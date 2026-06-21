@@ -1,0 +1,350 @@
+/**
+ * Tauri IPC database client — v10.0.1
+ * All data access via @tauri-apps/api invoke() calling Rust Tauri commands
+ */
+import { invoke } from '@tauri-apps/api/core'
+
+// ─── Types ──────────────────────────────────────────────────────
+export interface NoteRow { note_id: string; title: string; content: string; is_daily: number; notebook_id: string|null; project_ids: string|null; created_at: string; updated_at: string; [key:string]: unknown }
+export interface TagRow { tag_id: string; name: string; color: string; type: string; [key:string]: unknown }
+export interface NotebookRow { id: string; name: string; color: string; sort_order: number; parent_id?: string|null; [key:string]: unknown }
+export interface SuccessResponse<T = void> { success: boolean; error?: string }
+export interface FetchNotesResponse extends SuccessResponse { notes: NoteRow[] }
+export interface FetchTagsResponse extends SuccessResponse { tags: TagRow[] }
+export interface FetchNotebooksResponse extends SuccessResponse { notebooks: NotebookRow[] }
+export interface ProjectRow { id: string; name: string; customer: string; budget: string|number; description: string; status: string; owner: string; userId: string; displayId: string; created_at: string; updated_at: string; isArchived: boolean; bid_time: string; customer_contact: string; customer_phone: string; [key:string]: unknown }
+export interface FileRow { id: string; file_ext: string; file_size: number; parse_status: string; global_name: string; custom_name: string; created_at: string; updated_at: string; [key:string]: unknown }
+export interface ProductRow { id: string; name: string; series_id: string|null; description: string; standard_specs: string; full_specs: string; created_at: string; updated_at: string; [key:string]: unknown }
+export interface ProductSeriesRow { id: string; name: string; parent_id: string|null; category: string; sort_order: number; [key:string]: unknown }
+export interface TodoRow { id: string; title: string; content: string; done: number|boolean; priority: string; due_date: string; repeat: string; project_id: string; project_name: string; created_at: string; [key:string]: unknown }
+export interface LicenseStatus { activated: boolean; status: string; product: string; expiresAt: string; activatedAt: string; machineCode: string }
+export interface DynamicRow { id: string; content: string; operator: string; date: string; type: string; created_at: string; [key:string]: unknown }
+export interface SolutionRow { id: string; name: string; project_id: string; [key:string]: unknown }
+export interface VersionRow { id: string; versionNum: string; tags: string; content: string; amount: number; creator: string; items: string; createdAt: string; [key:string]: unknown }
+export interface AiConfig { providers?: AiProvider[]; activeProviderId?: string; visionProviders?: AiProvider[]; activeVisionId?: string; embedding?: { baseUrl: string; apiKey: string; modelName: string }; [key:string]: unknown }
+export interface AiProvider { id: string; name: string; apiKey: string; baseUrl: string; modelName: string; [key:string]: unknown }
+export interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
+export interface ChatMessage { role: 'user'|'assistant'; content: string; [key:string]: unknown }
+
+// ─── User ───────────────────────────────────────────────────────
+export async function fetchUserProfile(): Promise<{id:string;name:string;username:string;role:string;phone:string;email:string;avatar:string;aiConfig:string}> { return invoke('user_profile') }
+export async function updateUserProfile(data: Record<string,any>): Promise<void> { await invoke('user_profile_update', { data }) }
+
+// ─── License ────────────────────────────────────────────────────
+export async function fetchLicenseStatus(): Promise<LicenseStatus> { return invoke('license_status') }
+export async function activateLicense(key: string): Promise<{message:string;expiresAt:string}> { return invoke('license_activate', { key }) }
+export async function getMachineCode(): Promise<string> { return invoke('machine_code') }
+
+// ─── Projects ──────────────────────────────────────────────────
+export function fetchProject(id: string): Promise<ProjectRow|null> { return invoke('project_get', { id }) }
+export async function fetchProjects(): Promise<ProjectRow[]> { return invoke('project_list') }
+export async function createProject(data: Record<string,any>): Promise<ProjectRow> { return invoke('project_create', { data }) }
+export async function updateProject(id: string, data: Record<string,any>): Promise<void> { await invoke('project_update', { id, data }) }
+export async function deleteProject(id: string): Promise<void> { await invoke('project_delete', { id }) }
+export const deleteProjectBackend = deleteProject
+
+export async function createProjectDynamic(data: Record<string,any>): Promise<DynamicRow> { return invoke('project_dynamics_add', { projectId: data.projectId, event: { type: data.type||'note', content: data.content||'', operator: data.author||'' } }) }
+export async function fetchDynamics(projectId: string): Promise<DynamicRow[]> { return invoke('project_dynamics_list', { projectId }) }
+export async function fetchAllDynamics(): Promise<DynamicRow[]> { return invoke('project_dynamics_list_all') }
+export async function fetchProjectDynamics(projectId: string): Promise<DynamicRow[]> { return fetchDynamics(projectId) }
+export async function deleteProjectDynamic(dynamicId: string): Promise<void> { await invoke('project_dynamics_delete', { dynamicId }) }
+export async function editProjectDynamic(dynamicId: string, content: string): Promise<void> { await invoke('project_dynamics_edit', { dynamicId, content }) }
+export async function updateProjectStatus(projectId: string, newStatus: string, operator: string): Promise<void> { await invoke('project_update_status', { projectId, newStatus, operator }) }
+export async function archiveProject(projectId: string, operator: string): Promise<void> { await invoke('project_archive', { projectId, operator }) }
+export async function exportProject(projectId: string, savePath?: string): Promise<{success:boolean;exportPath?:string;error?:string}> { return invoke('project_export', { projectId, savePath }) }
+export async function importProject(data: any): Promise<{success:boolean;error?:string}> { return invoke('project_import', { data }) }
+export async function projectImportFile(filePath: string): Promise<{success:boolean;error?:string}> { return invoke('project_import_file', { filePath }) }
+export async function projectExportFiles(projectId: string): Promise<{success:boolean;error?:string}> { return invoke('project_export_files', { projectId }) }
+export async function projectsBatchExport(projectIds: string[]): Promise<{success:boolean;exportPath?:string;error?:string}> { return invoke('projects_batch_export', { projectIds }) }
+
+// ─── Products ──────────────────────────────────────────────────
+export async function fetchProductSeries(): Promise<ProductSeriesRow[]> { return invoke('product_series_list') }
+export async function createProductSeries(data: Record<string,any>): Promise<ProductSeriesRow> { return invoke('product_series_create', { data }) }
+export async function updateProductSeries(id: string, data: Record<string,any>): Promise<void> { return invoke('product_series_update', { id, data }) }
+export async function deleteProductSeries(id: string): Promise<void> { return invoke('product_series_delete', { id }) }
+export async function updateProductSeriesSortOrders(orders: {id:string;sortOrder:number}[]): Promise<void> { return invoke('product_series_update_sort_order', { data: orders }) }
+export async function fetchProducts(params?: Record<string,any>): Promise<ProductRow[]> { return invoke('product_list', { seriesId: params?.seriesId||null }) }
+export async function createProduct(data: Record<string,any>): Promise<ProductRow> { return invoke('product_create', { data }) }
+export async function updateProduct(id: string, data: Record<string,any>): Promise<void> { return invoke('product_update', { id, data }) }
+export async function updateProductSortOrders(orders: {id:string;sortOrder:number}[]): Promise<void> { return invoke('product_update_sort_orders', { data: orders }) }
+export async function deleteProduct(id: string): Promise<void> { return invoke('product_delete', { id }) }
+export async function productGetTags(productId: string): Promise<TagRow[]> { return invoke('product_get_tags', { productId }) }
+export async function productAddTagMapping(productId: string, tagName: string): Promise<void> { return invoke('product_add_tag_mapping', { productId, tagName }) }
+export async function productRemoveTagMapping(productId: string, tagId: string): Promise<void> { return invoke('product_remove_tag_mapping', { productId, tagId }) }
+
+// ─── Files ─────────────────────────────────────────────────────
+export async function fetchFiles(projectId: string): Promise<FileRow[]> { return invoke('file_list', { projectId }) }
+/// 统一文件上传：entityType 区分域（project / library / product / note / todo）
+export async function uploadFile(data: any): Promise<{fileId?:string;id?:string;[key:string]:any}> { return invoke('file_upload', { data }) }
+export async function deleteFile(fileId: string): Promise<void> { return invoke('file_delete', { fileId }) }
+export async function updateFileMeta(fileId: string, data: Record<string,any>): Promise<void> { return invoke('file_update_meta', { fileId, data }) }
+export async function openFile(fileId: string): Promise<void> { return invoke('file_open', { versionId: fileId }) }
+export async function downloadFile(versionId: string, suggestedName?: string): Promise<{success:boolean;error?:string}> { const { save } = await import('@tauri-apps/plugin-dialog'); const name = suggestedName || 'download'; const p = await save({ defaultPath: name }); if(!p) return {success:false,error:'cancelled'}; return invoke('file_download', { data: { versionId, savePath: p } }) }
+export async function getDownloadUrl(versionId: string): Promise<string> { return invoke('file_get_path', { versionId }) }
+export async function fileRepairParsedText(): Promise<any> { return invoke('file_repair_parsed_text') }
+export async function fileGetTags(fileId: string): Promise<TagRow[]> { return invoke('file_get_tags', { fileId }) }
+export async function fileAddTagMapping(fileId: string, tagName: string): Promise<void> { return invoke('file_add_tag_mapping', { fileId, tagName }) }
+export async function fileRemoveTagMapping(fileId: string, tagId: string): Promise<void> { return invoke('file_remove_tag_mapping', { fileId, tagId }) }
+
+
+// ─── 通用文件预览 & 导出（适用于任意 file_assets ID） ──
+export async function previewFile(fileId: string): Promise<any> { return invoke('file_preview', { fileId }) }
+export async function exportFile(fileId: string): Promise<any> {
+  const { save } = await import('@tauri-apps/plugin-dialog');
+  const r: any = await invoke('file_export', { fileId });
+  if (!r?.success) return r;
+  const p = await save({ defaultPath: r.fileName || 'download' });
+  if (!p) return { success: false, error: '已取消' };
+  await invoke('file_export_to_path', { filePath: r.filePath, savePath: p });
+  return { success: true };
+}
+
+// ─── 资料库：孤文件 + 虚拟树 + 移动 + 文件夹 ──
+export async function listGlobalFiles(): Promise<any> { return invoke('file_list_global') }
+export async function listAllFiles(): Promise<any> { return invoke('file_list_all') }
+export async function fetchFileTree(projectId?: string): Promise<any> { return invoke('file_tree', { projectId: projectId || null }) }
+export async function moveFile(data: { fileId: string; fromDomain: string; toDomain: string; toId?: string; toFolderId?: string }): Promise<any> { return invoke('file_move', { data }) }
+export async function addFileNoteMapping(fileId: string, noteId: string, fileName?: string): Promise<any> { return invoke('file_add_note_mapping', { fileId, noteId, fileName: fileName || null }) }
+export async function removeFileNoteMapping(fileId: string, noteId: string): Promise<any> { return invoke('file_remove_note_mapping', { fileId, noteId }) }
+export async function fetchFilesByNote(noteId: string): Promise<any> { return invoke('file_list_by_note', { noteId }) }
+export async function addFileTodoMapping(fileId: string, todoId: string, fileName?: string): Promise<any> { return invoke('file_add_todo_mapping', { fileId, todoId, fileName: fileName || null }) }
+export async function removeFileTodoMapping(fileId: string, todoId: string): Promise<any> { return invoke('file_remove_todo_mapping', { fileId, todoId }) }
+export async function deleteFileFromDomain(fileId: string, entityType: string, entityId: string): Promise<any> { return invoke('file_delete_from_domain', { fileId, entityType, entityId }) }
+export async function fetchFilesByTodo(todoId: string): Promise<any> { return invoke('file_list_by_todo', { todoId }) }
+export async function moveFileToFolder(fileId: string, folderId?: string|null): Promise<any> { return invoke('file_move_to_folder', { fileId, folderId: folderId || null }) }
+export async function createFolder(name: string, parentId?: string|null, projectId?: string|null): Promise<any> { return invoke('file_folder_create', { name, parentId, projectId }) }
+export async function renameFolder(id: string, name: string): Promise<any> { return invoke('file_folder_rename', { id, name }) }
+export async function moveFolder(id: string, parentId?: string|null): Promise<any> { return invoke('file_folder_move', { id, parentId: parentId || null }) }
+export async function reorderFolder(id: string, sortOrder: number): Promise<any> { return invoke('file_folder_reorder', { id, sortOrder }) }
+export async function deleteFolder(id: string): Promise<any> { return invoke('file_folder_delete', { id }) }
+
+// Material/product files — 统一走 uploadFile({ entityType: 'product', entityIds: [...] })
+export async function listMaterials(productId: string): Promise<any> { return invoke('file_list_by_product', { productId }) }
+export async function openMaterial(materialId: string): Promise<any> { return previewFile(materialId) }
+export async function downloadMaterial(data: { materialId: string }): Promise<any> { return exportFile(data.materialId) }
+export async function deleteMaterial(materialId: string, productId?: string): Promise<any> { return invoke('file_unlink_from_product', { fileId: materialId, productId: productId || '' }) }
+export async function deleteAllMaterial(materialId: string): Promise<any> { return invoke('file_delete', { fileId: materialId }) }
+export async function getMaterialAssociations(materialId: string): Promise<any> { return invoke('file_get_product_associations', { fileId: materialId }) }
+export async function updateMaterialAssociations(materialId: string, productIds: string[], matType?: string): Promise<any> { return invoke('file_update_product_associations', { data: { fileId: materialId, productIds, type: matType||'OTHER' } }) }
+
+// ─── Settings ──────────────────────────────────────────────────
+export async function fetchSettings(): Promise<any> { return invoke('settings_get') }
+export async function updateSettings(data: Record<string,any>): Promise<any> { return invoke('settings_update', { data }) }
+export async function fetchAiConfig(): Promise<any> { return invoke('get_ai_config') }
+export async function updateAiConfig(data: Record<string,any>): Promise<any> { return invoke('update_ai_config', { data: { ai_config: JSON.stringify(data) } }) }
+
+// ─── Notes ─────────────────────────────────────────────────────
+export async function fetchNotes(): Promise<FetchNotesResponse> { return invoke('notes_list_all') }
+export async function fetchDailyNotes(): Promise<FetchNotesResponse> { return invoke('notes_list_daily') }
+export async function fetchProjectNotes(projectId: string): Promise<FetchNotesResponse> { return invoke('notes_list_by_project', { projectId }) }
+export async function fetchOrphanNotes(): Promise<FetchNotesResponse> { return invoke('notes_list_orphan') }
+export async function createNote(data: Record<string,any>): Promise<{noteId:string}> { return invoke('notes_create', { data }) }
+export async function updateNote(data: Record<string,any>): Promise<void> { return invoke('notes_update', { data }) }
+export async function deleteNote(noteId: string): Promise<void> { return invoke('notes_delete', { noteId }) }
+export async function fetchTags(): Promise<FetchTagsResponse> { return invoke('notes_list_tags') }
+export async function createTag(data: Record<string,any>): Promise<TagRow> { return invoke('notes_create_tag', { data }) }
+export async function searchTags(query: string): Promise<FetchTagsResponse> { return invoke('notes_search_tags', { query }) }
+export async function listTagsByType(tagType: string): Promise<FetchTagsResponse> { return invoke('notes_list_tags_by_type', { tagType }) }
+export async function generateAITags(noteId: string): Promise<{success:boolean;tags?:TagRow[]}> { return invoke('notes_generate_ai_tags', { noteId }) }
+export async function rebuildNoteFTS(): Promise<{success:boolean}> { return invoke('notes_rebuild_fts') }
+export async function upgradeNoteFTSTriggers(): Promise<{success:boolean}> { return invoke('notes_upgrade_fts_triggers') }
+export async function getInheritedTags(noteId: string): Promise<{tags?:TagRow[]}> { return invoke('notes_get_inherited_tags', { noteId }) }
+export async function getProjectKnowledgeGraph(projectId: string): Promise<any> { return invoke('notes_get_project_knowledge_graph', { projectId }) }
+export async function semanticRecall(data: any): Promise<{results?:any[]}> { return invoke('notes_semantic_recall', { data }) }
+export async function fetchNoteTagMappings(): Promise<any> { return invoke('notes_list_tag_mappings') }
+export async function addNoteTagMapping(noteId: string, tagId: string): Promise<void> { await invoke('notes_add_tag_mapping', { noteId, tagId }) }
+export async function removeNoteTagMapping(noteId: string, tagId: string): Promise<void> { await invoke('notes_remove_tag_mapping', { noteId, tagId }) }
+export async function countNotesByNotebook(notebookId: string): Promise<{count:number}> { return invoke('notes_count_by_notebook', { notebookId }) }
+
+// Notes v2 aliases
+export const notesV2ListAll = fetchNotes
+export const notesV2ListDaily = fetchDailyNotes
+export const notesV2ListByProject = fetchProjectNotes
+export const notesV2ListOrphan = fetchOrphanNotes
+export async function notesV2Create(data: any): Promise<{noteId:string}> { return invoke('notes_create', { data }) }
+export async function notesV2Update(data: any): Promise<void> { return invoke('notes_update', { data }) }
+export async function notesV2Delete(noteId: string): Promise<void> { return invoke('notes_delete', { noteId }) }
+export const notesV2ListTags = fetchTags
+export const notesV2CreateTag = createTag
+export const notesV2SearchTags = searchTags
+export async function notesV2ListTrash(): Promise<FetchNotesResponse> { return invoke('notes_list_trash') }
+export async function notesV2ListArchive(): Promise<FetchNotesResponse> { return invoke('notes_list_archive') }
+export async function notesV2Restore(noteId: string, notebookId: string): Promise<void> { return invoke('notes_restore', { noteId, notebookId }) }
+export async function notesV2PermanentDelete(noteId: string): Promise<void> { return invoke('notes_permanent_delete', { noteId }) }
+
+// ─── Notebooks ─────────────────────────────────────────────────
+export async function fetchNotebooks(): Promise<FetchNotebooksResponse> { return invoke('notebook_list') }
+export async function createNotebook(data: Record<string,any>): Promise<{notebook?:NotebookRow;id?:string}> { return invoke('notebook_create', { data }) }
+export async function updateNotebook(data: Record<string,any>): Promise<void> { return invoke('notebook_update', { data }) }
+export async function deleteNotebook(notebookId: string): Promise<void> { return invoke('notebook_delete', { notebookId }) }
+export const fetchNotebooksV1 = fetchNotebooks
+export async function createNotebookV1(data: {name:string;color?:string;id?:string}): Promise<any> { return invoke('notebook_create', { data }) }
+export async function updateNotebookV1(data: any): Promise<any> { return invoke('notebook_update', { data }) }
+export const deleteNotebookV1 = deleteNotebook
+
+// ─── Partners ──────────────────────────────────────────────────
+export async function fetchChannelPartners(projectId: string): Promise<any[]> { return invoke('channel_list', { projectId }) }
+export async function createChannelPartner(data: Record<string,any>): Promise<any> { return invoke('channel_create', { data }) }
+export async function updateChannelPartner(data: Record<string,any>): Promise<any> { return invoke('channel_update', { data }) }
+export async function deleteChannelPartner(id: string): Promise<any> { return invoke('channel_delete', { channelId: id }) }
+export const fetchChannels = fetchChannelPartners; export const createChannel = createChannelPartner; export const updateChannel = updateChannelPartner; export const deleteChannel = deleteChannelPartner
+export async function createChannelContact(data: Record<string,any>): Promise<any> { return invoke('channel_contact_create', { data }) }
+export async function updateChannelContact(data: Record<string,any>): Promise<any> { return invoke('channel_contact_update', { data }) }
+export async function deleteChannelContact(id: string): Promise<any> { return invoke('channel_contact_delete', { contactId: id }) }
+export async function fetchVendorPartners(projectId: string): Promise<any[]> { return invoke('vendor_list', { projectId }) }
+export async function createVendorPartner(data: Record<string,any>): Promise<any> { return invoke('vendor_create', { data }) }
+export async function updateVendorPartner(data: Record<string,any>): Promise<any> { return invoke('vendor_update', { data }) }
+export async function deleteVendorPartner(id: string): Promise<any> { return invoke('vendor_delete', { vendorId: id }) }
+export const fetchVendors = fetchVendorPartners; export const createVendor = createVendorPartner; export const updateVendor = updateVendorPartner; export const deleteVendor = deleteVendorPartner
+export async function createVendorContact(data: Record<string,any>): Promise<any> { return invoke('vendor_contact_create', { data }) }
+export async function updateVendorContact(data: Record<string,any>): Promise<any> { return invoke('vendor_contact_update', { data }) }
+export async function deleteVendorContact(id: string): Promise<any> { return invoke('vendor_contact_delete', { contactId: id }) }
+
+// ─── Solutions ─────────────────────────────────────────────────
+export async function fetchProjectSolutions(projectId: string): Promise<SolutionRow[]> { return invoke('solution_list', { projectId }) }
+export async function createSolution(projectId: string, name: string): Promise<SolutionRow> { return invoke('solution_create', { projectId, name }) }
+export async function renameSolution(solutionId: string, name: string): Promise<void> { await invoke('solution_rename', { solutionId, name }) }
+export async function deleteSolution(solutionId: string): Promise<void> { await invoke('solution_delete', { solutionId }) }
+export async function createVersion(solutionId: string, data: Record<string,any>): Promise<VersionRow> { return invoke('solution_version_create', { solutionId, data }) }
+export async function finalizeDraftVersion(versionId: string, data: Record<string,any>): Promise<VersionRow> { return invoke('solution_version_finalize', { versionId, data }) }
+export async function fetchVersions(solutionId: string): Promise<VersionRow[]> { return invoke('solution_version_list', { solutionId }) }
+export async function deleteVersion(versionId: string): Promise<void> { await invoke('solution_version_delete', { versionId }) }
+export async function updateSolutionVersionMeta(versionId: string, data: Record<string,any>): Promise<void> { await invoke('solution_version_update_meta', { versionId, data }) }
+export async function saveDraftVersion(versionId: string, data: Record<string,any>): Promise<VersionRow> { return invoke('solution_version_save_draft', { versionId, data }) }
+export async function solutionDownloadExcel(data: {buffer:number[];fileName:string}): Promise<{success:boolean;savedPath?:string;error?:string}> { const { save } = await import('@tauri-apps/plugin-dialog'); const sp = await save({ defaultPath: data.fileName, filters: [{name:'Excel',extensions:['xlsx']}] }); if(!sp) return {success:false,error:'cancelled'}; return invoke('solution_download_excel', { data: { buffer: data.buffer, savePath: sp } }) }
+
+// ─── KB ────────────────────────────────────────────────────────
+export async function kbGetConfig(): Promise<{embeddingApiUrl?:string;embeddingApiKey?:string;embeddingModelName?:string;embeddingActive?:boolean;chatApiUrl?:string;chatApiKey?:string;chatModelName?:string}> { return invoke('kb_get_config') }
+export async function kbUpdateConfig(data: any): Promise<{success:boolean}> { return invoke('kb_update_config', { data }) }
+export async function kbImportFile(data: any): Promise<{success:boolean;fileId?:string;error?:string}> { return invoke('kb_import_file', { data }) }
+export async function kbSaveNote(data: any): Promise<{success:boolean;noteId?:string}> { return invoke('kb_save_note', { data }) }
+export async function kbSearch(data: any): Promise<{success:boolean;results?:any[]}> { return invoke('kb_search', { data }) }
+export async function kbDelete(docId: string): Promise<{success:boolean}> { return invoke('kb_delete', { docId }) }
+export async function kbListDocuments(projectId?: string): Promise<{success:boolean;documents?:FileRow[]}> { return invoke('kb_list_documents', { projectId: projectId||null }) }
+export async function kbChat(data: any): Promise<{success:boolean;answer?:string;error?:string}> { return invoke('kb_chat', { data }) }
+export async function kbAgentChat(data: any): Promise<{success:boolean;answer?:string;tool_log?:any[];context_docs?:any[];workspace?:string;error?:string}> { return invoke('kb_agent_chat', { data }) }
+export async function kbDiagnose(): Promise<any> { return invoke('kb_diagnose') }
+export async function kbGetTableChunks(fileId: string): Promise<any> { return invoke('kb_get_table_chunks', { fileId }) }
+export async function kbTestEmbedding(data: {url:string;key:string;model:string}): Promise<{success:boolean;message?:string;error?:string}> { return invoke('kb_test_embedding', { data }) }
+export async function kbTestChat(data: {url:string;key:string;model:string}): Promise<{success:boolean;message?:string;error?:string}> { return invoke('kb_test_chat', { data }) }
+
+// ─── AI Sync ───────────────────────────────────────────────────
+export async function aiSyncStatus(): Promise<any> { return invoke('ai_sync_status') }
+export async function aiSyncTrigger(): Promise<{success:boolean}> { return invoke('ai_sync_trigger') }
+export async function aiTestProvider(data: Record<string,any>): Promise<{success:boolean;message?:string;error?:string}> { return invoke('ai_test_provider', { data }) }
+export async function aiTestEmbedding(data: Record<string,any>): Promise<{success:boolean;message?:string;error?:string}> { return invoke('ai_test_embedding', { data }) }
+export async function aiSyncDiagnose(): Promise<any> { return invoke('ai_sync_diagnose') }
+export async function aiSyncReset(): Promise<{success:boolean}> { return invoke('ai_sync_reset') }
+export async function aiSyncDiagnoseFailedFiles(): Promise<any> { return invoke('ai_sync_diagnose_failed_files') }
+
+// ─── KB Debug & Agent Tools ─────────────────────────────────────
+export async function kbSearchDebug(query: string): Promise<any> { return invoke('kb_search_debug', { query }) }
+export async function kbDataBrowse(query?: string, page?: number): Promise<any> { return invoke('kb_data_browse', { query: query || null, page: page || null }) }
+export async function kbInspectFts5(query?: string, page?: number): Promise<any> { return invoke('kb_inspect_fts5', { query: query || null, page: page || 1 }) }
+export async function kbFts5Inspector(): Promise<any> { return invoke('kb_fts5_inspector') }
+export async function executeProductionRag(data: any): Promise<any> { return invoke('execute_production_rag', { data }) }
+export async function extToolSearchKnowledgeBase(keywords: string[], projectId?: string, filterTags?: string[]): Promise<string> { return invoke('ext_tool_search_knowledge_base', { keywords, projectId: projectId || null, filterTags: filterTags || null }) }
+export async function extToolGetDocumentPage(docId: string, page: number): Promise<any> { return invoke('ext_tool_get_document_page', { docId, page }) }
+export async function extToolFindRelatedKnowledge(docId: string): Promise<any> { return invoke('ext_tool_find_related_knowledge', { docId }) }
+export async function extToolSearchByTag(tag: string): Promise<any> { return invoke('ext_tool_search_by_tag', { tag }) }
+export async function extToolGetProjectContext(projectId: string): Promise<any> { return invoke('ext_tool_get_project_context', { projectId }) }
+export async function aiSyncForceResync(): Promise<any> { return invoke('ai_sync_force_resync') }
+export async function aiSyncRetryFailed(): Promise<any> { return invoke('ai_sync_retry_failed') }
+export async function cleanupRetryFailed(): Promise<any> { return invoke('cleanup_retry_failed') }
+export async function knowledgePipelineStatus(): Promise<any> { return invoke('knowledge_pipeline_status') }
+export async function pipelineDebugStatus(): Promise<any> { return invoke('pipeline_debug_status') }
+export async function pipelineClearKnowledge(): Promise<any> { return invoke('pipeline_clear_knowledge') }
+export async function pipelineClearVectors(): Promise<any> { return invoke('pipeline_clear_vectors') }
+export async function pipelineClearAll(): Promise<any> { return invoke('pipeline_clear_all') }
+export async function pipelineClearTagPipeline(): Promise<any> { return invoke('pipeline_clear_tag_pipeline') }
+export async function pipelineResync(): Promise<any> { return invoke('pipeline_resync') }
+export async function pipelineBrowseSource(sourceType?: string, limit?: number): Promise<any> { return invoke('pipeline_browse_source', { sourceType: sourceType || null, limit: limit || 50 }) }
+export async function pipelineGetSourceContent(id: number): Promise<any> { return invoke('pipeline_get_source_content', { id }) }
+export async function pipelineRetagAll(): Promise<any> { return invoke('pipeline_retag_all') }
+export async function kbSaveSessions(sessions: any): Promise<any> { return invoke('kb_save_sessions', { data: { sessions } }) }
+export async function kbLoadSessions(): Promise<any> { return invoke('kb_load_sessions') }
+
+// ── Memory Explorer API ──
+export async function kbMemoryObjects(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string;title:string}>}> { return invoke('kb_memory_objects', { query }) }
+export async function kbMemoryParents(sourceType: string, sourceId: string): Promise<{success:boolean;parents:Array<any>}> { return invoke('kb_memory_parents', { sourceType, sourceId }) }
+export async function kbMemoryEntityRelations(entityName?: string, sourceType?: string, sourceId?: string): Promise<{success:boolean;entities:Array<any>;related_objects:Array<any>}> { return invoke('kb_memory_entity_relations', { entityName: entityName || '', sourceType: sourceType || '', sourceId: sourceId || '' }) }
+export async function kbMemoryHeatmap(): Promise<{success:boolean;total_chunks:number;hot:Array<any>;cold:Array<any>}> { return invoke('kb_memory_heatmap') }
+export async function kbDashboardStats(): Promise<any> { return invoke('kb_memory_dashboard_stats') }
+export async function kbProjectNoteIds(): Promise<{ids:string[]}> { return invoke('kb_project_note_ids') }
+export async function kbBrowseParents(query?: string, page?: number): Promise<any> { return invoke('kb_browse_parents', { query: query || null, page: page || null }) }
+export async function kbBrowseVectors(limit?: number): Promise<any> { return invoke('kb_browse_vectors', { limit: limit || 50 }) }
+
+// ─── Assets ───────────────────────────────────────────────────
+export async function assetsSearch(data: any): Promise<any> { return invoke('assets_search', { data }) }
+export async function assetsSearchFts5(data: any): Promise<any> { return invoke('assets_search_fts5', { data }) }
+export async function assetsList(): Promise<any> { return invoke('assets_list') }
+export async function assetSyncStatus(): Promise<any> { return invoke('asset_sync_status') }
+export async function assetSyncTrigger(fileId: string): Promise<any> { return invoke('asset_sync_trigger', { fileId }) }
+export async function assetDiagnose(): Promise<any> { return invoke('asset_diagnose') }
+export async function assetGetLatestVersion(fileId: string): Promise<any> { return invoke('asset_get_latest_version', { fileId }) }
+export async function assetGetParsedText(fileId: string): Promise<any> { return invoke('asset_get_parsed_text', { fileId }) }
+export async function assetRerunMigration(): Promise<any> { return invoke('asset_rerun_migration') }
+
+// ─── Tags ──────────────────────────────────────────────────────
+export async function tagGetState(): Promise<any> { return invoke('tag_get_state') }
+export async function tagListRegistered(): Promise<any> { return invoke('tag_list_registered') }
+export async function tagForceResync(): Promise<any> { return invoke('tag_force_resync') }
+export async function tagList(category?: string): Promise<any[]> { return invoke('tag_list', { category }) }
+export async function tagCreate(name: string, color: string, category: string): Promise<any> { return invoke('tag_create', { name, color, category }) }
+export async function tagUpdate(tagId: string, data: Record<string,any>): Promise<any> { return invoke('tag_update', { tagId, ...data }) }
+export async function tagDelete(tagId: string): Promise<any> { return invoke('tag_delete', { tagId }) }
+export async function tagListCategories(): Promise<any[]> { return invoke('tag_list_categories') }
+export async function tagStats(): Promise<any> { return invoke('tag_stats') }
+export async function tagTagSingle(data: any): Promise<any> { return invoke('tag_tag_single', { data }) }
+export async function entityGetTags(entityType: string, entityId: string): Promise<any> { return invoke('entity_get_tags', { entityType, entityId }) }
+export async function entityAddTag(entityType: string, entityId: string, tagName: string): Promise<any> { return invoke('entity_add_tag', { entityType, entityId, tagName }) }
+export async function entityRemoveTag(entityType: string, entityId: string, tagId: string): Promise<any> { return invoke('entity_remove_tag', { entityType, entityId, tagId }) }
+
+// ─── Storage ───────────────────────────────────────────────────
+export async function getStorageConfig(): Promise<any> { return invoke('storage_get_config') }
+export async function updateStorageConfig(data: any): Promise<any> { return invoke('storage_update_config', { data }) }
+export async function testOssConnection(): Promise<any> { return invoke('oss_test_connection') }
+export async function startMigration(data: any): Promise<any> { return invoke('storage_migrate', { data }) }
+export async function getDefaultStoragePath(): Promise<string> { return invoke('storage_default_path') }
+export async function getMigrationProgress(): Promise<any> { return invoke('storage_migrate_progress') }
+export async function hasOssFiles(): Promise<any> { return invoke('file_has_oss_files') }
+export async function migrateFiles(oldPath: string, newPath: string): Promise<any> { return invoke('file_migrate_files', { oldPath, newPath }) }
+
+export async function fetchMigrationProgress(): Promise<any> { return invoke('storage_migrate_progress') }
+export async function uploadAvatar(formData: any): Promise<any> { return { success: true } }
+export async function startStorageMigration(data: any): Promise<any> { return invoke('storage_migrate', { data }) }
+
+// ─── Export ────────────────────────────────────────────────────
+export async function exportAllData(domains: string[], savePath: string): Promise<{success:boolean;error?:string}> { return invoke('export_data', { domains, savePath }) }
+export async function importData(data: any): Promise<any> { return invoke('import_data', { data }) }
+export async function dbExportRaw(): Promise<any> { return invoke('db_export_raw') }
+export async function productsExport(): Promise<any> { return invoke('products_export') }
+export async function productsImport(data: any): Promise<any> { return invoke('products_import', { data }) }
+export async function productsExportFile(): Promise<any> { return invoke('products_export_file') }
+export async function productsImportFile(filePath: string): Promise<any> { return invoke('products_import_file', { filePath }) }
+
+// ─── Shell & Dialog ────────────────────────────────────────────
+export async function revealFile(filePath: string): Promise<{success:boolean}> { try { const { open } = await import('@tauri-apps/plugin-shell'); await open(`file:///${filePath.replace(/\\/g,'/')}`); return {success:true} } catch { return {success:false} } }
+export async function openFileDialog(filters?: {name:string;extensions:string[]}[]): Promise<{canceled:boolean;path:string}> { try { const { open } = await import('@tauri-apps/plugin-dialog'); const r = await open({ filters: filters?.map(f=>({name:f.name,extensions:f.extensions})), multiple: false }); if(!r||typeof r!=='string') return {canceled:true,path:''}; return {canceled:false,path:r} } catch { return {canceled:true,path:''} } }
+export async function browseFolder(): Promise<{canceled:boolean;path:string}> { try { const { open } = await import('@tauri-apps/plugin-dialog'); const r = await open({ directory: true, multiple: false }); if(!r||typeof r!=='string') return {canceled:true,path:''}; return {canceled:false,path:r} } catch { return {canceled:true,path:''} } }
+
+// ─── Todos ──────────────────────────────────────────────────────
+export async function fetchTodos(): Promise<{todos?:TodoRow[]}> { return invoke('todos_list') }
+export async function createTodo(data: Record<string, any>): Promise<{todo?:TodoRow}> { return invoke('todos_create', { data }) }
+export async function updateTodo(id: string, data: Record<string, any>): Promise<{todo?:TodoRow}> { return invoke('todos_update', { id, data }) }
+export async function deleteTodo(id: string): Promise<void> { return invoke('todos_delete', { id }) }
+export async function toggleTodo(id: string): Promise<{todo?:TodoRow;repeat_advanced?:boolean}> { return invoke('todos_toggle', { id }) }
+export async function getTodo(id: string): Promise<{todo?:TodoRow}> { return invoke('todos_get', { id }) }
+
+// OSS
+export async function ossTestConnection(): Promise<{success:boolean;error?:string}> { return invoke('oss_test_connection') }
+export async function ossRawDiagnose(): Promise<{success:boolean;detail:string}> { return invoke('oss_raw_diagnose') }
+
+// Raw SQL (Compatibility)
+export async function dbAll(sql: string, params?: any[]): Promise<any[]> { return invoke('db_all', { sql, params: params||[] }) }
+export async function dbGet(sql: string, params?: any[]): Promise<any> { return invoke('db_get', { sql, params: params||[] }) }
+export async function dbRun(sql: string, params?: any[]): Promise<any> { return invoke('db_run', { sql, params: params||[] }) }
+
+// Project import/export
+export async function projectExport(projectId: string): Promise<any> { return invoke('project_export', { projectId }) }
+export async function batchExportProjects(projectIds: string[], filePath: string): Promise<any> { return invoke('projects_batch_export', { projectIds, filePath }) }

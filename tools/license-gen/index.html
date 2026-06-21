@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arkmind 许可证生成器</title>
+<style>
+:root { color-scheme: light; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: "Inter", system-ui, -apple-system, sans-serif; background: #f5f5f7; color: #1d1d1f; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.container { max-width: 720px; width: 100%; background: #fff; border-radius: 20px; box-shadow: 0 2px 20px rgba(0,0,0,0.06); padding: 40px; }
+h1 { font-size: 22px; font-weight: 700; text-align: center; margin-bottom: 8px; letter-spacing: -0.02em; }
+.subtitle { font-size: 13px; color: #86868b; text-align: center; margin-bottom: 32px; }
+.tabs { display: flex; gap: 4px; margin-bottom: 28px; background: #f5f5f7; border-radius: 10px; padding: 3px; }
+.tab { flex: 1; padding: 10px 16px; border: none; background: transparent; border-radius: 8px; font-size: 13px; font-weight: 500; color: #86868b; cursor: pointer; transition: all 0.15s; }
+.tab.active { background: #fff; color: #1d1d1f; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.tab:hover:not(.active) { color: #6e6e73; }
+.panel { display: none; }
+.panel.active { display: block; }
+.form-group { margin-bottom: 20px; }
+label { display: block; font-size: 12px; font-weight: 600; color: #6e6e73; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+input, select, textarea { width: 100%; padding: 10px 14px; border: 1px solid #e5e5ea; border-radius: 10px; font-size: 14px; font-family: inherit; outline: none; transition: border-color 0.15s; color: #1d1d1f; }
+input:focus, select:focus, textarea:focus { border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.1); }
+textarea { min-height: 80px; resize: vertical; font-family: 'SF Mono', monospace; font-size: 12px; }
+select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 36px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 24px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+.btn-primary { background: #0071e3; color: #fff; }
+.btn-primary:hover { background: #0077ed; }
+.btn-secondary { background: #f5f5f7; color: #1d1d1f; }
+.btn-secondary:hover { background: #e8e8ed; }
+.btn-danger { background: #ff3b30; color: #fff; }
+.btn-danger:hover { background: #ff453a; }
+.btn-group { display: flex; gap: 10px; margin-top: 24px; }
+.result-box { margin-top: 20px; padding: 16px; background: #f5f5f7; border-radius: 12px; font-size: 13px; line-height: 1.6; }
+.result-box.success { background: #f0fdf4; border: 1px solid #bbf7d0; }
+.result-box.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+.result-box .key-text { word-break: break-all; font-family: 'SF Mono', monospace; font-size: 11px; color: #0071e3; }
+.result-label { font-size: 11px; font-weight: 600; color: #6e6e73; margin-bottom: 4px; }
+.copy-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid #e5e5ea; border-radius: 6px; font-size: 11px; color: #0071e3; background: #fff; cursor: pointer; margin-top: 8px; font-family: inherit; }
+.copy-btn:hover { background: #f0f9ff; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Arkmind 许可证生成器</h1>
+  <p class="subtitle">Ed25519 非对称加密 · 机器码绑定 · 激活期限控制</p>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('generate')">签发许可证</button>
+    <button class="tab" onclick="switchTab('keypair')">密钥管理</button>
+    <button class="tab" onclick="switchTab('verify')">验证许可证</button>
+  </div>
+
+  <!-- Tab 1: Generate -->
+  <div id="panel-generate" class="panel active">
+    <div class="form-group">
+      <label>授权级别</label>
+      <select id="gen-product">
+        <option value="basic">基础版 — 核心 CRUD + 手动标签</option>
+        <option value="advanced" selected>高级版 — 全部 AI 功能</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>客户机器码</label>
+      <input id="gen-machine" type="text" placeholder="复制客户 App「系统设置→许可证」中显示的机器码" />
+    </div>
+    <div class="form-group">
+      <label>到期日期</label>
+      <input id="gen-expires" type="date" value="2099-12-31" />
+    </div>
+    <div class="form-group">
+      <label>私钥文件（拖拽或点击选择）</label>
+      <input id="gen-keyfile" type="file" accept=".key,.txt" />
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="generateLicense()">签发许可证</button>
+    </div>
+    <div id="gen-result"></div>
+  </div>
+
+  <!-- Tab 2: Keypair -->
+  <div id="panel-keypair" class="panel">
+    <div class="form-group">
+      <label>生成密钥对</label>
+      <p style="font-size:12px;color:#86868b;margin-bottom:12px">私钥由你保管（签发许可证用），公钥嵌入代码中（验证用）</p>
+      <button class="btn btn-primary" onclick="generateKeypair()">生成新密钥对</button>
+    </div>
+    <div id="keypair-result"></div>
+  </div>
+
+  <!-- Tab 3: Verify -->
+  <div id="panel-verify" class="panel">
+    <div class="form-group">
+      <label>许可证密钥</label>
+      <textarea id="verify-license" placeholder="粘贴完整许可证密钥..."></textarea>
+    </div>
+    <div class="form-group">
+      <label>机器码</label>
+      <input id="verify-machine" type="text" placeholder="当前机器的机器码" />
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="verifyLicense()">验证</button>
+    </div>
+    <div id="verify-result"></div>
+  </div>
+</div>
+
+<script type="module">
+// ─── 加载 noble 库（esm.sh 优先，unpkg 备选，均自动处理 ESM） ──
+async function loadLib(name, primaryUrl, fallbackUrl) {
+  try {
+    return await import(primaryUrl);
+  } catch (e1) {
+    console.warn('[' + name + '] ' + primaryUrl.split('/')[2] + ' 失败 → 尝试备用...');
+    try {
+      return await import(fallbackUrl);
+    } catch (e2) {
+      alert('加载 ' + name + ' 失败。请检查网络连接。\n\n错误: ' + e2.message);
+      throw e2;
+    }
+  }
+}
+
+const curves = await loadLib(
+  'noble-curves',
+  'https://esm.sh/@noble/curves@1.4.2/ed25519',
+  'https://unpkg.com/@noble/curves@1.4.2/ed25519.js'
+);
+const ed25519 = curves.ed25519;
+
+const hashes = await loadLib(
+  'noble-hashes',
+  'https://esm.sh/@noble/hashes@1.4.0/sha256',
+  'https://unpkg.com/@noble/hashes@1.4.0/sha256.js'
+);
+const sha256 = hashes.sha256;
+
+const utils = await loadLib(
+  'noble-utils',
+  'https://esm.sh/@noble/hashes@1.4.0/utils',
+  'https://unpkg.com/@noble/hashes@1.4.0/utils.js'
+);
+const { bytesToHex, hexToBytes } = utils;
+
+// ─── 工具函数 ──────────────────────────────────────
+function b64Encode(arr) { return btoa(String.fromCharCode(...arr)); }
+function b64Decode(s) { return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+function hashMachine(code) { return bytesToHex(sha256(new TextEncoder().encode(code))).slice(0, 16); }
+function now() { return new Date().toISOString().slice(0, 10); }
+
+// ─── Tab 切换 ──────────────────────────────────────
+window.switchTab = function(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.tab[onclick*="${name}"]`).classList.add('active');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(`panel-${name}`).classList.add('active');
+};
+
+// ─── 密钥对生成 ────────────────────────────────────
+window.generateKeypair = function() {
+  const privateKey = ed25519.utils.randomPrivateKey();
+  const publicKey = ed25519.getPublicKey(privateKey);
+  const privB64 = b64Encode(privateKey);
+  const pubB64 = b64Encode(publicKey);
+
+  const blob = new Blob([privB64], { type: 'text/plain' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'private.key'; a.click();
+
+  document.getElementById('keypair-result').innerHTML =
+    `<div class="result-box success">
+      <div class="result-label">密钥对已生成</div>
+      <div style="margin-top:8px;font-size:12px;color:#6e6e73">私钥已下载为 <b>private.key</b>（请妥善保管，勿泄露）</div>
+      <div style="margin-top:16px" class="result-label">公钥（嵌入代码用）</div>
+      <div class="key-text">${pubB64}</div>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText('${pubB64.replace(/'/g,"&#39;")}').then(()=>this.textContent='已复制！')">复制公钥</button>
+    </div>`;
+};
+
+// ─── 签发许可证 ────────────────────────────────────
+window.generateLicense = async function() {
+  const resultDiv = document.getElementById('gen-result');
+  const product = document.getElementById('gen-product').value;
+  const machineCode = document.getElementById('gen-machine').value.trim();
+  const expires = document.getElementById('gen-expires').value;
+  const fileInput = document.getElementById('gen-keyfile');
+
+  if (!machineCode) { resultDiv.innerHTML = '<div class="result-box error">请输入客户机器码</div>'; return; }
+  if (!fileInput.files.length) { resultDiv.innerHTML = '<div class="result-box error">请选择私钥文件 (private.key)</div>'; return; }
+
+  try {
+    const keyText = await fileInput.files[0].text();
+    const privateKey = b64Decode(keyText.trim());
+    if (privateKey.length !== 32) { resultDiv.innerHTML = '<div class="result-box error">私钥格式错误：应为 32 字节</div>'; return; }
+
+    const machineHash = hashMachine(machineCode);
+    const payload = { product, machine_code: machineHash, expires_at: expires, issued_at: now() };
+    const payloadJson = JSON.stringify(payload);
+    const payloadB64 = b64Encode(new TextEncoder().encode(payloadJson));
+    const message = new TextEncoder().encode(`Arkmind:${payloadB64}`);
+    const signature = ed25519.sign(message, privateKey);
+    const sigB64 = b64Encode(signature);
+    const license = `Arkmind-${payloadB64}.${sigB64}`;
+
+    const productLabel = product === 'advanced' ? '高级版' : '基础版';
+    resultDiv.innerHTML =
+      `<div class="result-box success">
+        <div class="result-label">许可证已签发</div>
+        <div style="font-size:12px;color:#6e6e73">${productLabel} | 机器码: ${machineHash} | 到期: ${expires}</div>
+        <div style="margin-top:16px" class="result-label">许可证密钥（复制全文发给客户）</div>
+        <div class="key-text">${license}</div>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('${license.replace(/'/g,"&#39;")}').then(()=>this.textContent='已复制！')">复制许可证</button>
+      </div>`;
+  } catch (e) {
+    resultDiv.innerHTML = `<div class="result-box error">签名失败: ${e.message}</div>`;
+  }
+};
+
+// ─── 验证许可证 ────────────────────────────────────
+window.verifyLicense = function() {
+  const resultDiv = document.getElementById('verify-result');
+  const license = document.getElementById('verify-license').value.trim();
+  const machineCode = document.getElementById('verify-machine').value.trim();
+
+  if (!license || !machineCode) { resultDiv.innerHTML = '<div class="result-box error">请填写许可证和机器码</div>'; return; }
+  if (!license.startsWith('Arkmind-')) { resultDiv.innerHTML = '<div class="result-box error">格式错误：缺少 Arkmind- 前缀</div>'; return; }
+
+  const stripped = license.slice(8);
+  const dotPos = stripped.lastIndexOf('.');
+  if (dotPos === -1) { resultDiv.innerHTML = '<div class="result-box error">格式错误：缺少签名分隔符</div>'; return; }
+
+  const payloadB64 = stripped.slice(0, dotPos);
+  const sigB64 = stripped.slice(dotPos + 1);
+
+  try {
+    const payloadBytes = b64Decode(payloadB64);
+    const payloadJson = new TextDecoder().decode(payloadBytes);
+    const payload = JSON.parse(payloadJson);
+
+    const currentMachine = hashMachine(machineCode);
+    const productLabel = payload.product === 'advanced' ? '高级版' : '基础版';
+    const machineMatch = payload.machine_code === currentMachine;
+    const expired = payload.expires_at && payload.expires_at !== '2099-12-31' && new Date(payload.expires_at) < new Date();
+
+    resultDiv.innerHTML =
+      `<div class="result-box ${machineMatch && !expired ? 'success' : 'error'}">
+        <div class="result-label">许可证信息</div>
+        <div style="margin-top:8px;font-size:13px">
+          级别: <b>${productLabel}</b><br>
+          签发: ${payload.issued_at}<br>
+          到期: ${payload.expires_at}<br>
+          绑定机器: ${payload.machine_code}<br>
+          当前机器: ${currentMachine}<br>
+          <b>${machineMatch ? '机器匹配' : '机器不匹配'}</b>
+          ${expired ? '<br><b>已过期</b>' : ''}
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#86868b">（签名验证需在 App 中完成，此处仅显示 payload 内容）</div>
+      </div>`;
+  } catch (e) {
+    resultDiv.innerHTML = `<div class="result-box error">解析失败: ${e.message}</div>`;
+  }
+};
+</script>
+</body>
+</html>

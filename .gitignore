@@ -1,0 +1,63 @@
+# ── Dependencies ──
+node_modules
+
+# ── Build output ──
+dist
+dist-ssr
+out
+
+# ── Rust / Tauri ──
+src-tauri/target
+src-tauri/Cargo.lock
+
+# ── Vite / dev cache ──
+.vite
+*.tsbuildinfo
+
+# ── IDE / editors ──
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+.idea
+*.swp
+*.swo
+*~
+.history
+
+# ── OS ──
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ── Env / secrets ──
+.env
+.env.local
+.env.development.local
+.env.production.local
+
+# ── Logs & caches ──
+*.log
+*.log.*
+npm-debug.log*
+.eslintcache
+.cache
+
+# ── Temp / test files ──
+*.tmp
+temp
+temple
+
+# ── Database / data (local dev) ──
+*.db
+*.db-journal
+*.db-wal
+
+# ── Coverage ──
+coverage
+
+# ── pnpm lockfile (use npm package-lock.json) ──
+pnpm-lock.yaml
