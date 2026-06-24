@@ -118,6 +118,80 @@ pub fn activate_child_chunk(child_id: i64) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Object Links — Hebbian object co-activation (Object-level Memory)
+// ═══════════════════════════════════════════════════════════════════
+
+/// 确保 object_links 表存在（在 database::init 启动时调用）
+pub fn init_object_links() {
+    let _ = database::run(
+        "CREATE TABLE IF NOT EXISTS object_links (
+            source_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            weight REAL DEFAULT 1.0,
+            last_seen TEXT NOT NULL,
+            PRIMARY KEY(source_id, target_id)
+        )",
+        &[],
+    );
+    let _ = database::run("CREATE INDEX IF NOT EXISTS idx_ol_source ON object_links(source_id)", &[]);
+    let _ = database::run("CREATE INDEX IF NOT EXISTS idx_ol_target ON object_links(target_id)", &[]);
+}
+
+/// 共同激活：将本轮被 LLM 采纳的 object_ids 建立 Hebbian 链接
+pub fn update_object_links(object_ids: &[String]) {
+    let mut unique: Vec<String> = object_ids.iter().cloned().collect();
+    unique.sort();
+    unique.dedup();
+    let n = unique.len();
+    if n < 2 { return; }
+    for i in 0..n {
+        for j in (i+1)..n {
+            let (a, b) = if unique[i] < unique[j] {
+                (&unique[i], &unique[j])
+            } else {
+                (&unique[j], &unique[i])
+            };
+            let _ = database::run(
+                "INSERT INTO object_links(source_id,target_id,weight,last_seen) \
+                 VALUES(?1,?2,1.0,datetime('now','localtime')) \
+                 ON CONFLICT(source_id,target_id) DO UPDATE SET \
+                 weight = weight + 0.3 * (5.0 - weight), \
+                 last_seen = excluded.last_seen",
+                &[json!(a), json!(b)],
+            );
+        }
+    }
+}
+
+/// 从种子 object_id 扩散邻居，按衰减权重排序
+pub fn expand_object_links(seed_ids: &[String], limit: usize) -> Vec<(String, f64)> {
+    if seed_ids.is_empty() { return vec![]; }
+    let ph: Vec<String> = seed_ids.iter().map(|_| "?".to_string()).collect();
+    let mut params: Vec<serde_json::Value> = seed_ids.iter().map(|c| json!(c)).collect();
+    params.extend(seed_ids.iter().map(|c| json!(c)));
+    params.push(json!(limit as i64));
+    let sql = format!(
+        "SELECT neighbor, eff FROM (
+            SELECT target_id as neighbor, weight * EXP(-0.01 * (julianday('now') - julianday(last_seen))) as eff \
+             FROM object_links WHERE source_id IN ({})
+            UNION ALL
+            SELECT source_id as neighbor, weight * EXP(-0.01 * (julianday('now') - julianday(last_seen))) as eff \
+             FROM object_links WHERE target_id IN ({})
+        ) ORDER BY eff DESC LIMIT ?",
+        ph.join(","), ph.join(",")
+    );
+    database::all(&sql, &params)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| {
+            let id = r["neighbor"].as_str().unwrap_or("").to_string();
+            let w = r["eff"].as_f64().unwrap_or(0.0);
+            if id.is_empty() || w <= 0.0 { None } else { Some((id, w)) }
+        })
+        .collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // now_secs helper
 // ═══════════════════════════════════════════════════════════════════
 

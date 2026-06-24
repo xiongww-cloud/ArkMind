@@ -15,13 +15,12 @@ const route = useRoute()
 const navItems = [
   { path: '/dashboard', label: '总览', icon: 'dashboard' },
   { path: '/projects', label: '项目', icon: 'folder-open' },
-  { path: '/products', label: '产品', icon: 'cube' },
   { path: '/notes', label: '笔记', icon: 'file-doc' },
   { path: '/todos', label: '待办', icon: 'list' },
+  { path: '/products', label: '产品', icon: 'cube' },
   { path: '/assets', label: '资料', icon: 'archive' },
   { path: '/knowledge-graph', label: '知识库', icon: 'network' },
-  { path: '/knowledge/brain', label: '智能问答', icon: 'sparkles' },
-  { path: '/inspector', label: '调试', icon: 'bar-chart' },
+  { path: '/knowledge/brain', label: '智能问答', icon: 'bolt' },
   { path: '/settings', label: '系统设置', icon: 'settings' }
 ]
 

@@ -324,7 +324,7 @@ pub async fn kb_project_note_ids() -> Result<Value, String> {
 pub async fn kb_memory_parents(source_type: String, source_id: String) -> Result<Value, String> {
     let _sid = format!("{}-{}", source_type, source_id);
     let parents = database::all(
-        "SELECT kc.rowid, kc.chunk_id, kc.content, kc.doc_title, kc.chunk_index, kc.created_at, kc.base_weight, kc.last_access_at, kc.access_count \
+        "SELECT kc.rowid, kc.chunk_id, kc.content, kc.doc_title, kc.chunk_index, kc.created_at, kc.base_weight, kc.last_access_at, kc.access_count, strftime('%s', kc.created_at) as created_ts \
          FROM knowledge_chunks kc WHERE kc.chunk_type='parent' \
          AND kc.source_data_id = (SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2) \
          ORDER BY kc.chunk_index ASC",
@@ -342,7 +342,7 @@ pub async fn kb_memory_parents(source_type: String, source_id: String) -> Result
         let base = p["base_weight"].as_f64().unwrap_or(1.0);
         let lat = p["last_access_at"].as_i64().unwrap_or(0);
         let access_count = p["access_count"].as_i64().unwrap_or(0);
-        let effective = if lat > 0 { base * (-GAMMA * ((now as i64 - lat) as f64)).exp() } else { base };
+        let effective = if lat > 0 { base * (-GAMMA * ((now as i64 - lat) as f64)).exp() } else { let created = p["created_ts"].as_i64().unwrap_or(now as i64); base * (-GAMMA * ((now as i64 - created) as f64)).exp() };
         let content = p["content"].as_str().unwrap_or("").chars().take(300).collect::<String>();
         let doc_title = p["doc_title"].as_str().unwrap_or("").to_string();
 
@@ -387,7 +387,7 @@ pub async fn kb_memory_heatmap() -> Result<Value, String> {
     // Hot parents: top 10 by effective_weight
     let mut hot: Vec<Value> = Vec::new();
     if let Ok(rows) = database::all(
-        "SELECT kc.rowid, kc.chunk_id, kc.doc_title, kc.base_weight, kc.last_access_at, kc.access_count, kc.source_data_id, sd.source_type, sd.source_id, sd.title as source_title \
+        "SELECT kc.rowid, kc.chunk_id, kc.doc_title, kc.base_weight, kc.last_access_at, kc.access_count, kc.source_data_id, sd.source_type, sd.source_id, sd.title as source_title, strftime('%s', kc.created_at) as created_ts \
          FROM knowledge_chunks kc LEFT JOIN source_data sd ON sd.id=kc.source_data_id \
          WHERE kc.chunk_type='child' AND kc.base_weight > 0 ORDER BY kc.base_weight DESC LIMIT 10",
         &[],
@@ -395,7 +395,7 @@ pub async fn kb_memory_heatmap() -> Result<Value, String> {
         for r in &rows {
             let base = r["base_weight"].as_f64().unwrap_or(1.0);
             let lat = r["last_access_at"].as_i64().unwrap_or(0);
-            let effective = if lat > 0 { base * (-GAMMA * (now - lat) as f64).exp() } else { base };
+            let effective = if lat > 0 { base * (-GAMMA * (now - lat) as f64).exp() } else { let created = r["created_ts"].as_i64().unwrap_or(now); base * (-GAMMA * (now - created) as f64).exp() };
             if effective < 0.5 { continue; }
             hot.push(json!({
                 "parent_id": r["chunk_id"].as_str().unwrap_or("").to_string(),
@@ -453,12 +453,12 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
     let mut hot_count: i64 = 0;
     let mut cold_count: i64 = 0;
     if let Ok(rows) = database::all(
-        "SELECT base_weight, last_access_at FROM knowledge_chunks WHERE chunk_type='child'", &[],
+        "SELECT base_weight, last_access_at, strftime('%s', created_at) as created_ts FROM knowledge_chunks WHERE chunk_type='child'", &[],
     ) {
         for r in &rows {
             let base = r["base_weight"].as_f64().unwrap_or(1.0);
             let lat = r["last_access_at"].as_i64().unwrap_or(0);
-            let effective = if lat > 0 { base * (-GAMMA * (now - lat) as f64).exp() } else { base };
+            let effective = if lat > 0 { base * (-GAMMA * (now - lat) as f64).exp() } else { let created = r["created_ts"].as_i64().unwrap_or(now); base * (-GAMMA * (now - created) as f64).exp() };
             let pct = (effective / MAX_WEIGHT * 100.0).clamp(0.0, 100.0);
             let idx = (pct / 5.0).round() as usize;
             let idx = idx.min(20);
@@ -708,4 +708,22 @@ pub async fn entity_add_tag(entity_type: String, entity_id: String, tag_name: St
 pub async fn entity_remove_tag(entity_type: String, entity_id: String, tag_id: String) -> Result<Value, String> {
     database::run("DELETE FROM tag_mappings WHERE entity_type=?1 AND entity_id=?2 AND tag_id=?3", &[json!(&entity_type), json!(&entity_id), json!(&tag_id)]).map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))
+}
+
+/// 调试：返回 ai_sync_queue 和 cleanup_queue 的原始数据
+#[tauri::command]
+pub async fn kb_pipeline_debug() -> Result<Value, String> {
+    let sync = database::all("SELECT * FROM ai_sync_queue ORDER BY id DESC LIMIT 30", &[]).map_err(|e| e.to_string())?;
+    let cleanup = database::all("SELECT * FROM cleanup_queue ORDER BY id DESC LIMIT 30", &[]).map_err(|e| e.to_string())?;
+    let sync_ok = database::get("SELECT COUNT(*) as cnt FROM ai_sync_queue WHERE is_embedded=1", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    let sync_pending = database::get("SELECT COUNT(*) as cnt FROM ai_sync_queue WHERE is_embedded<=0", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    let sync_fail = database::get("SELECT COUNT(*) as cnt FROM ai_sync_queue WHERE is_embedded=-1", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    let cleanup_pending = database::get("SELECT COUNT(*) as cnt FROM cleanup_queue WHERE status=0", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    let cleanup_done = database::get("SELECT COUNT(*) as cnt FROM cleanup_queue WHERE status=1", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    Ok(json!({
+        "success":true,
+        "stats": {"sync_ok":sync_ok,"sync_pending":sync_pending,"sync_fail":sync_fail,"cleanup_pending":cleanup_pending,"cleanup_done":cleanup_done},
+        "sync_queue": sync,
+        "cleanup_queue": cleanup
+    }))
 }

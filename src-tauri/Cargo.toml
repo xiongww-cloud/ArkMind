@@ -1,7 +1,7 @@
 [package]
 name = "arkmind"
 version = "10.0.1"
-description = "Arkmind 方舟智库"
+description = "Arkmind 鏂硅垷鏅哄簱"
 authors = ["Arkmind Team"]
 edition = "2021"
 rust-version = "1.77"
@@ -14,6 +14,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+strum = { version = "0.26", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"

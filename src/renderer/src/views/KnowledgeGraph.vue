@@ -9,6 +9,7 @@ import {
   pipelineDebugStatus,
   pipelineClearKnowledge, pipelineClearAll, pipelineClearTagPipeline,
   aiSyncRetryFailed, cleanupRetryFailed,
+  kbPipelineDebug,
 } from '@/api/db-client'
 
 type ViewType = 'dashboard' | 'tags' | 'status'
@@ -30,14 +31,15 @@ const growthChart = computed(() => {
 const byTypeChart = computed(() => {
   if (!stats.value?.by_type?.length) return null
   const d = stats.value.by_type
-  return { series: d.map((x: any) => x.cnt), labels: d.map((x: any) => typeLabel(x.label)), colors: chartColors }
+  const colors = d.map((x: any) => typeColor(x.label))
+  return { series: d.map((x: any) => x.cnt), labels: d.map((x: any) => typeLabel(x.label)), colors }
 })
 const weightDistChart = computed(() => {
   if (!stats.value?.weight_dist?.length) return null
   const d = stats.value.weight_dist
-  return { series: [{ name: '通用', data: d.map((x: any, i: number) => ({ x: i * 5, y: x.cnt || 0 })) }], categories: d.map((x: any) => x.label) }
+  return { series: [{ name: '碎片数', data: d.map((x: any, i: number) => ({ x: i * 5, y: x.cnt || 0 })) }], categories: d.map((x: any) => x.label) }
 })
-const chartColors = ['#6366f1','#06b6d4','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6']
+const chartColors = ['#60a5fa','#fbbf24','#a78bfa','#34d399','#94a3b8','#f59e0b','#ec4899','#14b8a6']
 
 const newTagName = ref(''); const newTagCategory = ref('general')
 const allTags = ref<any[]>([]); const categories = ref<string[]>([])
@@ -63,8 +65,11 @@ async function handleClearKnowledge() { if (!(await dangerConfirm({ title: '重�
 async function handleClearTagPipeline() { if (!(await dangerConfirm({ title: '重置标签管线', message: '确定重置所有标签映射？将清除已有标签并重新打标。', confirmText: '重置' }))) return; try { await pipelineClearTagPipeline(); toast({ message: '已重置标签管线，正在重新打标', type: 'success' }); await loadPipelineStatus() } catch {} }
 async function handleRetryFailedSync() { try { const r = await aiSyncRetryFailed(); toast({ message: `已重置 ${r?.retried ?? 0} 个失败同步任务`, type: 'success' }); await loadStats(); await loadPipelineStatus() } catch {} }
 async function handleRetryFailedCleanup() { try { const r = await cleanupRetryFailed(); toast({ message: `已重置 ${r?.retried ?? 0} 个失败清理任务`, type: 'success' }); await loadStats(); await loadPipelineStatus() } catch {} }
+
+const debugData = ref<any>(null)
+async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch {} }
 function typeLabel(st: string): string { const m: Record<string,string> = { FILE:'文件',NOTE:'笔记',PRODUCT:'产品',PROJECT:'项目',TODO:'待办' }; return m[st] || st || '通用' }
-function typeColor(st: string): string { const m: Record<string,string> = { FILE:'bg-blue-400',NOTE:'bg-amber-400',PRODUCT:'bg-emerald-400',PROJECT:'bg-violet-400',TODO:'bg-slate-300' }; return m[st] || 'bg-surface-300' }
+function typeColor(st: string): string { const m: Record<string,string> = { FILE:'#60a5fa',NOTE:'#fbbf24',PRODUCT:'#a78bfa',PROJECT:'#34d399',TODO:'#94a3b8' }; return m[st] || '#94a3b8' }
 function categoryLabel(c: string): string { const m: Record<string,string> = { general:'通用',scene:'场景',tech:'技术',product:'产品',daily:'日常',custom:'自定义' }; return m[c] || c }
 const categoryColors: Record<string,string> = { general:'#6366f1', scene:'#06b6d4', tech:'#10b981', product:'#f59e0b', daily:'#f472b6', custom:'#8b5cf6' }
 function tagHeatColor(tag: any): string {
@@ -104,7 +109,7 @@ onMounted(() => { loadStats(); loadTags(); loadPipelineStatus(); document.addEve
             <div class="flex items-end gap-3">
               <div v-for="item in (stats?.object_counts?.by_type || [])" :key="item.label" class="flex-1 text-center">
                 <div class="text-[18px] font-bold text-surface-800">{{ item.cnt }}</div>
-                <div class="h-1.5 rounded-full mt-1.5 mx-auto w-full" :class="typeColor(item.label)" :style="{ height: Math.max(4, item.cnt / Math.max(stats?.object_counts?.total || 1, 1) * 60) + 'px' }"></div>
+                <div class="h-1.5 rounded-full mt-1.5 mx-auto w-full" :style="{ background: typeColor(item.label), height: Math.max(4, item.cnt / Math.max(stats?.object_counts?.total || 1, 1) * 60) + 'px' }"></div>
                 <div class="text-[10px] text-surface-400 mt-1">{{ typeLabel(item.label) }}</div>
               </div>
             </div>
@@ -115,19 +120,19 @@ onMounted(() => { loadStats(); loadTags(); loadPipelineStatus(); document.addEve
               <div><div class="text-[22px] font-bold text-emerald-600">{{ stats?.pipeline?.embedded ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">已嵌入</div></div>
               <div><div class="text-[22px] font-bold text-amber-600">{{ stats?.pipeline?.pending ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">待处理</div></div>
               <div><div class="text-[22px] font-bold text-red-500">{{ stats?.pipeline?.failed ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">失败</div></div>
-              <div><div class="text-[22px] font-bold text-emerald-600">{{ stats?.pipeline?.tagged ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">已同步</div></div>
-              <div><div class="text-[22px] font-bold text-surface-400">{{ stats?.pipeline?.untagged ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">待标注</div></div>
+              <div><div class="text-[22px] font-bold text-emerald-600">{{ stats?.pipeline?.tagged ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">已打标</div></div>
+              <div><div class="text-[22px] font-bold text-surface-400">{{ stats?.pipeline?.untagged ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">待打标</div></div>
             </div>
           </div>
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-            <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识碎片分布</h3>
+            <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识分布</h3>
             <VueApexCharts v-if="byTypeChart" type="donut" height="260" :series="byTypeChart.series" :options="{ labels: byTypeChart.labels, colors: byTypeChart.colors, legend: { position: 'bottom', fontSize: '12px', labels: { colors: '#64748b' } }, dataLabels: { enabled: true, formatter: (v: number) => v.toFixed(0) + '%' }, plotOptions: { pie: { donut: { size: '65%', labels: { show: true, total: { show: true, label: '总计', fontSize: '13px', color: '#334155' } } } } }, chart: { fontFamily: 'inherit' } }" />
             <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
           </div>
           <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-            <h3 class="text-[12px] font-semibold text-surface-600 mb-3">权重分布</h3>
+            <h3 class="text-[12px] font-semibold text-surface-600 mb-3">遗忘曲线</h3>
             <VueApexCharts v-if="weightDistChart" type="area" height="260" :series="weightDistChart.series" :options="{ xaxis: { type: 'numeric', min: 0, max: 100, title: { text: '有效权重', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' }, formatter: (v: string) => { const n = parseFloat(v); if (n === 0) return '0%'; if (n === 100) return '100%'; return '' } }, tickAmount: 1 }, yaxis: { title: { text: '碎片数', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#6366f1'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 0 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false } } }" />
             <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
           </div>
@@ -252,8 +257,49 @@ onMounted(() => { loadStats(); loadTags(); loadPipelineStatus(); document.addEve
             <span class="w-px h-6 bg-surface-200 self-center" />
             <button @click="handleRetryFailedSync" class="px-3 py-1 text-[11px] rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重试失败同步</button>
             <button @click="handleRetryFailedCleanup" class="px-3 py-1 text-[11px] rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重试失败清理</button>
+            <router-link to="/inspector" class="px-3 py-1 text-[11px] rounded-lg border border-surface-300 text-surface-500 hover:bg-surface-50 transition flex items-center gap-1">
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              索引检查
+            </router-link>
           </div>
         </div>
+
+        <!-- Pipeline Debug -->
+        <div v-if="debugData" class="mt-2">
+          <h3 class="text-[12px] font-semibold text-surface-500 uppercase tracking-wider mb-3">管道调试</h3>
+          <div class="grid grid-cols-5 gap-2 mb-2">
+            <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-emerald-600">{{ debugData.stats.sync_ok }}</div><div class="text-[9px] text-surface-400">已嵌入</div></div>
+            <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-blue-600">{{ debugData.stats.sync_pending }}</div><div class="text-[9px] text-surface-400">待处理</div></div>
+            <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-red-500">{{ debugData.stats.sync_fail }}</div><div class="text-[9px] text-surface-400">失败</div></div>
+            <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-amber-600">{{ debugData.stats.cleanup_pending }}</div><div class="text-[9px] text-surface-400">待清理</div></div>
+            <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-slate-500">{{ debugData.stats.cleanup_done }}</div><div class="text-[9px] text-surface-400">已清理</div></div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <h4 class="text-[10px] text-surface-400 mb-1">ai_sync_queue (最近 30 条)</h4>
+              <div class="max-h-[200px] overflow-auto text-[8px] rounded border border-surface-200">
+                <div v-for="r in debugData.sync_queue" :key="r.id" class="px-1.5 py-0.5 border-b border-surface-100 flex items-center gap-1"
+                  :class="r.is_embedded===1?'text-emerald-600':r.is_embedded===-1?'text-red-500':'text-blue-600'">
+                  <span class="font-mono">{{ r.id }}</span>
+                  <span>{{ r.source_type }}/{{ r.source_id?.slice(0,8) }}...</span>
+                  <span class="ml-auto" :title="r.last_error">{{ r.is_embedded===1?'✓':r.is_embedded===-1?'✗':'⏳' }}</span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <h4 class="text-[10px] text-surface-400 mb-1">cleanup_queue (最近 30 条)</h4>
+              <div class="max-h-[200px] overflow-auto text-[8px] rounded border border-surface-200">
+                <div v-for="r in debugData.cleanup_queue" :key="r.id" class="px-1.5 py-0.5 border-b border-surface-100 flex items-center gap-1"
+                  :class="r.status===1?'text-emerald-600':r.status===-1?'text-red-500':'text-amber-600'">
+                  <span class="font-mono">{{ r.id }}</span>
+                  <span>{{ r.source_type }}/{{ r.source_id?.slice(0,8) }}...</span>
+                  <span class="ml-auto">{{ r.status===1?'✓':r.status===-1?'✗':'⏳' }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button @click="loadDebug" class="mt-2 px-2 py-1 text-[10px] rounded border border-surface-200 text-surface-500 hover:bg-surface-50">加载管道调试数据</button>
       </div>
     </div>
   </div>

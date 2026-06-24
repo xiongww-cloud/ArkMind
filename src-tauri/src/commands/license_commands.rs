@@ -13,10 +13,11 @@ pub fn license_status() -> Result<Value, String> {
     match row {
         Some(r) => {
             let is_active = r["status"].as_str() == Some("active");
+            let product = r["product"].as_str().unwrap_or("");
             Ok(json!({
                 "activated": is_active,
                 "status": r["status"].as_str().unwrap_or("inactive"),
-                "product": r["product"].as_str().unwrap_or(""),
+                "product": product,
                 "activatedAt": r["activated_at"].as_str().unwrap_or(""),
                 "expiresAt": r["expires_at"].as_str().unwrap_or(""),
                 "machineCode": r["machine_code"].as_str().unwrap_or(""),
@@ -38,13 +39,10 @@ pub fn machine_code() -> Result<String, String> {
 pub fn license_activate(key: String) -> Result<Value, String> {
     match license::activate_license(&key) {
         Ok((product, expires_at)) => {
-            let is_premium = matches!(product.as_str(), "advanced" | "enhanced");
             Ok(json!({
                 "success": true,
                 "product": product,
-                "expiresAt": expires_at,
-                "isPremium": is_premium,
-                "message": if is_premium { "高级版已激活，AI 功能已启用" } else { "基础版已激活" }
+                "expiresAt": expires_at
             }))
         }
         Err(e) => Ok(json!({

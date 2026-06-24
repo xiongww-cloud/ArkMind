@@ -1,4 +1,4 @@
-use crate::database;
+﻿use crate::database;
 use chrono::Datelike;
 use serde_json::{json, Value};
 
@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 pub async fn todos_list() -> Result<Value, String> {
     // ★ 到期克隆：已完成的循环待办 due_date 已到 → 克隆新周期 + 删除原待办
     let expired: Vec<Value> = database::all(
-        "SELECT * FROM todos WHERE done=1 AND repeat IS NOT NULL AND repeat!='' AND due_date <= date('now','localtime')",
+        "SELECT * FROM todos WHERE done=1 AND repeat IS NOT NULL AND repeat!='' AND date(due_date) <= date('now','localtime')",
         &[],
     ).unwrap_or_default();
     for row in &expired {
@@ -28,11 +28,13 @@ pub async fn todos_list() -> Result<Value, String> {
                     "INSERT INTO todo_project_mapping(todo_id,project_id) SELECT ?1,project_id FROM todo_project_mapping WHERE todo_id=?2",
                     rusqlite::params![new_id, old_id],
                 ).ok();
+                // ★ 关键：更新旧待办的 due_date 以防止重复克隆
+                conn.execute("UPDATE todos SET due_date=?1, updated_at=datetime('now','localtime') WHERE id=?2",
+                    rusqlite::params![next, old_id],
+                )?;
                 Ok(())
             }).ok();
         }
-        // 原待办已完成，仅更新 updated_at 标记处理时间
-        database::run("UPDATE todos SET updated_at=datetime('now','localtime') WHERE id=?", &[json!(&old_id)]).ok();
     }
 
     let todos = database::all(
@@ -92,6 +94,7 @@ pub async fn todos_create(data: Value) -> Result<Value, String> {
     .map_err(|e| e.to_string())?
     .unwrap_or(json!({}));
     // ★ trigger 已自动同步 KV 格式到 source_data
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Created);
     Ok(json!({ "success": true, "todo": todo }))
 }
 
@@ -163,6 +166,7 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
     .map_err(|e| e.to_string())?
     .unwrap_or(json!({}));
     // ★ trigger 已自动同步 KV 格式到 source_data
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Updated);
     Ok(json!({ "success": true, "todo": todo }))
 }
 
@@ -173,12 +177,13 @@ pub async fn todos_delete(id: String) -> Result<Value, String> {
     // ★ 清理待办的知识库
     crate::services::cleanup_pipeline::enqueue_cleanup("TODO", &id);
     database::run("DELETE FROM todos WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Deleted);
+    crate::services::cleanup_pipeline::wake_cleanup();
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({ "success": true }))
 }
 
 fn next_due_date(current: &str, repeat: &str) -> Option<String> {
-    eprintln!("[todos_toggle] next_due_date input: current={:?}, repeat={:?}", current, repeat);
     let time_suffix = if current.contains('T') {
         chrono::NaiveDateTime::parse_from_str(current, "%Y-%m-%dT%H:%M:%S").ok().map(|dt| format!("T{}", dt.format("%H:%M:%S")))
     } else { None };
@@ -187,7 +192,6 @@ fn next_due_date(current: &str, repeat: &str) -> Option<String> {
             chrono::NaiveDateTime::parse_from_str(current, "%Y-%m-%dT%H:%M:%S")
                 .map(|dt| dt.date())
         }).ok()?;
-    eprintln!("[todos_toggle] next_due_date parsed date: {:?}", date);
     let next = match repeat {
         "daily" => date + chrono::Duration::days(1),
         "weekly" => date + chrono::Duration::days(7),
@@ -199,7 +203,6 @@ fn next_due_date(current: &str, repeat: &str) -> Option<String> {
         }
         _ => date,
     };
-    eprintln!("[todos_toggle] next_due_date result: {:?}", next);
     match time_suffix {
         Some(ts) => Some(format!("{}{}", next.format("%Y-%m-%d"), ts)),
         None => Some(next.format("%Y-%m-%d").to_string()),
@@ -236,6 +239,7 @@ pub async fn todos_toggle(id: String) -> Result<Value, String> {
         "UPDATE todos SET done = CASE WHEN done=0 THEN 1 ELSE 0 END, updated_at=datetime('now', 'localtime') WHERE id=?",
         &[json!(&id)],
     ).map_err(|e| e.to_string())?;
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Updated);
     // 标记完成时入队清理 source_data + 向量
     let todo = database::get(
         "SELECT t.*, tpm.project_id, p.name as project_name FROM todos t \

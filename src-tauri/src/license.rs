@@ -74,6 +74,7 @@ pub fn activate_license(key: &str) -> Result<(String, String), String> {
     let (product, expires_at) = verify_license_key_and_get_expiry(key)?;
     let machine = get_machine_hash();
     let expires_value = if expires_at.is_empty() { serde_json::Value::Null } else { serde_json::json!(expires_at) };
+    crate::database::run("UPDATE license SET status='inactive' WHERE status='active'", &[]).ok();
     crate::database::run(
         "INSERT INTO license (key_hash,license_key,status,product,activated_at,expires_at,machine_code) \
          VALUES(?,?,'active',?,datetime('now', 'localtime'),?,?)",
@@ -86,7 +87,8 @@ pub fn activate_license(key: &str) -> Result<(String, String), String> {
         ],
     ).map_err(|e| format!("db: {}", e))?;
     crate::database::save().map_err(|e| e.to_string())?;
-    if product == "advanced" || product == "enhanced" { crate::services::knowledge_pipeline::start(); }
+    // 激活后启动知识管线
+    crate::services::knowledge_pipeline::start();
     Ok((product, expires_at))
 }
 

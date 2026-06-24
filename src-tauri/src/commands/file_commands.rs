@@ -1,4 +1,4 @@
-use crate::database;
+﻿use crate::database;
 use serde_json::{json, Value};
 use sha2::{Sha256, Digest};
 use std::io::{Read, BufReader};
@@ -283,10 +283,12 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn file_add_note_mapping(file_id: String, note_id: String) -> Result<Value, String> {
     if file_id.is_empty() || note_id.is_empty() { return Ok(json!({"success":false,"error":"参数缺失"})); }
     add_relation(&file_id, "note", &note_id, "", "", None);
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn file_remove_note_mapping(file_id: String, note_id: String) -> Result<Value, String> {
     database::run("DELETE FROM file_relations WHERE entity_type='note' AND entity_id=? AND file_id=?", &[json!(&note_id), json!(&file_id)]).map_err(|e| e.to_string())?;
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn file_list_by_note(note_id: String) -> Result<Vec<Value>, String> {
@@ -375,6 +377,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
             database::run("DELETE FROM file_assets WHERE id=?", &[json!(aid)]).ok();
         }
     }
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::File, &file_id, crate::services::object_changed::Action::Deleted);
     Ok(json!({"success":true}))
 }
 

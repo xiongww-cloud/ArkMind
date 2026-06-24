@@ -1,4 +1,4 @@
-//! Native Tool Calling Agent — ReAct loop + symmetric retrieval + structured context lookup
+﻿//! Native Tool Calling Agent — ReAct loop + symmetric retrieval + structured context lookup
 
 use crate::database;
 use crate::services::search_assets;
@@ -22,7 +22,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_act: 执行操作（创建待办、更新项目状态）
 
 ## 工具说明
-- ext_tool_object: 搜索结构化对象（产品、项目、文件、笔记、待办）。支持多词组合查询（如「S12700E-8 招标参数」），多词可缩小范围提高匹配精度。返回的是该对象的权威完整结构化记录，即知识库中所有已知内容。**如果返回的结构化数据足以回答用户问题（如产品型号、规格参数、项目信息），请直接基于 object 结果回答，不需要再调 search。** 特别地：对于产品对象，如果其 `full_specs` 字段不为空，说明知识库中已有该产品的完整参数；直接从 `full_specs` 中提取即可回答，无需再 search 文件内的参数内容。只有当 `full_specs` 为空或明确缺失用户所需的关键字段时，才使用 search 去文件中补充。如果缺少所需字段，说明知识库暂无该信息，不应继续对该对象进行 traverse(references) 或相同关键词 search。**注意：workspace 中已有的对象在 scratchpad 的「Active Objects」中列出。你可以直接引用这些对象的结构化数据，无需重复调用 object。** 优先使用本工具。
+- ext_tool_object: 搜索结构化对象（产品、项目、文件、笔记、待办）。返回对象名称和 source_id。**不返回详细参数——使用 search 工具检索该对象的详细内容。**
 - ext_tool_search: 在文档中寻找证据。**search 的关键词应从会话工作记忆的「Unknown」部分提取，将具体的待解问题转化为可检索的关键词组合。** 如果返回结果不包含某类信息，说明知识库中可能不存在该信息。不要对大量同类对象逐个重复搜索。
 - ext_tool_traverse: 沿关联图谱漫游。chunk_id 必须来自 search() 结果中的「ChunkID：xxxx」字段，不要传 Product/Project/File ID。
 - ext_tool_act: 执行操作（创建/更新待办、更新项目状态）
@@ -59,7 +59,7 @@ fn get_api_endpoint() -> (String, String, String) {
 // Session Memory — 会话工作记忆层
 // ═══════════════════════════════════════════════════════════════════
 const ACCESS_STALE_THRESHOLD: usize = 20;   // 超过 20 次访问未命中即淘汰
-const SCRATCHPAD_MAX_CHARS: usize = 800;     // scratchpad 最长字符数
+const SCRATCHPAD_MAX_CHARS: usize = 4000;     // scratchpad 最长字符数
 
 #[derive(Debug, Clone)]
 struct ActiveObject {
@@ -67,6 +67,7 @@ struct ActiveObject {
     obj_id: String,
     name: String,
     access_order: usize,
+    hits: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -112,12 +113,14 @@ impl SessionMemory {
         if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == obj_type && o.obj_id == obj_id) {
             existing.name = name.to_string();
             existing.access_order = self.access_counter;
+            existing.hits += 1;
         } else {
             self.active_objects.push(ActiveObject {
                 obj_type: obj_type.to_string(),
                 obj_id: obj_id.to_string(),
                 name: name.to_string(),
                 access_order: self.access_counter,
+                hits: 1,
             });
         }
         self.evict_stale();
@@ -241,8 +244,8 @@ impl SessionMemory {
             lines.push(String::new());
             lines.push("## Active Objects".to_string());
             let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().collect();
-            sorted.sort_by(|a, b| b.access_order.cmp(&a.access_order));
-            for (i, o) in sorted.iter().take(6).enumerate() {
+            sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
+            for (i, o) in sorted.iter().take(10).enumerate() {
                 let label = match o.obj_type.as_str() {
                     "product" => format!("PRODUCT: {}", o.name),
                     "project" => format!("PROJECT: {}", o.name),
@@ -1246,39 +1249,21 @@ fn execute_object_get(query: &str) -> String {
     // ★ 排序：FTS5 结果按 rank 降序（高相关优先），file_relations 补集（rank=0.0）排在末尾
     ranked.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
-    let has_file_rel_only = ranked.iter().any(|(st, _, r)| st == "FILE" && *r == 0.0);
-
     let mut out = String::new();
 
     for (st, sid, _rank) in ranked.iter().take(10) {
         match st.as_str() {
             "PRODUCT" | "PROJECT" | "NOTE" | "TODO" => {
                 let stype = st.as_str();
-                if let Ok(Some(row)) = database::get("SELECT title,content FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(stype), json!(sid)]) {
+                if let Ok(Some(row)) = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(stype), json!(sid)]) {
                     let n = row["title"].as_str().unwrap_or("");
-                    let content = row["content"].as_str().unwrap_or("");
                     out.push_str(&format!("  [{}] {} | source_id: {}-{}\n", stype.to_uppercase(), n, stype.to_uppercase(), sid));
-                    out.push_str(&format!("    {}\n", content));
                 }
             }
             "FILE" => {
-                if let Ok(Some(row)) = database::get("SELECT fa.id,fa.file_ext,fa.id as file_id,fr.custom_name FROM file_assets fa LEFT JOIN file_relations fr ON fr.file_id=fa.id WHERE fa.id=?1 LIMIT 1",&[json!(sid)]) {
+                if let Ok(Some(row)) = database::get("SELECT fa.id,fr.custom_name FROM file_assets fa LEFT JOIN file_relations fr ON fr.file_id=fa.id WHERE fa.id=?1 LIMIT 1",&[json!(sid)]) {
                     let name = row["custom_name"].as_str().filter(|x|!x.is_empty()).or_else(|| row["id"].as_str()).unwrap_or("");
                     out.push_str(&format!("  [FILE] {} | source_id: FILE-{}\n", name, sid));
-                    let file_path: String = row["file_id"].as_str().map(|fid| {
-                        database::get(
-                            "WITH RECURSIVE fp AS (SELECT f.name,f.parent_id,0 AS d FROM library_folders f JOIN library_file_locations l ON l.folder_id=f.id WHERE l.file_id=?1 \
-                             UNION ALL SELECT f2.name,f2.parent_id,fp.d+1 FROM library_folders f2 JOIN fp ON f2.id=fp.parent_id) \
-                             SELECT GROUP_CONCAT(name,' / ' ORDER BY d DESC) FROM fp",
-                            &[json!(fid)],
-                        ).ok().flatten().and_then(|r| r["GROUP_CONCAT(name,' / ' ORDER BY d DESC)"].as_str().map(|s| s.to_string())).unwrap_or_default()
-                    }).unwrap_or_default();
-                    let mut schema_fields = vec!["name"];
-                    if !row["file_ext"].as_str().unwrap_or("").is_empty() { schema_fields.push("ext"); }
-                    if row["custom_name"].as_str().filter(|x|!x.is_empty()).is_some() { schema_fields.push("custom_name"); }
-                    if !file_path.is_empty() { schema_fields.push("path"); }
-                    out.push_str(&format!("    schema: {}\n", schema_fields.iter().map(|f| format!("[{}]", f)).collect::<Vec<_>>().join(" ")));
-                    if !file_path.is_empty() { out.push_str(&format!("    path: {}\n", file_path)); }
                 }
             }
             _ => {}
@@ -1287,11 +1272,7 @@ fn execute_object_get(query: &str) -> String {
 
     let result = out.trim().to_string();
     if !result.is_empty() {
-        let mut suffix = String::from("\n\n【知识库说明】\n以上为该对象的全部结构化信息。如果字段为空或未提及某信息，说明知识库中暂无更多结构化数据。请勿对该 object_id 进行 traverse(references) 或相同关键词 search。");
-        if has_file_rel_only {
-            suffix.push_str("\n\n💡 部分文件通过文件名匹配发现（不在全文索引中）。如需查看其内容，可使用 search 工具并指定完整文件名。");
-        }
-        format!("{}{}", result, suffix)
+        format!("{}\n\n💡 对象的详细参数已物化为知识碎片。使用 search 工具检索所需具体内容。", result)
     } else {
         result
     }
@@ -1362,7 +1343,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     // ★ 从活跃对象和本轮 query 设置 Focus
     let top_entities: Vec<String> = {
         let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
-        sorted.sort_by(|a, b| b.access_order.cmp(&a.access_order));
+        sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
         sorted.iter().take(3).map(|o| o.name.clone()).collect()
     };
     session.set_focus_from_user_query(&query, &top_entities);
@@ -1420,12 +1401,12 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                         }
                         cached.clone()
                     } else {
-                        let res = match tc.function.name.as_str() {
+                        eprintln!("[LLM检索] 迭代#{} 工具={}", iters, tc.function.name); let res = match tc.function.name.as_str() {
                             "ext_tool_search" | "ext_tool_search_knowledge_base" => {
                                 if iters == 1 && session.active_objects.is_empty() { "请先使用 object 工具发现相关对象，建立 Workspace 后再使用 search。当前为第一轮，还不确定要搜索的具体范围。".to_string() } else {
-                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.access_order.cmp(&a.access_order)); sorted.iter().take(6).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, ft.as_deref(), scope_opt, &session.visited_sources, &session.visited_chunks).await; for s in &new_sources { session.mark_source_visited(s); } res } }
+                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, ft.as_deref(), scope_opt, &session.visited_sources, &session.visited_chunks).await; for s in &new_sources { session.mark_source_visited(s); } res } }
                             "ext_tool_object" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let query = a["query"].as_str().unwrap_or(""); execute_object_get(query) }
-                            "ext_tool_traverse" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_traverse(a["chunk_id"].as_str().unwrap_or(""), a["edge_type"].as_str().unwrap_or("Next"), a["radius"].as_i64().unwrap_or(10) as usize, &visited, a["target_name"].as_str().unwrap_or(""), &mut traverse_source_counter) }
+                            "ext_tool_traverse" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_traverse(a["chunk_id"].as_str().unwrap_or(""), a["edge_type"].as_str().unwrap_or("Next"), a["radius"].as_i64().unwrap_or(5) as usize, &visited, a["target_name"].as_str().unwrap_or(""), &mut traverse_source_counter) }
                             "ext_tool_act" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_act(a["action"].as_str().unwrap_or(""), a["project_id"].as_str().unwrap_or(""), a["todo_title"].as_str().unwrap_or(""), a["todo_content"].as_str().unwrap_or(""), a["todo_id"].as_str().unwrap_or(""), a["new_status"].as_str().unwrap_or("")) }
                             "ext_tool_batch_search" => {
                                 if iters == 1 && session.active_objects.is_empty() { "请先使用 object 工具发现相关对象，建立 Workspace 后再使用 batch_search。当前为第一轮，还不确定要搜索的具体范围。".to_string() } else {
@@ -1440,7 +1421,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                                         }
                                     }
                                 }
-                                let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.access_order.cmp(&a.access_order)); sorted.iter().take(6).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() };
+                                let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() };
                                 let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } };
                                 execute_batch_search(&sub_queries, scope_opt, &session.visited_sources).await
                                 } }
@@ -1549,7 +1530,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 }
 
                 // 注入 scratchpad 到 system prompt
-                let scratchpad = session.generate_scratchpad();
+                let scratchpad = session.generate_scratchpad(); eprintln!("[LLM检索] scratchpad注入: {} chars, objects={}", scratchpad.chars().count(), session.active_objects.len());
                 let new_sys = AGENT_SYSTEM_PROMPT.replace("{{session_scratchpad}}", &scratchpad);
                 if let Some(ref mut content) = messages[0].content {
                     *content = new_sys;

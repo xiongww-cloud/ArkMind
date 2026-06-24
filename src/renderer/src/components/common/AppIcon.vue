@@ -61,6 +61,7 @@ const ICON_MAP = {
   'sidebar': '<rect x="3" y="3" width="18" height="18" rx="3" ry="3"/><line x1="9" y1="3" x2="9" y2="21"/>',
   'layout': '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="12" y1="9" x2="12" y2="21"/>',
   'bolt': '<path stroke-linecap="round" stroke-linejoin="round" d="M13 2L3 14h7l-1 8 9-12h-7l1-8z"/>',
+  'chat-ai': '<g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L4 20V7a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H7z"/><path d="M18 4v2"/><path d="M17 5h2"/><path d="M16.5 3.5l1 1"/><path d="M18.5 3.5l-1 1"/></g>',
   'sparkles': '<path d="M9.813 15.904L9 18.75l-.813-2.846a10.5 10.5 0 00-5.09-5.09L.25 10l2.846-.813a10.5 10.5 0 005.09-5.09L9 1.25l.813 2.846a10.5 10.5 0 005.09 5.09L17.75 10l-2.846.813a10.5 10.5 0 00-5.09 5.09zM18.259 12.715L18 13.5l-.259-.785a7.5 7.5 0 00-3.456-3.456L13.5 9l.785-.259a7.5 7.5 0 003.456-3.456L18 4.5l.259.785a7.5 7.5 0 003.456 3.456L22.5 9l-.785.259a7.5 7.5 0 00-3.456 3.456z"/>',
   'bold': '<path d="M6 12h9a4 4 0 010 8H7a1 1 0 01-1-1V5a1 1 0 011-1h7a4 4 0 010 8"/>',
   'italic': '<line x1="19" y1="4" x2="10" y2="4"/><line x1="14" y1="20" x2="5" y2="20"/><line x1="15" y1="4" x2="9" y2="20"/>',

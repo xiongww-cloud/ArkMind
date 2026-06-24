@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated } from 'vue'
+import { ref, computed, onMounted, onActivated, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter, useRoute } from 'vue-router'
@@ -156,7 +156,7 @@ onMounted(() => {
   }
   syncFromBackend()
 })
-
+// Event-driven refresh
 // Keep-alive support: re-sync every time the component is activated
 onActivated(() => {
   syncFromBackend()

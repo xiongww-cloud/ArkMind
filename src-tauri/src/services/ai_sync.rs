@@ -269,10 +269,18 @@ pub async fn process_single_entity(source_table: &str, source_id: &str) -> bool 
     tokio::task::yield_now().await;
     let mut materialized = materialize_task(source_table, source_id).await;
 
-    if materialized.text.is_empty() {
+    // ★ 哈希去重：与队列路径相同逻辑
+    let content_hash = if !materialized.text.is_empty() {
+        compute_content_hash(&materialized.text)
+    } else {
+        materialized.dedup_key.clone()
+    };
+    let last_hash = task["last_content_hash"].as_str().unwrap_or("").to_string();
+    if materialized.text.is_empty() || content_hash == last_hash {
+        eprintln!("[精准物化] 内容未变或为空, 跳过 {source_table}:{source_id}");
         let _ = database::run(
-            "UPDATE ai_sync_queue SET is_embedded=1,updated_at=datetime('now', 'localtime') WHERE id=?",
-            &[json!(task_id)],
+            "UPDATE ai_sync_queue SET is_embedded=1,last_content_hash=?,updated_at=datetime('now', 'localtime') WHERE id=?",
+            &[json!(&content_hash), json!(task_id)],
         );
     } else {
         if source_table != "files" {
@@ -311,8 +319,8 @@ pub async fn process_single_entity(source_table: &str, source_id: &str) -> bool 
         {
             Ok(n) if n > 0 => {
                 database::run(
-                    "UPDATE ai_sync_queue SET is_embedded=1,last_dedup_key=?,updated_at=datetime('now', 'localtime') WHERE id=?",
-                    &[json!(doc_id), json!(task_id)],
+                    "UPDATE ai_sync_queue SET is_embedded=1,last_dedup_key=?,last_content_hash=?,updated_at=datetime('now', 'localtime') WHERE id=?",
+                    &[json!(doc_id), json!(&content_hash), json!(task_id)],
                 ).ok();
                 if source_table == "files" { crate::services::ai_tag::enqueue_tag_task("files", source_id); }
                 else if source_table == "notes" { crate::services::ai_tag::enqueue_tag_task("notes", source_id); }
@@ -339,7 +347,25 @@ pub async fn process_sync_task() -> bool {
     let task_id = task["id"].as_i64().unwrap_or(0);
     let source_table = task["source_table"].as_str().unwrap_or("");
     let source_id = task["source_id"].as_str().unwrap_or("");
+    // ★ 跳过 project_dynamics 僵尸任务（历史残留，不再需要独立物化）
+    if source_table == "project_dynamics" {
+        database::run("DELETE FROM ai_sync_queue WHERE id=?", &[json!(task_id)]).ok();
+        return false;
+    }
     println!("[AI同步] 正在处理: {source_table}:{source_id}");
+
+    // ★ 源数据不存在时直接标记完成，避免死循环
+    let sd_exists = database::get(
+        "SELECT 1 FROM source_data WHERE source_type=(SELECT CASE WHEN ?1='files' THEN 'FILE' WHEN ?1='notes' THEN 'NOTE' WHEN ?1='products' THEN 'PRODUCT' WHEN ?1='projects' THEN 'PROJECT' WHEN ?1='todos' THEN 'TODO' ELSE '' END) AND source_id=?2",
+        &[json!(source_table), json!(source_id)],
+    ).ok().flatten().is_some();
+    if !sd_exists {
+        eprintln!("[同步任务] source_data 不存在, 标记完成: {source_table}:{source_id}");
+        if let Err(e) = database::run("UPDATE ai_sync_queue SET is_embedded=1,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(task_id)]) {
+            eprintln!("[同步任务] 标记失败: {e}");
+        }
+        return true;
+    }
 
     tokio::task::yield_now().await;
     let mut materialized = materialize_task(source_table, source_id).await;
@@ -352,8 +378,11 @@ pub async fn process_sync_task() -> bool {
     };
     let last_hash = task["last_content_hash"].as_str().unwrap_or("").to_string();
     if materialized.text.is_empty() || content_hash == last_hash {
+        eprintln!("[同步任务] hash诊断: table={} id={} content_len={} hash={} last={} isEmpty={}", source_table, source_id, materialized.text.len(), &content_hash, &last_hash, materialized.text.is_empty());
         eprintln!("[同步任务] 内容未变或为空, 跳过 {source_table}:{source_id}");
-        let _ = database::run("UPDATE ai_sync_queue SET is_embedded=1,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(task_id)]);
+        if let Err(e) = database::run("UPDATE ai_sync_queue SET is_embedded=1,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(task_id)]) {
+            eprintln!("[同步任务] 标记跳过失败: {e}");
+        }
     } else {
         eprintln!("[同步任务] materialized.text 长度={}, 开始导入", materialized.text.len());
         if source_table != "files" {
@@ -388,6 +417,9 @@ pub async fn process_sync_task() -> bool {
                 else if source_table == "products" { crate::services::ai_tag::enqueue_tag_task("products", source_id); }
                 else if source_table == "projects" { crate::services::ai_tag::enqueue_tag_task("projects", source_id); }
                 else if source_table == "todos" { crate::services::ai_tag::enqueue_tag_task("todos", source_id); }
+                if source_table == "files" || source_table == "notes" || source_table == "products" || source_table == "projects" || source_table == "todos" {
+                    crate::services::ai_tag::wake_tag();
+                }
                 println!("[AI同步] 已嵌入: {source_table}:{source_id} ({n} 个块)");
             }
             Err(e) => {
@@ -395,8 +427,11 @@ pub async fn process_sync_task() -> bool {
                 let _ = database::run("UPDATE ai_sync_queue SET is_embedded=-1,retry_count=retry_count+1,last_error=?,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(e),json!(task_id)]);
             }
             _ => {
-                eprintln!("[同步任务] import_sync_document 返回 0 个块");
-                let _ = database::run("UPDATE ai_sync_queue SET is_embedded=-1,retry_count=retry_count+1,last_error='zero_chunks',updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(task_id)]);
+                eprintln!("[同步任务] import_sync_document 返回 0 个块（内容未变）");
+                database::run(
+                    "UPDATE ai_sync_queue SET is_embedded=1,last_content_hash=?,updated_at=datetime('now', 'localtime') WHERE id=?",
+                    &[json!(content_hash), json!(task_id)],
+                ).ok();
             }
         }
     }
@@ -450,6 +485,7 @@ pub fn purge_stale_queue_entries() {
         "DELETE FROM ai_sync_queue WHERE source_table='notes' AND source_id NOT IN (SELECT note_id FROM notes)",
         "DELETE FROM ai_sync_queue WHERE source_table='products' AND source_id NOT IN (SELECT id FROM products)",
         "DELETE FROM ai_sync_queue WHERE source_table='todos' AND source_id NOT IN (SELECT id FROM todos)",
+        "DELETE FROM ai_sync_queue WHERE source_table='project_dynamics'",
     ] { database::run(sql, &[]).ok(); }
 }
 

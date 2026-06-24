@@ -13,6 +13,12 @@ static TAGGER_REGISTRY: once_cell::sync::Lazy<Mutex<std::collections::HashMap<St
 macro_rules! lock_tag { ($m:expr) => { $m.lock().unwrap_or_else(|e| e.into_inner()) }; }
 static TAG_COLORS: &[&str] = &["#6366f1","#8b5cf6","#ec4899","#f43f5e","#f97316","#eab308","#22c55e","#14b8a6","#06b6d4","#3b82f6"];
 static TAG_LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
+static WAKE_TAG: std::sync::LazyLock<tokio::sync::Notify> = std::sync::LazyLock::new(tokio::sync::Notify::new);
+
+/// 唤醒标签管线
+pub fn wake_tag() {
+    WAKE_TAG.notify_one();
+}
 
 pub fn register_tagger(source_type: &str, tagger: BoxedTagger) { lock_tag!(TAGGER_REGISTRY).insert(source_type.to_string(), tagger); }
 
@@ -198,14 +204,20 @@ async fn tag_loop() {
         if !TAG_LOOP_RUNNING.load(Ordering::Acquire) { break; }
         tick = tick.wrapping_add(1);
 
-        // Seed new records every ~60 ticks (≈5 minutes at 5s idle)
-        if tick % 60 == 0 {
+        // Seed new records every ~2 ticks (≈1 min at 30s idle)
+        if tick % 2 == 0 {
             seed_pending_tags();
         }
 
         let had_work = process_tag_task().await;
 
-        tokio::time::sleep(Duration::from_millis(if had_work { 200 } else { 5000 })).await;
+        // Event-driven: no work → wait for notification or 30s timeout
+        if !had_work {
+            tokio::select! {
+                _ = WAKE_TAG.notified() => {},
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {},
+            }
+        }
     }
 }
 

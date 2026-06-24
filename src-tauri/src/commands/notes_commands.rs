@@ -1,4 +1,4 @@
-// Notes commands — CRUD + tag management + trash
+﻿// Notes commands — CRUD + tag management + trash
 use crate::database;
 use serde_json::{json, Value};
 
@@ -43,6 +43,7 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
         Ok(())
     }).map_err(|e|e.to_string())?;
     crate::services::source_doc_sync::sync_entity_to_source_docs("NOTE", &note_id, title, content);
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Created);
     Ok(json!({"success":true,"noteId":note_id}))
 }
 #[tauri::command]
@@ -65,6 +66,7 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
         let content = row["content"].as_str().unwrap_or("");
         crate::services::source_doc_sync::sync_entity_to_source_docs("NOTE", &note_id, title, content);
     }
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command]
@@ -72,6 +74,8 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     database::run("UPDATE notes SET deleted_at=datetime('now', 'localtime'), notebook_id=NULL WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
     database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM tag_mappings WHERE entity_type='notes' AND entity_id=?",&[json!(&note_id)]).ok();
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
+    crate::services::cleanup_pipeline::wake_cleanup();
     database::save().map_err(|e|e.to_string())?;
     Ok(json!({"success":true}))
 }
@@ -82,6 +86,7 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     } else { Some(notebook_id) };
     database::run("UPDATE notes SET deleted_at=NULL, notebook_id=?, updated_at=datetime('now', 'localtime') WHERE note_id=?",&[json!(actual_nb),json!(&note_id)]).map_err(|e|e.to_string())?;
     database::save().map_err(|e|e.to_string())?;
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn notes_list_archive() -> Result<Value, String> {
@@ -96,7 +101,8 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     database::run("DELETE FROM tag_mappings WHERE entity_type='notes' AND entity_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM file_relations WHERE entity_type='note' AND entity_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM notes WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
-
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
+    crate::services::cleanup_pipeline::wake_cleanup();
     database::save().map_err(|e|e.to_string())?;
     Ok(json!({"success":true}))
 }
@@ -119,13 +125,7 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
 #[tauri::command] pub async fn notebook_list() -> Result<Value, String> { let notebooks = database::all("SELECT * FROM notebooks ORDER BY sort_order ASC,name ASC",&[]).map_err(|e|e.to_string())?; Ok(json!({"success":true,"notebooks":notebooks})) }
 #[tauri::command] pub async fn notebook_create(data: Value) -> Result<Value, String> { let id = data["id"].as_str().map(|s|s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()); let name = data["name"].as_str().unwrap_or("新笔记本"); let color = data["color"].as_str().unwrap_or("#64748b"); let parent_id = data["parentId"].as_str().map(|s|json!(s)); database::run("INSERT INTO notebooks(id,name,color,parent_id) VALUES(?,?,?,?)",&[json!(id),json!(name),json!(color),parent_id.clone().unwrap_or(json!(serde_json::Value::Null))]).map_err(|e|e.to_string())?; database::save().map_err(|e|e.to_string())?; Ok(json!({"success":true,"notebook":{"id":id,"name":name,"color":color,"parentId":parent_id}})) }
 #[tauri::command] pub async fn notebook_update(data: Value) -> Result<Value, String> { let id = data["id"].as_str().ok_or("missing id")?; if let Some(n) = data["name"].as_str() { database::run("UPDATE notebooks SET name=? WHERE id=?",&[json!(n),json!(id)]).ok(); } if let Some(c) = data["color"].as_str() { database::run("UPDATE notebooks SET color=? WHERE id=?",&[json!(c),json!(id)]).ok(); } if let Some(p) = data["parentId"].as_str() { database::run("UPDATE notebooks SET parent_id=? WHERE id=?",&[json!(p),json!(id)]).ok(); } else if data.get("parentId").map(|v|v.is_null()).unwrap_or(false) { database::run("UPDATE notebooks SET parent_id=NULL WHERE id=?",&[json!(id)]).ok(); } if let Some(s) = data["sortOrder"].as_i64() { database::run("UPDATE notebooks SET sort_order=? WHERE id=?",&[json!(s),json!(id)]).ok(); } database::save().map_err(|e|e.to_string())?; Ok(json!({"success":true})) }
-#[tauri::command] pub async fn notebook_delete(notebook_id: String) -> Result<Value, String> {
-    let count: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM notes WHERE notebook_id=? AND deleted_at IS NULL", rusqlite::params![&notebook_id], |r| r.get(0))).unwrap_or(0);
-    if count > 0 { return Ok(json!({"success":false,"error":"笔记本不为空，请先移动所有笔记"})); }
-    database::run("DELETE FROM notebooks WHERE id=?",&[json!(&notebook_id)]).map_err(|e|e.to_string())?;
-    database::save().map_err(|e|e.to_string())?;
-    Ok(json!({"success":true}))
-}
+#[tauri::command] pub async fn notebook_delete(notebook_id: String) -> Result<Value, String> { database::run("UPDATE notes SET deleted_at=datetime('now', 'localtime'), notebook_id=NULL WHERE notebook_id=?",&[json!(&notebook_id)]).map_err(|e|e.to_string())?; database::run("DELETE FROM notebooks WHERE id=?",&[json!(&notebook_id)]).map_err(|e|e.to_string())?; database::save().map_err(|e|e.to_string())?; Ok(json!({"success":true})) }
 // Tag management (global)
 #[tauri::command] pub async fn tag_force_resync() -> Result<Value, String> {
     database::run("DELETE FROM ai_tag_queue",&[]).ok();

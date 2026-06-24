@@ -1,14 +1,15 @@
-use crate::database;
+﻿use crate::database;
 use serde_json::{json, Value};
 
 #[tauri::command] pub async fn product_series_list() -> Result<Vec<Value>, String> { database::all("SELECT * FROM product_series ORDER BY sort_order ASC, name ASC", &[]).map_err(|e| e.to_string()) }
-#[tauri::command] pub async fn product_series_create(data: Value) -> Result<Value, String> { let id = uuid::Uuid::new_v4().to_string(); let inner = data.get("data").unwrap_or(&data); let name = inner["name"].as_str().unwrap_or(""); let parent_id = inner["parentId"].as_str().or_else(|| inner["parent_id"].as_str()).map(|s| json!(s)); database::run("INSERT INTO product_series(id,name,parent_id) VALUES(?,?,?)",&[json!(id),json!(name),parent_id.unwrap_or(Value::Null)]).map_err(|e| e.to_string())?; database::get("SELECT * FROM product_series WHERE id=?",&[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
-#[tauri::command] pub async fn product_series_update(id: String, data: Value) -> Result<Value, String> { if let Some(n) = data["name"].as_str() { database::run("UPDATE product_series SET name=?,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(n),json!(id)]).map_err(|e| e.to_string())?; } if let Some(ref pv) = data.get("parentId").or(data.get("parent_id")) { if pv.is_null() || pv.as_str() == Some("") { database::run("UPDATE product_series SET parent_id=NULL WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?; } else if let Some(pid) = pv.as_str() { database::run("UPDATE product_series SET parent_id=? WHERE id=?",&[json!(pid),json!(id)]).map_err(|e| e.to_string())?; } } if let Some(ref so) = data.get("sortOrder").or(data.get("sort_order")) { if let Some(so_num) = so.as_i64() { database::run("UPDATE product_series SET sort_order=?,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(so_num),json!(id)]).map_err(|e| e.to_string())?; } } Ok(json!({"success":true})) }
+#[tauri::command] pub async fn product_series_create(data: Value) -> Result<Value, String> { let id = uuid::Uuid::new_v4().to_string(); let inner = data.get("data").unwrap_or(&data); let name = inner["name"].as_str().unwrap_or(""); let parent_id = inner["parentId"].as_str().or_else(|| inner["parent_id"].as_str()).map(|s| json!(s)); database::run("INSERT INTO product_series(id,name,parent_id) VALUES(?,?,?)",&[json!(id),json!(name),parent_id.unwrap_or(Value::Null)]).map_err(|e| e.to_string())?; database::get("SELECT * FROM product_series WHERE id=?",&[json!(id)]).map_err(|e| e.to_string()).map(|r| { crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, "series", crate::services::object_changed::Action::Updated); r.unwrap_or(Value::Null) }) }
+#[tauri::command] pub async fn product_series_update(id: String, data: Value) -> Result<Value, String> { if let Some(n) = data["name"].as_str() { database::run("UPDATE product_series SET name=?,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(n),json!(id)]).map_err(|e| e.to_string())?; } if let Some(ref pv) = data.get("parentId").or(data.get("parent_id")) { if pv.is_null() || pv.as_str() == Some("") { database::run("UPDATE product_series SET parent_id=NULL WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?; } else if let Some(pid) = pv.as_str() { database::run("UPDATE product_series SET parent_id=? WHERE id=?",&[json!(pid),json!(id)]).map_err(|e| e.to_string())?; } } if let Some(ref so) = data.get("sortOrder").or(data.get("sort_order")) { if let Some(so_num) = so.as_i64() { database::run("UPDATE product_series SET sort_order=?,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(so_num),json!(id)]).map_err(|e| e.to_string())?; } } crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, "series", crate::services::object_changed::Action::Updated); Ok(json!({"success":true})) }
 #[tauri::command] pub async fn product_series_delete(id: String) -> Result<Value, String> {
     let subs: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM product_series WHERE parent_id=?", rusqlite::params![&id], |r| r.get(0))).unwrap_or(0);
     let prods: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM products WHERE series_id=?", rusqlite::params![&id], |r| r.get(0))).unwrap_or(0);
     if subs > 0 || prods > 0 { return Ok(json!({"success":false,"error":"目录不为空，请先移动所有产品和子目录"})); }
     database::run("DELETE FROM product_series WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, "series", crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn product_series_update_sort_order(data: Vec<Value>) -> Result<Value, String> {
@@ -17,6 +18,7 @@ use serde_json::{json, Value};
         let so = item["sortOrder"].as_i64().unwrap_or(0);
         if !id.is_empty() { database::run("UPDATE product_series SET sort_order=? WHERE id=?",&[json!(so),json!(id)]).ok(); }
     }
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, "series", crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn product_list(series_id: Option<String>) -> Result<Vec<Value>, String> { if let Some(sid) = series_id { database::all("SELECT * FROM products WHERE series_id=? ORDER BY sort_order ASC, name ASC",&[json!(sid)]).map_err(|e| e.to_string()) } else { database::all("SELECT * FROM products ORDER BY sort_order ASC, name ASC",&[]).map_err(|e| e.to_string()) } }
@@ -31,6 +33,7 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     database::run("INSERT INTO products(id,name,series_id,description,price,standard_specs,full_specs) VALUES(?,?,?,?,?,?,?)",
     &[json!(id),json!(&name),series_id.unwrap_or(Value::Null),json!(&desc),json!(data["price"].as_f64().unwrap_or(0.0)),json!(&std_specs),json!(&specs)]).map_err(|e| e.to_string())?;
     // ★ trigger 已自动同步 KV 格式到 source_data
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, &id, crate::services::object_changed::Action::Created);
     database::get("SELECT * FROM products WHERE id=?",&[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null))
 }
 #[tauri::command] pub async fn product_update(id: String, data: Value) -> Result<(), String> {
@@ -45,6 +48,7 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     values.push(json!(id));
     database::run(&format!("UPDATE products SET {} WHERE id=?",fields.join(",")),&values).map_err(|e|e.to_string())?;
     // ★ trigger 已自动同步 KV 格式到 source_data，无需额外写入
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, &id, crate::services::object_changed::Action::Updated);
     Ok(())
 }
 #[tauri::command] pub async fn product_update_sort_orders(data: Vec<Value>) -> Result<(), String> {
@@ -60,6 +64,8 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM tag_mappings WHERE entity_type='products' AND entity_id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     database::run("DELETE FROM products WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::cleanup_pipeline::enqueue_cleanup("PRODUCT", &id);
+    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, &id, crate::services::object_changed::Action::Deleted);
+    crate::services::cleanup_pipeline::wake_cleanup();
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))
 }

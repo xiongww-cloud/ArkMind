@@ -26,7 +26,7 @@ use tokio::sync::{mpsc, Semaphore};
 // ═══════════════════════════════════════════════════════════════════
 
 /// 防抖窗口：此时间内连续写入不触发物化
-const DEBOUNCE_WINDOW_SECS: u64 = 5;
+const DEBOUNCE_WINDOW_SECS: u64 = 30;
 
 /// 最大并发物化数。SQLite 全局 Mutex 串行化所有 DB 操作，
 /// 此处限制避免过多任务同时排队等待锁。

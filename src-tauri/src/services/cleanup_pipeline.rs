@@ -5,9 +5,16 @@
 
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
+static WAKE: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+
+/// 唤醒清理管线（由业务删除命令调用，零延迟异步通知）
+pub fn wake_cleanup() {
+    WAKE.notify_one();
+}
 
 /// 将清理任务加入队列
 pub fn enqueue_cleanup(source_type: &str, source_id: &str) {
@@ -61,7 +68,7 @@ pub fn process_cleanup_task() -> bool {
             }).unwrap_or_default()
         });
 
-    // 1. 清理向量数据
+    // ★ 仅清理 LanceDB + vector_cache（source_data / knowledge_chunks 由业务删除流程 FK cascade 负责）
     if !chunk_ids.is_empty() {
         let ph: Vec<String> = chunk_ids.iter().map(|_| "?".to_string()).collect();
         let params: Vec<serde_json::Value> = chunk_ids.iter().map(|id| json!(id)).collect();
@@ -75,38 +82,7 @@ pub fn process_cleanup_task() -> bool {
         }
     }
 
-    // 2. 手动清理 kk_chunks_fts（不需要触发器）
-    for cid in &chunk_ids {
-        crate::database::run("INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES('delete', ?)", &[json!(cid)]).ok();
-    }
-
-    // 3. 删除 knowledge_chunks（不需要触发器）
-    if !chunk_ids.is_empty() {
-        let ph: Vec<String> = chunk_ids.iter().map(|_| "?".to_string()).collect();
-        let params: Vec<serde_json::Value> = chunk_ids.iter().map(|id| json!(id)).collect();
-        crate::database::run(&format!("DELETE FROM knowledge_chunks WHERE id IN ({})", ph.join(",")), &params).ok();
-    }
-
-    // 4. 手动清理 global_search_fts（source_data 可能已不存在，但不影响幂等性）
-    if let Some(sid) = sd_id {
-        if let Ok(Some(sd_row)) = crate::database::get(
-            "SELECT rowid, source_type, source_id, title, content FROM source_data WHERE id=?",
-            &[json!(sid)],
-        ) {
-            if let Some(rowid) = sd_row["rowid"].as_i64().filter(|r| *r > 0) {
-                crate::database::run(
-                    "INSERT INTO global_search_fts(global_search_fts, rowid, source_type, source_id, title, content) \
-                     VALUES ('delete', ?1, ?2, ?3, ?4, ?5)",
-                    &[json!(rowid), json!(sd_row["source_type"].as_str().unwrap_or("")), json!(sd_row["source_id"].as_str().unwrap_or("")),
-                      json!(sd_row["title"].as_str().unwrap_or("")), json!(sd_row["content"].as_str().unwrap_or(""))],
-                ).ok();
-            }
-        }
-        // 5. 删除 source_data（不存在也无所谓——幂等）
-        let _ = crate::database::run("DELETE FROM source_data WHERE id=?", &[json!(sid)]);
-    }
-
-    // 6. 标记完成
+    // 标记完成
     crate::database::run("UPDATE cleanup_queue SET status=1 WHERE id=?", &[json!(task_id)]).ok();
     println!("[清理管线] 完成: {}/{} ({} 个块已清理)", source_type, source_id, chunk_ids.len());
     true
@@ -170,18 +146,27 @@ async fn cleanup_scheduler_loop() {
     loop {
         tick = tick.wrapping_add(1);
 
+        let mut had_work = false;
         // 每次 tick 处理最多 5 个清理任务
         for _ in 0..5 {
             if !process_cleanup_task() {
                 break;
             }
+            had_work = true;
         }
 
         // 每 ~10 分钟执行兜底扫描
-        if tick % 6000 == 0 {
+        if tick % 20 == 0 {
             cleanup_orphan_source_data();
+            tick = 0;
         }
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Event-driven: no work → wait for notification or 30s timeout
+        if !had_work {
+            tokio::select! {
+                _ = WAKE.notified() => {},
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {},
+            }
+        }
     }
 }

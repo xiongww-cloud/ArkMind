@@ -6,6 +6,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use base64::Engine;
+use serde_json::json;
 
 static DB: Lazy<Mutex<Option<Connection>>> = Lazy::new(|| Mutex::new(None));
 
@@ -62,11 +63,9 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     // ★ FTS5 自动镜像 + 结构化数据同步（无条件执行，不依赖 Premium 许可）
     init_struct_source_data_triggers(&conn)?;
 
-    let premium = is_premium_license_internal(&conn);
-    if premium {
-        init_ai_queue_triggers(&conn)?;
-        println!("[数据库] FTS5 + AI 触发器已初始化（高级版）");
-    }
+    // ★ 初始化 AI 触发器（激活即全功能）
+    init_ai_queue_triggers(&conn)?;
+    println!("[数据库] FTS5 + AI 触发器已初始化");
 
     // Store in global AFTER all init is done
     {
@@ -245,6 +244,20 @@ fn create_schema(conn: &Connection) -> SqliteResult<()> {
         -- AI pipeline tables
         CREATE TABLE IF NOT EXISTS ai_sync_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, source_table TEXT NOT NULL, source_id TEXT NOT NULL, is_embedded INTEGER DEFAULT 0, retry_count INTEGER DEFAULT 0, last_dedup_key TEXT DEFAULT '', last_error TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime')), UNIQUE(source_table, source_id));
         CREATE TABLE IF NOT EXISTS ai_tag_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT NOT NULL, source_id TEXT NOT NULL, status INTEGER DEFAULT 0, tag_type TEXT DEFAULT 'ai_shadow', retry_count INTEGER DEFAULT 0, last_error TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime')), UNIQUE(source_type, source_id));
+        -- ★ Event Bus: 对象变更事件溯源
+        CREATE TABLE IF NOT EXISTS event_store (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            object_type TEXT NOT NULL,
+            object_id TEXT NOT NULL,
+            payload TEXT DEFAULT '{}',
+            source TEXT NOT NULL DEFAULT 'user',
+            trace_id TEXT,
+            created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_event_type ON event_store(event_type);
+        CREATE INDEX IF NOT EXISTS idx_event_object ON event_store(object_type, object_id);
+        CREATE INDEX IF NOT EXISTS idx_event_time ON event_store(created_at);
 
         -- ★ Unified tag mappings (replaces note/file/product/project_tags_mapping)
         CREATE TABLE IF NOT EXISTS tag_mappings (
@@ -324,6 +337,17 @@ pub(crate) fn all(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<V
         })?;
         Ok(rows.filter_map(|r|r.ok()).collect())
     })
+}
+
+/// ★ Event Bus: 对象变更事件
+pub(crate) fn emit_event(
+    event_type: &str, object_type: &str, object_id: &str,
+    payload: serde_json::Value, source: &str, trace_id: &str,
+) {
+    run(
+        "INSERT INTO event_store(event_type,object_type,object_id,payload,source,trace_id) VALUES(?1,?2,?3,?4,?5,?6)",
+        &[json!(event_type), json!(object_type), json!(object_id), payload, json!(source), json!(trace_id)],
+    ).ok();
 }
 
 pub(crate) fn get(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<Option<serde_json::Value>> {
@@ -1375,9 +1399,8 @@ fn dedupe_file_assets_hash(conn: &rusqlite::Connection) {
 
 fn fix_assets_fts_schema(_conn: &rusqlite::Connection) {}
 
-fn is_premium_license_internal(conn: &rusqlite::Connection) -> bool {
-    conn.query_row("SELECT product FROM license WHERE status='active' ORDER BY id DESC LIMIT 1", [], |r| r.get::<_,String>(0)).map(|p| p=="advanced"||p=="enhanced").unwrap_or(false)
-}
+
+
 fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     // Idempotent column migrations (IGNORE errors if column already exists)
     let migrations: &[&str] = &[

@@ -24,13 +24,7 @@ pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &st
     // ★ 触发防抖物化 + 独立打标（不依赖物化）
     let st_lower = source_type.to_lowercase();
     let queue_type = if st_lower.ends_with('s') { st_lower.clone() } else { format!("{}s", st_lower) };
-    if let Some(sched) = crate::services::knowledge_pipeline::get_scheduler() {
-        if matches!(queue_type.as_str(), "notes" | "files" | "products") {
-            sched.enqueue(&queue_type, source_id);
-            // 独立触发打标，不依赖物化
-            crate::services::ai_tag::enqueue_tag_task(&queue_type, source_id);
-        }
-    }
+    crate::services::ai_tag::enqueue_tag_task(&queue_type, source_id);
 }
 
 /// 删除实体对应的 source_data 记录

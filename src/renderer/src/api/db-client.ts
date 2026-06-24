@@ -348,3 +348,6 @@ export async function dbRun(sql: string, params?: any[]): Promise<any> { return 
 // Project import/export
 export async function projectExport(projectId: string): Promise<any> { return invoke('project_export', { projectId }) }
 export async function batchExportProjects(projectIds: string[], filePath: string): Promise<any> { return invoke('projects_batch_export', { projectIds, filePath }) }
+
+// Pipeline Debug
+export async function kbPipelineDebug(): Promise<{success:boolean;stats:any;sync_queue:any[];cleanup_queue:any[]}> { return invoke('kb_pipeline_debug') }

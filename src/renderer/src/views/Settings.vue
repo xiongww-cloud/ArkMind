@@ -68,7 +68,8 @@ async function activateLicenseKey() {
     licenseActivated.value = true
     licenseStatus.value = 'active'
     licenseExpiresAt.value = result.expiresAt
-    licenseSuccess.value = result.message || '激活成功'
+    licenseProduct.value = result.product || ''
+    licenseSuccess.value = '激活成功'
     licenseKey.value = ''
     setTimeout(() => { licenseSuccess.value = '' }, 3000)
   } catch (e) {
@@ -88,7 +89,7 @@ function formatExpiryDate(dateStr) {
 // Derive display product name
 const licenseProductLabel = computed(() => {
   if (!licenseProduct.value) return ''
-  const map: Record<string, string> = { basic: '基础版', advanced: '高级版' }
+  const map: Record<string, string> = { basic: '基础版', advanced: '高级版', enhanced: 'AI增强版' }
   return map[licenseProduct.value] || licenseProduct.value
 })
 

@@ -262,7 +262,7 @@ function goToProject(projectId: string) {
     </header>
 
     <!-- ── Pipeline ── -->
-    <div class="bg-white rounded-2xl border border-surface-200 p-5">
+    <div class="bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
       <h2 class="text-[13px] font-semibold text-surface-700 mb-4 flex items-center gap-1.5">
         <AppIcon name="bar-chart" size="15" class="text-surface-400" />
         Pipeline 概览
@@ -284,7 +284,7 @@ function goToProject(projectId: string) {
 
     <!-- ── Active Projects + Deadlines ── -->
     <div class="flex flex-col lg:flex-row gap-4 items-start">
-      <div class="flex-1 lg:flex-[7] bg-white rounded-2xl border border-surface-200 p-5">
+      <div class="flex-1 lg:flex-[7] bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5">
             <AppIcon name="folder-open" size="15" class="text-surface-400" />
@@ -303,7 +303,7 @@ function goToProject(projectId: string) {
         </div>
         <p v-else class="text-[12px] text-surface-300 py-8 text-center">暂无活跃项目</p>
       </div>
-      <div class="flex-1 lg:flex-[5] bg-white rounded-2xl border border-surface-200 p-5">
+      <div class="flex-1 lg:flex-[5] bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5">
             <AppIcon name="clock" size="15" class="text-surface-400" />
@@ -325,7 +325,7 @@ function goToProject(projectId: string) {
 
     <!-- ── Todos + Recent Notes ── -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
-      <div class="lg:col-span-6 bg-white rounded-2xl border border-surface-200 p-5">
+      <div class="lg:col-span-6 bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5">
             <AppIcon name="list" size="15" class="text-surface-400" />
@@ -345,7 +345,7 @@ function goToProject(projectId: string) {
         </div>
         <p v-else class="text-[12px] text-surface-300 py-6 text-center">暂无待办</p>
       </div>
-      <div class="lg:col-span-6 bg-white rounded-2xl border border-surface-200 p-5">
+      <div class="lg:col-span-6 bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5">
             <AppIcon name="file-doc" size="15" class="text-surface-400" />
@@ -366,10 +366,10 @@ function goToProject(projectId: string) {
     </div>
 
     <!-- ── Knowledge Growth ── -->
-    <div v-if="dashboardStats?.daily_growth?.length && growthChartOptions.series?.[0]?.data?.length" class="bg-white rounded-2xl border border-surface-200 p-5">
+    <div v-if="dashboardStats?.daily_growth?.length && growthChartOptions.series?.[0]?.data?.length" class="bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
       <h2 class="text-[13px] font-semibold text-surface-700 mb-4 flex items-center gap-1.5">
         <AppIcon name="sparkles" size="15" class="text-surface-400" />
-        知识库增长
+        知识增长趋势
       </h2>
       <VueApexCharts :options="growthChartOptions" :series="growthChartOptions.series" type="area" height="180" />
     </div>

@@ -11,7 +11,8 @@
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -42,9 +43,6 @@ enum Commands {
     Keygen,
     /// Sign a license for a customer
     Sign {
-        /// License tier: basic | advanced
-        #[arg(short, long, default_value = "basic")]
-        product: String,
         /// Machine code from the customer's app
         #[arg(short, long)]
         machine: String,
@@ -75,8 +73,9 @@ fn main() {
     match cli.command {
         Commands::Keygen => {
             // Generate fresh keypair
-            let mut rng = rand_core::OsRng;
-            let signing_key = SigningKey::generate(&mut rng);
+            let mut seed = [0u8; 32];
+            OsRng.fill_bytes(&mut seed);
+            let signing_key = SigningKey::from_bytes(&seed);
             let verifying_key = signing_key.verifying_key();
 
             // Save private key
@@ -100,7 +99,7 @@ fn main() {
             println!("   Rust code snippet:");
             println!("   const PUBLIC_KEY_B64: &str = \"{}\";", vk_b64);
         }
-        Commands::Sign { product, machine, expires, key } => {
+        Commands::Sign { machine, expires, key } => {
             // Read private key
             let pk_b64 = std::fs::read_to_string(&key).expect("failed to read private key file");
             let pk_b64 = pk_b64.trim();
@@ -114,8 +113,8 @@ fn main() {
             let issued = chrono::Local::now().format("%Y-%m-%d").to_string();
             let machine_hash = gen_machine_hash(&machine);
             let payload = LicensePayload {
-                product,
-                machine_code: machine_hash,
+                product: "activated".into(),
+                machine_code: machine_hash.clone(),
                 expires_at: expires,
                 issued_at: issued,
             };
@@ -132,7 +131,6 @@ fn main() {
             let license = format!("Arkmind-{}.{}", payload_b64, sig_b64);
             println!("✅ License generated!");
             println!();
-            println!("   Product:   {}", payload.product);
             println!("   Machine:   {} → hash: {}", machine, machine_hash);
             println!("   Expires:   {}", payload.expires_at);
             println!("   Issued:    {}", payload.issued_at);
@@ -149,7 +147,8 @@ fn main() {
                 .decode(pk_b64)
                 .expect("invalid base64 private key");
             let signing_key = SigningKey::from_bytes(&pk_bytes.try_into().expect("32 bytes"));
-            let vk_bytes = signing_key.verifying_key().as_bytes();
+            let verifying_key = signing_key.verifying_key();
+            let vk_bytes = verifying_key.as_bytes();
             let vk_b64 = base64::engine::general_purpose::STANDARD.encode(vk_bytes);
             println!("Public key (base64): {}", vk_b64);
         }
