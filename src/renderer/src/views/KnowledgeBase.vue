@@ -32,12 +32,12 @@ function renderedContent(idx: number): string { return rendered.value[idx] || ''
 // ─── Typewriter ─────────────────────────────────────────────────
 const typewriterStates = ref<Record<number,{text:string;done:boolean}>>({})
 let typewriterTimers: Record<number,ReturnType<typeof setInterval>> = {}
-function startTypewriter(idx: number, fullText: string, speed = 25) {
+function startTypewriter(idx: number, fullText: string, speed = 8) {
   stopTypewriter(idx)
   if (!fullText) { typewriterStates.value[idx] = { text: '', done: true }; return }
   renderMarkdown(fullText).then(html => { rendered.value[idx] = html })
-  const chunk = 3
-  let pos = Math.min(chunk * 3, fullText.length)
+  const chunk = 5
+  let pos = Math.min(chunk * 5, fullText.length)
   typewriterStates.value[idx] = { text: fullText.slice(0, pos), done: false }
   typewriterTimers[idx] = setInterval(() => {
     pos += chunk

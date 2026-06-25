@@ -12,36 +12,50 @@ use tauri::Emitter;
 const API_TIMEOUT_SECS: u64 = 30;
 const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 
+## 当前日期
+{{today}}
+
 ## 当前会话工作记忆
 {{session_scratchpad}}
 
-## 核心能力
-- ext_tool_search: 全局全文检索，自动前置搜索关联对象并附加到结果顶部
-- ext_tool_object: 搜索业务对象（产品/项目/文件/笔记），返回结构化属性面板
-- ext_tool_traverse: 在知识空间中沿关联图谱漫游（next=向后翻页, prev=向前翻页, related=关联知识, references=引用实体）
-- ext_tool_act: 执行操作（创建待办、更新项目状态）
+## 你的身份
+你是用户的长期思维伙伴。
+知识库是你的记忆，对象关系网络是你的联想。
+你的职责不是检索信息，而是帮助用户理解问题、形成判断、推进决策。
 
-## 工具说明
-- ext_tool_object: 搜索结构化对象（产品、项目、文件、笔记、待办）。返回对象名称和 source_id。**不返回详细参数——使用 search 工具检索该对象的详细内容。**
-- ext_tool_search: 在文档中寻找证据。**search 的关键词应从会话工作记忆的「Unknown」部分提取，将具体的待解问题转化为可检索的关键词组合。** 如果返回结果不包含某类信息，说明知识库中可能不存在该信息。不要对大量同类对象逐个重复搜索。
-- ext_tool_traverse: 沿关联图谱漫游。chunk_id 必须来自 search() 结果中的「ChunkID：xxxx」字段，不要传 Product/Project/File ID。
-- ext_tool_act: 执行操作（创建/更新待办、更新项目状态）
-- 最终答案末尾用 <refs> 标签列出本答案引用的对象ID，如：<refs>PRODUCT-xxx, PROJECT-yyy</refs>
+## 推理原则
+你必须在内部严格区分三类信息：
 
-## 关键规则
-- **查看 ## Execution Log 确认当前进度**；每一步调用工具后，留意下一步方向
-- search 发现有用信息后，用新关键词继续 search，而不是用 traverse(next) 逐块翻页
-- traverse(next/prev) 仅用于补全被切割的表格或段落的上下文，禁止连续 3 次以上使用 next/prev
-- 结果中如有「未访问热点」提示，优先用 search 跳转到这些热点
+1. 事实（Fact）：来自知识库检索结果
+2. 经历（Experience）：来自历史对话记录（CHAT）
+3. 联想（Association）：来自对象关系网络、经验网络或常识推理
 
-## 回答格式：Markdown，优先使用表格呈现。如果缺少用户所需的具体信息（如使用场景、详细参数），必须明确告知「知识库暂无该信息」，禁止根据产品名称自行推断或编造。"#;
+联想不是事实，经历不是事实。当引用经历时，说明"我找到过往讨论记录"。
+当引用联想时，使用"我推测""这让我想到""通常情况下""可能意味着"。
+禁止把联想描述为已经发生过的事实、用户曾经说过的话，或当作历史记录。
+
+## 回答目标
+帮助用户解决问题，而不是复述记忆。
+知识库中的内容是证据，不是答案本身。
+最终回答应围绕用户的问题组织，而不是围绕检索结果组织。
+
+## 工具
+- ext_tool_object: 搜索记忆中的对象。无关键词时按时间线浏览（适合「昨天聊了什么」），有关键词时按名称搜索。支持类型和时间过滤。
+- ext_tool_search: 从长期记忆中检索相关知识，支持 time_range 时间范围过滤
+- ext_tool_traverse: 查看同一知识片段附近的上下文
+- ext_tool_act: 执行动作
+
+- 每轮检索后评估证据是否足够。如果足够，直接输出最终答案，不要继续搜索。
+
+## 引用
+最终答案末尾用 <refs> 标签列出引用对象ID：<refs>PRODUCT-xxx, PROJECT-yyy</refs>"#;
 
 // Data structures
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)] #[serde(rename_all = "lowercase")]
 pub enum MessageRole { System, User, Assistant, Tool }
 #[derive(Debug, Clone, Serialize, Deserialize)] pub struct ToolCall { pub id: String, #[serde(rename="type")] pub call_type: String, pub function: FunctionCall }
 #[derive(Debug, Clone, Serialize, Deserialize)] pub struct FunctionCall { pub name: String, pub arguments: String }
-#[derive(Debug, Clone, Serialize, Deserialize)] pub struct ChatMessage { pub role: MessageRole, #[serde(skip_serializing_if="Option::is_none")] pub content: Option<String>, #[serde(skip_serializing_if="Option::is_none")] pub tool_calls: Option<Vec<ToolCall>>, #[serde(skip_serializing_if="Option::is_none")] pub tool_call_id: Option<String>, #[serde(skip_serializing_if="Option::is_none")] pub name: Option<String> }
+#[derive(Debug, Clone, Serialize, Deserialize)] pub struct ChatMessage { pub role: MessageRole, #[serde(skip_serializing_if="Option::is_none")] pub content: Option<String>, #[serde(skip_serializing_if="Option::is_none")] pub tool_calls: Option<Vec<ToolCall>>, #[serde(skip_serializing_if="Option::is_none")] pub tool_call_id: Option<String>, #[serde(skip_serializing_if="Option::is_none")] pub name: Option<String>, #[serde(skip_serializing_if="Option::is_none")] pub reasoning_content: Option<String> }
 
 static API_CACHE: Lazy<RwLock<(String,String,String,Instant)>> = Lazy::new(|| RwLock::new((String::new(),String::new(),String::new(),Instant::now()-std::time::Duration::from_secs(60))));
 static AGENT_HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| reqwest::Client::builder().timeout(std::time::Duration::from_secs(API_TIMEOUT_SECS)).build().expect("agent http"));
@@ -270,20 +284,10 @@ impl SessionMemory {
                     "note" => format!("NOTE: {}", o.name),
                     t => format!("{}: {}", t, o.name),
                 };
-                // 查询 Top3 标签
-                let entity_type = format!("{}s", o.obj_type.trim_end_matches('s'));
-                let tags: Vec<String> = database::all(
-                    "SELECT t.name FROM tag_mappings tm JOIN tags t ON t.tag_id=tm.tag_id WHERE tm.entity_type=?1 AND tm.entity_id=?2 LIMIT 3",
-                    &[json!(entity_type), json!(&o.obj_id)],
-                ).unwrap_or_default().iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-
                 if i == 0 {
                     lines.push(format!("  [{}] 🌟 当前焦点", label));
                 } else {
                     lines.push(format!("  [{}] 💤", label));
-                }
-                if !tags.is_empty() {
-                    lines.push(format!("    {}", tags.iter().map(|t| format!("[{}]", t)).collect::<Vec<_>>().join(" ")));
                 }
             }
         }
@@ -337,8 +341,8 @@ impl SessionMemory {
 
 fn build_tools_definitions() -> Value {
     json!([
-        {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。关键词应从会话工作记忆中提取。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"}},"required":["keywords"]}}},
-        {"type":"function","function":{"name":"ext_tool_object","description":"搜索所有结构化对象（产品、项目、文件、笔记、待办）。返回结构化属性。对于产品，如果 full_specs 非空则优先从中提取参数回答，无需再 search 文件内容。","parameters":{"type":"object","properties":{"query":{"type":"string","description":"产品型号名或关键词，支持多词组合（如「S12700E-8 招标参数」）以提高匹配精度"}},"required":["query"]}}},
+        {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。支持时间范围过滤。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
+        {"type":"function","function":{"name":"ext_tool_object","description":"搜索记忆中的对象。无关键词时按时间线浏览（适合「昨天聊了什么」），有关键词时按名称搜索（适合「5310是什么」）。","parameters":{"type":"object","properties":{"query":{"type":"string","description":"对象名称关键词，留空按时间线浏览"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"返回数量，默认20"}},"required":[]}}},
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。chunk_id 必须来自 search() 结果中的「ChunkID」字段，不要传其他ID。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"必须来自 search() 结果的 ChunkID 字段"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_act","description":"执行操作","parameters":{"type":"object","properties":{"action":{"type":"string","description":"create_todo/update_todo_status/update_project_status"},"project_id":{"type":"string","description":"项目ID"},"todo_title":{"type":"string","description":"待办标题"},"todo_content":{"type":"string","description":"待办内容"},"todo_id":{"type":"string","description":"待办ID"},"new_status":{"type":"string","description":"新状态"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_batch_search","description":"批量并发检索多个独立指标。仅当用户在单轮中询问≥3个独立指标时使用。每个指标返回2个最相关结果。简单问题和单指标请用 ext_tool_search。","parameters":{"type":"object","properties":{"queries":{"type":"array","items":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~3 个核心关键词"}},"required":["keywords"]},"description":"3~10 个独立子查询"}},"required":["queries"]}}},
@@ -446,16 +450,6 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
         _ => {}
     }
 
-    // ── 2. 标签 ──
-    let tags: Vec<String> = database::all(
-        "SELECT t.name FROM tag_mappings tm JOIN tags t ON t.tag_id=tm.tag_id WHERE tm.entity_type=?1 AND tm.entity_id=?2",
-        &[json!(st), json!(sid)],
-    ).unwrap_or_default().into_iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-    if !tags.is_empty() {
-        lines.push(format!("标签：{} → 可填入 filter_tags", tags.join("、")));
-    }
-
-    // ── 3. 项目/产品/笔记关联 ──
     if st == "notes" {
         let projs: Vec<String> = database::all(
             "SELECT p.name, p.status, p.customer FROM projects p JOIN note_project_mapping npm ON npm.project_id=p.id WHERE npm.note_id=?1",
@@ -699,7 +693,7 @@ fn resolve_scope_to_rowids(scope: &[String]) -> std::collections::HashSet<i64> {
 }
 
 /// 执行 search 并同时返回发现的来源列表
-async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std::collections::HashSet<i64>>, visited_sources: &std::collections::HashSet<String>, visited_chunks: &std::collections::HashSet<String>) -> (String, Vec<String>) {
+async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std::collections::HashSet<i64>>, visited_sources: &std::collections::HashSet<String>, visited_chunks: &std::collections::HashSet<String>, time_range: Option<(String, String)>) -> (String, Vec<String>) {
     let query = keywords.join(" "); if query.trim().is_empty() { return ("no keywords".into(), vec![]); }
     let tag_rowids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut obj_head = String::new();
@@ -787,6 +781,14 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
                 (effective_rrf * 0.5, false)
             };
             if !h.is_empty() && !seen_hashes.insert(h.clone()) { continue; }
+            // ★ 时间过滤
+            if let Some((ref start, ref end)) = time_range {
+                let created_at: String = database::get("SELECT created_at FROM knowledge_chunks WHERE id=?1",&[json!(cr)]).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
+                if !created_at.is_empty() {
+                    let date = &created_at[..10.min(created_at.len())];  // "2026-06-25"
+                    if date < start.as_str() || date > end.as_str() { continue; }
+                }
+            }
             // ★ 已在前轮展示过的 chunk 直接丢弃，让排名更靠后的新 chunk 补位
             let short_chunk: String = chunk_id.chars().take(8).collect();
             if !short_chunk.is_empty() && visited_chunks.contains(&short_chunk) { continue; }
@@ -796,13 +798,9 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
         }
     }
 
-    let obj_ids: Vec<String> = candidates.iter().take(5).filter_map(|(_,_,st,sid,_,_,_,_,_,_,_)| {
-        if st.is_empty() || sid.is_empty() { None } else { Some(format!("{}-{}", st.to_uppercase(), sid)) }
-    }).collect();
-    crate::services::synapse::update_object_links(&obj_ids);
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut out = String::new();
-    for (idx, (score, _cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)) in candidates.iter().take(5).enumerate() {
+    for (idx, (score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)) in candidates.iter().take(3).enumerate() {
         let rrf_tag = &format!("{:.3}", score);
         let boost_tag = if *is_obj_match { "🔥" } else { "" };
         let mut meta = build_chunk_metadata(st, sid);
@@ -840,6 +838,15 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
             if let Some(name) = name {
                 meta.push_str(&format!("\n[{}] {} | source_id: {}-{}", source_label, name, source_label, sid));
             }
+        }
+        // ★ 时间标注
+        let created_at: String = database::get(
+            "SELECT created_at FROM knowledge_chunks WHERE id=?1", &[json!(cr)],
+        ).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
+        let time_info = relative_time(&created_at);
+        if !time_info.is_empty() {
+            if !meta.is_empty() { meta.push('\n'); }
+            meta.push_str(&time_info);
         }
         let preview: String = content.chars().take(1300).collect();
         if meta.is_empty() { out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}", idx + 1, rrf_tag, boost_tag, preview)); }
@@ -1163,6 +1170,28 @@ fn execute_act(action: &str, project_id: &str, todo_title: &str, todo_content: &
     }
 }
 
+fn resolve_time(s: &str) -> String {
+    let s = s.trim();
+    if s.is_empty() { return String::new(); }
+    if s.len() >= 10 && s.contains('-') { return s[..10].to_string(); }
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    // Handle relative expressions via simple matching
+    if s.contains("昨天") || s.contains("昨天") { let d = chrono::Local::now() - chrono::Duration::days(1); return d.format("%Y-%m-%d").to_string(); }
+    if s.contains("前天") { let d = chrono::Local::now() - chrono::Duration::days(2); return d.format("%Y-%m-%d").to_string(); }
+    if s.contains("今天") || s.is_empty() { return today; }
+    // fallback: return as-is
+    s.to_string()
+}
+
+fn relative_time(created_at: &str) -> String {
+    if created_at.is_empty() { return String::new(); }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let ts = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S").map(|dt| dt.and_utc().timestamp()).unwrap_or(0);
+    let delta = (now - ts).max(0);
+    let rel = if delta < 60 { "刚刚".to_string() } else if delta < 3600 { format!("{}分钟前", delta / 60) } else if delta < 86400 { format!("{}小时前", delta / 3600) } else if delta < 2592000 { format!("{}天前", delta / 86400) } else if delta < 77760000 { format!("{}个月前", delta / 2592000) } else { format!("{}年前", delta / 31104000) };
+    format!("🕐 {} ({})", rel, &created_at[..created_at.len().min(16)])
+}
+
 fn execute_object_get(query: &str) -> String {
     let q = query.trim();
     if q.is_empty() { return "请提供搜索关键词。".into(); }
@@ -1323,7 +1352,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     let tools = build_tools_definitions();
     let mut session = SessionMemory::new();
     let mut messages: Vec<ChatMessage> = vec![
-        ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None},
+        ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
     ];
     // ★ 恢复历史消息中的 assistant/tool 对话 + 重建 SessionMemory
     for h in &history {
@@ -1340,7 +1369,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     } else { args_str.to_string() };
                     Some(ToolCall { id: id.to_string(), call_type: "function".into(), function: FunctionCall { name: name.to_string(), arguments: args } })
                 }).collect());
-                messages.push(ChatMessage{role:MessageRole::Assistant,content:content.clone(),tool_calls:tcs,tool_call_id:None,name:None});
+                messages.push(ChatMessage{role:MessageRole::Assistant,content:content.clone(),tool_calls:tcs,tool_call_id:None,name:None,reasoning_content:h["reasoning_content"].as_str().map(String::from)});
                 // 没有 tool_calls 的 content 是最终回答，记录为 observation
                 if let Some(ref text) = content {
                     if h["tool_calls"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
@@ -1352,7 +1381,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 let content_str = h["content"].as_str().unwrap_or("").to_string();
                 let id = h["tool_call_id"].as_str().unwrap_or("").to_string();
                 let name = h["name"].as_str().unwrap_or("").to_string();
-                messages.push(ChatMessage{role:MessageRole::Tool,content:Some(content_str.clone()),tool_calls:None,tool_call_id:Some(id),name:Some(name)});
+                messages.push(ChatMessage{role:MessageRole::Tool,content:Some(content_str.clone()),tool_calls:None,tool_call_id:Some(id),reasoning_content:None,name:Some(name)});
                 // 从 tool 结果中重建 SessionMemory
                 for line in content_str.lines() {
                     session.update_from_line(line);
@@ -1361,12 +1390,12 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             _ => {
                 // user 或其他角色
                 let content = h["content"].as_str().map(|s| s.to_string());
-                messages.push(ChatMessage{role:MessageRole::User,content,tool_calls:None,tool_call_id:None,name:None});
+                messages.push(ChatMessage{role:MessageRole::User,content,tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
             }
         }
     }
     // ★ 追加本轮新问题
-    messages.push(ChatMessage{role:MessageRole::User,content:Some(query.clone()),tool_calls:None,tool_call_id:None,name:None});
+    messages.push(ChatMessage{role:MessageRole::User,content:Some(query.clone()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
     // ★ 从活跃对象和本轮 query 设置 Focus
     let top_entities: Vec<String> = {
@@ -1380,7 +1409,9 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     let (mut iters, mut pt, mut ct) = (0i32, 0i64, 0i64);
     let mut traverse_source_counter: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
     // 注入初始 scratchpad（空），后续每轮由循环内代码更新
-    let empty_sys = AGENT_SYSTEM_PROMPT.replace("{{session_scratchpad}}", "");
+    let empty_sys = AGENT_SYSTEM_PROMPT
+        .replace("{{today}}", &chrono::Local::now().format("%Y年%m月%d日").to_string())
+        .replace("{{session_scratchpad}}", "");
     messages[0].content = Some(empty_sys);
 
     loop {
@@ -1390,6 +1421,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         let choice = ar["choices"].as_array().and_then(|a|a.first()).ok_or("no choices")?;
         let msg = &choice["message"];
         let ac = msg["content"].as_str().unwrap_or("");
+        let reasoning = msg["reasoning_content"].as_str().map(String::from);
         let tcs: Option<Vec<Value>> = msg["tool_calls"].as_array().map(|a|a.to_vec());
 
         match tcs {
@@ -1400,13 +1432,92 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             }
             Some(ref calls) if !calls.is_empty() => {
                 if iters >= max_iters {
-                    messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None});
+                    messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
-                let mut current_round = json!({"round":iters,"thought":ac,"tools":[]});
+            // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
+
+fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize) -> String {
+    let rows = database::all(
+        "SELECT source_type, source_id, title, substr(content,1,100) as preview, updated_at FROM source_data
+         WHERE (source_type=?1 OR ?1='')
+           AND date(updated_at) >= ?2 AND date(updated_at) <= ?3
+         ORDER BY updated_at DESC LIMIT ?4",
+        &[json!(obj_type), json!(start), json!(end), json!(limit)],
+    ).unwrap_or_default();
+    if rows.is_empty() { return format!("时间范围内无{}对象。", if obj_type.is_empty() { "任何" } else { obj_type }); }
+    let mut out = String::new();
+    for r in &rows {
+        let st = r["source_type"].as_str().unwrap_or("");
+        let sid = r["source_id"].as_str().unwrap_or("");
+        let name = r["title"].as_str().unwrap_or("");
+        let preview = r["preview"].as_str().unwrap_or("");
+        let ts = r["updated_at"].as_str().unwrap_or("");
+        let rel = relative_time(ts);
+        out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
+    }
+    out
+}
+
+fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limit: usize) -> String {
+    let q = query.trim(); if q.is_empty() { return timeline_mode(obj_type, start, end, limit); }
+    let words: Vec<String> = q.split_whitespace().map(|k| k.replace('"',"")).collect();
+    let fts_q = if words.len() > 1 { format!("NEAR(({}), 30)", words.join(" ")) } else { words.first().cloned().unwrap_or_default() };
+    let results = match database::fts5_search_content(&fts_q, 30) { Ok(r) => r, Err(_) => Vec::new() };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = String::new();
+    let mut count = 0usize;
+    for r in &results {
+        if count >= limit { break; }
+        let st = r.entity_type.to_uppercase();
+        if !obj_type.is_empty() && st != obj_type.to_uppercase() { continue; }
+        let sid = r.entity_id.trim().to_string();
+        if !seen.insert(format!("{}-{}", st, sid)) { continue; }
+        // time filter
+        if let Ok(Some(row)) = database::get("SELECT title, content, updated_at FROM source_data WHERE source_type=?1 AND source_id=?2 AND date(updated_at)>=?3 AND date(updated_at)<=?4", &[json!(st), json!(sid), json!(start), json!(end)]) {
+            let name = row["title"].as_str().unwrap_or("");
+            let preview = row["content"].as_str().unwrap_or("").chars().take(100).collect::<String>();
+            let ts = row["updated_at"].as_str().unwrap_or("");
+            let rel = relative_time(ts);
+            out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
+            count += 1;
+        }
+    }
+    // LIKE fallback
+    if out.is_empty() {
+        let like = format!("%{}%", q);
+        if let Ok(rows) = database::all(
+            "SELECT source_type, source_id, title, substr(content,1,100) as preview, updated_at FROM source_data WHERE title LIKE ?1 AND (source_type=?2 OR ?2='') AND date(updated_at)>=?3 AND date(updated_at)<=?4 ORDER BY updated_at DESC LIMIT ?5",
+            &[json!(&like), json!(obj_type), json!(start), json!(end), json!(limit)],
+        ) {
+            for r in &rows {
+                let st = r["source_type"].as_str().unwrap_or("");
+                let sid = r["source_id"].as_str().unwrap_or("");
+                let name = r["title"].as_str().unwrap_or("");
+                let preview = r["preview"].as_str().unwrap_or("");
+                let ts = r["updated_at"].as_str().unwrap_or("");
+                let rel = relative_time(ts);
+                out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
+            }
+        }
+    }
+    if out.is_empty() { format!("未找到匹配「{}」的对象。", q) } else { out }
+}
+
+fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, String)>, limit: usize) -> String {
+    let limit = if limit == 0 { 20 } else { limit };
+    let (start, end) = match time_range {
+        Some((s, e)) => (s, e),
+        None => (chrono::Local::now().format("%Y-%m-%d").to_string(), "2099-12-31".to_string()),
+    };
+    if query.trim().is_empty() { timeline_mode(obj_type, &start, &end, limit) }
+    else { keyword_object_mode(query, obj_type, &start, &end, limit) }
+}
+
+    let mut current_round = json!({"round":iters,"thought":ac,"tools":[]});
                 let mut atc = Vec::new();
                 for tc in calls {
                     let id = tc["id"].as_str().unwrap_or("").to_string();
@@ -1414,13 +1525,14 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     let args = tc["function"]["arguments"].as_str().unwrap_or("").to_string();
                     atc.push(ToolCall{id:id.clone(),call_type:"function".into(),function:FunctionCall{name:name.into(),arguments:args.clone()}});
                 }
-                messages.push(ChatMessage{role:MessageRole::Assistant,content:None,tool_calls:Some(atc.clone()),tool_call_id:None,name:None});
+                messages.push(ChatMessage{role:MessageRole::Assistant,content:None,tool_calls:Some(atc.clone()),tool_call_id:None,name:None,reasoning_content:reasoning.clone()});
                 let mut round_tools = Vec::new();
                 let mut dedup_cache: std::collections::HashMap<(String,String),String> = std::collections::HashMap::new();
                 let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
                 let mut extract_chunk_ids = |tools: &[Value]| { for t in tools { let s = t["result"].as_str().unwrap_or(""); if s.contains("ChunkID") { for line in s.lines() { let tl = line.trim(); if tl.starts_with("ChunkID") { if let Some(id) = tl.split('：').nth(1).map(|x| x.trim().to_string()) { visited.insert(id); } } } } } };
                 for r in &tool_log { if let Some(tools) = r["tools"].as_array() { extract_chunk_ids(tools); } }
                 extract_chunk_ids(&round_tools);
+                session.visited_chunks.extend(visited.iter().cloned());
                 for tc in &atc {
                     let key = (tc.function.name.clone(), tc.function.arguments.clone());
                     let result = if let Some(cached) = dedup_cache.get(&key) {
@@ -1431,17 +1543,21 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     } else {
                         eprintln!("[LLM检索] 迭代#{} 工具={}", iters, tc.function.name); let res = match tc.function.name.as_str() {
                             "ext_tool_search" | "ext_tool_search_knowledge_base" => {
-                                if iters == 1 && session.active_objects.is_empty() { "请先使用 object 工具发现相关对象，建立 Workspace 后再使用 search。当前为第一轮，还不确定要搜索的具体范围。".to_string() } else {
-                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, scope_opt, &session.visited_sources, &session.visited_chunks).await; for s in &new_sources { session.mark_source_visited(s); }
+                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); let time_range = a["start_time"].as_str().and_then(|s| a["end_time"].as_str().map(|e| (resolve_time(s), resolve_time(e)))); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, scope_opt.clone(), &session.visited_sources, &session.visited_chunks, time_range.clone()).await;
+                                let (res, new_sources) = if new_sources.len() < 2 && scope_opt.is_some() {
+                                    let fb = execute_search_knowledge(&kw, None, &session.visited_sources, &session.visited_chunks, time_range.clone()).await;
+                                    eprintln!("[LLM检索] scope fallback: {} old_sources → {} new_sources", default_scope.len(), fb.1.len());
+                                    fb
+                                } else { (res, new_sources) };
+                                for s in &new_sources { session.mark_source_visited(s); }
                                 // ★ 学习: new_sources → object_links（先 dedup）
                                 let mut adopted: Vec<String> = new_sources.iter().filter(|s| !s.is_empty()).cloned().collect();
                                 adopted.sort(); adopted.dedup();
-                                eprintln!("[LLM检索] new_sources adopted: {:?}", adopted); if adopted.len() >= 2 { crate::services::synapse::update_object_links_weighted(&adopted, 0.5); } res } }
-                            "ext_tool_object" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let query = a["query"].as_str().unwrap_or(""); execute_object_get(query) }
+                                eprintln!("[LLM检索] new_sources adopted: {:?}", adopted); res }
+                            "ext_tool_object" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let q = a["query"].as_str().unwrap_or(""); let t = a["type"].as_str().unwrap_or(""); let s = a["start_time"].as_str().map(resolve_time); let e = a["end_time"].as_str().map(resolve_time); let tr = s.and_then(|s| e.map(|e| (s, e))); let limit = a["limit"].as_u64().unwrap_or(20) as usize; execute_object_get(q, t, tr, limit) }
                             "ext_tool_traverse" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_traverse(a["chunk_id"].as_str().unwrap_or(""), a["edge_type"].as_str().unwrap_or("Next"), a["radius"].as_i64().unwrap_or(5) as usize, &visited, a["target_name"].as_str().unwrap_or(""), &mut traverse_source_counter) }
                             "ext_tool_act" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_act(a["action"].as_str().unwrap_or(""), a["project_id"].as_str().unwrap_or(""), a["todo_title"].as_str().unwrap_or(""), a["todo_content"].as_str().unwrap_or(""), a["todo_id"].as_str().unwrap_or(""), a["new_status"].as_str().unwrap_or("")) }
                             "ext_tool_batch_search" => {
-                                if iters == 1 && session.active_objects.is_empty() { "请先使用 object 工具发现相关对象，建立 Workspace 后再使用 batch_search。当前为第一轮，还不确定要搜索的具体范围。".to_string() } else {
                                 let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                                 let queries_raw = a["queries"].as_array();
                                 let mut sub_queries: Vec<Vec<String>> = Vec::new();
@@ -1456,7 +1572,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                                 let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() };
                                 let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } };
                                 execute_batch_search(&sub_queries, scope_opt, &session.visited_sources).await
-                                } }
+                                }
                             _ => format!("未知工具: {}", tc.function.name),
                         };
                         dedup_cache.insert(key, res.clone());
@@ -1467,31 +1583,29 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     };
                     let parsed_args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                     round_tools.push(json!({"tool":tc.function.name,"args":parsed_args,"result":result,"result_len":result.chars().count()}));
-                    messages.push(ChatMessage{role:MessageRole::Tool,content:Some(result),tool_calls:None,tool_call_id:Some(tc.id.clone()),name:Some(tc.function.name.clone())});
+                    messages.push(ChatMessage{role:MessageRole::Tool,content:Some(result),tool_calls:None,tool_call_id:Some(tc.id.clone()),reasoning_content:None,name:Some(tc.function.name.clone())});
                 }
                 current_round["tools"] = json!(round_tools);
                 tool_log.push(current_round);
-
-                // ★ 将本轮工具结果喂入 SessionMemory
                 // ★ 同时记录工具调用历史到检索计划
                 for t in &round_tools {
                     let result_str = t["result"].as_str().unwrap_or("");
                     let mut step_desc = t["tool"].as_str().unwrap_or("").to_string();
                     if let Some(args) = t["args"].as_object() {
                         if step_desc == "ext_tool_search" {
-                            if let Some(kw) = args["keywords"].as_array() {
+                            if let Some(kw) = args.get("keywords").and_then(|v| v.as_array()) {
                                 step_desc = format!("search({})", kw.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "));
                             }
                         } else if step_desc == "ext_tool_object" {
-                            if let Some(q) = args["query"].as_str() {
+                            if let Some(q) = args.get("query").and_then(|v| v.as_str()) {
                                 step_desc = format!("object(\"{}\")", q);
                             }
                         } else if step_desc == "ext_tool_traverse" {
-                            if let Some(cid) = args["chunk_id"].as_str() {
+                            if let Some(cid) = args.get("chunk_id").and_then(|v| v.as_str()) {
                                 step_desc = format!("traverse({}…)", &cid[..cid.len().min(8)]);
                             }
                         } else if step_desc == "ext_tool_act" {
-                            if let Some(a) = args["action"].as_str() {
+                            if let Some(a) = args.get("action").and_then(|v| v.as_str()) {
                                 step_desc = format!("act({})", a);
                             }
                         }
@@ -1554,7 +1668,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 }
 
                 if !circuit_break_reason.is_empty() {
-                    messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None});
+                    messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
@@ -1563,7 +1677,9 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
                 // 注入 scratchpad 到 system prompt
                 let scratchpad = session.generate_scratchpad(); eprintln!("[LLM检索] scratchpad注入: {} chars, objects={}", scratchpad.chars().count(), session.active_objects.len());
-                let new_sys = AGENT_SYSTEM_PROMPT.replace("{{session_scratchpad}}", &scratchpad);
+                let new_sys = AGENT_SYSTEM_PROMPT
+                    .replace("{{today}}", &chrono::Local::now().format("%Y年%m月%d日").to_string())
+                    .replace("{{session_scratchpad}}", &scratchpad);
                 if let Some(ref mut content) = messages[0].content {
                     *content = new_sys;
                 }

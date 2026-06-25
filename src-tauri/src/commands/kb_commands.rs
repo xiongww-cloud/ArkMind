@@ -1,5 +1,6 @@
 ﻿use crate::database;
 use serde_json::{json, Value};
+use tauri::Emitter;
 
 #[tauri::command] pub async fn kb_get_config() -> Result<Value, String> {
     let row = database::get("SELECT kb_config FROM system_config WHERE tenant_id='local-user'", &[]).map_err(|e| e.to_string())?;
@@ -15,8 +16,8 @@ use serde_json::{json, Value};
     let query = data["query"].as_str().unwrap_or("").to_string();
     let max_iter = data["maxIterations"].as_i64().map(|n| n as i32);
     let history: Vec<Value> = data["history"].as_array().map(|a| a.to_vec()).unwrap_or_default();
-    let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, history, Some(app_handle)).await;
-    match &result { Ok(v) => { if let Some(ans) = v["answer"].as_str() { if !ans.is_empty() { let preview: String = ans.chars().take(100).collect(); println!("[Agent] 响应: {}", preview); } } } Err(e) => eprintln!("[Agent] 错误: {}", e), }
+    let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, history, Some(app_handle.clone())).await;
+    match &result { Ok(v) => { let _ = app_handle.emit("agent:done", v); if let Some(ans) = v["answer"].as_str() { if !ans.is_empty() { let preview: String = ans.chars().take(100).collect(); println!("[Agent] 响应: {}", preview); } } } Err(e) => eprintln!("[Agent] 错误: {}", e), }
     result
 }
 #[tauri::command] pub async fn kb_chat(app_handle: tauri::AppHandle, data: Value) -> Result<Value, String> {

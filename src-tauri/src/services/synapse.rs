@@ -139,6 +139,7 @@ pub fn init_object_links() {
 
 /// Helper: parse SQLite datetime string → unix seconds
 fn parse_datetime_to_secs(s: &str) -> f64 {
+    if let Ok(ts) = s.parse::<i64>() { return ts as f64; }
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|dt| dt.and_utc().timestamp() as f64)
         .unwrap_or(0.0)
