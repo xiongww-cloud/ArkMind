@@ -1,4 +1,4 @@
-use crate::database;
+﻿use crate::database;
 use serde_json::{json, Value};
 
 #[tauri::command] pub async fn kb_get_config() -> Result<Value, String> {
@@ -38,7 +38,7 @@ use serde_json::{json, Value};
     if let Some(pid) = project_id.filter(|p| !p.is_empty()) {
         let _ = crate::database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id) VALUES(?1,?2,'project',?3)", &[serde_json::json!(uuid::Uuid::new_v4().to_string()), serde_json::json!(&object_id), serde_json::json!(&pid)]);
     }
-    crate::services::ai_tag::enqueue_tag_task("files", &file_id);
+    
     Ok(json!({"success":true,"fileId":file_id,"chunkCount":0}))
 }
 #[tauri::command] pub async fn kb_save_note(data: Value) -> Result<Value, String> {
@@ -201,18 +201,68 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
 
 // Chat session persistence
 #[tauri::command] pub async fn kb_save_sessions(data: Value) -> Result<Value, String> {
-    let sessions_json = data["sessions"].to_string();
-    let path = dirs::data_dir().unwrap_or_default().join("arkmind").join("chat_sessions.json");
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?; }
-    std::fs::write(&path, &sessions_json).map_err(|e| format!("写入会话文件失败: {}", e))?;
+    let sessions = data["sessions"].as_array().ok_or("missing sessions array")?;
+    for s in sessions {
+        let id = s["id"].as_str().ok_or("missing session id")?;
+        let title = s["title"].as_str().or_else(|| s["name"].as_str()).unwrap_or("");
+        database::run("INSERT OR REPLACE INTO chat_sessions(id,title,updated_at) VALUES(?1,?2,datetime('now','localtime'))",
+            &[json!(id), json!(title)]).map_err(|e| e.to_string())?;
+        let msgs_raw = s["messages"].as_array().cloned().or_else(|| s["messages"].as_str().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()));
+        if let Some(ref msgs) = msgs_raw {
+            database::run("DELETE FROM chat_messages WHERE session_id=?", &[json!(id)]).ok();
+            let mut chat_text = String::new();
+            for m in msgs {
+                let role = m["role"].as_str().unwrap_or("");
+                let content = m["content"].as_str().unwrap_or("");
+                if role != "user" && role != "assistant" { continue; }
+                if content.trim().is_empty() { continue; }
+                database::run("INSERT INTO chat_messages(session_id,role,content) VALUES(?1,?2,?3)",
+                    &[json!(id), json!(role), json!(content)]).ok();
+                if !chat_text.is_empty() { chat_text.push('\n'); }
+                chat_text.push_str(&format!("[{}]: {}", role, content));
+            }
+            if !chat_text.trim().is_empty() {
+                // ★ P0: 仅在最终答案时保存 CHAT (最后一条是 assistant 且内容 > 100 字符)
+                let is_final = msgs_raw.as_ref().and_then(|a| a.last()).map(|m| {
+                    m["role"].as_str() == Some("assistant") && m["content"].as_str().map_or(false, |c| c.len() > 100)
+                }).unwrap_or(false);
+                if is_final {
+                    database::run("DELETE FROM source_data WHERE source_type='CHAT' AND source_id=?", &[json!(id)]).ok();
+                    if let Err(_) = database::run(
+                        "INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('CHAT',?1,?2,?3,datetime('now','localtime'))",
+                        &[json!(id), json!(title), json!(chat_text)],
+                    ) {}
+                    crate::services::ai_sync::trigger_sync("chat", id);
+                } else {
+                    // 推理中不保存
+                }
+            }
+        }
+    }
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn kb_load_sessions() -> Result<Value, String> {
-    let path = dirs::data_dir().unwrap_or_default().join("arkmind").join("chat_sessions.json");
-    match std::fs::read_to_string(&path) {
-        Ok(content) => { let sessions: Value = serde_json::from_str(&content).unwrap_or(json!([])); let sessions = if let Value::String(s) = &sessions { serde_json::from_str(s).unwrap_or(json!([])) } else { sessions }; Ok(json!({"success":true,"sessions":sessions})) }
-        Err(_) => Ok(json!({"success":true,"sessions":[]}))
+    let mut rows = database::all(
+        "SELECT s.id, s.title, s.created_at, s.updated_at, \
+         (SELECT json_group_array(json_object('role',m.role,'content',m.content)) \
+          FROM chat_messages m WHERE m.session_id=s.id ORDER BY m.id) as messages \
+         FROM chat_sessions s ORDER BY s.updated_at DESC LIMIT 100",
+        &[],
+    ).unwrap_or_default();
+    for row in &mut rows {
+        if let Some(s) = row["messages"].as_str() {
+            if let Ok(arr) = serde_json::from_str::<Value>(s) {
+                let mut m = row.as_object_mut().unwrap();
+                m.insert("messages".to_string(), arr);
+            }
+        }
     }
+    Ok(json!({"success":true,"sessions":rows}))
+}
+
+#[tauri::command] pub async fn kb_delete_session(session_id: String) -> Result<Value, String> {
+    database::run("DELETE FROM chat_sessions WHERE id=?", &[json!(&session_id)]).ok();
+    Ok(json!({"success":true}))
 }
 
 // Tag management

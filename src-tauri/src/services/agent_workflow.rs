@@ -203,7 +203,24 @@ impl SessionMemory {
     }
 
     /// 生成注入 Prompt 的工作记忆文本，受 Token 预算约束
-    fn generate_scratchpad(&self) -> String {
+    fn generate_scratchpad(&mut self) -> String {
+        // ★ P1: 下一轮扩散 — 每轮开始时从 object_links 注入关联对象
+        let top_oids: Vec<String> = self.active_objects.iter().take(5).map(|o| o.obj_id.to_string()).collect();
+        let neighbors = crate::services::synapse::expand_object_links(&top_oids, 15);
+        if neighbors.len() > 0 { eprintln!("[LLM检索] expand(next_round): {} neighbors", neighbors.len()); }
+        for (nid, _w) in neighbors.iter().take(5) {
+            if let Some(dash) = nid.find("-") {
+                let (ot, oi) = nid.split_at(dash);
+                let oi = &oi[1..];
+                let obj_type = ot.to_lowercase();
+                if let Ok(Some(row)) = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[serde_json::json!(ot), serde_json::json!(oi)]) {
+                    let name = row["title"].as_str().unwrap_or("");
+                    if !obj_type.is_empty() && !oi.is_empty() && !name.is_empty() {
+                        self.update(&obj_type, oi, name);
+                    }
+                }
+            }
+        }
         let mut lines: Vec<String> = Vec::new();
         lines.push("## 当前会话工作记忆".to_string());
 
@@ -1416,9 +1433,10 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                             "ext_tool_search" | "ext_tool_search_knowledge_base" => {
                                 if iters == 1 && session.active_objects.is_empty() { "请先使用 object 工具发现相关对象，建立 Workspace 后再使用 search。当前为第一轮，还不确定要搜索的具体范围。".to_string() } else {
                                 let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, scope_opt, &session.visited_sources, &session.visited_chunks).await; for s in &new_sources { session.mark_source_visited(s); }
-                                // ★ 学习: new_sources → object_links
-                                let adopted: Vec<String> = new_sources.iter().filter(|s| !s.is_empty()).cloned().collect();
-                                eprintln!("[LLM检索] new_sources adopted: {:?}", adopted); if adopted.len() >= 2 { crate::services::synapse::update_object_links_weighted(&adopted, 0.5); } let top_oids: Vec<String> = session.active_objects.iter().take(5).map(|o| o.obj_id.to_string()).collect(); let neighbors = crate::services::synapse::expand_object_links(&top_oids, 15); eprintln!("[LLM检索] object_link expand: seeds={:?} neighbors={}", top_oids, neighbors.len()); for (nid, _w) in neighbors.iter().take(5) { if let Some(dash) = nid.find("-") { let (ot, oi) = nid.split_at(dash); let oi = &oi[1..]; let obj_type = ot.to_lowercase(); if let Ok(Some(row)) = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[serde_json::json!(ot), serde_json::json!(oi)]) { let name = row["title"].as_str().unwrap_or(""); if !obj_type.is_empty() && !oi.is_empty() && !name.is_empty() { session.update(&obj_type, oi, name); } } } } res } }
+                                // ★ 学习: new_sources → object_links（先 dedup）
+                                let mut adopted: Vec<String> = new_sources.iter().filter(|s| !s.is_empty()).cloned().collect();
+                                adopted.sort(); adopted.dedup();
+                                eprintln!("[LLM检索] new_sources adopted: {:?}", adopted); if adopted.len() >= 2 { crate::services::synapse::update_object_links_weighted(&adopted, 0.5); } res } }
                             "ext_tool_object" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let query = a["query"].as_str().unwrap_or(""); execute_object_get(query) }
                             "ext_tool_traverse" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_traverse(a["chunk_id"].as_str().unwrap_or(""), a["edge_type"].as_str().unwrap_or("Next"), a["radius"].as_i64().unwrap_or(5) as usize, &visited, a["target_name"].as_str().unwrap_or(""), &mut traverse_source_counter) }
                             "ext_tool_act" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_act(a["action"].as_str().unwrap_or(""), a["project_id"].as_str().unwrap_or(""), a["todo_title"].as_str().unwrap_or(""), a["todo_content"].as_str().unwrap_or(""), a["todo_id"].as_str().unwrap_or(""), a["new_status"].as_str().unwrap_or("")) }

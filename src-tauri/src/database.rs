@@ -65,6 +65,10 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
 
     // ★ 初始化 AI 触发器（激活即全功能）
     init_ai_queue_triggers(&conn)?;
+
+    // ★ ★ CHAT 去重：清理重复 + 唯一索引（P0 修复）
+    let _ = conn.execute_batch("DELETE FROM source_data WHERE rowid NOT IN (SELECT MIN(rowid) FROM source_data GROUP BY source_type, source_id)");
+    let _ = conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_sd_unique ON source_data(source_type, source_id)");
     println!("[数据库] FTS5 + AI 触发器已初始化");
 
     // Store in global AFTER all init is done
@@ -266,6 +270,19 @@ fn create_schema(conn: &Connection) -> SqliteResult<()> {
             tag_id TEXT NOT NULL,
             PRIMARY KEY (entity_type, entity_id, tag_id)
         );
+
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id TEXT PRIMARY KEY, title TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            role TEXT NOT NULL, content TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id);
 
         -- ═══════════════════════════════════════════════════════════════════
         -- ★ Knowledge Base: Content-Label Separation / Dual-Layer Storage
@@ -1443,6 +1460,9 @@ fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         "ALTER TABLE knowledge_chunks ADD COLUMN base_weight REAL DEFAULT 1.0",
         "ALTER TABLE knowledge_chunks ADD COLUMN last_access_at INTEGER DEFAULT NULL",
         "ALTER TABLE knowledge_chunks ADD COLUMN access_count INTEGER DEFAULT 0",
+        "CREATE TABLE IF NOT EXISTS chat_sessions (id TEXT PRIMARY KEY, title TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime')))",
+        "CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
+        "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id)",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);

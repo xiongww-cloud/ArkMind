@@ -137,13 +137,22 @@ pub fn init_object_links() {
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_ol_target ON object_links(target_id)", &[]);
 }
 
-/// 共同激活：将本轮被 LLM 采纳的 object_ids 建立 Hebbian 链接
+/// Helper: parse SQLite datetime string → unix seconds
+fn parse_datetime_to_secs(s: &str) -> f64 {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .map(|dt| dt.and_utc().timestamp() as f64)
+        .unwrap_or(0.0)
+}
+
+/// 共同激活（搜索路径）：将共同出现的 object_ids 建立 Hebbian 链接
+/// 使用与 chunk synapse 相同的衰减 + lerp 公式
 pub fn update_object_links(object_ids: &[String]) {
     let mut unique: Vec<String> = object_ids.iter().cloned().collect();
     unique.sort();
     unique.dedup();
     let n = unique.len();
     if n < 2 { return; }
+    let now = now_secs();
     for i in 0..n {
         for j in (i+1)..n {
             let (a, b) = if unique[i] < unique[j] {
@@ -151,13 +160,25 @@ pub fn update_object_links(object_ids: &[String]) {
             } else {
                 (&unique[j], &unique[i])
             };
-            let _ = database::run(
-                "INSERT INTO object_links(source_id,target_id,weight,last_seen) \
-                 VALUES(?1,?2,1.0,datetime('now','localtime')) \
-                 ON CONFLICT(source_id,target_id) DO UPDATE SET \
-                 weight = weight + 0.3 * (5.0 - weight), \
-                 last_seen = excluded.last_seen",
+            // 读取现有行
+            let existing = database::get(
+                "SELECT weight, last_seen FROM object_links WHERE source_id=?1 AND target_id=?2",
                 &[json!(a), json!(b)],
+            ).ok().flatten();
+            let new_weight = if let Some(row) = existing {
+                let w = row["weight"].as_f64().unwrap_or(1.0);
+                let last_seen = row["last_seen"].as_str().unwrap_or("").to_string();
+                let last_secs = parse_datetime_to_secs(&last_seen);
+                let delta = (now - last_secs).max(0.0);
+                let decayed = w * (-GAMMA * delta).exp();
+                let new_w = decayed + (MAX_BASE_WEIGHT - decayed) * ACTIVATION_R;
+                new_w
+            } else {
+                1.0
+            };
+            let _ = database::run(
+                "INSERT INTO object_links(source_id,target_id,weight,last_seen) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,target_id) DO UPDATE SET weight=excluded.weight, last_seen=excluded.last_seen",
+                &[json!(a), json!(b), json!(new_weight), json!(now_secs() as i64)],
             );
         }
     }
@@ -171,22 +192,21 @@ pub fn expand_object_links(seed_ids: &[String], limit: usize) -> Vec<(String, f6
     params.extend(seed_ids.iter().map(|c| json!(c)));
     params.push(json!(limit as i64));
     let sql = format!(
-        "SELECT neighbor, eff FROM (
-            SELECT target_id as neighbor, weight * (1.0/(1.0+(julianday('now') - julianday(last_seen))*0.01)) as eff \
-             FROM object_links WHERE source_id IN ({})
-            UNION ALL
-            SELECT source_id as neighbor, weight * (1.0/(1.0+(julianday('now') - julianday(last_seen))*0.01)) as eff \
-             FROM object_links WHERE target_id IN ({})
-        ) ORDER BY eff DESC LIMIT ?",
+        "SELECT neighbor, weight, last_seen FROM (SELECT target_id as neighbor, weight, last_seen FROM object_links WHERE source_id IN ({}) UNION ALL SELECT source_id as neighbor, weight, last_seen FROM object_links WHERE target_id IN ({})) ORDER BY weight DESC LIMIT ?",
         ph.join(","), ph.join(",")
     );
+    let now = now_secs();
     database::all(&sql, &params)
         .unwrap_or_default()
         .iter()
         .filter_map(|r| {
             let id = r["neighbor"].as_str().unwrap_or("").to_string();
-            let w = r["eff"].as_f64().unwrap_or(0.0);
-            if id.is_empty() || w <= 0.0 { None } else { Some((id, w)) }
+            let w = r["weight"].as_f64().unwrap_or(0.0);
+            let last_seen = r["last_seen"].as_str().unwrap_or("");
+            let last_secs = parse_datetime_to_secs(last_seen);
+            let delta = (now - last_secs).max(0.0);
+            let eff = if w > 0.0 { w * (-GAMMA * delta).exp() } else { 0.0 };
+            if id.is_empty() || eff <= 0.001 { None } else { Some((id, eff)) }
         })
         .collect()
 }
@@ -287,9 +307,28 @@ pub async fn audit_project_risk(project_id: &str) -> Result<(), String> {
 
 
 pub fn update_object_links_weighted(ids: &[String], boost: f64) {
-    let mut u: Vec<String> = ids.iter().cloned().collect(); u.sort(); u.dedup();
+    let mut u: Vec<String> = ids.iter().cloned().collect();
+    u.sort(); u.dedup();
     if u.len() < 2 { return; }
+    let now = now_secs();
     for i in 0..u.len() { for j in (i+1)..u.len() {
-        let _ = crate::database::run("INSERT INTO object_links VALUES(?1,?2,1.0,datetime('now','localtime')) ON CONFLICT DO UPDATE SET weight=weight+?3*(5.0-weight),last_seen=excluded.last_seen", &[serde_json::json!(u[i]), serde_json::json!(u[j]), serde_json::json!(boost)]);
+        let existing = database::get(
+            "SELECT weight, last_seen FROM object_links WHERE source_id=?1 AND target_id=?2",
+            &[json!(&u[i]), json!(&u[j])],
+        ).ok().flatten();
+        let new_weight = if let Some(row) = existing {
+            let w = row["weight"].as_f64().unwrap_or(1.0);
+            let last_seen = row["last_seen"].as_str().unwrap_or("").to_string();
+            let last_secs = parse_datetime_to_secs(&last_seen);
+            let delta = (now - last_secs).max(0.0);
+            let decayed = w * (-GAMMA * delta).exp();
+            decayed + (MAX_BASE_WEIGHT - decayed) * boost
+        } else {
+            1.0
+        };
+        let _ = crate::database::run(
+            "INSERT INTO object_links VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,target_id) DO UPDATE SET weight=excluded.weight,last_seen=excluded.last_seen",
+            &[json!(&u[i]), json!(&u[j]), json!(new_weight), json!(now_secs() as i64)],
+        );
     }}
 }

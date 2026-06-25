@@ -4,7 +4,7 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
 import ToolCallCard from '@/components/chat/ToolCallCard.vue'
 import { toast } from '@/composables/useToast'
-import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions } from '@/api/db-client'
+import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbDeleteSession } from '@/api/db-client'
 import { sanitizeHtml, sanitizeHtmlSync } from '@/utils/sanitize'
 import { listen } from '@tauri-apps/api/event'
 
@@ -66,7 +66,7 @@ const sessionNameEdit = ref('')
 const editingSessionId = ref<string|null>(null)
 
 function newSession() {
-  const id = Date.now().toString(36)
+  const id = crypto.randomUUID()
   sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toISOString() })
   currentSessionId.value = id; saveToStorage()
 }
@@ -90,7 +90,7 @@ const currentSession = computed(() => sessions.value.find(s => s.id === currentS
 
 function saveToStorage() { kbSaveSessions(sessions.value).catch((e) => console.error('[Agent] 保存会话失败:', e)) }
 async function loadFromStorage() {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions } catch { sessions.value = [] }
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话' })) } catch { sessions.value = [] }
   if (!sessions.value.length) { newSession(); return }
   currentSessionId.value = sessions.value[0].id
   // Render markdown for loaded AI messages — await all renders
@@ -118,6 +118,7 @@ const confirmDeleteId = ref<string|null>(null)
 function confirmDeleteSession(id: string) { confirmDeleteId.value = id }
 function executeDelete() {
   const id = confirmDeleteId.value; if (!id) return
+  kbDeleteSession(id).catch(() => {})
   sessions.value = sessions.value.filter(s => s.id !== id)
   if (currentSessionId.value === id) currentSessionId.value = sessions.value[0]?.id ?? null
   confirmDeleteId.value = null
@@ -152,6 +153,7 @@ async function handleSendMessage() {
   if (!q || isChatting.value) return
   const session = currentSession.value; if (!session) return
   session.messages.push({ role: 'user', content: q })
+  if (session.name === '新对话') { session.name = q.slice(0, 30); saveToStorage() }
   inputMessage.value = ''; saveToStorage(); scrollToBottom()
   isChatting.value = true
   thinkingProgress.value = ''

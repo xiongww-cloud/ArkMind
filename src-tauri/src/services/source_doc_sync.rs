@@ -1,4 +1,4 @@
-//! 统一源数据同步模块
+﻿//! 统一源数据同步模块
 //!
 //! 笔记/产品/项目/待办的 CRUD 操作通过此模块，将清洗后的数据
 //! 统一写入 source_data 表，并触发防抖 AI 物化调度。
@@ -24,7 +24,8 @@ pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &st
     // ★ 触发防抖物化 + 独立打标（不依赖物化）
     let st_lower = source_type.to_lowercase();
     let queue_type = if st_lower.ends_with('s') { st_lower.clone() } else { format!("{}s", st_lower) };
-    crate::services::ai_tag::enqueue_tag_task(&queue_type, source_id);
+    _ = &queue_type; // 保留以备后用
+    
 }
 
 /// 删除实体对应的 source_data 记录

@@ -263,6 +263,7 @@ export async function pipelineGetSourceContent(id: number): Promise<any> { retur
 export async function pipelineRetagAll(): Promise<any> { return invoke('pipeline_retag_all') }
 export async function kbSaveSessions(sessions: any): Promise<any> { return invoke('kb_save_sessions', { data: { sessions } }) }
 export async function kbLoadSessions(): Promise<any> { return invoke('kb_load_sessions') }
+export async function kbDeleteSession(sessionId: string): Promise<any> { return invoke('kb_delete_session', { sessionId }) }
 
 // ── Memory Explorer API ──
 export async function kbMemoryObjects(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string;title:string}>}> { return invoke('kb_memory_objects', { query }) }

@@ -140,10 +140,8 @@ async fn tag_loop() {
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
         // 一次处理多个标签任务
-        for _ in 0..20 {
-            if !crate::services::ai_tag::process_tag_task().await { break; }
-        }
-        tokio::time::sleep(Duration::from_secs(600)).await; // 10min
+        // 标签管线已禁用
+        tokio::time::sleep(Duration::from_secs(600)).await; // 保留 600s 占位
     }
 }
 

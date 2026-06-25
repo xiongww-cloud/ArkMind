@@ -1,4 +1,4 @@
-//! AI Sync — semantic materialization pipeline
+﻿//! AI Sync — semantic materialization pipeline
 //! Six source tables → natural language paragraphs → chunking → FTS5 indexing
 
 use crate::database;
@@ -219,7 +219,7 @@ async fn materialize_task(source_table: &str, source_id: &str) -> MaterializedRe
     ).ok().flatten();
 
     match source_table {
-        "files" | "notes" | "products" | "projects" | "todos" => {
+        "files" | "notes" | "products" | "projects" | "todos" | "chat" => {
             let row = match sd {
                 Some(r) => {
                     let content_len = r["content"].as_str().map(|s| s.len()).unwrap_or(0);
@@ -322,11 +322,11 @@ pub async fn process_single_entity(source_table: &str, source_id: &str) -> bool 
                     "UPDATE ai_sync_queue SET is_embedded=1,last_dedup_key=?,last_content_hash=?,updated_at=datetime('now', 'localtime') WHERE id=?",
                     &[json!(doc_id), json!(&content_hash), json!(task_id)],
                 ).ok();
-                if source_table == "files" { crate::services::ai_tag::enqueue_tag_task("files", source_id); }
-                else if source_table == "notes" { crate::services::ai_tag::enqueue_tag_task("notes", source_id); }
-                else if source_table == "products" { crate::services::ai_tag::enqueue_tag_task("products", source_id); }
-                else if source_table == "projects" { crate::services::ai_tag::enqueue_tag_task("projects", source_id); }
-                else if source_table == "todos" { crate::services::ai_tag::enqueue_tag_task("todos", source_id); }
+                if source_table == "files" { }
+                else if source_table == "notes" { }
+                else if source_table == "products" { }
+                else if source_table == "projects" { }
+                else if source_table == "todos" { }
                 println!("[AI同步] 已嵌入: {source_table}:{source_id} ({n} 个块)");
             }
             _ => {
@@ -356,7 +356,7 @@ pub async fn process_sync_task() -> bool {
 
     // ★ 源数据不存在时直接标记完成，避免死循环
     let sd_exists = database::get(
-        "SELECT 1 FROM source_data WHERE source_type=(SELECT CASE WHEN ?1='files' THEN 'FILE' WHEN ?1='notes' THEN 'NOTE' WHEN ?1='products' THEN 'PRODUCT' WHEN ?1='projects' THEN 'PROJECT' WHEN ?1='todos' THEN 'TODO' ELSE '' END) AND source_id=?2",
+        "SELECT 1 FROM source_data WHERE source_type=(SELECT CASE WHEN ?1='files' THEN 'FILE' WHEN ?1='notes' THEN 'NOTE' WHEN ?1='products' THEN 'PRODUCT' WHEN ?1='projects' THEN 'PROJECT' WHEN ?1='todos' THEN 'TODO' WHEN ?1='chat' THEN 'CHAT' ELSE '' END) AND source_id=?2",
         &[json!(source_table), json!(source_id)],
     ).ok().flatten().is_some();
     if !sd_exists {
@@ -412,13 +412,13 @@ pub async fn process_sync_task() -> bool {
                     "UPDATE ai_sync_queue SET is_embedded=1,last_dedup_key=?,last_content_hash=?,updated_at=datetime('now', 'localtime') WHERE id=?",
                     &[json!(doc_id), json!(&content_hash), json!(task_id)],
                 ).ok();
-                if source_table == "files" { crate::services::ai_tag::enqueue_tag_task("files", source_id); }
-                else if source_table == "notes" { crate::services::ai_tag::enqueue_tag_task("notes", source_id); }
-                else if source_table == "products" { crate::services::ai_tag::enqueue_tag_task("products", source_id); }
-                else if source_table == "projects" { crate::services::ai_tag::enqueue_tag_task("projects", source_id); }
-                else if source_table == "todos" { crate::services::ai_tag::enqueue_tag_task("todos", source_id); }
+                if source_table == "files" { }
+                else if source_table == "notes" { }
+                else if source_table == "products" { }
+                else if source_table == "projects" { }
+                else if source_table == "todos" { }
                 if source_table == "files" || source_table == "notes" || source_table == "products" || source_table == "projects" || source_table == "todos" {
-                    crate::services::ai_tag::wake_tag();
+                    
                 }
                 println!("[AI同步] 已嵌入: {source_table}:{source_id} ({n} 个块)");
             }
@@ -492,7 +492,7 @@ pub fn purge_stale_queue_entries() {
 pub fn trigger_sync(source_table: &str, source_id: &str) {
     // 重置已有条目或插入新条目
     let updated = database::run(
-        "UPDATE ai_sync_queue SET is_embedded=0,retry_count=0,last_error='',updated_at=datetime('now','localtime') WHERE source_table=?1 AND source_id=?2",
+        "UPDATE ai_sync_queue SET is_embedded=0,retry_count=0,last_error='',updated_at=datetime('now','localtime') WHERE source_table=?1 AND source_id=?2 AND is_embedded=0",
         &[json!(source_table), json!(source_id)],
     ).ok();
     if updated.map_or(0, |r| r.changes) == 0 {
