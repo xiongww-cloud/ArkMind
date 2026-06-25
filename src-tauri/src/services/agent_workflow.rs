@@ -48,6 +48,8 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - 每轮检索后评估证据是否足够。如果足够，直接输出最终答案，不要继续搜索。
 
 ## 引用
+时间回忆类问题（「昨天发生了什么」「最近聊了什么」）：先用 object 按时间范围获取对象列表，直接回答中按主题聚类和总结，不要使用 search。
+
 最终答案末尾用 <refs> 标签列出引用对象ID：<refs>PRODUCT-xxx, PROJECT-yyy</refs>"#;
 
 // Data structures
@@ -1457,7 +1459,22 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize) -> String
         let preview = r["preview"].as_str().unwrap_or("");
         let ts = r["updated_at"].as_str().unwrap_or("");
         let rel = relative_time(ts);
-        out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
+        out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}", st, name, st, sid, rel, preview));
+        let seed = format!("{}-{}", st, sid);
+        let neighbors = crate::services::synapse::expand_object_links(&[seed], 5);
+        if !neighbors.is_empty() {
+            let mut links_by_type: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+            for (nid, w) in &neighbors {
+                if *w < 1.0 { continue; }
+                if let Some(dash) = nid.find('-') {
+                    let nt = &nid[..dash]; let ni = &nid[dash+1..];
+                    links_by_type.entry(nt.to_string()).or_default().push(ni[..ni.len().min(8)].to_string());
+                }
+            }
+            let link_str: Vec<String> = links_by_type.iter().map(|(t, ids)| format!("{}: {}", t, ids.join(", "))).collect();
+            if !link_str.is_empty() { out.push_str(&format!("\n  🔗 {}", link_str.join(" | "))); }
+        }
+        out.push_str("\n\n");
     }
     out
 }
