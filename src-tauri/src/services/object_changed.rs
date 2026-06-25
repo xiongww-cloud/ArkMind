@@ -28,7 +28,6 @@ pub fn object_changed(typ: ObjectType, id: &str, action: Action) {
     match action {
         Action::Created | Action::Updated => {
             crate::services::ai_sync::trigger_sync(typ.to_source_table(), id);
-            crate::services::ai_tag::trigger_tagging(typ.to_source_table(), id);
         }
         Action::Deleted => {}
     }

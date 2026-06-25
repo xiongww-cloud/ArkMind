@@ -1,4 +1,4 @@
-//! SQLite database — rusqlite powered, WAL mode, FTS5 full-text search
+﻿//! SQLite database — rusqlite powered, WAL mode, FTS5 full-text search
 //!
 //! 35+ tables: core business + AI pipeline + knowledge base + FTS5 virtual tables
 
@@ -1437,6 +1437,8 @@ fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         "ALTER TABLE cleanup_queue ADD COLUMN source_data_id INTEGER DEFAULT NULL",
         "ALTER TABLE cleanup_queue ADD COLUMN chunk_ids TEXT DEFAULT '[]'",
         "ALTER TABLE ai_sync_queue ADD COLUMN last_content_hash TEXT DEFAULT ''",
+        // Object Links
+        "CREATE TABLE IF NOT EXISTS object_links(source_id TEXT NOT NULL, target_id TEXT NOT NULL, weight REAL DEFAULT 1.0, last_seen TEXT NOT NULL, PRIMARY KEY(source_id, target_id))",
         // Synapse evolution fields — lazy decay on child chunks
         "ALTER TABLE knowledge_chunks ADD COLUMN base_weight REAL DEFAULT 1.0",
         "ALTER TABLE knowledge_chunks ADD COLUMN last_access_at INTEGER DEFAULT NULL",

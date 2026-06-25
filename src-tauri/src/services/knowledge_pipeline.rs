@@ -3,7 +3,7 @@
 //! Schedule:
 //!   sync_loop(10s)  → materialize source_data → knowledge_chunks → FTS5
 //!   embed_loop(60s) → vectorize new chunks → LanceDB
-//!   tag_loop(10min) → AI tagging → tag_mappings
+//!   (ai_tag removed — orphan workflow, not needed)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

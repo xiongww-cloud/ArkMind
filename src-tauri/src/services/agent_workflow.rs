@@ -26,7 +26,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_search: 在文档中寻找证据。**search 的关键词应从会话工作记忆的「Unknown」部分提取，将具体的待解问题转化为可检索的关键词组合。** 如果返回结果不包含某类信息，说明知识库中可能不存在该信息。不要对大量同类对象逐个重复搜索。
 - ext_tool_traverse: 沿关联图谱漫游。chunk_id 必须来自 search() 结果中的「ChunkID：xxxx」字段，不要传 Product/Project/File ID。
 - ext_tool_act: 执行操作（创建/更新待办、更新项目状态）
-- 中文回答，引用来源
+- 最终答案末尾用 <refs> 标签列出本答案引用的对象ID，如：<refs>PRODUCT-xxx, PROJECT-yyy</refs>
 
 ## 关键规则
 - **查看 ## Execution Log 确认当前进度**；每一步调用工具后，留意下一步方向
@@ -320,7 +320,7 @@ impl SessionMemory {
 
 fn build_tools_definitions() -> Value {
     json!([
-        {"type":"function","function":{"name":"ext_tool_search","description":"在文档中寻找证据。关键词应从会话工作记忆的「Unknown」部分提取，将待解问题转化为关键词组合。结果不包含某类信息时，说明知识库可能不存在，不要逐个重复搜索。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词。连续提问时结合已有关键词一起搜索"},"filter_tags":{"type":"array","items":{"type":"string"},"description":"只填先前结果标签中出现的值"}},"required":["keywords"]}}},
+        {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。关键词应从会话工作记忆中提取。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"}},"required":["keywords"]}}},
         {"type":"function","function":{"name":"ext_tool_object","description":"搜索所有结构化对象（产品、项目、文件、笔记、待办）。返回结构化属性。对于产品，如果 full_specs 非空则优先从中提取参数回答，无需再 search 文件内容。","parameters":{"type":"object","properties":{"query":{"type":"string","description":"产品型号名或关键词，支持多词组合（如「S12700E-8 招标参数」）以提高匹配精度"}},"required":["query"]}}},
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。chunk_id 必须来自 search() 结果中的「ChunkID」字段，不要传其他ID。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"必须来自 search() 结果的 ChunkID 字段"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_act","description":"执行操作","parameters":{"type":"object","properties":{"action":{"type":"string","description":"create_todo/update_todo_status/update_project_status"},"project_id":{"type":"string","description":"项目ID"},"todo_title":{"type":"string","description":"待办标题"},"todo_content":{"type":"string","description":"待办内容"},"todo_id":{"type":"string","description":"待办ID"},"new_status":{"type":"string","description":"新状态"}},"required":["action"]}}},
@@ -682,12 +682,9 @@ fn resolve_scope_to_rowids(scope: &[String]) -> std::collections::HashSet<i64> {
 }
 
 /// 执行 search 并同时返回发现的来源列表
-async fn execute_search_knowledge(keywords: &[String], filter_tags: Option<&[String]>, scope_rowids: Option<std::collections::HashSet<i64>>, visited_sources: &std::collections::HashSet<String>, visited_chunks: &std::collections::HashSet<String>) -> (String, Vec<String>) {
+async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std::collections::HashSet<i64>>, visited_sources: &std::collections::HashSet<String>, visited_chunks: &std::collections::HashSet<String>) -> (String, Vec<String>) {
     let query = keywords.join(" "); if query.trim().is_empty() { return ("no keywords".into(), vec![]); }
-    let tag_rowids: std::collections::HashSet<i64> = match filter_tags {
-        Some(tags) if !tags.is_empty() => get_child_rowids_by_tag_names(tags).into_iter().collect(),
-        _ => std::collections::HashSet::new(),
-    };
+    let tag_rowids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut obj_head = String::new();
     let mut matched_sources: std::collections::HashSet<(String,String)> = std::collections::HashSet::new();
     if !keywords.is_empty() {
@@ -782,6 +779,10 @@ async fn execute_search_knowledge(keywords: &[String], filter_tags: Option<&[Str
         }
     }
 
+    let obj_ids: Vec<String> = candidates.iter().take(5).filter_map(|(_,_,st,sid,_,_,_,_,_,_,_)| {
+        if st.is_empty() || sid.is_empty() { None } else { Some(format!("{}-{}", st.to_uppercase(), sid)) }
+    }).collect();
+    crate::services::synapse::update_object_links(&obj_ids);
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut out = String::new();
     for (idx, (score, _cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)) in candidates.iter().take(5).enumerate() {
@@ -1282,6 +1283,16 @@ fn execute_object_get(query: &str) -> String {
 // Main Agent Loop
 // ═══════════════════════════════════════════════════════════════════
 
+/// 从 LLM 最终回答中提取 <refs> 格式的引用对象 ID
+fn extract_citations(text: &str) -> Vec<String> {
+    if let Some(s) = text.find("<refs>") {
+        if let Some(e) = text[s..].find("</refs>") {
+            return text[s+6..s+e].split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+        }
+    }
+    vec![]
+}
+
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>) -> Result<Value, String> {
     let query = user_query.trim().to_string();
@@ -1368,7 +1379,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             None => {
                 let answer = if ac.is_empty() { "未能生成有效回答。" } else { ac };
                 if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
-                if !ac.is_empty() { session.record_observation(ac); } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                if (!ac.is_empty()) { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
                 if iters >= max_iters {
@@ -1404,7 +1415,10 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                         eprintln!("[LLM检索] 迭代#{} 工具={}", iters, tc.function.name); let res = match tc.function.name.as_str() {
                             "ext_tool_search" | "ext_tool_search_knowledge_base" => {
                                 if iters == 1 && session.active_objects.is_empty() { "请先使用 object 工具发现相关对象，建立 Workspace 后再使用 search。当前为第一轮，还不确定要搜索的具体范围。".to_string() } else {
-                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, ft.as_deref(), scope_opt, &session.visited_sources, &session.visited_chunks).await; for s in &new_sources { session.mark_source_visited(s); } res } }
+                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, scope_opt, &session.visited_sources, &session.visited_chunks).await; for s in &new_sources { session.mark_source_visited(s); }
+                                // ★ 学习: new_sources → object_links
+                                let adopted: Vec<String> = new_sources.iter().filter(|s| !s.is_empty()).cloned().collect();
+                                eprintln!("[LLM检索] new_sources adopted: {:?}", adopted); if adopted.len() >= 2 { crate::services::synapse::update_object_links_weighted(&adopted, 0.5); } let top_oids: Vec<String> = session.active_objects.iter().take(5).map(|o| o.obj_id.to_string()).collect(); let neighbors = crate::services::synapse::expand_object_links(&top_oids, 15); eprintln!("[LLM检索] object_link expand: seeds={:?} neighbors={}", top_oids, neighbors.len()); for (nid, _w) in neighbors.iter().take(5) { if let Some(dash) = nid.find("-") { let (ot, oi) = nid.split_at(dash); let oi = &oi[1..]; let obj_type = ot.to_lowercase(); if let Ok(Some(row)) = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[serde_json::json!(ot), serde_json::json!(oi)]) { let name = row["title"].as_str().unwrap_or(""); if !obj_type.is_empty() && !oi.is_empty() && !name.is_empty() { session.update(&obj_type, oi, name); } } } } res } }
                             "ext_tool_object" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let query = a["query"].as_str().unwrap_or(""); execute_object_get(query) }
                             "ext_tool_traverse" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_traverse(a["chunk_id"].as_str().unwrap_or(""), a["edge_type"].as_str().unwrap_or("Next"), a["radius"].as_i64().unwrap_or(5) as usize, &visited, a["target_name"].as_str().unwrap_or(""), &mut traverse_source_counter) }
                             "ext_tool_act" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_act(a["action"].as_str().unwrap_or(""), a["project_id"].as_str().unwrap_or(""), a["todo_title"].as_str().unwrap_or(""), a["todo_content"].as_str().unwrap_or(""), a["todo_id"].as_str().unwrap_or(""), a["new_status"].as_str().unwrap_or("")) }

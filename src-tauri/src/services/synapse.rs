@@ -1,4 +1,4 @@
-//! Synapse — neural energy / lazy decay / activation
+﻿//! Synapse — neural energy / lazy decay / activation
 //!
 //! Architecture:
 //!   - Chunk weight (knowledge_chunks):
@@ -172,10 +172,10 @@ pub fn expand_object_links(seed_ids: &[String], limit: usize) -> Vec<(String, f6
     params.push(json!(limit as i64));
     let sql = format!(
         "SELECT neighbor, eff FROM (
-            SELECT target_id as neighbor, weight * EXP(-0.01 * (julianday('now') - julianday(last_seen))) as eff \
+            SELECT target_id as neighbor, weight * (1.0/(1.0+(julianday('now') - julianday(last_seen))*0.01)) as eff \
              FROM object_links WHERE source_id IN ({})
             UNION ALL
-            SELECT source_id as neighbor, weight * EXP(-0.01 * (julianday('now') - julianday(last_seen))) as eff \
+            SELECT source_id as neighbor, weight * (1.0/(1.0+(julianday('now') - julianday(last_seen))*0.01)) as eff \
              FROM object_links WHERE target_id IN ({})
         ) ORDER BY eff DESC LIMIT ?",
         ph.join(","), ph.join(",")
@@ -283,4 +283,13 @@ pub async fn audit_project_risk(project_id: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+
+pub fn update_object_links_weighted(ids: &[String], boost: f64) {
+    let mut u: Vec<String> = ids.iter().cloned().collect(); u.sort(); u.dedup();
+    if u.len() < 2 { return; }
+    for i in 0..u.len() { for j in (i+1)..u.len() {
+        let _ = crate::database::run("INSERT INTO object_links VALUES(?1,?2,1.0,datetime('now','localtime')) ON CONFLICT DO UPDATE SET weight=weight+?3*(5.0-weight),last_seen=excluded.last_seen", &[serde_json::json!(u[i]), serde_json::json!(u[j]), serde_json::json!(boost)]);
+    }}
 }

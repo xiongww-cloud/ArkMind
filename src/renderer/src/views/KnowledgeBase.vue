@@ -200,7 +200,7 @@ async function handleSendMessage() {
     const result: any = await kbAgentChat({ query: q, history })
     const msg = session.messages[aiIdx]; msg.isThinking = false
     if (result.success) {
-      msg.content = result.answer || ''
+      msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
       msg.toolCalls = result.tool_log || []
       startTypewriter(aiIdx, msg.content)
       const rawCalls: any[] = []; const toolResults: any[] = []

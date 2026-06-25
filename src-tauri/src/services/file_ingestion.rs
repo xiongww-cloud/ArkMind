@@ -1,4 +1,4 @@
-//! 数据摄入中台 (Data Ingestion Mid-Platform)
+﻿//! 数据摄入中台 (Data Ingestion Mid-Platform)
 //!
 //! 统一摄入所有业务实体到 source_data 表，轮转顺序：
 //!   ① file   → PENDING文件：解析→清洗→落盘→广播
@@ -47,11 +47,12 @@ fn ingestion_loop(app: tauri::AppHandle) {
         }
 
         // 每轮只处理一类实体，轮转顺序：file → note → product → project
-        match loop_tick % 4 {
+        match loop_tick % 5 {
             0 => ingest_pending_files(&app),
             1 => ingest_pending_notes(),
             2 => ingest_pending_products(),
             3 => ingest_pending_projects(),
+            4 => ingest_pending_todos(),
             _ => {}
         }
 
@@ -404,5 +405,28 @@ fn ingest_pending_projects() {
         );
         // ★ 不入 ai_sync_queue，结构化数据不走 chunk
         println!("[数据摄入中台] 📁 项目 {} 已摄入 ({} 字符)", &proj_id[..proj_id.len().min(8)], clean.len());
+    }
+}
+
+
+fn ingest_pending_todos() {
+    let rows = match crate::database::all(
+        "SELECT t.id, t.title, t.content FROM todos t WHERE t.id NOT IN (SELECT source_id FROM source_data WHERE source_type='TODO') AND t.done=0 LIMIT 20",
+        &[],
+    ) { Ok(r) => r, Err(e) => { eprintln!("[data ingestion] query todos failed: {}", e); return; } };
+    if rows.is_empty() { return; }
+    for row in &rows {
+        let id = row["id"].as_str().unwrap_or("").to_string();
+        if id.is_empty() { continue; }
+        let title = row["title"].as_str().unwrap_or("");
+        let raw = row["content"].as_str().unwrap_or("");
+        let markdown = crate::services::file_parser::html_to_markdown(&raw);
+        let clean = crate::services::file_parser::sanitize_chars(&markdown);
+        if clean.trim().is_empty() { continue; }
+        let _ = crate::database::run(
+            "INSERT OR REPLACE INTO source_data(source_type,source_id,title,content,updated_at) VALUES('TODO',?1,?2,?3,datetime('now','localtime'))",
+            &[serde_json::json!(&id), serde_json::json!(title), serde_json::json!(&clean)],
+        );
+        println!("[data ingestion] todo {} ingested ({} chars)", &id[..id.len().min(8)], clean.len());
     }
 }
