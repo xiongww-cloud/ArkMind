@@ -168,7 +168,7 @@ async function handleSendMessage() {
   const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
     thinkingProgress.value = ev.payload.msg; scrollToBottom()
   })
-  const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [] }
+  const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [] }
   session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; saveToStorage(); scrollToBottom()
   const unlistenFinal = await listen('agent:final-tokens', (event: any) => {
     const data = event.payload as any
@@ -342,7 +342,7 @@ onUnmounted(() => {
           <div v-else class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
           <div class="min-w-0" :class="msg.role === 'user' ? 'max-w-[65%]' : 'max-w-[75%]'">
             <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1" :class="msg.role === 'user' ? 'text-right' : ''">{{ new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</div>
-            <div v-if="msg.isThinking">
+            <div v-if="msg.isThinking && (!msg.blocks || msg.blocks.length === 0)">
               <div class="bg-white border border-[#e5e5ea] rounded-2xl px-3 py-2 shadow-sm rounded-tl-[4px]">
                 <div class="flex items-center gap-2">
                   <span class="text-[12px] text-[#86868b]">思考中</span>
@@ -354,6 +354,9 @@ onUnmounted(() => {
                 </div>
               </div>
               <div v-if="thinkingProgress" class="text-[10px] text-[#86868b] mt-1 px-1">{{ thinkingProgress }}</div>
+            </div>
+            <div v-if="msg.isThinking && msg.blocks && msg.blocks.length > 0" class="space-y-1.5 mb-2">
+              <div v-for="(block, bi) in msg.blocks" :key="bi" class="text-[12px] text-surface-600 bg-surface-50 px-3 py-1.5 rounded-lg border-l-2 border-surface-200 italic">{{ block.content }}</div>
             </div>
             <div v-else-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
             <div v-else-if="msg.content" :class="msg.role === 'user' ? 'bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-2' : 'bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm'">
