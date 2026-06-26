@@ -25,7 +25,8 @@ async function renderMessageContent(idx: number) {
   const msgs = currentSession.value?.messages; if (!msgs || !msgs[idx]) return ''
   if (rendered.value[idx] !== undefined) return rendered.value[idx]
   const text = msgs[idx].content || ''; if (!text) return ''
-  rendered.value[idx] = await renderMarkdown(text)
+  const safeText = text.replace(/~/g, '～')
+  rendered.value[idx] = await renderMarkdown(safeText)
 }
 function renderedContent(idx: number): string { return rendered.value[idx] || '' }
 
@@ -35,7 +36,7 @@ let typewriterTimers: Record<number,ReturnType<typeof setInterval>> = {}
 function startTypewriter(idx: number, fullText: string, speed = 8) {
   stopTypewriter(idx)
   if (!fullText) { typewriterStates.value[idx] = { text: '', done: true }; return }
-  renderMarkdown(fullText).then(html => { rendered.value[idx] = html })
+  renderMarkdown(fullText.replace(/~/g, '～')).then(html => { rendered.value[idx] = html })
   const chunk = 5
   let pos = Math.min(chunk * 5, fullText.length)
   typewriterStates.value[idx] = { text: fullText.slice(0, pos), done: false }
@@ -70,6 +71,12 @@ function newSession() {
   sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toISOString() })
   currentSessionId.value = id; saveToStorage()
 }
+
+// ★ 启动时加载持久化会话
+onMounted(async () => {
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话' })) } catch {}
+  if (!sessions.value.length) { newSession() }
+})
 async function selectSession(id: string) {
   currentSessionId.value = id; rendered.value = {}
   for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
@@ -188,6 +195,10 @@ async function handleSendMessage() {
     saveToStorage(); scrollToBottom()
   })
   try {
+    // ★ 流式监听：实时显示 LLM thought + 最终答案
+    const streamedContent = ref('')
+    const unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottom() })
+    const unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { streamedContent.value += '\n🤔 ' + ev.payload.text + '\n'; scrollToBottom() })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
@@ -203,6 +214,7 @@ async function handleSendMessage() {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     if (result.success) {
       msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+      if (streamedContent.value) { msg.content = streamedContent.value.replace(/<refs>[\s\S]*<\/refs>/g, '').trim(); streamedContent.value = '' }
       msg.toolCalls = result.tool_log || []
       startTypewriter(aiIdx, msg.content)
       const rawCalls: any[] = []; const toolResults: any[] = []
@@ -224,6 +236,7 @@ async function handleSendMessage() {
     (await unlistenTool)()
     ;(await unlistenFinal)()
     isChatting.value = false; saveToStorage(); scrollToBottom()
+    ;unlistenStream(); unlistenThought()
   }
 }
 

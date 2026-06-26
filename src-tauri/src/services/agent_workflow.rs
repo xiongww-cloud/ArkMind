@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use std::sync::RwLock;
 use std::time::Instant;
 use tauri::Emitter;
+use futures::StreamExt;
 
 const API_TIMEOUT_SECS: u64 = 30;
 const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
@@ -45,10 +46,13 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_traverse: 查看同一知识片段附近的上下文
 - ext_tool_act: 执行动作
 
-- 每轮检索后评估证据是否足够。如果足够，直接输出最终答案，不要继续搜索。
+- 每轮检索后评估证据是否足够。如果足够，直接输出最终答案。
+- 第一轮先用 object 发现相关对象（建立注意力范围），再决定是否 search。
 
 ## 引用
 时间回忆类问题（「昨天发生了什么」「最近聊了什么」）：先用 object 按时间范围获取对象列表，直接回答中按主题聚类和总结，不要使用 search。
+日期范围用「至」代替「~」（如「6月15日至6月21日」）。
+回答中使用口语化、拟人化表达，禁止使用检索、搜索、工具等术语。
 
 最终答案末尾用 <refs> 标签列出引用对象ID：<refs>PRODUCT-xxx, PROJECT-yyy</refs>"#;
 
@@ -351,7 +355,7 @@ fn build_tools_definitions() -> Value {
     ])
 }
 
-async fn call_llm_with_tools(messages: &[ChatMessage], tools: &Value) -> Result<Value, String> {
+async fn call_llm_with_tools(messages: &[ChatMessage], tools: &Value, _app_handle: &Option<tauri::AppHandle>) -> Result<Value, String> {
     let (url, api_key, model) = get_api_endpoint();
     let msgs: Vec<Value> = messages.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect();
     let body = json!({"model":model,"messages":msgs,"tools":tools,"tool_choice":"auto","temperature":0.3});
@@ -365,15 +369,34 @@ async fn call_llm_with_tools(messages: &[ChatMessage], tools: &Value) -> Result<
 async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<tauri::AppHandle>) -> Result<String, String> {
     let (url, api_key, model) = get_api_endpoint();
     let msgs: Vec<Value> = messages.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect();
-    let body = json!({"model":model,"messages":msgs,"temperature":0.3});
+    let body = json!({"model":model,"messages":msgs,"temperature":0.3,"stream":true});
     let mut req = AGENT_HTTP_CLIENT.post(&format!("{}/chat/completions", url)).json(&body);
     if !api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", api_key)); }
     let resp = req.send().await.map_err(|e| format!("LLM: {e}"))?;
     if !resp.status().is_success() { let s = resp.status(); let b = resp.text().await.unwrap_or_default(); return Err(format!("LLM {s}: {b}")); }
-    let r: Value = resp.json().await.map_err(|e| format!("JSON: {e}"))?;
-    let full = r["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
-    if let Some(ref h) = app_handle {
-        let _ = h.emit("agent:final-tokens", json!({"tokens": full}));
+    let byte_stream = resp.bytes_stream();
+    let mut buffer = String::new();
+    let mut full = String::new();
+    let mut stream = byte_stream;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("stream: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(pos) = buffer.find('\n') {
+            let line = buffer[..pos].to_string();
+            buffer = buffer[pos+1..].to_string();
+            if line.is_empty() || line == "data: [DONE]" { continue; }
+            if !line.starts_with("data: ") { continue; }
+            if let Ok(chunk) = serde_json::from_str::<Value>(&line[6..]) {
+                if let Some(choices) = chunk["choices"].as_array() {
+                    for c in choices {
+                        if let Some(tok) = c["delta"]["content"].as_str() {
+                            full.push_str(tok);
+                            if let Some(ref h) = app_handle { let _ = h.emit("agent:token", json!({"token": tok})); }
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(full)
 }
@@ -1409,6 +1432,8 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
     let mut tool_log: Vec<Value> = Vec::new();
     let (mut iters, mut pt, mut ct) = (0i32, 0i64, 0i64);
+    let mut budget = 100i32;
+    let mut search_cost = 10i32;
     let mut traverse_source_counter: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
     // 注入初始 scratchpad（空），后续每轮由循环内代码更新
     let empty_sys = AGENT_SYSTEM_PROMPT
@@ -1417,12 +1442,16 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     messages[0].content = Some(empty_sys);
 
     loop {
+        eprintln!("[LLM检索] 预算: {}/{} cost={}", budget, 100i32, search_cost);
+        budget -= search_cost;
+        search_cost = ((search_cost as f64 * 1.2) as i32).max(1);
         iters += 1;
-        let ar = call_llm_with_tools(&messages, &tools).await?;
+        let ar = call_llm_with_tools(&messages, &tools, &app_handle).await?;
         if let Some(u) = ar.get("usage") { pt += u["prompt_tokens"].as_i64().unwrap_or(0); ct += u["completion_tokens"].as_i64().unwrap_or(0); }
         let choice = ar["choices"].as_array().and_then(|a|a.first()).ok_or("no choices")?;
         let msg = &choice["message"];
         let ac = msg["content"].as_str().unwrap_or("");
+        if !ac.is_empty() { if let Some(ref h) = app_handle { let _ = h.emit("agent:thought", json!({"text": ac})); } }
         let reasoning = msg["reasoning_content"].as_str().map(String::from);
         let tcs: Option<Vec<Value>> = msg["tool_calls"].as_array().map(|a|a.to_vec());
 
@@ -1433,6 +1462,16 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 if (!ac.is_empty()) { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
+                // ★ 预算检查：耗尽时强制回答
+                if budget < 0 {
+                    if let Some(ref h) = app_handle {
+                        let kw = calls.first().and_then(|tc| tc["function"]["arguments"].as_str().map(|s| s.to_string())).unwrap_or_default();
+                        let _ = h.emit("agent:budget-low", json!({"remaining":budget,"cost":search_cost,"next_query":kw}));
+                    }
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
+                    let ws = session.generate_scratchpad();
+                    return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                }
                 if iters >= max_iters {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
@@ -1452,20 +1491,43 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize) -> String
     ).unwrap_or_default();
     if rows.is_empty() { return format!("时间范围内无{}对象。", if obj_type.is_empty() { "任何" } else { obj_type }); }
     let mut out = String::new();
+    let expand = |sid: &str| -> std::collections::HashSet<String> {
+        let n = crate::services::synapse::expand_object_links(&[sid.to_string()], 10);
+        n.into_iter().filter(|(_,w)| *w > 0.0).map(|(id,_)| id).collect()
+    };
+    let mut prev_neighbors: Option<std::collections::HashSet<String>> = None;
+    let mut prev_ts: Option<String> = None;
     for r in &rows {
         let st = r["source_type"].as_str().unwrap_or("");
         let sid = r["source_id"].as_str().unwrap_or("");
         let name = r["title"].as_str().unwrap_or("");
         let preview = r["preview"].as_str().unwrap_or("");
         let ts = r["updated_at"].as_str().unwrap_or("");
+        let seed = format!("{}-{}", st, sid);
+        let current_neighbors = expand(&seed);
+        
+        // ★ Boundary scoring vs previous row
+        if let (Some(ref prev_n), Some(ref p_ts)) = (prev_neighbors, prev_ts) {
+            let d_time = (chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S").ok()
+                .zip(chrono::NaiveDateTime::parse_from_str(p_ts, "%Y-%m-%d %H:%M:%S").ok())
+                .map(|(t,p)| (t-p).num_minutes().max(0) as f64)).unwrap_or(999.0);
+            let time_b = 1.0 - (-0.03 * d_time).exp();
+            let shared = prev_n.intersection(&current_neighbors).count() as f64;
+            let union = prev_n.union(&current_neighbors).count().max(1) as f64;
+            let jaccard = shared / union;
+            let space_b = 1.0 - jaccard;
+            let boundary = 0.5 * time_b + 0.5 * space_b;
+            eprintln!("[Boundary] Δt={}m timeB={:.2} spaceB={:.2} → score={:.2}", d_time as i64, time_b, space_b, boundary);
+            if boundary > 0.5 {
+                out.push_str(&format!("━━━━━ 💥 边界突变 (Boundary: {:.2}) ── Δt={}m ──\n\n", boundary, d_time as i64));
+            }
+        }
+        
         let rel = relative_time(ts);
         out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}", st, name, st, sid, rel, preview));
-        let seed = format!("{}-{}", st, sid);
-        let neighbors = crate::services::synapse::expand_object_links(&[seed], 5);
-        if !neighbors.is_empty() {
+        if !current_neighbors.is_empty() {
             let mut links_by_type: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-            for (nid, w) in &neighbors {
-                if *w < 1.0 { continue; }
+            for nid in &current_neighbors {
                 if let Some(dash) = nid.find('-') {
                     let nt = &nid[..dash]; let ni = &nid[dash+1..];
                     links_by_type.entry(nt.to_string()).or_default().push(ni[..ni.len().min(8)].to_string());
@@ -1475,6 +1537,8 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize) -> String
             if !link_str.is_empty() { out.push_str(&format!("\n  🔗 {}", link_str.join(" | "))); }
         }
         out.push_str("\n\n");
+        prev_neighbors = Some(current_neighbors);
+        prev_ts = Some(ts.to_string());
     }
     out
 }
@@ -1697,6 +1761,9 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                 let new_sys = AGENT_SYSTEM_PROMPT
                     .replace("{{today}}", &chrono::Local::now().format("%Y年%m月%d日").to_string())
                     .replace("{{session_scratchpad}}", &scratchpad);
+                // ★ 经济账本
+                let budget_info = format!("\n\n## 🧠 思维预算\n- 剩余: {} | 本轮成本: {}\n- 预算有限，不要全部搜索轮次都用完。证据足够就立刻回答。", budget, search_cost);
+                let new_sys = format!("{}{}", new_sys, budget_info);
                 if let Some(ref mut content) = messages[0].content {
                     *content = new_sys;
                 }
