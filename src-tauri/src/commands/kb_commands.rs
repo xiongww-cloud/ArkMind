@@ -253,7 +253,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
     for row in &mut rows {
         if let Some(s) = row["messages"].as_str() {
             if let Ok(arr) = serde_json::from_str::<Value>(s) {
-                let mut m = row.as_object_mut().unwrap();
+                let m = row.as_object_mut().unwrap();
                 m.insert("messages".to_string(), arr);
             }
         }

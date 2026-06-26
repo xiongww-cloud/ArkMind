@@ -88,6 +88,7 @@ struct ActiveObject {
     name: String,
     access_order: usize,
     hits: usize,
+    score: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +142,7 @@ impl SessionMemory {
                 name: name.to_string(),
                 access_order: self.access_counter,
                 hits: 1,
+                score: 0.0,
             });
         }
         self.evict_stale();
@@ -281,7 +283,7 @@ impl SessionMemory {
             lines.push(String::new());
             lines.push("## Active Objects".to_string());
             let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().collect();
-            sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
+            sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
             for (i, o) in sorted.iter().take(10).enumerate() {
                 let label = match o.obj_type.as_str() {
                     "product" => format!("PRODUCT: {}", o.name),
@@ -1425,7 +1427,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     // ★ 从活跃对象和本轮 query 设置 Focus
     let top_entities: Vec<String> = {
         let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
-        sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
+        sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         sorted.iter().take(3).map(|o| o.name.clone()).collect()
     };
     session.set_focus_from_user_query(&query, &top_entities);
@@ -1443,6 +1445,8 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
     loop {
         eprintln!("[LLM检索] 预算: {}/{} cost={}", budget, 100i32, search_cost);
+        // ★ 每轮注意力衰减
+        for o in &mut session.active_objects { o.score *= 0.5; }
         budget -= search_cost;
         search_cost = ((search_cost as f64 * 1.2) as i32).max(1);
         iters += 1;
@@ -1458,8 +1462,8 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         match tcs {
             None => {
                 let answer = if ac.is_empty() { "未能生成有效回答。" } else { ac };
-                if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
-                if (!ac.is_empty()) { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                if let Some(ref h) = app_handle { let _ = h.emit("agent:progress", json!({"msg": "🧩 差不多了，我整理一下……"})); let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
+                if !ac.is_empty() { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
                 // ★ 预算检查：耗尽时强制回答
@@ -1622,9 +1626,18 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                         }
                         cached.clone()
                     } else {
-                        eprintln!("[LLM检索] 迭代#{} 工具={}", iters, tc.function.name); let res = match tc.function.name.as_str() {
+                        eprintln!("[LLM检索] 迭代#{} 工具={}", iters, tc.function.name);
+                        let progress_msg = match tc.function.name.as_str() {
+                            "ext_tool_object" => "👀 我先看看知识库里有什么相关的……",
+                            "ext_tool_search" => "🔎 正在翻阅相关资料……",
+                            "ext_tool_traverse" => "📖 我再确认一下上下文……",
+                            "ext_tool_act" => "✍️ 好的，我来处理……",
+                            _ => "💭 让我想想……"
+                        };
+                        if let Some(ref h) = app_handle { let _ = h.emit("agent:progress", json!({"msg": progress_msg})); }
+                        let res = match tc.function.name.as_str() {
                             "ext_tool_search" | "ext_tool_search_knowledge_base" => {
-                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); let time_range = a["start_time"].as_str().and_then(|s| a["end_time"].as_str().map(|e| (resolve_time(s), resolve_time(e)))); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, scope_opt.clone(), &session.visited_sources, &session.visited_chunks, time_range.clone()).await;
+                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let _ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); let time_range = a["start_time"].as_str().and_then(|s| a["end_time"].as_str().map(|e| (resolve_time(s), resolve_time(e)))); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, scope_opt.clone(), &session.visited_sources, &session.visited_chunks, time_range.clone()).await;
                                 let (res, new_sources) = if new_sources.len() < 2 && scope_opt.is_some() {
                                     let fb = execute_search_knowledge(&kw, None, &session.visited_sources, &session.visited_chunks, time_range.clone()).await;
                                     eprintln!("[LLM检索] scope fallback: {} old_sources → {} new_sources", default_scope.len(), fb.1.len());
@@ -1638,6 +1651,10 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
                                         if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
                                             session.update(&ot.to_lowercase(), oi, &name);
+                                            // ★ 检索发现 → score += 0.9
+                                            if let Some(existing) = session.active_objects.iter_mut().find(|o| o.obj_type == ot.to_lowercase() && o.obj_id == oi) {
+                                                existing.score = existing.score * 0.5 + 0.9;
+                                            }
                                         }
                                     }
                                 }

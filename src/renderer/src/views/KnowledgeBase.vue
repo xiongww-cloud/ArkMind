@@ -164,25 +164,12 @@ async function handleSendMessage() {
   inputMessage.value = ''; saveToStorage(); scrollToBottom()
   isChatting.value = true
   thinkingProgress.value = ''
+  // ★ Real Cognitive Stream: 实时进度
+  const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
+    thinkingProgress.value = ev.payload.msg; scrollToBottom()
+  })
   const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [] }
   session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; saveToStorage(); scrollToBottom()
-  const toolRounds: Array<{round: number, count: number}> = []
-  let finalTokens = ''
-  const unlistenTool = await listen('agent:tool-result', (event: any) => {
-    const data = event.payload as any
-    const round = data.round || 0
-    const existing = toolRounds.find(r => r.round === round)
-    if (existing) {
-      existing.count++
-    } else {
-      toolRounds.push({ round, count: 1 })
-    }
-    const latest = toolRounds.reduce((a, b) => a.round > b.round ? a : b)
-    thinkingProgress.value = `Step ${latest.round}: ${latest.count} tool${latest.count > 1 ? 's' : ''}...`
-    const msg = session.messages[aiIdx]
-    if (msg && !msg.content) msg.content = '思考中'
-    saveToStorage(); scrollToBottom()
-  })
   const unlistenFinal = await listen('agent:final-tokens', (event: any) => {
     const data = event.payload as any
     finalTokens += (data.tokens || '')
@@ -233,10 +220,8 @@ async function handleSendMessage() {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
-    (await unlistenTool)()
-    ;(await unlistenFinal)()
     isChatting.value = false; saveToStorage(); scrollToBottom()
-    ;unlistenStream(); unlistenThought()
+    ;unlistenStream(); unlistenThought(); unlistenProgress()
   }
 }
 
