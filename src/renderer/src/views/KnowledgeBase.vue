@@ -38,7 +38,7 @@ function startTypewriter(idx: number, fullText: string, speed = 8) {
   if (!fullText) { typewriterStates.value[idx] = { text: '', done: true }; return }
   renderMarkdown(fullText.replace(/~/g, '～')).then(html => { rendered.value[idx] = html })
   const chunk = 5
-  let pos = Math.min(chunk * 5, fullText.length)
+  let pos = 0
   typewriterStates.value[idx] = { text: fullText.slice(0, pos), done: false }
   typewriterTimers[idx] = setInterval(() => {
     pos += chunk
@@ -185,7 +185,7 @@ async function handleSendMessage() {
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
     const unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottom() })
-    const unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { streamedContent.value += '\n🤔 ' + ev.payload.text + '\n'; scrollToBottom() })
+    const unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { thinkingProgress.value = ev.payload.text; scrollToBottom() })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
@@ -201,6 +201,7 @@ async function handleSendMessage() {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     if (result.success) {
       msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+      thinkingProgress.value = ''
       if (streamedContent.value) { msg.content = streamedContent.value.replace(/<refs>[\s\S]*<\/refs>/g, '').trim(); streamedContent.value = '' }
       msg.toolCalls = result.tool_log || []
       startTypewriter(aiIdx, msg.content)
@@ -345,7 +346,7 @@ onUnmounted(() => {
             <div v-if="msg.isThinking && (!msg.blocks || msg.blocks.length === 0)">
               <div class="bg-white border border-[#e5e5ea] rounded-2xl px-3 py-2 shadow-sm rounded-tl-[4px]">
                 <div class="flex items-center gap-2">
-                  <span class="text-[12px] text-[#86868b]">思考中</span>
+                  <span class="text-[12px]" :class="thinkingProgress ? 'text-[#3a3a3c]' : 'text-[#86868b]'">{{ thinkingProgress || '思考中' }}</span>
                   <div class="flex gap-1">
                     <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:0ms"/>
                     <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:150ms"/>
@@ -353,7 +354,6 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
-              <div v-if="thinkingProgress" class="text-[10px] text-[#86868b] mt-1 px-1">{{ thinkingProgress }}</div>
             </div>
             <div v-if="msg.isThinking && msg.blocks && msg.blocks.length > 0" class="space-y-1.5 mb-2">
               <div v-for="(block, bi) in msg.blocks" :key="bi" class="text-[12px] text-surface-600 bg-surface-50 px-3 py-1.5 rounded-lg border-l-2 border-surface-200 italic">{{ block.content }}</div>
