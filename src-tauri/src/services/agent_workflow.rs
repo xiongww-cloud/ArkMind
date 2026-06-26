@@ -1630,7 +1630,17 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     eprintln!("[LLM检索] scope fallback: {} old_sources → {} new_sources", default_scope.len(), fb.1.len());
                                     fb
                                 } else { (res, new_sources) };
-                                for s in &new_sources { session.mark_source_visited(s); }
+                                for s in &new_sources { session.mark_source_visited(s);
+                                    // ★ search 发现的对象自动注入 active_objects
+                                    if let Some(dash) = s.find('-') {
+                                        let (ot, oi) = s.split_at(dash);
+                                        let oi = &oi[1..];
+                                        let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                        if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
+                                            session.update(&ot.to_lowercase(), oi, &name);
+                                        }
+                                    }
+                                }
                                 // ★ 学习: new_sources → object_links（先 dedup）
                                 let mut adopted: Vec<String> = new_sources.iter().filter(|s| !s.is_empty()).cloned().collect();
                                 adopted.sort(); adopted.dedup();
