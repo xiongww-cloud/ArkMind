@@ -1,4 +1,4 @@
-﻿//! AI Sync — semantic materialization pipeline
+//! AI Sync — semantic materialization pipeline
 //! Six source tables → natural language paragraphs → chunking → FTS5 indexing
 
 use crate::database;
@@ -211,7 +211,10 @@ async fn materialize_task(source_table: &str, source_id: &str) -> MaterializedRe
     let key = format!("{source_table}-{source_id}");
 
     // ★ 统一从 source_data 读清洗后的内容，不做附加上下文拼接
-    let source_type_q = source_table.to_uppercase().trim_end_matches('S').to_string();
+    let source_type_q = match source_table {
+        "chat_sessions" => "CHAT".to_string(),
+        _ => source_table.to_uppercase().trim_end_matches('S').to_string(),
+    };
     eprintln!("[物化任务] source_table={}, source_id={}, query_type={}", source_table, source_id, source_type_q);
     let sd = database::get(
         "SELECT id,title,content,updated_at FROM source_data WHERE source_type=?1 AND source_id=?2",
@@ -356,7 +359,7 @@ pub async fn process_sync_task() -> bool {
 
     // ★ 源数据不存在时直接标记完成，避免死循环
     let sd_exists = database::get(
-        "SELECT 1 FROM source_data WHERE source_type=(SELECT CASE WHEN ?1='files' THEN 'FILE' WHEN ?1='notes' THEN 'NOTE' WHEN ?1='products' THEN 'PRODUCT' WHEN ?1='projects' THEN 'PROJECT' WHEN ?1='todos' THEN 'TODO' WHEN ?1='chat' THEN 'CHAT' ELSE '' END) AND source_id=?2",
+        "SELECT 1 FROM source_data WHERE source_type=(SELECT CASE WHEN ?1='files' THEN 'FILE' WHEN ?1='notes' THEN 'NOTE' WHEN ?1='products' THEN 'PRODUCT' WHEN ?1='projects' THEN 'PROJECT' WHEN ?1='todos' THEN 'TODO' WHEN ?1='chat' OR ?1='chat_sessions' THEN 'CHAT' ELSE '' END) AND source_id=?2",
         &[json!(source_table), json!(source_id)],
     ).ok().flatten().is_some();
     if !sd_exists {
@@ -490,9 +493,9 @@ pub fn purge_stale_queue_entries() {
 }
 
 pub fn trigger_sync(source_table: &str, source_id: &str) {
-    // 重置已有条目或插入新条目
+    // 重置已有条目（包括已处理的），强制重新同步
     let updated = database::run(
-        "UPDATE ai_sync_queue SET is_embedded=0,retry_count=0,last_error='',updated_at=datetime('now','localtime') WHERE source_table=?1 AND source_id=?2 AND is_embedded=0",
+        "UPDATE ai_sync_queue SET is_embedded=0,retry_count=0,last_error='',updated_at=datetime('now','localtime') WHERE source_table=?1 AND source_id=?2",
         &[json!(source_table), json!(source_id)],
     ).ok();
     if updated.map_or(0, |r| r.changes) == 0 {
@@ -520,6 +523,76 @@ pub fn seed_from_source_data() {
             if res.changes > 0 { println!("[数据库] 从 source_data 补种 {}: +{} 行", source_type, res.changes); }
         }
     }
+}
+
+/// 新接口：直接从 source_data 物化并存储到 knowledge_chunks
+/// 供知识管线调用，不依赖 ai_sync_queue
+pub async fn materialize_and_store(
+    source_table: &str,
+    source_id: &str,
+    source_data_id: i64,
+    content: &str,
+) -> Result<usize, String> {
+    if content.trim().is_empty() {
+        return Ok(0);
+    }
+
+    // 获取标题
+    let source_type_q = match source_table {
+        "chat_sessions" => "CHAT".to_string(),
+        _ => source_table.to_uppercase().trim_end_matches('S').to_string(),
+    };
+    let title = database::get(
+        "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
+        &[json!(&source_type_q), json!(source_id)],
+    )
+    .ok()
+    .flatten()
+    .and_then(|r| r["title"].as_str().map(String::from))
+    .unwrap_or_default();
+
+    // 清洗内容
+    let mut text = content.to_string();
+    if source_table == "notes" || source_table == "todos" {
+        text = crate::services::data_pipeline::strip_html_for_chunking(&text);
+    } else if source_table != "files" {
+        let pipeline = crate::services::data_pipeline::get_pipeline();
+        text = pipeline.process_file_stream(source_table, source_id, text);
+    }
+
+    if text.trim().is_empty() {
+        return Ok(0);
+    }
+
+    // 计算去重 key
+    let dedup_key = format!("{}-{}", source_table, source_id);
+    let content_hash = compute_content_hash(&text);
+
+    // 检查是否需要更新（哈希去重）
+    let existing = database::get(
+        "SELECT content_hash FROM knowledge_chunks WHERE dedup_key=?1 AND chunk_type='parent' LIMIT 1",
+        &[json!(&dedup_key)],
+    ).ok().flatten();
+    
+    if let Some(existing_hash) = existing.and_then(|r| r["content_hash"].as_str().map(String::from)) {
+        if existing_hash == content_hash {
+            eprintln!("[物化] 内容未变，跳过: {}:{}", source_table, source_id);
+            return Ok(0);
+        }
+    }
+
+    // 删除旧的 chunks
+    delete_chunks_by_source(&dedup_key);
+
+    // 导入新 chunks
+    let n = import_sync_document(Some(source_data_id), &title, &text, None, &[]).await
+        .map_err(|e| format!("import_sync_document 失败: {}", e))?;
+
+    if n > 0 {
+        println!("[物化] 已更新: {}:{} ({} 个块)", source_table, source_id, n);
+    }
+
+    Ok(n)
 }
 
 

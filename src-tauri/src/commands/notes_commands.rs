@@ -1,4 +1,4 @@
-﻿// Notes commands — CRUD + tag management + trash
+// Notes commands — CRUD + tag management + trash
 use crate::database;
 use serde_json::{json, Value};
 
@@ -75,7 +75,6 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM tag_mappings WHERE entity_type='notes' AND entity_id=?",&[json!(&note_id)]).ok();
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
-    crate::services::cleanup_pipeline::wake_cleanup();
     database::save().map_err(|e|e.to_string())?;
     Ok(json!({"success":true}))
 }
@@ -94,15 +93,12 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     Ok(json!({"success":true,"notes":notes}))
 }
 #[tauri::command] pub async fn notes_permanent_delete(note_id: String) -> Result<Value, String> {
-    // ★ 清理笔记的知识库（source_data + knowledge_chunks + vector_cache + LanceDB）
-    crate::services::cleanup_pipeline::enqueue_cleanup("NOTE", &note_id);
-
+    crate::services::knowledge_lifecycle::notify_deleted("NOTE", &note_id);
     database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM tag_mappings WHERE entity_type='notes' AND entity_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM file_relations WHERE entity_type='note' AND entity_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM notes WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
-    crate::services::cleanup_pipeline::wake_cleanup();
     database::save().map_err(|e|e.to_string())?;
     Ok(json!({"success":true}))
 }

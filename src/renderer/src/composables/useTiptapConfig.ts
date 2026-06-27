@@ -9,9 +9,8 @@ import TableHeader from '@tiptap/extension-table-header'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import { ProjectExtension, FileExtension } from '@/components/editor/extensions'
-import type { Extension } from '@tiptap/core'
 
-export function getTiptapExtensions(options?: { placeholder?: string; extraExtensions?: Extension[] }) {
+export function getTiptapExtensions(options?: { placeholder?: string; extraExtensions?: any[] }) {
   return [
     StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
     Underline,

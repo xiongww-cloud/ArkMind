@@ -176,7 +176,7 @@ pub fn run() {
             commands::ext_tool_search_knowledge_base, commands::ext_tool_get_document_page,
             commands::ext_tool_find_related_knowledge, commands::ext_tool_search_by_tag,
             commands::ext_tool_get_project_context,
-            commands::kb_memory_objects, commands::kb_project_note_ids, commands::kb_memory_parents,
+            commands::kb_memory_objects, commands::search_business, commands::search_source_data, commands::kb_project_note_ids, commands::kb_memory_parents,
             commands::kb_memory_heatmap, commands::kb_memory_dashboard_stats,
             commands::kb_pipeline_debug,
             commands::ext_tool_translate_filter, commands::ext_tool_search_filtered,

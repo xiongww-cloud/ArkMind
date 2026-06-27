@@ -723,7 +723,7 @@ async function removeNotebook(nid: string) {
 // ─── Trash / Archive ─────────────────────────────────────────────────
 async function openRestoreDialog(nid: string) { restoringNoteId.value = nid; restoreSearchQuery.value = ''; selectedRestoreTarget.value = null; restoreDialogOpen.value = true }
 async function confirmRestore() { if (!selectedRestoreTarget.value || !restoringNoteId.value) return; isRestoring.value = true; try { await notesV2Restore(restoringNoteId.value, selectedRestoreTarget.value); restoreDialogOpen.value = false; if (selectedTrashNoteId.value === restoringNoteId.value) selectedTrashNoteId.value = null; restoringNoteId.value = null; await loadAll(); toast({ message: '笔记已恢复', type: 'success' }) } catch (e: any) { toast({ message: '恢复失败: ' + (e.message || e), type: 'error' }) } finally { isRestoring.value = false } }
-async function permanentDelete(nid: string) { const ok = await dangerConfirm({ title: '永久删除', message: '此操作不可恢复，确定永久删除？', confirmText: '永久删除' }); if (!ok) return; try { await notesV2PermanentDelete(nid); trashNotes.value = trashNotes.value.filter(n => n.note_id !== nid); if (selectedTrashNoteId.value === nid) selectedTrashNoteId.value = null } catch (e) { console.error('[Notes] permanentDelete failed:', e) }
+async function permanentDelete(nid: string) { const ok = await dangerConfirm({ title: '永久删除', message: '此操作不可恢复，确定永久删除？', confirmText: '永久删除' }); if (!ok) return; try { await notesV2PermanentDelete(nid); trashNotes.value = trashNotes.value.filter(n => n.note_id !== nid); if (selectedTrashNoteId.value === nid) selectedTrashNoteId.value = null } catch (e) { console.error('[Notes] permanentDelete failed:', e) } }
 
 const restoreNotebookList = computed(() => {
   const q = restoreSearchQuery.value.toLowerCase()

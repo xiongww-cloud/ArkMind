@@ -367,6 +367,91 @@ pub async fn kb_memory_objects(query: String) -> Result<Value, String> {
     Ok(json!({"success":true,"objects":objects}))
 }
 
+/// 业务表检索：按名称模糊匹配 projects/products/notes/file_relations
+#[tauri::command]
+pub async fn search_business(query: String) -> Result<Value, String> {
+    let q = query.trim().to_string();
+    if q.is_empty() { return Ok(json!({"success":true,"objects":[]})); }
+    let like = format!("%{}%", q);
+    let mut objects: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // projects
+    if let Ok(rows) = database::all("SELECT id, name FROM projects WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+        for r in &rows {
+            let id = r["id"].as_str().unwrap_or("").to_string();
+            let name = r["name"].as_str().unwrap_or("").to_string();
+            if seen.insert(format!("PROJECT-{}", id)) {
+                objects.push(json!({"source_type":"PROJECT","source_id":id,"title":name}));
+            }
+        }
+    }
+    // products
+    if let Ok(rows) = database::all("SELECT id, name FROM products WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+        for r in &rows {
+            let id = r["id"].as_str().unwrap_or("").to_string();
+            let name = r["name"].as_str().unwrap_or("").to_string();
+            if seen.insert(format!("PRODUCT-{}", id)) {
+                objects.push(json!({"source_type":"PRODUCT","source_id":id,"title":name}));
+            }
+        }
+    }
+    // notes
+    if let Ok(rows) = database::all("SELECT note_id, title FROM notes WHERE title LIKE ?1 AND deleted_at IS NULL LIMIT 10", &[json!(&like)]) {
+        for r in &rows {
+            let id = r["note_id"].as_str().unwrap_or("").to_string();
+            let name = r["title"].as_str().unwrap_or("").to_string();
+            if seen.insert(format!("NOTE-{}", id)) {
+                objects.push(json!({"source_type":"NOTE","source_id":id,"title":name}));
+            }
+        }
+    }
+    // file_relations
+    if let Ok(rows) = database::all("SELECT file_id, custom_name FROM file_relations WHERE custom_name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+        for r in &rows {
+            let id = r["file_id"].as_str().unwrap_or("").to_string();
+            let name = r["custom_name"].as_str().unwrap_or("").to_string();
+            if seen.insert(format!("FILE-{}", id)) {
+                objects.push(json!({"source_type":"FILE","source_id":id,"title":name}));
+            }
+        }
+    }
+    // todos (未完成)
+    if let Ok(rows) = database::all("SELECT id, title FROM todos WHERE title LIKE ?1 AND done=0 LIMIT 10", &[json!(&like)]) {
+        for r in &rows {
+            let id = r["id"].as_str().unwrap_or("").to_string();
+            let name = r["title"].as_str().unwrap_or("").to_string();
+            if seen.insert(format!("TODO-{}", id)) {
+                objects.push(json!({"source_type":"TODO","source_id":id,"title":name}));
+            }
+        }
+    }
+    Ok(json!({"success":true,"objects":objects}))
+}
+
+/// source_data FTS5 检索
+#[tauri::command]
+pub async fn search_source_data(query: String) -> Result<Value, String> {
+    let q = query.trim().to_string();
+    if q.is_empty() { return Ok(json!({"success":true,"objects":[]})); }
+    let fts_q = q.split_whitespace().map(|k| format!("\"{}\"", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
+    let mut objects: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Ok(rows) = database::all(
+        "SELECT source_type, source_id, title FROM source_data_fts WHERE source_data_fts MATCH ?1 LIMIT 30",
+        &[json!(&fts_q)],
+    ) {
+        for r in &rows {
+            let st = r["source_type"].as_str().unwrap_or("").to_string();
+            let sid = r["source_id"].as_str().unwrap_or("").to_string();
+            let key = format!("{}-{}", st, sid);
+            if seen.insert(key) {
+                objects.push(json!({"source_type": st, "source_id": sid}));
+            }
+        }
+    }
+    Ok(json!({"success":true,"objects":objects}))
+}
+
 /// 获取所有关联了项目的笔记 ID 集合
 #[tauri::command]
 pub async fn kb_project_note_ids() -> Result<Value, String> {

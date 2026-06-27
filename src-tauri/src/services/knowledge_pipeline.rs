@@ -1,15 +1,16 @@
-﻿//! KnowledgePipeline — 3 independent polling loops
+//! KnowledgePipeline — 3 independent polling loops
 //!
 //! Schedule:
-//!   sync_loop(10s)  → materialize source_data → knowledge_chunks → FTS5
+//!   sync_loop(10s)  → 通过 get_changed_since 接口获取变更 → materialize → knowledge_chunks → FTS5
 //!   embed_loop(60s) → vectorize new chunks → LanceDB
-//!   (ai_tag removed — orphan workflow, not needed)
+//!   tag_loop(600s)  → 标签管线（已禁用）
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
-
 static PIPELINE_RUNNING: AtomicBool = AtomicBool::new(false);
+static LAST_SYNC_TIME: Mutex<String> = Mutex::new(String::new());
 
 // ─── Entry point ──────────────────────────────────────────────────
 
@@ -18,41 +19,21 @@ pub fn start() {
         println!("[知识管线] 已在运行中");
         return;
     }
-    println!("[知识管线] Arkmind 知识管线启动 (v11.0)");
+    println!("[知识管线] Arkmind 知识管线启动 (v12.0 - 时间戳驱动)");
 
-    // ── Step 1: Cleanup stale queue entries (zombie source_ids) ──
-    crate::services::ai_sync::purge_stale_queue_entries();
+    // ── Step 1: 清理旧版触发器 ──
+    cleanup_legacy_triggers();
 
-    // ── Step 2: Cleanup stale SQL triggers from old schema versions ──
-    let _ = crate::database::run(
-        "DROP TRIGGER IF EXISTS ai_sync_products_insert;
-         DROP TRIGGER IF EXISTS ai_sync_products_update;",
-        &[],
-    );
+    // ── Step 2: 初始化同步时间戳 ──
+    init_sync_timestamp();
 
-    // ── Step 3: Seed sync queue ──
-    let queue_count: i64 = crate::database::with_db(|c| {
-        c.query_row("SELECT COUNT(*) FROM ai_sync_queue", [], |r| r.get(0))
-    }).unwrap_or(0);
-    if queue_count == 0 {
-        crate::services::ai_sync::cold_start_seed_sync_queue();
-    } else {
-        crate::services::ai_sync::seed_from_source_data();
-    }
-
-    // ── Step 4: Reset failed tasks with retry_count < 3 ──
-    reset_retryable_failures();
-
-    // ── Step 5: Heal ──
-    heal_duplicate_tasks();
-
-    // ── Step 6: Vector cache consistency check ──
+    // ── Step 3: Vector cache consistency check ──
     clean_vector_cache();
 
-    // ── Step 7: Trash auto-cleanup ──
+    // ── Step 4: Trash auto-cleanup ──
     auto_clean_trash();
 
-    // ── Step 8: Persist WAL ──
+    // ── Step 5: Persist WAL ──
     let _ = crate::database::save();
 
     // ── Spawn 3 independent loops ──
@@ -71,20 +52,28 @@ pub fn is_running() -> bool {
     PIPELINE_RUNNING.load(Ordering::Acquire)
 }
 
-// ─── Startup helpers (unchanged) ──────────────────────────────────
+// ─── Startup helpers ──────────────────────────────────────────────
 
-fn reset_retryable_failures() {
-    match crate::database::run(
-        "UPDATE ai_sync_queue SET is_embedded=0, retry_count=0, last_error=''
-         WHERE is_embedded=-1 AND retry_count<3", &[],
-    ) { Ok(r) if r.changes > 0 => println!("[知识管线] 重置 {} 个可重试的同步失败", r.changes), _ => {} }
-    match crate::database::run(
-        "UPDATE ai_tag_queue SET status=0, retry_count=0
-         WHERE status=-1 AND retry_count<3", &[],
-    ) { Ok(r) if r.changes > 0 => println!("[知识管线] 重置 {} 个可重试的标签失败", r.changes), _ => {} }
+fn cleanup_legacy_triggers() {
+    let _ = crate::database::run(
+        "DROP TRIGGER IF EXISTS ai_sync_products_insert;
+         DROP TRIGGER IF EXISTS ai_sync_products_update;
+         DROP TRIGGER IF EXISTS sd_reset_sync_on_update;
+         DROP TRIGGER IF EXISTS sd_reset_sync_on_insert;",
+        &[],
+    );
 }
 
-fn heal_duplicate_tasks() {}
+fn init_sync_timestamp() {
+    // 从 source_data 获取最新时间戳作为初始值
+    let latest = crate::database::get(
+        "SELECT MAX(updated_at) as ts FROM source_data", &[],
+    ).ok().flatten().and_then(|r| r["ts"].as_str().map(String::from));
+    
+    let mut last_sync = LAST_SYNC_TIME.lock().unwrap();
+    *last_sync = latest.unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
+    println!("[知识管线] 初始同步时间戳: {}", *last_sync);
+}
 
 fn clean_vector_cache() {
     match crate::database::run(
@@ -105,18 +94,47 @@ fn auto_clean_trash() {
 
 // ─── 3 independent polling loops ──────────────────────────────────
 
-/// 同步循环：每 10s 扫描 ai_sync_queue，创建/更新 knowledge_chunks + FTS5
+/// 同步循环：每 10s 通过 get_changed_since 接口获取变更，创建/更新 knowledge_chunks + FTS5
 async fn sync_loop() {
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
-        // 补种
-        crate::services::ai_sync::seed_from_source_data();
-        crate::services::ai_sync::seed_new_records();
-        // 处理同步任务（每 tick 最多 20 个）
-        for _ in 0..20 {
-            if !run_timeout("sync", || crate::services::ai_sync::process_sync_task()).await { break; }
-            tokio::task::yield_now().await;
+
+        let last_sync = LAST_SYNC_TIME.lock().unwrap().clone();
+        let changed = crate::services::knowledge_lifecycle::get_changed_since(&last_sync, 20);
+        
+        if !changed.is_empty() {
+            println!("[知识管线] 发现 {} 个变更对象（since {}）", changed.len(), last_sync);
+            let mut max_updated = last_sync.clone();
+            
+            for (source_type, source_id, content, updated_at) in &changed {
+                if updated_at > &max_updated {
+                    max_updated = updated_at.clone();
+                }
+                // 转换 source_type 为 source_table 格式
+                let source_table = match source_type.as_str() {
+                    "NOTE" => "notes",
+                    "PRODUCT" => "products",
+                    "PROJECT" => "projects",
+                    "TODO" => "todos",
+                    "FILE" => "files",
+                    "CHAT" => "chat_sessions",
+                    _ => continue,
+                };
+                
+                // 获取 source_data_id
+                if let Some(sd_id) = crate::services::knowledge_lifecycle::get_source_data_id(source_type, source_id) {
+                    // 调用现有的物化逻辑
+                    match crate::services::ai_sync::materialize_and_store(source_table, source_id, sd_id, content).await {
+                        Ok(_) => {},
+                        Err(e) => eprintln!("[知识管线] 物化失败 {}/{}: {}", source_type, source_id, e),
+                    }
+                }
+            }
+            
+            // 更新同步时间戳
+            *LAST_SYNC_TIME.lock().unwrap() = max_updated;
         }
+        
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
@@ -135,13 +153,11 @@ async fn embed_loop() {
     }
 }
 
-/// 标签循环：每 10 分钟处理一次 ai_tag_queue
+/// 标签循环：每 10 分钟处理一次
 async fn tag_loop() {
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
-        // 一次处理多个标签任务
-        // 标签管线已禁用
-        tokio::time::sleep(Duration::from_secs(600)).await; // 保留 600s 占位
+        tokio::time::sleep(Duration::from_secs(600)).await;
     }
 }
 

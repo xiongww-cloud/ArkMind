@@ -19,3 +19,4 @@ pub mod source_doc_sync;
 pub mod debounced_sync;
 pub mod semantic_builder;
 pub mod cleanup_pipeline;
+pub mod knowledge_lifecycle;

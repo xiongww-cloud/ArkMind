@@ -1,4 +1,4 @@
-﻿use crate::database;
+use crate::database;
 use chrono::Datelike;
 use serde_json::{json, Value};
 
@@ -172,13 +172,10 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn todos_delete(id: String) -> Result<Value, String> {
-    crate::commands::file_commands::cleanup_orphan_files_for_entity("todo", &id);
     database::run("DELETE FROM todo_project_mapping WHERE todo_id=?", &[json!(&id)]).ok();
-    // ★ 清理待办的知识库
-    crate::services::cleanup_pipeline::enqueue_cleanup("TODO", &id);
+    crate::services::knowledge_lifecycle::notify_deleted("TODO", &id);
     database::run("DELETE FROM todos WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Deleted);
-    crate::services::cleanup_pipeline::wake_cleanup();
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({ "success": true }))
 }

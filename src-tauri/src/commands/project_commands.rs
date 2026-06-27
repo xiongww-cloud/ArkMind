@@ -1,4 +1,4 @@
-﻿use crate::database;
+use crate::database;
 use serde_json::{json, Value};
 
 #[tauri::command] pub async fn project_list() -> Result<Vec<Value>, String> { database::all("SELECT * FROM projects ORDER BY updated_at DESC", &[]).map_err(|e| e.to_string()) }
@@ -37,12 +37,9 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     Ok(())
 }
 #[tauri::command] pub async fn project_delete(id: String) -> Result<Value, String> {
-    crate::commands::file_commands::cleanup_orphan_files_for_entity("project", &id);
-    // ★ 入队清理管线（异步清理 source_data + chunks + 向量）
-    crate::services::cleanup_pipeline::enqueue_cleanup("PROJECT", &id);
+    crate::services::knowledge_lifecycle::notify_deleted("PROJECT", &id);
     database::run("DELETE FROM projects WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &id, crate::services::object_changed::Action::Deleted);
-    crate::services::cleanup_pipeline::wake_cleanup();
     database::run("DELETE FROM note_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM tag_mappings WHERE entity_type='projects' AND entity_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(&id)]).ok();

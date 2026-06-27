@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { useSelectionStore } from '@/stores/selection'
 import { useNavigation } from '@/composables/useNavigation'
-import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Delete, fetchTodos, kbMemoryObjects } from '@/api/db-client'
+import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Delete, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData } from '@/api/db-client'
 import { toast } from '@/composables/useToast'
 
 defineProps({})
@@ -68,8 +68,27 @@ function onSearchInput() {
   searchOpen.value = true
   searchTimer = setTimeout(async () => {
     try {
-      const r = await kbMemoryObjects(q)
-      searchResults.value = (r?.objects || []).slice(0, 30)
+      const [business, sourceData] = await Promise.all([
+        searchBusiness(q),
+        searchSourceData(q)
+      ])
+      const seen = new Set<string>()
+      const merged: any[] = []
+      // 业务表结果优先（带有 title）
+      for (const obj of (business?.objects || [])) {
+        const key = `${obj.source_type}-${obj.source_id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        merged.push(obj)
+      }
+      // source_data 结果补充（去重）
+      for (const obj of (sourceData?.objects || [])) {
+        const key = `${obj.source_type}-${obj.source_id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        merged.push({ ...obj, title: '' })
+      }
+      searchResults.value = merged.slice(0, 30)
     } catch { searchResults.value = [] }
     finally { searchLoading.value = false }
   }, 300)

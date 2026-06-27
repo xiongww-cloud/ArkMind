@@ -73,11 +73,6 @@ pub fn cleanup_kb(source_type: &str, source_id: &str) {
     }
 }
 
-pub fn cleanup_kb_for_file(fid: &str) { crate::services::cleanup_pipeline::enqueue_cleanup("FILE", fid); }
-
-/// 清理指定实体类型的所有关联文件（stub，由 cleanup_pipeline 统一处理）
-pub fn cleanup_orphan_files_for_entity(_entity_type: &str, _entity_id: &str) {}
-
 use std::sync::Mutex;
 static STORAGE_BASE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -371,7 +366,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
         let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?", &[json!(aid)])
             .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
         if remaining == 0 {
-            cleanup_kb_for_file(aid);
+            crate::services::knowledge_lifecycle::notify_deleted("FILE", aid);
             if let Some(p) = get_physical_path(aid) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
             database::run("DELETE FROM library_file_locations WHERE file_id=?", &[json!(aid)]).ok();
             database::run("DELETE FROM file_assets WHERE id=?", &[json!(aid)]).ok();
@@ -396,7 +391,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
         let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?", &[json!(aid)])
             .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
         if remaining == 0 {
-            cleanup_kb_for_file(aid);
+            crate::services::knowledge_lifecycle::notify_deleted("FILE", aid);
             if let Some(p) = get_physical_path(aid) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
             database::run("DELETE FROM library_file_locations WHERE file_id=?", &[json!(aid)]).ok();
             database::run("DELETE FROM file_assets WHERE id=?", &[json!(aid)]).ok();
@@ -578,7 +573,7 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
         let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?",&[json!(&file_id)])
             .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
         if remaining == 0 {
-            cleanup_kb_for_file(&file_id);
+            crate::services::knowledge_lifecycle::notify_deleted("FILE", &file_id);
             if let Some(p) = get_physical_path(&file_id) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
             database::run("DELETE FROM library_file_locations WHERE file_id=?",&[json!(&file_id)]).ok();
             database::run("DELETE FROM file_assets WHERE id=?",&[json!(&file_id)]).ok();

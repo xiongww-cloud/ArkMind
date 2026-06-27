@@ -273,6 +273,8 @@ export async function kbDeleteSession(sessionId: string): Promise<any> { return 
 
 // ── Memory Explorer API ──
 export async function kbMemoryObjects(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string;title:string}>}> { return invoke('kb_memory_objects', { query }) }
+export async function searchBusiness(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string;title:string}>}> { return invoke('search_business', { query }) }
+export async function searchSourceData(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string}>}> { return invoke('search_source_data', { query }) }
 export async function kbMemoryParents(sourceType: string, sourceId: string): Promise<{success:boolean;parents:Array<any>}> { return invoke('kb_memory_parents', { sourceType, sourceId }) }
 export async function kbMemoryEntityRelations(entityName?: string, sourceType?: string, sourceId?: string): Promise<{success:boolean;entities:Array<any>;related_objects:Array<any>}> { return invoke('kb_memory_entity_relations', { entityName: entityName || '', sourceType: sourceType || '', sourceId: sourceId || '' }) }
 export async function kbMemoryHeatmap(): Promise<{success:boolean;total_chunks:number;hot:Array<any>;cold:Array<any>}> { return invoke('kb_memory_heatmap') }

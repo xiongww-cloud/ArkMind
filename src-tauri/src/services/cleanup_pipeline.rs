@@ -11,13 +11,13 @@ use std::time::Duration;
 static STARTED: AtomicBool = AtomicBool::new(false);
 static WAKE: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
 
-/// 唤醒清理管线（由业务删除命令调用，零延迟异步通知）
-pub fn wake_cleanup() {
+/// 唤醒清理管线（由 knowledge_lifecycle 调用，零延迟异步通知）
+pub(crate) fn wake_cleanup() {
     WAKE.notify_one();
 }
 
-/// 将清理任务加入队列
-pub fn enqueue_cleanup(source_type: &str, source_id: &str) {
+/// 将清理任务加入队列（由 knowledge_lifecycle 调用）
+pub(crate) fn enqueue_cleanup(source_type: &str, source_id: &str) {
     // ★ 快照当前 source_data_id 和 chunk_ids，存入队列（不依赖后续 source_data 存在）
     let sd_id: Option<String> = crate::database::get(
         "SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",
