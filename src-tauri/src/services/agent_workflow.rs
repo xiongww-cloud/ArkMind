@@ -41,7 +41,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 最终回答应围绕用户的问题组织，而不是围绕检索结果组织。
 
 ## 工具
-- ext_tool_object: 搜索记忆中的对象。无关键词时按时间线浏览（适合「昨天聊了什么」），有关键词时按名称搜索。支持类型和时间过滤。
+- ext_tool_object: 搜索记忆中的对象。传入 id 返回完整内容（前3个父块）；无关键词时按时间线浏览；有关键词时按名称搜索。支持类型和时间过滤。
 - ext_tool_search: 从长期记忆中检索相关知识，支持 time_range 时间范围过滤
 - ext_tool_traverse: 查看同一知识片段附近的上下文
 - ext_tool_act: 执行动作
@@ -1217,6 +1217,19 @@ fn resolve_time(s: &str) -> String {
     s.to_string()
 }
 
+fn fetch_parent_chunks(source_id_str: &str) -> String {
+    let (ot, oi) = if let Some(dash) = source_id_str.find('-') { source_id_str.split_at(dash) } else { return "".to_string() };
+    let oi = &oi[1..];
+    let sdid = database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(oi)]).ok().flatten().and_then(|r| r["id"].as_i64()).unwrap_or(0);
+    if sdid == 0 { return format!("未找到对象: {source_id_str}"); }
+    let chunks: Vec<String> = database::all("SELECT chunk_id, content, chunk_index FROM knowledge_chunks WHERE source_data_id=?1 AND parent_id IS NULL ORDER BY chunk_index LIMIT 3", &[json!(sdid)]).unwrap_or_default().iter().map(|r| {
+        let content = r["content"].as_str().unwrap_or("");
+        let chunk_id = r["chunk_id"].as_str().unwrap_or("");
+        format!("[OBJECT-{} 父块{:?}] ChunkID: {}\n{}\n", ot, r["chunk_index"].as_i64().unwrap_or(0)+1, &chunk_id[..chunk_id.len().min(8)], &content[..content.len().min(1800)])
+    }).collect();
+    if chunks.is_empty() { format!("对象 {source_id_str} 无可用内容。") } else { chunks.join("\n") }
+}
+
 fn relative_time(created_at: &str) -> String {
     if created_at.is_empty() { return String::new(); }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
@@ -1529,7 +1542,7 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize) -> String
             let space_b = 1.0 - jaccard;
             let boundary = 0.5 * time_b + 0.5 * space_b;
             eprintln!("[Boundary] Δt={}m timeB={:.2} spaceB={:.2} → score={:.2}", d_time as i64, time_b, space_b, boundary);
-            if boundary > 0.5 {
+            if boundary > 0.45 {
                 out.push_str(&format!("━━━━━ 💥 边界突变 (Boundary: {:.2}) ── Δt={}m ──\n\n", boundary, d_time as i64));
             }
         }
@@ -1661,7 +1674,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                 let mut adopted: Vec<String> = new_sources.iter().filter(|s| !s.is_empty()).cloned().collect();
                                 adopted.sort(); adopted.dedup();
                                 eprintln!("[LLM检索] new_sources adopted: {:?}", adopted); res }
-                            "ext_tool_object" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let q = a["query"].as_str().unwrap_or(""); let t = a["type"].as_str().unwrap_or(""); let s = a["start_time"].as_str().map(resolve_time); let e = a["end_time"].as_str().map(resolve_time); let tr = s.and_then(|s| e.map(|e| (s, e))); let limit = a["limit"].as_u64().unwrap_or(20) as usize; let res = execute_object_get(q, t, tr, limit); for line in res.lines() { if let Some(si) = line.split("source_id: ").nth(1) { let sid = si.trim(); if sid.is_empty() { continue; } if let Some(dash) = sid.find('-') { let (ot, oi) = sid.split_at(dash); let oi = &oi[1..]; let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(ot),json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default(); if !ot.is_empty() && !oi.is_empty() && !name.is_empty() { session.update(&ot.to_lowercase(), oi, &name); } } } } res }
+                            "ext_tool_object" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); if a.get("id").and_then(|v|v.as_str()).filter(|s|!s.is_empty()).is_some() { fetch_parent_chunks(a["id"].as_str().unwrap_or("")) } else { let q = a["query"].as_str().unwrap_or(""); let t = a["type"].as_str().unwrap_or(""); let s = a["start_time"].as_str().map(resolve_time); let e = a["end_time"].as_str().map(resolve_time); let tr = s.and_then(|s| e.map(|e| (s, e))); let limit = a["limit"].as_u64().unwrap_or(20) as usize; let res = execute_object_get(q, t, tr, limit); for line in res.lines() { if let Some(si) = line.split("source_id: ").nth(1) { let sid = si.trim(); if sid.is_empty() { continue; } if let Some(dash) = sid.find('-') { let (ot, oi) = sid.split_at(dash); let oi = &oi[1..]; let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(ot),json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default(); if !ot.is_empty() && !oi.is_empty() && !name.is_empty() { session.update(&ot.to_lowercase(), oi, &name); } } } } res } }
                             "ext_tool_traverse" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_traverse(a["chunk_id"].as_str().unwrap_or(""), a["edge_type"].as_str().unwrap_or("Next"), a["radius"].as_i64().unwrap_or(10) as usize, &visited, a["target_name"].as_str().unwrap_or(""), &mut traverse_source_counter) }
                             "ext_tool_act" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_act(a["action"].as_str().unwrap_or(""), a["project_id"].as_str().unwrap_or(""), a["todo_title"].as_str().unwrap_or(""), a["todo_content"].as_str().unwrap_or(""), a["todo_id"].as_str().unwrap_or(""), a["new_status"].as_str().unwrap_or("")) }
                             "ext_tool_batch_search" => {

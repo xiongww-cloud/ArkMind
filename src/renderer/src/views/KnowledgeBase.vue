@@ -77,10 +77,10 @@ function newSession() {
 onMounted(async () => {
   try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话' })) } catch {}
   if (!sessions.value.length) { newSession() }
-  nextTick(() => scrollToBottom())
+  nextTick(() => scrollToBottomIfNear())
 })
 // ★ 每次切换回来时确保到底
-onActivated(() => { nextTick(() => scrollToBottom()) })
+onActivated(() => { nextTick(() => scrollToBottomIfNear()) })
 async function selectSession(id: string) {
   currentSessionId.value = id; rendered.value = {}
   for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
@@ -96,7 +96,7 @@ async function selectSession(id: string) {
       return Promise.resolve()
     }))
   }
-  scrollToBottom()
+  scrollToBottomIfNear()
 }
 const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
 
@@ -113,7 +113,7 @@ async function loadFromStorage() {
     }
     return Promise.resolve()
   }))
-  scrollToBottom()
+  scrollToBottomIfNear()
 }
 
 // ─── Chat state ─────────────────────────────────────────────────
@@ -137,12 +137,15 @@ function executeDelete() {
   saveToStorage()
 }
 
-function scrollToBottom() {
+let initialScrollDone = false
+function scrollToBottomIfNear() {
   const el = feedScrollRef.value as HTMLElement | null; if (!el) return
-  el.scrollTop = el.scrollHeight
-  // ★ 兜底：async markdown 渲染可能延时，50ms 后再滚一次
-  setTimeout(() => { if (feedScrollRef.value) feedScrollRef.value.scrollTop = feedScrollRef.value.scrollHeight }, 50)
+  if (!initialScrollDone) { initialScrollDone = true; nextTick(() => { el.scrollTop = el.scrollHeight }); return }
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150
+  if (nearBottom) { nextTick(() => { el.scrollTop = el.scrollHeight }) }
 }
+
+watch(currentSessionId, () => { initialScrollDone = false })
 
 // ─── Context recall ─────────────────────────────────────────────
 const recalledContext = computed(() => {
@@ -165,15 +168,15 @@ async function handleSendMessage() {
   const session = currentSession.value; if (!session) return
   session.messages.push({ role: 'user', content: q })
   if (session.name === '新对话') { session.name = q.slice(0, 30); saveToStorage() }
-  inputMessage.value = ''; saveToStorage(); scrollToBottom()
+  inputMessage.value = ''; saveToStorage(); scrollToBottomIfNear()
   isChatting.value = true
   thinkingProgress.value = ''
   // ★ Real Cognitive Stream: 实时进度
   const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
-    thinkingProgress.value = ev.payload.msg; scrollToBottom()
+    thinkingProgress.value = ev.payload.msg; scrollToBottomIfNear()
   })
   const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [] }
-  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; saveToStorage(); scrollToBottom()
+  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; saveToStorage(); scrollToBottomIfNear()
   const unlistenFinal = await listen('agent:final-tokens', (event: any) => {
     const data = event.payload as any
     finalTokens += (data.tokens || '')
@@ -183,13 +186,13 @@ async function handleSendMessage() {
       msg.isThinking = false
       renderMessageContent(aiIdx)
     }
-    saveToStorage(); scrollToBottom()
+    saveToStorage(); scrollToBottomIfNear()
   })
   try {
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
-    const unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottom() })
-    const unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);scrollToBottom();if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
+    const unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
+    const unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);scrollToBottomIfNear();if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
@@ -225,7 +228,7 @@ async function handleSendMessage() {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
-    isChatting.value = false; saveToStorage(); scrollToBottom()
+    isChatting.value = false; saveToStorage(); scrollToBottomIfNear()
     try { ;unlistenStream(); unlistenThought(); unlistenProgress() } catch {}
   }
 }
