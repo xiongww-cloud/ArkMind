@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onUnmounted, nextTick, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
 import ToolCallCard from '@/components/chat/ToolCallCard.vue'
@@ -67,6 +67,7 @@ const sessionNameEdit = ref('')
 const editingSessionId = ref<string|null>(null)
 
 function newSession() {
+  for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
   const id = crypto.randomUUID()
   sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toISOString() })
   currentSessionId.value = id; saveToStorage()
@@ -76,13 +77,17 @@ function newSession() {
 onMounted(async () => {
   try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话' })) } catch {}
   if (!sessions.value.length) { newSession() }
+  nextTick(() => scrollToBottom())
 })
+// ★ 每次切换回来时确保到底
+onActivated(() => { nextTick(() => scrollToBottom()) })
 async function selectSession(id: string) {
   currentSessionId.value = id; rendered.value = {}
   for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
   typewriterStates.value = {}
   // Trigger markdown rendering for all AI messages — await all
   const session = sessions.value.find(s => s.id === id)
+  for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
   if (session) {
     await Promise.all(session.messages.map((m, i) => {
       if (m.role === 'assistant' && m.content && !m.isThinking) {
@@ -133,12 +138,10 @@ function executeDelete() {
 }
 
 function scrollToBottom() {
-  // Double nextTick: first for v-for render, second for async markdown HTML
-  nextTick(() => {
-    nextTick(() => {
-      if (feedScrollRef.value) feedScrollRef.value.scrollTop = feedScrollRef.value.scrollHeight
-    })
-  })
+  const el = feedScrollRef.value as HTMLElement | null; if (!el) return
+  el.scrollTop = el.scrollHeight
+  // ★ 兜底：async markdown 渲染可能延时，50ms 后再滚一次
+  setTimeout(() => { if (feedScrollRef.value) feedScrollRef.value.scrollTop = feedScrollRef.value.scrollHeight }, 50)
 }
 
 // ─── Context recall ─────────────────────────────────────────────
@@ -155,6 +158,7 @@ const recalledContext = computed(() => {
 const suggestions = ['分析一下这个项目的关键信息', '请帮我写一份投标应答', '搜索关于S12700E的参数信息', '最近项目有什么进展']
 
 // ─── Send message ───────────────────────────────────────────────
+let thoughtTimer: any = null
 async function handleSendMessage() {
   const q = inputMessage.value.trim()
   if (!q || isChatting.value) return
@@ -185,7 +189,7 @@ async function handleSendMessage() {
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
     const unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottom() })
-    const unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { thinkingProgress.value = ev.payload.text; scrollToBottom() })
+    const unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);scrollToBottom();if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
@@ -222,7 +226,7 @@ async function handleSendMessage() {
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
     isChatting.value = false; saveToStorage(); scrollToBottom()
-    ;unlistenStream(); unlistenThought(); unlistenProgress()
+    try { ;unlistenStream(); unlistenThought(); unlistenProgress() } catch {}
   }
 }
 
@@ -346,7 +350,7 @@ onUnmounted(() => {
             <div v-if="msg.isThinking && (!msg.blocks || msg.blocks.length === 0)">
               <div class="bg-white border border-[#e5e5ea] rounded-2xl px-3 py-2 shadow-sm rounded-tl-[4px]">
                 <div class="flex items-center gap-2">
-                  <span class="text-[12px]" :class="thinkingProgress ? 'text-[#3a3a3c]' : 'text-[#86868b]'">{{ thinkingProgress || '思考中' }}</span>
+                  <span class="text-[12px] text-[#3a3a3c] transition-colors duration-500">{{ thinkingProgress || '思考中' }}</span>
                   <div class="flex gap-1">
                     <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:0ms"/>
                     <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:150ms"/>
@@ -367,7 +371,7 @@ onUnmounted(() => {
                 <div v-if="isTypewriting(idx)" class="text-[12px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">
                   {{ typewriterText(idx) }}<span class="inline-block w-[2px] h-[1em] bg-[#2563eb] ml-0.5 align-middle animate-pulse">▌</span>
                 </div>
-                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(idx)"></div>
+                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: renderedContent(idx) ? 1 : 0, transform: renderedContent(idx) ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(idx)"></div>
                 <div class="flex items-center gap-1 mt-3 pt-3 border-t border-[#e5e5ea]">
                   <button @click="copyAnswer(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3.5 h-3.5" /></button>
                   <button @click="copyFullTrace(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制完整对话">
@@ -464,6 +468,7 @@ onUnmounted(() => {
 
 <style scoped>
 @keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+@keyframes recall { 0%,100%{opacity:0.2;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
 .animate-bounce { animation: bounce 1.2s infinite ease-in-out; }
 .animate-fade-in { animation: fadeIn 0.3s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }

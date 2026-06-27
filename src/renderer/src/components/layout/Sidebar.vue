@@ -21,8 +21,8 @@ const navItems = [
   { path: '/assets', label: '资料', icon: 'archive' },
   { path: '/knowledge-graph', label: '知识库', icon: 'network' },
   { path: '/knowledge/brain', label: '智能问答', icon: 'chat' },
-  { path: '/agent-debug', label: 'Agent调试', icon: 'bar-chart' },
-  { path: '/inspector', label: '索引检查', icon: 'search' },
+  // { path: '/agent-debug', label: 'Agent调试', icon: 'bar-chart' },
+  // { path: '/inspector', label: '索引检查', icon: 'search' },
   { path: '/settings', label: '系统设置', icon: 'settings' }
 ]
 

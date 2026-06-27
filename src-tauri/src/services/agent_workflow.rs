@@ -232,7 +232,9 @@ impl SessionMemory {
     /// 生成注入 Prompt 的工作记忆文本，受 Token 预算约束
     fn generate_scratchpad(&mut self) -> String {
         // ★ P1: 下一轮扩散 — 每轮开始时从 object_links 注入关联对象
-        let top_oids: Vec<String> = self.active_objects.iter().take(5).map(|o| o.obj_id.to_string()).collect();
+        let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().collect();
+        sorted.sort_by(|a,b|b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        let top_oids: Vec<String> = sorted.iter().take(5).map(|o| o.obj_id.to_string()).collect();
         let neighbors = crate::services::synapse::expand_object_links(&top_oids, 15);
         if neighbors.len() > 0 { eprintln!("[LLM检索] expand(next_round): {} neighbors", neighbors.len()); }
         for (nid, _w) in neighbors.iter().take(5) {

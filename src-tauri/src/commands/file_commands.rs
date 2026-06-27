@@ -557,8 +557,20 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
 }
 #[tauri::command] pub async fn file_update_product_associations(file_id: String, data: Value) -> Result<Value, String> {
     database::run("DELETE FROM file_relations WHERE entity_type='product' AND file_id=?",&[json!(&file_id)]).ok();
-    if let Some(ids) = data["productIds"].as_array() {
-        for pid in ids { if let Some(p) = pid.as_str() { add_relation(&file_id, "product", p, "", "", None); } }
+    let has_new = data["productIds"].as_array().map(|a| !a.is_empty()).unwrap_or(false);
+    if has_new {
+        if let Some(ids) = data["productIds"].as_array() {
+            for pid in ids { if let Some(p) = pid.as_str() { add_relation(&file_id, "product", p, "", "", None); } }
+        }
+    } else {
+        let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?",&[json!(&file_id)])
+            .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+        if remaining == 0 {
+            cleanup_kb_for_file(&file_id);
+            if let Some(p) = get_physical_path(&file_id) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
+            database::run("DELETE FROM library_file_locations WHERE file_id=?",&[json!(&file_id)]).ok();
+            database::run("DELETE FROM file_assets WHERE id=?",&[json!(&file_id)]).ok();
+        }
     }
     Ok(json!({"success":true}))
 }
