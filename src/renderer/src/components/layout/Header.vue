@@ -137,7 +137,7 @@ async function loadQuickTodos() {
             const { updateTodo } = await import('@/api/db-client')
             await updateTodo(t.id, { done: false })
             t.done = false
-          } catch {}
+          } catch (e) { console.error('[Header] toggleTodo failed:', e) }
         }
       }
     }
@@ -162,7 +162,7 @@ async function toggleQuickTodoDone(t: any) {
     const { toggleTodo } = await import('@/api/db-client')
     await toggleTodo(t.id)
     await loadQuickTodos()
-  } catch {}
+  } catch (e) { console.error('[Header] toggleQuickTodo failed:', e) }
 }
 
 async function deleteQuickTodo(t: any) {

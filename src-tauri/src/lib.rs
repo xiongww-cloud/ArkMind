@@ -59,7 +59,7 @@ pub fn run() {
                         let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
                             "pdf"=>"application/pdf", "docx"=>"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xlsx"=>"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "png"=>"image/png", "jpg"|"jpeg"=>"image/jpeg", "gif"=>"image/gif", "webp"=>"image/webp", _=>"application/octet-stream"
                         };
-                        tauri::http::Response::builder().status(200).header("Content-Type", mime).header("Access-Control-Allow-Origin","*").body(buf)
+                        tauri::http::Response::builder().status(200).header("Content-Type", mime).header("Access-Control-Allow-Origin","pms://localhost").body(buf)
                     }
                 }
                 _ => tauri::http::Response::builder().status(404).body("Not Found".as_bytes().to_vec())
@@ -121,8 +121,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // DB raw
-            commands::db_all, commands::db_get, commands::db_run,
             // License
             commands::license_status, commands::license_activate, commands::machine_code,
             // Projects
@@ -139,7 +137,7 @@ pub fn run() {
             commands::file_update_meta, commands::file_cleanup_if_orphan,
             commands::file_get_tags, commands::file_add_tag_mapping, commands::file_remove_tag_mapping,
             commands::file_list_by_product, commands::file_open_product, commands::file_download_product,
-            commands::file_preview, commands::file_export, commands::file_export_to_path,
+            commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes,
             commands::file_list_global,
             commands::file_move, commands::file_tree,
             commands::file_folder_create, commands::file_folder_rename, commands::file_folder_delete, commands::file_folder_move, commands::file_folder_reorder,

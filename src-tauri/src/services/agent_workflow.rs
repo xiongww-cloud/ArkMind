@@ -1,4 +1,4 @@
-﻿//! Native Tool Calling Agent — ReAct loop + symmetric retrieval + structured context lookup
+//! Native Tool Calling Agent — ReAct loop + symmetric retrieval + structured context lookup
 
 use crate::database;
 use crate::services::search_assets;
@@ -45,6 +45,9 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_search: 从长期记忆中检索相关知识，支持 time_range 时间范围过滤
 - ext_tool_traverse: 查看同一知识片段附近的上下文
 - ext_tool_act: 执行动作
+
+## 工具调用格式（必须遵守）
+你必须使用标准的 tool_calls 格式调用工具。禁止在 content 字段中输出 XML 格式的工具调用。如果模型返回了 XML 格式的工具调用，那是错误的行为。
 
 - 每轮检索后评估证据是否足够。如果足够，直接输出最终答案。
 - 第一轮先用 object 发现相关对象（建立注意力范围），再决定是否 search。
@@ -364,6 +367,48 @@ fn build_tools_definitions() -> Value {
     ])
 }
 
+
+/// Fallback: parse XML tool calls from content when model does not use function calling format
+fn parse_xml_tool_calls(content: &str) -> Option<Vec<Value>> {
+    let tag_start = "tool_calls>";
+    let tag_end = "/tool_calls>";
+    if !content.contains(tag_start) || !content.contains(tag_end) { return None; }
+    let start = content.find(tag_start).map(|i| i + tag_start.len())?;
+    let end = content.find(tag_end)?;
+    let xml_body = &content[start..end];
+    let mut tool_calls = Vec::new();
+    let mut remaining = xml_body;
+    while let Some(inv_start) = remaining.find("invoke name=\"") {
+        let ns = inv_start + "invoke name=\"".len();
+        let ne = remaining[ns..].find('"').map(|i| ns + i)?;
+        let func_name = &remaining[ns..ne];
+        let ps = remaining.find('>').map(|i| i + 1)?;
+        let ib = &remaining[ps..];
+        let ie = ib.find("/invoke>").unwrap_or(ib.len());
+        let pb = &ib[..ie];
+        let mut params = serde_json::Map::new();
+        let mut pr = pb;
+        while let Some(pst) = pr.find("parameter name=\"") {
+            let pns = pst + "parameter name=\"".len();
+            let pne = pr[pns..].find('"').map(|i| pns + i)?;
+            let pn = pr[pns..pne].to_string();
+            let pvs = pr.find('>').map(|i| i + 1)?;
+            let pbody = &pr[pvs..];
+            let pe = pbody.find("/parameter>").unwrap_or(pbody.len());
+            let pv = pbody[..pe].trim().to_string();
+            let jv = serde_json::from_str::<Value>(&pv).unwrap_or_else(|_| json!(pv));
+            params.insert(pn, jv);
+            pr = &pr[pvs + pe + "/parameter>".len()..];
+        }
+        tool_calls.push(json!({
+            "id": format!("call_{}", &uuid::Uuid::new_v4().to_string()[..8]),
+            "type": "function",
+            "function": {"name": func_name, "arguments": serde_json::to_string(&Value::Object(params)).unwrap_or_default()}
+        }));
+        remaining = &remaining[ps + ie + "/invoke>".len()..];
+    }
+    if tool_calls.is_empty() { None } else { Some(tool_calls) }
+}
 async fn call_llm_with_tools(messages: &[ChatMessage], tools: &Value, _app_handle: &Option<tauri::AppHandle>) -> Result<Value, String> {
     let (url, api_key, model) = get_api_endpoint();
     let msgs: Vec<Value> = messages.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect();
@@ -1467,17 +1512,36 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         eprintln!("[LLM检索] 预算: {}/{} cost={}", budget, 100i32, search_cost);
         // ★ 每轮注意力衰减
         for o in &mut session.active_objects { o.score *= 0.5; }
-        budget -= search_cost;
-        search_cost = ((search_cost as f64 * 1.2) as i32).max(1);
         iters += 1;
+
+        // ★ 注入 scratchpad + budget_info 到 system prompt（供当前轮 LLM 读取）
+        let scratchpad = session.generate_scratchpad();
+        let new_sys = AGENT_SYSTEM_PROMPT
+            .replace("{{today}}", &chrono::Local::now().format("%Y年%m月%d日").to_string())
+            .replace("{{session_scratchpad}}", &scratchpad);
+        let budget_info = format!("\n\n## 🧠 思维预算\n- 剩余: {} | 本轮成本: {}\n- 预算有限，不要全部搜索轮次都用完。证据足够就立刻回答。", budget, search_cost);
+        let new_sys = format!("{}{}", new_sys, budget_info);
+        if let Some(ref mut content) = messages[0].content {
+            *content = new_sys;
+        }
+
         let ar = call_llm_with_tools(&messages, &tools, &app_handle).await?;
         if let Some(u) = ar.get("usage") { pt += u["prompt_tokens"].as_i64().unwrap_or(0); ct += u["completion_tokens"].as_i64().unwrap_or(0); }
         let choice = ar["choices"].as_array().and_then(|a|a.first()).ok_or("no choices")?;
         let msg = &choice["message"];
         let ac = msg["content"].as_str().unwrap_or("");
-        if !ac.is_empty() { if let Some(ref h) = app_handle { let _ = h.emit("agent:thought", json!({"text": ac})); } }
         let reasoning = msg["reasoning_content"].as_str().map(String::from);
-        let tcs: Option<Vec<Value>> = msg["tool_calls"].as_array().map(|a|a.to_vec());
+        let mut tcs: Option<Vec<Value>> = msg["tool_calls"].as_array().map(|a|a.to_vec());
+
+        // ★ 兜底：如果 tool_calls 为空但 content 包含 XML 格式工具调用，尝试解析
+        if tcs.is_none() || tcs.as_ref().map_or(false, |v| v.is_empty()) {
+            if let Some(parsed) = parse_xml_tool_calls(ac) {
+                eprintln!("[LLM检索] 从 content 解析到 XML 工具调用: {:?}", parsed);
+                tcs = Some(parsed);
+            }
+        }
+
+        if !ac.is_empty() && tcs.is_none() { if let Some(ref h) = app_handle { let _ = h.emit("agent:thought", json!({"text": ac})); } }
 
         match tcs {
             None => {
@@ -1795,17 +1859,9 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
 
-                // 注入 scratchpad 到 system prompt
-                let scratchpad = session.generate_scratchpad(); eprintln!("[LLM检索] scratchpad注入: {} chars, objects={}", scratchpad.chars().count(), session.active_objects.len());
-                let new_sys = AGENT_SYSTEM_PROMPT
-                    .replace("{{today}}", &chrono::Local::now().format("%Y年%m月%d日").to_string())
-                    .replace("{{session_scratchpad}}", &scratchpad);
-                // ★ 经济账本
-                let budget_info = format!("\n\n## 🧠 思维预算\n- 剩余: {} | 本轮成本: {}\n- 预算有限，不要全部搜索轮次都用完。证据足够就立刻回答。", budget, search_cost);
-                let new_sys = format!("{}{}", new_sys, budget_info);
-                if let Some(ref mut content) = messages[0].content {
-                    *content = new_sys;
-                }
+                // ★ 扣减预算（工具执行后，下一轮生效）
+                budget -= search_cost;
+                search_cost = ((search_cost as f64 * 1.2) as i32).max(1);
             }
             _ => { let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":format!("根据当前信息：\n\n{}",ac),"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log})); }
         }

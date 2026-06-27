@@ -1,6 +1,18 @@
 <script setup lang="ts">
+function formatTime(ts: string) { if (!ts) return ''; const d = new Date(ts); return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }
+function formatSessionTime(ts: string) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const now = new Date()
+  const diff = now.getTime() - d.getTime()
+  if (diff < 300000) return '刚刚'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`
+  if (diff < 172800000) return '昨天'
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
 defineProps<{
-  sessions: { id: string; name: string; messages: any[]; createdAt: string }[]
+  sessions: { id: string; name: string; messages: any[]; createdAt: string; updatedAt?: string }[]
   currentSessionId: string | null
   editingSessionId: string | null
   sessionNameEdit: string
@@ -45,6 +57,7 @@ const emit = defineEmits<{
         <div class="flex-1 min-w-0">
           <div class="truncate font-medium">{{ s.name }}</div>
           <div v-if="s.messages.length" class="text-[10px] mt-0.5 text-surface-400 truncate">{{ s.messages[s.messages.length-1].content?.slice(0,40) || '...' }}</div>
+          <div v-if="s.updatedAt || s.createdAt" class="text-[9px] mt-0.5 text-surface-400">{{ formatSessionTime(s.updatedAt || s.createdAt) }}</div>
         </div>
         <!-- Rename button — matches NotesPage notebook edit style -->
         <button @click.stop="emit('startRename', s.id)"

@@ -96,7 +96,7 @@ async function showSourceDetail(row: any) {
       }
       sourceDetail.value = r.row
     }
-  } catch {}
+  } catch (e) { console.error('[Inspector] loadSourceDetail failed:', e) }
 }
 
 function closeDetail() { sourceDetail.value = null; detailHtml.value = '' }

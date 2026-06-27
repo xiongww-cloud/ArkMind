@@ -20,6 +20,10 @@ async function renderMarkdown(text: string): Promise<string> {
     return sanitizeHtml(html)
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
+// ─── Types ──────────────────────────────────────────────────────
+interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean }
+interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
+
 const rendered = ref<Record<number,string>>({})
 async function renderMessageContent(idx: number) {
   const msgs = currentSession.value?.messages; if (!msgs || !msgs[idx]) return ''
@@ -31,34 +35,33 @@ async function renderMessageContent(idx: number) {
 function renderedContent(idx: number): string { return rendered.value[idx] || '' }
 
 // ─── Typewriter ─────────────────────────────────────────────────
-const typewriterStates = ref<Record<number,{text:string;done:boolean}>>({})
-let typewriterTimers: Record<number,ReturnType<typeof setInterval>> = {}
-function startTypewriter(idx: number, fullText: string, speed = 8) {
-  stopTypewriter(idx)
-  if (!fullText) { typewriterStates.value[idx] = { text: '', done: true }; return }
-  renderMarkdown(fullText.replace(/~/g, '～')).then(html => { rendered.value[idx] = html })
-  const chunk = 5
+const activeTypewriters = new Set<ChatMessage>()
+function startTypewriter(msg: ChatMessage, fullText: string, speed = 8) {
+  stopTypewriter(msg)
+  if (!fullText) { msg.typewriterText = ''; msg.typewriterDone = true; return }
+  const idx = currentSession.value?.messages.indexOf(msg) ?? -1
+  if (idx >= 0) renderMarkdown(fullText.replace(/~/g, '～')).then(html => { rendered.value[idx] = html })
+  const TYPEWRITER_CHUNK_SIZE = 5
   let pos = 0
-  typewriterStates.value[idx] = { text: fullText.slice(0, pos), done: false }
-  typewriterTimers[idx] = setInterval(() => {
-    pos += chunk
+  msg.typewriterText = fullText.slice(0, pos)
+  msg.typewriterDone = false
+  activeTypewriters.add(msg)
+  const timer = setInterval(() => {
+    pos += TYPEWRITER_CHUNK_SIZE
     if (pos >= fullText.length) {
-      pos = fullText.length; clearInterval(typewriterTimers[idx]); delete typewriterTimers[idx]
-      typewriterStates.value[idx] = { text: fullText, done: true }; return
+      pos = fullText.length; clearInterval(timer); activeTypewriters.delete(msg)
+      msg.typewriterText = fullText; msg.typewriterDone = true; return
     }
-    typewriterStates.value[idx] = { text: fullText.slice(0, pos), done: false }
+    msg.typewriterText = fullText.slice(0, pos)
   }, speed)
 }
-function stopTypewriter(idx: number) {
-  if (typewriterTimers[idx]) { clearInterval(typewriterTimers[idx]); delete typewriterTimers[idx] }
-  const s = typewriterStates.value[idx]; if (s && !s.done) { s.text = s.text; s.done = true }
+function stopTypewriter(msg: ChatMessage) {
+  if (msg.typewriterText !== undefined && !msg.typewriterDone) { msg.typewriterDone = true }
+  activeTypewriters.delete(msg)
 }
-function typewriterText(idx: number): string { return typewriterStates.value[idx]?.text || '' }
-function isTypewriting(idx: number): boolean { return !!typewriterStates.value[idx] && !typewriterStates.value[idx].done }
-
-// ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string }
-interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
+function stopAllTypewriters() { for (const msg of activeTypewriters) { stopTypewriter(msg) } }
+function typewriterText(msg: ChatMessage): string { return msg.typewriterText || '' }
+function isTypewriting(msg: ChatMessage): boolean { return msg.typewriterText !== undefined && !msg.typewriterDone }
 
 // ─── Session management ─────────────────────────────────────────
 const sessions = ref<ChatSession[]>([])
@@ -67,15 +70,15 @@ const sessionNameEdit = ref('')
 const editingSessionId = ref<string|null>(null)
 
 function newSession() {
-  for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
+  stopAllTypewriters()
   const id = crypto.randomUUID()
-  sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toISOString() })
+  sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
   currentSessionId.value = id; saveToStorage()
 }
 
 // ★ 启动时加载持久化会话
 onMounted(async () => {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话' })) } catch {}
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
   if (!sessions.value.length) { newSession() }
   nextTick(() => scrollToBottomIfNear())
 })
@@ -83,11 +86,9 @@ onMounted(async () => {
 onActivated(() => { nextTick(() => scrollToBottomIfNear()) })
 async function selectSession(id: string) {
   currentSessionId.value = id; rendered.value = {}
-  for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
-  typewriterStates.value = {}
+  stopAllTypewriters()
   // Trigger markdown rendering for all AI messages — await all
   const session = sessions.value.find(s => s.id === id)
-  for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
   if (session) {
     await Promise.all(session.messages.map((m, i) => {
       if (m.role === 'assistant' && m.content && !m.isThinking) {
@@ -100,9 +101,9 @@ async function selectSession(id: string) {
 }
 const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
 
-function saveToStorage() { kbSaveSessions(sessions.value).catch((e) => console.error('[Agent] 保存会话失败:', e)) }
+function saveToStorage() { const s = currentSession.value; if (s && s.messages.length > 0) { s.updatedAt = new Date().toISOString(); sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) }; kbSaveSessions(sessions.value).catch((e) => console.error('[Agent] 保存会话失败:', e)) }
 async function loadFromStorage() {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话' })) } catch { sessions.value = [] }
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
   if (!sessions.value.length) { newSession(); return }
   currentSessionId.value = sessions.value[0].id
   // Render markdown for loaded AI messages — await all renders
@@ -141,7 +142,8 @@ let initialScrollDone = false
 function scrollToBottomIfNear() {
   const el = feedScrollRef.value as HTMLElement | null; if (!el) return
   if (!initialScrollDone) { initialScrollDone = true; nextTick(() => { el.scrollTop = el.scrollHeight }); return }
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150
+  const SCROLL_NEAR_BOTTOM_THRESHOLD = 150
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
   if (nearBottom) { nextTick(() => { el.scrollTop = el.scrollHeight }) }
 }
 
@@ -211,13 +213,14 @@ async function handleSendMessage() {
       thinkingProgress.value = ''
       if (streamedContent.value) { msg.content = streamedContent.value.replace(/<refs>[\s\S]*<\/refs>/g, '').trim(); streamedContent.value = '' }
       msg.toolCalls = result.tool_log || []
-      startTypewriter(aiIdx, msg.content)
+      startTypewriter(msg, msg.content)
       const rawCalls: any[] = []; const toolResults: any[] = []
       for (const r of (result.tool_log || [])) {
         for (const t of (r.tools || [])) {
           const callId = 'call_' + Math.random().toString(36).slice(2, 8)
           rawCalls.push({ id: callId, type: 'function', function: { name: t.tool, arguments: typeof t.args === 'string' ? t.args : JSON.stringify(t.args) } })
-          toolResults.push({ id: callId, name: t.tool, content: typeof t.result === 'string' ? t.result.substring(0, 30000) : '' })
+          const TOOL_RESULT_MAX_LENGTH = 30000
+          toolResults.push({ id: callId, name: t.tool, content: typeof t.result === 'string' ? t.result.substring(0, TOOL_RESULT_MAX_LENGTH) : '' })
         }
       }
       msg.rawToolCalls = rawCalls; msg.toolResults = toolResults; msg.contextDocs = result.context_docs || result.sources || [];
@@ -229,7 +232,7 @@ async function handleSendMessage() {
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
     isChatting.value = false; saveToStorage(); scrollToBottomIfNear()
-    try { ;unlistenStream(); unlistenThought(); unlistenProgress() } catch {}
+    try { ;unlistenStream(); unlistenThought(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
   }
 }
 
@@ -295,7 +298,7 @@ async function openNotebookPicker(idx: number) { savingMsgIdx.value = idx; noteb
 onMounted(loadFromStorage)
 onUnmounted(() => {
   saveToStorage()
-  for (const k of Object.keys(typewriterTimers)) stopTypewriter(Number(k))
+  stopAllTypewriters()
 })
 </script>
 
@@ -371,8 +374,8 @@ onUnmounted(() => {
                 <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
               </template>
               <template v-else>
-                <div v-if="isTypewriting(idx)" class="text-[12px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">
-                  {{ typewriterText(idx) }}<span class="inline-block w-[2px] h-[1em] bg-[#2563eb] ml-0.5 align-middle animate-pulse">▌</span>
+                <div v-if="isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">
+                  {{ typewriterText(msg) }}<span class="inline-block w-[2px] h-[1em] bg-[#2563eb] ml-0.5 align-middle animate-pulse">▌</span>
                 </div>
                 <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: renderedContent(idx) ? 1 : 0, transform: renderedContent(idx) ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(idx)"></div>
                 <div class="flex items-center gap-1 mt-3 pt-3 border-t border-[#e5e5ea]">

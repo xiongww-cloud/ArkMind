@@ -27,7 +27,7 @@ export interface ChatSession { id: string; name: string; messages: ChatMessage[]
 export interface ChatMessage { role: 'user'|'assistant'; content: string; [key:string]: unknown }
 
 // ─── User ───────────────────────────────────────────────────────
-export async function fetchUserProfile(): Promise<{id:string;name:string;username:string;role:string;phone:string;email:string;avatar:string;aiConfig:string}> { return invoke('user_profile') }
+export async function fetchUserProfile(): Promise<UserProfile> { return invoke('user_profile') }
 export async function updateUserProfile(data: Record<string,any>): Promise<void> { await invoke('user_profile_update', { data }) }
 
 // ─── License ────────────────────────────────────────────────────
@@ -98,6 +98,7 @@ export async function exportFile(fileId: string): Promise<any> {
   await invoke('file_export_to_path', { filePath: r.filePath, savePath: p });
   return { success: true };
 }
+export async function readFileBytes(fileId: string): Promise<{success:boolean;data?:string;error?:string}> { return invoke('file_read_bytes', { fileId }) }
 
 // ─── 资料库：孤文件 + 虚拟树 + 移动 + 文件夹 ──
 export async function listGlobalFiles(): Promise<any> { return invoke('file_list_global') }
@@ -128,10 +129,11 @@ export async function getMaterialAssociations(materialId: string): Promise<any> 
 export async function updateMaterialAssociations(materialId: string, productIds: string[], matType?: string): Promise<any> { return invoke('file_update_product_associations', { data: { fileId: materialId, productIds, type: matType||'OTHER' } }) }
 
 // ─── Settings ──────────────────────────────────────────────────
-export async function fetchSettings(): Promise<any> { return invoke('settings_get') }
-export async function updateSettings(data: Record<string,any>): Promise<any> { return invoke('settings_update', { data }) }
-export async function fetchAiConfig(): Promise<any> { return invoke('get_ai_config') }
-export async function updateAiConfig(data: Record<string,any>): Promise<any> { return invoke('update_ai_config', { data: { ai_config: JSON.stringify(data) } }) }
+export interface UserProfile { id: string; name: string; username: string; role: string; phone: string; email: string; avatar: string; aiConfig: string }
+export async function fetchSettings(): Promise<Record<string, any>> { return invoke('settings_get') }
+export async function updateSettings(data: Record<string,any>): Promise<{success: boolean}> { return invoke('settings_update', { data }) }
+export async function fetchAiConfig(): Promise<AiConfig> { return invoke('get_ai_config') }
+export async function updateAiConfig(data: Record<string,any>): Promise<{success: boolean}> { return invoke('update_ai_config', { data: { ai_config: JSON.stringify(data) } }) }
 
 // ─── Notes ─────────────────────────────────────────────────────
 export async function fetchNotes(): Promise<FetchNotesResponse> { return invoke('notes_list_all') }
@@ -208,23 +210,27 @@ export async function deleteSolution(solutionId: string): Promise<void> { await 
 export async function createVersion(solutionId: string, data: Record<string,any>): Promise<VersionRow> { return invoke('solution_version_create', { solutionId, data }) }
 export async function finalizeDraftVersion(versionId: string, data: Record<string,any>): Promise<VersionRow> { return invoke('solution_version_finalize', { versionId, data }) }
 export async function fetchVersions(solutionId: string): Promise<VersionRow[]> { return invoke('solution_version_list', { solutionId }) }
+export const fetchSolutionVersions = fetchVersions
 export async function deleteVersion(versionId: string): Promise<void> { await invoke('solution_version_delete', { versionId }) }
 export async function updateSolutionVersionMeta(versionId: string, data: Record<string,any>): Promise<void> { await invoke('solution_version_update_meta', { versionId, data }) }
 export async function saveDraftVersion(versionId: string, data: Record<string,any>): Promise<VersionRow> { return invoke('solution_version_save_draft', { versionId, data }) }
 export async function solutionDownloadExcel(data: {buffer:number[];fileName:string}): Promise<{success:boolean;savedPath?:string;error?:string}> { const { save } = await import('@tauri-apps/plugin-dialog'); const sp = await save({ defaultPath: data.fileName, filters: [{name:'Excel',extensions:['xlsx']}] }); if(!sp) return {success:false,error:'cancelled'}; return invoke('solution_download_excel', { data: { buffer: data.buffer, savePath: sp } }) }
 
 // ─── KB ────────────────────────────────────────────────────────
-export async function kbGetConfig(): Promise<{embeddingApiUrl?:string;embeddingApiKey?:string;embeddingModelName?:string;embeddingActive?:boolean;chatApiUrl?:string;chatApiKey?:string;chatModelName?:string}> { return invoke('kb_get_config') }
-export async function kbUpdateConfig(data: any): Promise<{success:boolean}> { return invoke('kb_update_config', { data }) }
-export async function kbImportFile(data: any): Promise<{success:boolean;fileId?:string;error?:string}> { return invoke('kb_import_file', { data }) }
-export async function kbSaveNote(data: any): Promise<{success:boolean;noteId?:string}> { return invoke('kb_save_note', { data }) }
-export async function kbSearch(data: any): Promise<{success:boolean;results?:any[]}> { return invoke('kb_search', { data }) }
+export interface KbConfig { embeddingApiUrl?: string; embeddingApiKey?: string; embeddingModelName?: string; embeddingActive?: boolean; chatApiUrl?: string; chatApiKey?: string; chatModelName?: string }
+export interface KbSearchResult { source_type: string; source_id: string; title: string; chunk_text: string; score: number }
+export interface KbDiagnoseResult { success: boolean; embedding_configured: boolean; chat_configured: boolean; lancedb_count: number; fts5_count: number }
+export async function kbGetConfig(): Promise<KbConfig> { return invoke('kb_get_config') }
+export async function kbUpdateConfig(data: Record<string, any>): Promise<{success:boolean}> { return invoke('kb_update_config', { data }) }
+export async function kbImportFile(data: Record<string, any>): Promise<{success:boolean;fileId?:string;error?:string}> { return invoke('kb_import_file', { data }) }
+export async function kbSaveNote(data: Record<string, any>): Promise<{success:boolean;noteId?:string}> { return invoke('kb_save_note', { data }) }
+export async function kbSearch(data: Record<string, any>): Promise<{success:boolean;results?:KbSearchResult[]}> { return invoke('kb_search', { data }) }
 export async function kbDelete(docId: string): Promise<{success:boolean}> { return invoke('kb_delete', { docId }) }
 export async function kbListDocuments(projectId?: string): Promise<{success:boolean;documents?:FileRow[]}> { return invoke('kb_list_documents', { projectId: projectId||null }) }
-export async function kbChat(data: any): Promise<{success:boolean;answer?:string;error?:string}> { return invoke('kb_chat', { data }) }
-export async function kbAgentChat(data: any): Promise<{success:boolean;answer?:string;tool_log?:any[];context_docs?:any[];workspace?:string;error?:string}> { return invoke('kb_agent_chat', { data }) }
-export async function kbDiagnose(): Promise<any> { return invoke('kb_diagnose') }
-export async function kbGetTableChunks(fileId: string): Promise<any> { return invoke('kb_get_table_chunks', { fileId }) }
+export async function kbChat(data: Record<string, any>): Promise<{success:boolean;answer?:string;error?:string}> { return invoke('kb_chat', { data }) }
+export async function kbAgentChat(data: Record<string, any>): Promise<{success:boolean;answer?:string;tool_log?:Array<{tool:string;args:unknown;result:string}>;context_docs?:Array<{title:string;chunk_text:string}>;workspace?:string;error?:string}> { return invoke('kb_agent_chat', { data }) }
+export async function kbDiagnose(): Promise<KbDiagnoseResult> { return invoke('kb_diagnose') }
+export async function kbGetTableChunks(fileId: string): Promise<{success:boolean;chunks?:Array<{id:number;chunk_text:string;chunk_index:number}>}> { return invoke('kb_get_table_chunks', { fileId }) }
 export async function kbTestEmbedding(data: {url:string;key:string;model:string}): Promise<{success:boolean;message?:string;error?:string}> { return invoke('kb_test_embedding', { data }) }
 export async function kbTestChat(data: {url:string;key:string;model:string}): Promise<{success:boolean;message?:string;error?:string}> { return invoke('kb_test_chat', { data }) }
 
@@ -340,11 +346,6 @@ export async function getTodo(id: string): Promise<{todo?:TodoRow}> { return inv
 // OSS
 export async function ossTestConnection(): Promise<{success:boolean;error?:string}> { return invoke('oss_test_connection') }
 export async function ossRawDiagnose(): Promise<{success:boolean;detail:string}> { return invoke('oss_raw_diagnose') }
-
-// Raw SQL (Compatibility)
-export async function dbAll(sql: string, params?: any[]): Promise<any[]> { return invoke('db_all', { sql, params: params||[] }) }
-export async function dbGet(sql: string, params?: any[]): Promise<any> { return invoke('db_get', { sql, params: params||[] }) }
-export async function dbRun(sql: string, params?: any[]): Promise<any> { return invoke('db_run', { sql, params: params||[] }) }
 
 // Project import/export
 export async function projectExport(projectId: string): Promise<any> { return invoke('project_export', { projectId }) }

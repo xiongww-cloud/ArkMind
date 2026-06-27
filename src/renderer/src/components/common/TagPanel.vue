@@ -35,7 +35,7 @@ const availableTags = computed(() => {
 })
 
 async function loadTags() {
-  try { const r = await entityGetTags(props.entityType, props.entityId); tags.value = r?.tags || []; console.log('[TagPanel] loaded', props.entityType, props.entityId, tags.value.length, 'tags') }
+  try { const r = await entityGetTags(props.entityType, props.entityId); tags.value = r?.tags || [] }
   catch { tags.value = [] }
 }
 

@@ -2,17 +2,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
-import StarterKit from '@tiptap/starter-kit'
-import Underline from '@tiptap/extension-underline'
-import TextAlign from '@tiptap/extension-text-align'
-import Placeholder from '@tiptap/extension-placeholder'
-import TaskList from '@tiptap/extension-task-list'
-import TaskItem from '@tiptap/extension-task-item'
-import Table from '@tiptap/extension-table'
-import TableRow from '@tiptap/extension-table-row'
-import TableCell from '@tiptap/extension-table-cell'
-import TableHeader from '@tiptap/extension-table-header'
-import { ProjectExtension, FileExtension } from '@/components/editor/extensions'
+import { getTiptapExtensions } from '@/composables/useTiptapConfig'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useSelectionStore } from '@/stores/selection'
@@ -933,17 +923,7 @@ async function loadAllProjects() {
 
 const noteEditor = useEditor({
   content: '',
-  extensions: [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
-    Underline,
-    Table.configure({ resizable: true }),
-    TableRow, TableCell, TableHeader,
-    TaskList, TaskItem.configure({ nested: true }),
-    TextAlign.configure({ types: ['heading', 'paragraph'] }),
-    Placeholder.configure({ placeholder: '开始记录...' }),
-    ProjectExtension,
-    FileExtension,
-  ],
+  extensions: getTiptapExtensions({ placeholder: '开始记录...' }),
   onUpdate: ({ editor: ed }) => {
     if (selectedNote.value && debouncedNoteSave) debouncedNoteSave(ed.getHTML())
   },
@@ -1084,7 +1064,7 @@ function panelFileSize(bytes: number | undefined): string {
 }
 
 async function panelPreviewFile(fileId: string) {
-  try { await previewFile(fileId) } catch {}
+  try { await previewFile(fileId) } catch (e) { console.error('[Project] previewFile failed:', e) }
 }
 
 function panelStartRename(f: any) {
@@ -1098,7 +1078,7 @@ function panelStartRename(f: any) {
 
 async function panelConfirmRename(f: any) {
   const n = panelEditingFileName.value.trim()
-  if (n) { try { await updateFileMeta(f.id, { customName: n }); await loadProjFilesPanel() } catch {} }
+  if (n) { try { await updateFileMeta(f.id, { customName: n }); await loadProjFilesPanel() } catch (e) { console.error('[Project] renameFile failed:', e) } }
   panelEditingFileId.value = null
 }
 

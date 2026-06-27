@@ -11,6 +11,8 @@ const router = useRouter()
 const projectStore = useProjectStore()
 const { navigateTo } = useNavigation()
 
+const MS_PER_DAY = 86400000
+
 // ─── Time-of-day greeting ───────────────────────────────────────────
 const greeting = computed(() => {
   const h = new Date().getHours()
@@ -38,11 +40,11 @@ async function loadData() {
     const r = await fetchProjects()
     allProjects.value = Array.isArray(r) ? r : projectStore.projects
   } catch { allProjects.value = projectStore.projects }
-  try { const r: any = await fetchTodos(); allTodos.value = r?.todos || [] } catch {}
-  try { const r: any = await fetchAllDynamics(); allDynamics.value = r || [] } catch {}
-  try { const r: any = await fetchNotes(); allNotes.value = r?.notes || [] } catch {}
-  try { const r = await kbProjectNoteIds(); projectNoteIds.value = new Set(r?.ids || []) } catch {}
-  try { dashboardStats.value = await kbDashboardStats() } catch {}
+  try { const r: any = await fetchTodos(); allTodos.value = r?.todos || [] } catch (e) { console.error('[Dashboard] fetchTodos failed:', e) }
+  try { const r: any = await fetchAllDynamics(); allDynamics.value = r || [] } catch (e) { console.error('[Dashboard] fetchAllDynamics failed:', e) }
+  try { const r: any = await fetchNotes(); allNotes.value = r?.notes || [] } catch (e) { console.error('[Dashboard] fetchNotes failed:', e) }
+  try { const r = await kbProjectNoteIds(); projectNoteIds.value = new Set(r?.ids || []) } catch (e) { console.error('[Dashboard] kbProjectNoteIds failed:', e) }
+  try { dashboardStats.value = await kbDashboardStats() } catch (e) { console.error('[Dashboard] kbDashboardStats failed:', e) }
 }
 
 onMounted(loadData)
@@ -86,7 +88,7 @@ const urgentDeadlineCount = computed(() => {
   return allProjects.value.filter((p: any) => {
     if (!p.bid_time || ['Won','Ordered','Lost'].includes(p.status)) return false
     const ms = new Date(p.bid_time).getTime() - now
-    return ms > 0 && ms < 86400000 * 3
+    return ms > 0 && ms < MS_PER_DAY * 3
   }).length
 })
 
@@ -142,8 +144,8 @@ const deadlines = computed(() => {
       return {
         id: p.id,
         name: p.name, deadline: bt.slice(0, 10),
-        urgent: ms > 0 && ms < 86400000 * 2,
-        medium: ms > 0 && ms < 86400000 * 7,
+        urgent: ms > 0 && ms < MS_PER_DAY * 2,
+        medium: ms > 0 && ms < MS_PER_DAY * 7,
         stage: statusLabels[p.status] || p.status,
       }
     })

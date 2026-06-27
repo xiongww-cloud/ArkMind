@@ -1,4 +1,4 @@
-﻿use crate::database;
+use crate::database;
 use serde_json::{json, Value};
 use tauri::Emitter;
 
@@ -203,14 +203,16 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
 // Chat session persistence
 #[tauri::command] pub async fn kb_save_sessions(data: Value) -> Result<Value, String> {
     let sessions = data["sessions"].as_array().ok_or("missing sessions array")?;
-    let base_ts = chrono::Local::now();
-    for (i, s) in sessions.iter().enumerate() {
-        let ts = (base_ts + chrono::Duration::milliseconds(i as i64)).format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+    for s in sessions.iter() {
         let id = s["id"].as_str().ok_or("missing session id")?;
         let title = s["title"].as_str().or_else(|| s["name"].as_str()).unwrap_or("");
+        // 使用前端传来的 updatedAt，若无则用当前时间
+        let updated_at = s["updatedAt"].as_str().or_else(|| s["updated_at"].as_str())
+            .unwrap_or(&chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string())
+            .to_string();
         // ★ UPSERT：保留已有会话的 created_at，只更新 title / updated_at
         database::run("INSERT INTO chat_sessions(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3) ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
-            &[json!(id), json!(title), json!(ts)]).map_err(|e| e.to_string())?;
+            &[json!(id), json!(title), json!(updated_at)]).map_err(|e| e.to_string())?;
         let msgs_raw = s["messages"].as_array().cloned().or_else(|| s["messages"].as_str().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()));
         if let Some(ref msgs) = msgs_raw {
             database::run("DELETE FROM chat_messages WHERE session_id=?", &[json!(id)]).ok();

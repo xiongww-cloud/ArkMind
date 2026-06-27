@@ -1,4 +1,4 @@
-﻿use crate::database;
+use crate::database;
 use serde_json::{json, Value};
 use sha2::{Sha256, Digest};
 use std::io::{Read, BufReader};
@@ -513,6 +513,18 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
 #[tauri::command] pub async fn file_export_to_path(file_path: String, save_path: String) -> Result<Value, String> {
     std::fs::copy(&file_path, &save_path).map_err(|e| format!("拷贝失败: {}", e))?;
     Ok(json!({"success":true}))
+}
+
+#[tauri::command] pub async fn file_read_bytes(file_id: String) -> Result<Value, String> {
+    use base64::Engine;
+    match resolve_file_info(&file_id) {
+        Some((src, _, _)) => {
+            let buf = std::fs::read(&src).map_err(|e| format!("读取文件失败: {}", e))?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+            Ok(json!({"success":true,"data":b64}))
+        }
+        None => Ok(json!({"success":false,"error":"文件不存在"}))
+    }
 }
 
 // ── Stubs / legacy compat ──

@@ -557,7 +557,6 @@ async function deleteVersionEntry(entry) {
     if (plan && Array.isArray(plan.history)) {
       plan.history = plan.history.filter(h => (h.versionId || h.id) !== verId)
     }
-    console.log(`版本 ${fmtVersion(entry.data.versionNum)} 已删除`)
   } catch (e) {
     console.warn('删除版本失败', e)
   }
@@ -626,7 +625,7 @@ const saveDraft = () => {
 }
 
 function clearDraft(planId) {
-  try { localStorage.removeItem(draftKey(planId)) } catch {}
+  try { localStorage.removeItem(draftKey(planId)) } catch (e) { console.error('[Solution] clearDraft failed:', e) }
 }
 
 function restoreDrafts() {
@@ -669,7 +668,6 @@ onMounted(async () => {
   try {
     const raw = await fetchProducts()
     const products = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.items) ? raw.items : [])
-    console.log(`[ProductCatalog] 产品库加载完成，共 ${products.length} 条数据`)
     gp.value = products.map(p => ({ ...p, name: p.model || p.name }))
   } catch (e) {
     console.warn('[ProductCatalog] 加载产品库失败', e)

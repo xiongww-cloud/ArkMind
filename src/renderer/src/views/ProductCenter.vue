@@ -301,7 +301,7 @@ function startRenameMaterial(m: any) {
 }
 async function confirmRenameMaterial(m: any) {
   const n = editingMaterialName.value.trim()
-  if (n) { try { await updateFileMeta(m.id, { customName: n, relationId: m.relation_id }); await loadMaterials() } catch {} }
+  if (n) { try { await updateFileMeta(m.id, { customName: n, relationId: m.relation_id }); await loadMaterials() } catch (e) { console.error('[Product] renameMaterial failed:', e) } }
   editingMaterialId.value = null
 }
 function cancelRenameMaterial() { editingMaterialId.value = null }

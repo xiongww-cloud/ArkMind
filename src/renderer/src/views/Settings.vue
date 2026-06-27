@@ -673,7 +673,6 @@ async function saveStorageConfig() {
     if (oldPath && newPath && oldPath !== newPath) {
       try {
         await migrateFiles(oldPath, newPath)
-        console.log('文件搬迁完成:', oldPath, '->', newPath)
       } catch (e) {
         console.warn('文件搬迁失败:', e)
       }

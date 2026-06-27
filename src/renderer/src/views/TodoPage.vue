@@ -133,7 +133,7 @@ async function confirmRename(f: AttachedFile) {
       const { updateFileMeta } = await import('@/api/db-client')
       await updateFileMeta(f.id, { customName: n, relationId: f.relation_id })
       await refreshAttachments()
-    } catch {}
+    } catch (e) { console.error('[Todo] renameAttachment failed:', e) }
   }
   editingFileId.value = null
 }
@@ -266,12 +266,9 @@ async function updateTodoLocal(id: string, data: Partial<Todo>) {
 
 async function toggleDone(id: string) {
   try {
-    console.log('[toggleDone] calling apiToggleTodo for', id)
     const r = await apiToggleTodo(id)
-    console.log('[toggleDone] response:', JSON.stringify(r))
     if (r?.todo) {
       const idx = todos.value.findIndex(t => t.id === id)
-      console.log('[toggleDone] idx:', idx, 'repeat_advanced:', r.repeat_advanced, 'new due_date:', r.todo?.due_date, 'new done:', r.todo?.done)
       if (idx !== -1) {
         todos.value[idx].done = r.todo.done === 1 || r.todo.done === true
         if (r.repeat_advanced) {

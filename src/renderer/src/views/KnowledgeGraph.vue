@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import VueApexCharts from 'vue3-apexcharts'
 import AppIcon from '@/components/common/AppIcon.vue'
@@ -16,7 +16,7 @@ type ViewType = 'dashboard' | 'tags' | 'status'
 const activeView = ref<ViewType>('dashboard')
 const stats = ref<any>(null)
 const growthDays = ref(30)
-async function loadStats() { try { const r = await kbDashboardStats(); if (r?.success) stats.value = r } catch {} }
+async function loadStats() { try { const r = await kbDashboardStats(); if (r?.success) stats.value = r } catch (e) { console.error('[KG] loadStats failed:', e) } }
 function setGrowthDays(d: number) { growthDays.value = d }
 
 const growthChart = computed(() => {
@@ -55,19 +55,19 @@ const groupedTags = computed(() => {
 async function loadTags() {
   try { const [t, c, s] = await Promise.all([tagList(), tagListCategories(), tagStats()]); allTags.value = Array.isArray(t) ? t : []; categories.value = Array.isArray(c) ? c.map((x: any) => x.type || x) : []; if (s?.success) tagStatsData.value = s } catch { allTags.value = []; categories.value = [] }
 }
-async function handleCreateTag() { if (!newTagName.value.trim()) return; try { await tagCreate(newTagName.value.trim(), '', newTagCategory.value); newTagName.value = ''; await loadTags() } catch {} }
-async function handleDeleteTag(tagId: string) { try { await tagDelete(tagId); await loadTags() } catch {} }
+async function handleCreateTag() { if (!newTagName.value.trim()) return; try { await tagCreate(newTagName.value.trim(), '', newTagCategory.value); newTagName.value = ''; await loadTags() } catch (e) { console.error('[KG] createTag failed:', e) } }
+async function handleDeleteTag(tagId: string) { try { await tagDelete(tagId); await loadTags() } catch (e) { console.error('[KG] deleteTag failed:', e) } }
 
 const pipelineStatus = ref<any>({})
-async function loadPipelineStatus() { try { pipelineStatus.value = await pipelineDebugStatus() || {} } catch {} }
-async function handleClearAll() { if (!(await dangerConfirm({ title: '重置全部数据', message: '确定重置全部数据？将重新从业务表抓取数据并重新物化打标。', confirmText: '重置' }))) return; try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }); await loadStats(); await loadPipelineStatus() } catch {} }
-async function handleClearKnowledge() { if (!(await dangerConfirm({ title: '重置知识管线', message: '确定重置知识碎片和向量缓存？将重新从源数据物化。', confirmText: '重置' }))) return; try { await pipelineClearKnowledge(); toast({ message: '已重置知识管线，正在重新物化', type: 'success' }); await loadStats(); await loadPipelineStatus() } catch {} }
-async function handleClearTagPipeline() { if (!(await dangerConfirm({ title: '重置标签管线', message: '确定重置所有标签映射？将清除已有标签并重新打标。', confirmText: '重置' }))) return; try { await pipelineClearTagPipeline(); toast({ message: '已重置标签管线，正在重新打标', type: 'success' }); await loadPipelineStatus() } catch {} }
-async function handleRetryFailedSync() { try { const r = await aiSyncRetryFailed(); toast({ message: `已重置 ${r?.retried ?? 0} 个失败同步任务`, type: 'success' }); await loadStats(); await loadPipelineStatus() } catch {} }
-async function handleRetryFailedCleanup() { try { const r = await cleanupRetryFailed(); toast({ message: `已重置 ${r?.retried ?? 0} 个失败清理任务`, type: 'success' }); await loadStats(); await loadPipelineStatus() } catch {} }
+async function loadPipelineStatus() { try { pipelineStatus.value = await pipelineDebugStatus() || {} } catch (e) { console.error('[KG] loadPipelineStatus failed:', e) } }
+async function handleClearAll() { if (!(await dangerConfirm({ title: '重置全部数据', message: '确定重置全部数据？将重新从业务表抓取数据并重新物化打标。', confirmText: '重置' }))) return; try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }); await loadStats(); await loadPipelineStatus() } catch (e) { console.error('[KG] clearAll failed:', e); toast({ message: '重置失败', type: 'error' }) } }
+async function handleClearKnowledge() { if (!(await dangerConfirm({ title: '重置知识管线', message: '确定重置知识碎片和向量缓存？将重新从源数据物化。', confirmText: '重置' }))) return; try { await pipelineClearKnowledge(); toast({ message: '已重置知识管线，正在重新物化', type: 'success' }); await loadStats(); await loadPipelineStatus() } catch (e) { console.error('[KG] clearKnowledge failed:', e); toast({ message: '重置失败', type: 'error' }) } }
+async function handleClearTagPipeline() { if (!(await dangerConfirm({ title: '重置标签管线', message: '确定重置所有标签映射？将清除已有标签并重新打标。', confirmText: '重置' }))) return; try { await pipelineClearTagPipeline(); toast({ message: '已重置标签管线，正在重新打标', type: 'success' }); await loadPipelineStatus() } catch (e) { console.error('[KG] clearTagPipeline failed:', e); toast({ message: '重置失败', type: 'error' }) } }
+async function handleRetryFailedSync() { try { const r = await aiSyncRetryFailed(); toast({ message: `已重置 ${r?.retried ?? 0} 个失败同步任务`, type: 'success' }); await loadStats(); await loadPipelineStatus() } catch (e) { console.error('[KG] retryFailedSync failed:', e); toast({ message: '重试失败', type: 'error' }) } }
+async function handleRetryFailedCleanup() { try { const r = await cleanupRetryFailed(); toast({ message: `已重置 ${r?.retried ?? 0} 个失败清理任务`, type: 'success' }); await loadStats(); await loadPipelineStatus() } catch (e) { console.error('[KG] retryFailedCleanup failed:', e); toast({ message: '重试失败', type: 'error' }) } }
 
 const debugData = ref<any>(null)
-async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch {} }
+async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch (e) { console.error('[KG] loadDebug failed:', e) } }
 function typeLabel(st: string): string { const m: Record<string,string> = { FILE:'文件',NOTE:'笔记',PRODUCT:'产品',PROJECT:'项目',TODO:'待办' }; return m[st] || st || '通用' }
 function typeColor(st: string): string { const m: Record<string,string> = { FILE:'#60a5fa',NOTE:'#fbbf24',PRODUCT:'#a78bfa',PROJECT:'#34d399',TODO:'#94a3b8' }; return m[st] || '#94a3b8' }
 function categoryLabel(c: string): string { const m: Record<string,string> = { general:'通用',scene:'场景',tech:'技术',product:'产品',daily:'日常',custom:'自定义' }; return m[c] || c }

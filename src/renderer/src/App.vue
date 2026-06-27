@@ -50,10 +50,12 @@ function onActivated() {
   showActivation.value = false
 }
 
+const LICENSE_POLL_INTERVAL_MS = 5 * 60 * 1000
+
 onMounted(() => {
   authStore.loadUser()
   checkActivation()
-  licensePollTimer = setInterval(pollLicenseStatus, 5 * 60 * 1000)
+  licensePollTimer = setInterval(pollLicenseStatus, LICENSE_POLL_INTERVAL_MS)
 })
 
 onUnmounted(() => {

@@ -214,7 +214,7 @@ async function confirmRename(id: string) {
 async function handleDeleteFolder(id: string) {
   const ok = await dangerConfirm({ title: '删除目录', message: '确定删除此目录？', confirmText: '删除' })
   if (!ok) return
-  try { const r: any = await deleteFolder(id); if (!r?.success) { toast({ message: r?.error || '删除失败', type: 'error' }); return }; await loadFolders() } catch {}
+  try { const r: any = await deleteFolder(id); if (!r?.success) { toast({ message: r?.error || '删除失败', type: 'error' }); return }; await loadFolders() } catch (e) { console.error('[Asset] deleteFolder failed:', e) }
 }
 
 // ─── Drag & drop ──────────────────────────────────

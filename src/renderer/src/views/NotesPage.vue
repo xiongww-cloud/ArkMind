@@ -10,17 +10,8 @@ import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
 import AttachmentPanel from '@/components/notes/AttachmentPanel.vue'
 import TagPanel from '@/components/common/TagPanel.vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
-import StarterKit from '@tiptap/starter-kit'
-import Underline from '@tiptap/extension-underline'
-import TextAlign from '@tiptap/extension-text-align'
-import Placeholder from '@tiptap/extension-placeholder'
-import Table from '@tiptap/extension-table'
-import TableRow from '@tiptap/extension-table-row'
-import TableCell from '@tiptap/extension-table-cell'
-import TableHeader from '@tiptap/extension-table-header'
-import TaskList from '@tiptap/extension-task-list'
-import TaskItem from '@tiptap/extension-task-item'
 import { Node } from '@tiptap/core'
+import { getTiptapExtensions } from '@/composables/useTiptapConfig'
 import {
   notesV2ListAll, notesV2ListDaily, notesV2ListOrphan, notesV2ListTrash, notesV2ListArchive,
   notesV2Create, notesV2Update, notesV2Delete, notesV2Restore, notesV2PermanentDelete,
@@ -29,7 +20,6 @@ import {
   fetchProjects,
   addFileNoteMapping, deleteFileFromDomain, fetchFilesByNote, uploadFile, previewFile, updateFileMeta,
 } from '@/api/db-client'
-import { ProjectExtension, FileExtension } from '@/components/editor/extensions'
 import { useLinkModals } from '@/composables/useLinkModals'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import { sanitizeHtmlSync } from '@/utils/sanitize'
@@ -117,21 +107,7 @@ const TimeTag = Node.create({
 
 const editor = useEditor({
   content: '',
-  extensions: [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
-    Underline,
-    Table.configure({ resizable: true }),
-    TableRow,
-    TableCell,
-    TableHeader,
-    TaskList,
-    TaskItem.configure({ nested: true }),
-    TextAlign.configure({ types: ['heading', 'paragraph'] }),
-    Placeholder.configure({ placeholder: '开始记录...' }),
-    TimeTag,
-    ProjectExtension,
-    FileExtension,
-  ],
+  extensions: getTiptapExtensions({ placeholder: '开始记录...', extraExtensions: [TimeTag] }),
   onUpdate: ({ editor: ed }) => {
     editContent.value = ed.getHTML()
     scheduleSave()
@@ -334,7 +310,7 @@ async function ensureDailyNote() {
   // ★ 唯一一处自动删除：清除非今日的空闪记
   for (const n of notes.value) {
     if (n.is_daily && n.title !== today && !(n.content || '').replace(/<[^>]*>/g, '').trim()) {
-      try { await notesV2PermanentDelete(n.note_id) } catch {}
+      try { await notesV2PermanentDelete(n.note_id) } catch (e) { console.error('[Notes] auto-delete daily note failed:', e) }
     }
   }
   notes.value = notes.value.filter(n => !(n.is_daily && n.title !== today && !(n.content || '').replace(/<[^>]*>/g, '').trim()))
@@ -407,7 +383,7 @@ function scheduleSave() {
 async function saveBeforeSwitch() {
   if (isDirty.value && selectedNoteId.value) {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
-    try { await doSave() } catch {}
+    try { await doSave() } catch (e) { console.error('[Notes] save on unmount failed:', e) }
   }
 }
 async function doSave() {
@@ -481,7 +457,7 @@ async function createNote() {
     await nextTick()
     editor.value?.commands.setContent('')
     editor.value?.commands.focus()
-  } catch {}
+  } catch (e) { console.error('[Notes] create note failed:', e) }
 }
 async function deleteNote(id: string) {
   const ok = await dangerConfirm({ title: '删除笔记', message: '确定删除此笔记？将放入回收站，30天后自动清空。', confirmText: '删除' })
@@ -491,7 +467,7 @@ async function deleteNote(id: string) {
     notes.value = notes.value.filter(n => n.note_id !== id && n.id !== id)
     if (selectedNoteId.value === id) selectedNoteId.value = null
     toast({ message: '已移至回收站', type: 'success' })
-  } catch {}
+  } catch (e) { console.error('[Notes] deleteNote failed:', e) }
 }
 
 // ─── Drag & Drop — custom mouse-event based (bypasses WebView HTML5 drag bugs) ──
@@ -545,7 +521,6 @@ function startNotebookDrag(e: MouseEvent, notebookId: string) {
   dragY.value = dragStartY.value = e.clientY
   document.addEventListener('mousemove', onDragMove)
   dragTimer.value = setTimeout(() => {
-    console.log('[drag] start notebook drag:', notebookId)
     isDragging.value = true
     dragType.value = 'notebook'
     dragNotebookId.value = notebookId
@@ -611,7 +586,6 @@ async function onDragUp(_e: MouseEvent) {
   if (!moved) return
   if (!type || !targetId) return
 
-  console.log('[drag] drop', { type, targetId, noteId: noteId, notebookId: notebookId, insert })
   if (type === 'note') {
     if (!noteId || noteId === targetId) return
     try {
@@ -696,7 +670,7 @@ function insertNoteFileToEditor(f: any) {
 }
 
 async function renameNoteFile(file: any, name: string) {
-  try { await updateFileMeta(file.id, { customName: name, relationId: file.relation_id }); await loadNoteFiles() } catch {}
+  try { await updateFileMeta(file.id, { customName: name, relationId: file.relation_id }); await loadNoteFiles() } catch (e) { console.error('[Notes] renameNoteFile failed:', e) }
 }
 async function removeNoteFile(fileId: string) {
   if (!selectedNoteId.value) return
@@ -743,13 +717,13 @@ async function removeNotebook(nid: string) {
   const count = countData?.count || 0
   const ok = await dangerConfirm({ title: '删除笔记本', message: `确定删除「${nb?.name || '未命名'}」？其中 ${count} 篇笔记将移入回收站。`, confirmText: '删除' })
   if (!ok) return
-  try { await deleteNotebook(nid); notebooks.value = notebooks.value.filter(n => n.id !== nid); if (selectedNotebookId.value === nid) { selectedNotebookId.value = null; currentView.value = 'daily' } } catch {}
+  try { await deleteNotebook(nid); notebooks.value = notebooks.value.filter(n => n.id !== nid); if (selectedNotebookId.value === nid) { selectedNotebookId.value = null; currentView.value = 'daily' } } catch (e) { console.error('[Notes] deleteNotebook failed:', e) }
 }
 
 // ─── Trash / Archive ─────────────────────────────────────────────────
 async function openRestoreDialog(nid: string) { restoringNoteId.value = nid; restoreSearchQuery.value = ''; selectedRestoreTarget.value = null; restoreDialogOpen.value = true }
 async function confirmRestore() { if (!selectedRestoreTarget.value || !restoringNoteId.value) return; isRestoring.value = true; try { await notesV2Restore(restoringNoteId.value, selectedRestoreTarget.value); restoreDialogOpen.value = false; if (selectedTrashNoteId.value === restoringNoteId.value) selectedTrashNoteId.value = null; restoringNoteId.value = null; await loadAll(); toast({ message: '笔记已恢复', type: 'success' }) } catch (e: any) { toast({ message: '恢复失败: ' + (e.message || e), type: 'error' }) } finally { isRestoring.value = false } }
-async function permanentDelete(nid: string) { const ok = await dangerConfirm({ title: '永久删除', message: '此操作不可恢复，确定永久删除？', confirmText: '永久删除' }); if (!ok) return; try { await notesV2PermanentDelete(nid); trashNotes.value = trashNotes.value.filter(n => n.note_id !== nid); if (selectedTrashNoteId.value === nid) selectedTrashNoteId.value = null } catch {} }
+async function permanentDelete(nid: string) { const ok = await dangerConfirm({ title: '永久删除', message: '此操作不可恢复，确定永久删除？', confirmText: '永久删除' }); if (!ok) return; try { await notesV2PermanentDelete(nid); trashNotes.value = trashNotes.value.filter(n => n.note_id !== nid); if (selectedTrashNoteId.value === nid) selectedTrashNoteId.value = null } catch (e) { console.error('[Notes] permanentDelete failed:', e) }
 
 const restoreNotebookList = computed(() => {
   const q = restoreSearchQuery.value.toLowerCase()

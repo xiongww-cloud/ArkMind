@@ -353,7 +353,6 @@ export const useProjectStore = defineStore('project', () => {
         project.bidTime = remote.bid_time || ''
         project.customerContact = remote.customer_contact || ''
         project.customerPhone = remote.customer_phone || ''
-        console.log('[fetchProjectDetail] 已从后端刷新项目数据:', project.name)
       }
       // Also fetch solutions from backend
       try {

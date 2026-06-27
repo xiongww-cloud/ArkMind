@@ -1,4 +1,3 @@
-pub mod db_commands;
 pub mod project_commands;
 pub mod product_commands;
 pub mod file_commands;
@@ -13,7 +12,6 @@ pub mod export_commands;
 pub mod window_commands;
 pub mod todo_commands;
 
-pub use db_commands::*;
 pub use project_commands::*;
 pub use product_commands::*;
 pub use file_commands::*;

@@ -49,13 +49,13 @@ async function onFolderRename(id: string, name: string) {
 async function onFolderDelete(id: string) {
   const ok = await dangerConfirm({ title: '删除目录', message: '确定删除此目录？', confirmText: '删除' })
   if (!ok) return
-  try { const r: any = await deleteFolder(id); if (!r?.success) { toast({ message: r?.error || '删除失败', type: 'error' }); return }; await loadFolders() } catch {}
+  try { const r: any = await deleteFolder(id); if (!r?.success) { toast({ message: r?.error || '删除失败', type: 'error' }); return }; await loadFolders() } catch (e) { console.error('[FileManager] deleteFolder failed:', e) }
 }
 async function onFolderMove(id: string, parentId: string|null) {
   try { await moveFolder(id, parentId); await loadFolders() } catch (e: any) { toast({ message: '移动失败', type: 'error' }) }
 }
 async function onFolderReorder(id: string, sortOrder: number) {
-  try { await reorderFolder(id, sortOrder); await loadFolders() } catch {}
+  try { await reorderFolder(id, sortOrder); await loadFolders() } catch (e) { console.error('[FileManager] reorderFolder failed:', e) }
 }
 
 // ─── File filter by folder ──────────────────────────────────────────────────
