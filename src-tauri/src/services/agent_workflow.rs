@@ -1734,6 +1734,76 @@ fn ext_tool_manage_project(
     }
 }
 
+/// 被动提醒：检查待办到期、项目停滞、投标截止，生成提醒文本注入 LLM 上下文
+fn check_proactive_reminders() -> String {
+    let mut reminders = Vec::new();
+
+    // 1. 24h 内到期的待办
+    if let Ok(rows) = database::all(
+        "SELECT title, due_date FROM todos WHERE done=0 AND due_date IS NOT NULL AND due_date <= date('now','+1 day') AND due_date >= date('now') ORDER BY due_date ASC LIMIT 5",
+        &[],
+    ) {
+        if !rows.is_empty() {
+            let items: Vec<String> = rows.iter().map(|r| {
+                let title = r["title"].as_str().unwrap_or("");
+                let due = r["due_date"].as_str().unwrap_or("");
+                format!("• {} (截止: {})", title, due)
+            }).collect();
+            reminders.push(format!("⏰ 待办即将到期：\n{}", items.join("\n")));
+        }
+    }
+
+    // 2. 今天到期的待办（最高优先级）
+    if let Ok(rows) = database::all(
+        "SELECT title, due_date FROM todos WHERE done=0 AND due_date=date('now') ORDER BY due_date ASC LIMIT 5",
+        &[],
+    ) {
+        if !rows.is_empty() {
+            let items: Vec<String> = rows.iter().map(|r| {
+                let title = r["title"].as_str().unwrap_or("");
+                format!("• {}", title)
+            }).collect();
+            reminders.push(format!("🔴 今天到期：\n{}", items.join("\n")));
+        }
+    }
+
+    // 3. 7 天未更新的项目
+    if let Ok(rows) = database::all(
+        "SELECT name, updated_at FROM projects WHERE updated_at < date('now','-7 days') ORDER BY updated_at ASC LIMIT 3",
+        &[],
+    ) {
+        if !rows.is_empty() {
+            let items: Vec<String> = rows.iter().map(|r| {
+                let name = r["name"].as_str().unwrap_or("");
+                let updated = r["updated_at"].as_str().unwrap_or("");
+                format!("• {} (最后更新: {})", name, updated)
+            }).collect();
+            reminders.push(format!("📌 项目长期未更新：\n{}", items.join("\n")));
+        }
+    }
+
+    // 4. 3 天内投标截止
+    if let Ok(rows) = database::all(
+        "SELECT name, bid_time FROM projects WHERE bid_time IS NOT NULL AND bid_time != '' AND bid_time <= date('now','+3 days') AND bid_time >= date('now') ORDER BY bid_time ASC LIMIT 3",
+        &[],
+    ) {
+        if !rows.is_empty() {
+            let items: Vec<String> = rows.iter().map(|r| {
+                let name = r["name"].as_str().unwrap_or("");
+                let bid = r["bid_time"].as_str().unwrap_or("");
+                format!("• {} (投标: {})", name, bid)
+            }).collect();
+            reminders.push(format!("🎯 投标截止临近：\n{}", items.join("\n")));
+        }
+    }
+
+    if reminders.is_empty() {
+        String::new()
+    } else {
+        format!("【系统提醒】\n{}", reminders.join("\n\n"))
+    }
+}
+
 fn execute_act(action: &str, project_id: &str, new_status: &str) -> String {
     match action {
         "update_project_status" => {
@@ -1926,6 +1996,46 @@ fn extract_citations(text: &str) -> Vec<String> {
     vec![]
 }
 
+/// 记录认知经历：用户问了什么、查了什么、用了什么工具、完成了什么
+fn record_experience(query: &str, session: &SessionMemory, tool_log: &[Value]) {
+    if query.trim().is_empty() { return; }
+
+    // 提取查阅的来源：从 session.active_objects 中获取被访问的对象
+    let sources: Vec<String> = session.active_objects.iter().take(5).map(|o| {
+        format!("{}-{}", o.obj_type.to_uppercase(), &o.obj_id[o.obj_id.find('-').map(|d| d+1).unwrap_or(0)..])
+    }).collect();
+    let sources_str = if sources.is_empty() { "无特定来源".to_string() } else { sources.join("、") };
+
+    // 提取使用的工具
+    let tools: Vec<String> = tool_log.iter().flat_map(|r| {
+        r["tools"].as_array().map(|arr| arr.iter().filter_map(|t| {
+            let name = t["tool"].as_str()?;
+            let args = t["args"].as_object()?;
+            let summary = match name {
+                "ext_tool_search" => args.get("keywords").and_then(|k| k.as_array())
+                    .map(|k| format!("search({})", k.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))),
+                "ext_tool_object" => args.get("query").and_then(|q| q.as_str())
+                    .map(|q| format!("object(\"{}\")", q)),
+                "ext_tool_traverse" => args.get("chunk_id").and_then(|c| c.as_str())
+                    .map(|c| format!("traverse({})", &c[..c.len().min(8)])),
+                _ => Some(format!("{}", name)),
+            };
+            Some(summary.unwrap_or_else(|| name.to_string()))
+        }).collect::<Vec<_>>()).into_iter().flatten()
+    }).collect();
+    let tools_str = if tools.is_empty() { "无工具调用".to_string() } else { tools.join("、") };
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let content = format!(
+        "[用户问] {}\n[查阅] {}\n[工具] {}\n[结论] 完成回答",
+        query, sources_str, tools_str
+    );
+    let _ = database::run(
+        "INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('MEMORY',?1,?2,?3,datetime('now','localtime'))",
+        &[json!(&id), json!(query), json!(&content)],
+    );
+}
+
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>) -> Result<Value, String> {
     let query = user_query.trim().to_string();
@@ -1983,6 +2093,13 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     }
     // ★ 追加本轮新问题
     messages.push(ChatMessage{role:MessageRole::User,content:Some(query.clone()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+
+    // ★ 被动提醒：注入待办到期/项目停滞/投标截止等提醒
+    let reminders = check_proactive_reminders();
+    if !reminders.is_empty() {
+        eprintln!("[主动提醒] 注入提醒: {}", &reminders[..reminders.len().min(100)]);
+        messages.push(ChatMessage{role:MessageRole::System,content:Some(format!("{}（你应该在回答中自然地提到这些提醒，但不要让用户觉得你在念清单。如果用户的问题与某个提醒相关，优先关联回答。）", reminders)),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+    }
 
     // ★ 从活跃对象和本轮 query 设置 Focus
     let top_entities: Vec<String> = {
@@ -2065,7 +2182,9 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             None => {
                 let answer = if ac.is_empty() { "未能生成有效回答。" } else { ac };
                 if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
-                if !ac.is_empty() { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                if !ac.is_empty() { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } }
+                record_experience(&query, &session, &tool_log);
+                let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
                 // ★ 预算检查：耗尽时强制回答
@@ -2076,6 +2195,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     }
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
+                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
                 if iters >= max_iters {
@@ -2083,6 +2203,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
+                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
             // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
@@ -2777,6 +2898,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
+                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
 
@@ -2784,7 +2906,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                 budget -= search_cost;
                 search_cost = ((search_cost as f64 * 1.2) as i32).max(1);
             }
-            _ => { let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":format!("根据当前信息：\n\n{}",ac),"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log})); }
+            _ => { let ws = session.generate_scratchpad(); record_experience(&query, &session, &tool_log); return Ok(json!({"success":true,"answer":format!("根据当前信息：\n\n{}",ac),"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log})); }
         }
     }
 }
