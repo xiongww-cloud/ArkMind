@@ -50,6 +50,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_manage_todo: 管理待办。action=create(创建，title必填，priority从用户原话提取填入此字段不要写进content，due_date从用户原话提取，repeat可选daily/weekly/monthly)，action=update(更新，用todo_id或title匹配)，action=delete(删除，用todo_id或title匹配)。
 - ext_tool_create_memory: 记住用户教的知识。title=完整知识点，content=原始陈述。只有用户明确告诉你的信息才创建。更新时直接新建。
 - ext_tool_manage_policy: 管理用户规则（宪法）。有id+content=更新，有id+无content=删除，无id+有content=新增。
+- ext_tool_manage_project: 管理项目。action=create(创建项目，name必填，可选customer/owner/budget/description/status等)，action=update(更新项目，project_id必填)，action=delete(删除项目及所有关联数据)，action=add_channel(添加渠道，project_id+name必填)，action=add_vendor(添加供应商，project_id+name必填)，action=add_contact(添加联系人，parent_id+parent_type(channel/vendor)+name必填)。
 
 ## 用户策略（必须严格遵守）
 {{user_policies}}
@@ -426,18 +427,21 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_create_memory","description":"记住用户教的知识。只有用户明确告诉你的信息才创建。更新时直接新建。","parameters":{"type":"object","properties":{"title":{"type":"string","description":"完整知识点，如'5310适用于中小企业'"},"content":{"type":"string","description":"用户的原始陈述"}},"required":["title"]}}},
         {"type":"function","function":{"name":"ext_tool_batch_search","description":"批量并发检索多个独立指标。仅当用户在单轮中询问≥3个独立指标时使用。每个指标返回2个最相关结果。简单问题和单指标请用 ext_tool_search。","parameters":{"type":"object","properties":{"queries":{"type":"array","items":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~3 个核心关键词"}},"required":["keywords"]},"description":"3~10 个独立子查询"}},"required":["queries"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户的规则/策略（宪法）。有id+content=更新规则，有id+无content=删除规则，无id+有content=新增规则。当用户表达「以后...」「记住...」「不要...」「总是...」「删掉...」等规则性指令时使用。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"策略source_id（更新或删除时必填）"},"content":{"type":"string","description":"规则内容（新增或更新时必填）"}},"required":[]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建项目), update(更新项目字段), delete(删除项目及关联数据), add_channel(添加渠道伙伴), add_vendor(添加供应商), add_contact(添加联系人), update_channel(更新渠道), update_vendor(更新供应商), delete_channel(删除渠道), delete_vendor(删除供应商), delete_contact(删除联系人)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","add_channel","add_vendor","add_contact","update_channel","update_vendor","delete_channel","delete_vendor","delete_contact"]},"project_id":{"type":"string","description":"项目ID(update/delete/add_channel/add_vendor用)"},"name":{"type":"string","description":"项目名称(create)或渠道/供应商/联系人名称"},"customer":{"type":"string","description":"客户名称"},"customer_contact":{"type":"string","description":"客户联系人"},"customer_phone":{"type":"string","description":"客户联系电话"},"owner":{"type":"string","description":"项目负责人"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/Won/Lost/Archived"},"channel_id":{"type":"string","description":"渠道ID(update_channel/delete_channel用)"},"vendor_id":{"type":"string","description":"供应商ID(update_vendor/delete_vendor用)"},"contact_id":{"type":"string","description":"联系人ID(delete_contact用)"},"parent_id":{"type":"string","description":"父级ID(add_contact时为channel_id或vendor_id)"},"parent_type":{"type":"string","description":"父级类型: channel/vendor(add_contact/delete_contact用)"},"phone":{"type":"string","description":"联系电话"},"company":{"type":"string","description":"公司名称"},"email":{"type":"string","description":"邮箱"},"remark":{"type":"string","description":"备注"}},"required":["action"]}}}
     ])
 }
 
 
 /// Fallback: parse XML tool calls from content when model does not use function calling format
 fn parse_xml_tool_calls(content: &str) -> Option<Vec<Value>> {
+    // 清理非标准前缀（如 DeepSeek 的 ｜｜DSML｜｜）
+    let cleaned = content.replace("｜｜DSML｜｜", "").replace("‖DSML‖", "").replace("<<DSML>>", "");
     let tag_start = "tool_calls>";
     let tag_end = "/tool_calls>";
-    if !content.contains(tag_start) || !content.contains(tag_end) { return None; }
-    let start = content.find(tag_start).map(|i| i + tag_start.len())?;
-    let end = content.find(tag_end)?;
-    let xml_body = &content[start..end];
+    if !cleaned.contains(tag_start) || !cleaned.contains(tag_end) { return None; }
+    let start = cleaned.find(tag_start).map(|i| i + tag_start.len())?;
+    let end = cleaned.find(tag_end)?;
+    let xml_body = &cleaned[start..end];
     let mut tool_calls = Vec::new();
     let mut remaining = xml_body;
     while let Some(inv_start) = remaining.find("invoke name=\"") {
@@ -1413,6 +1417,323 @@ fn ext_tool_create_memory(title: &str, content: &str) -> String {
     }
 }
 
+fn ext_tool_manage_project(
+    action: &str,
+    project_id: &str,
+    name: &str,
+    customer: &str,
+    customer_contact: &str,
+    customer_phone: &str,
+    owner: &str,
+    budget: f64,
+    description: &str,
+    bid_time: &str,
+    status: &str,
+    channel_id: &str,
+    vendor_id: &str,
+    contact_id: &str,
+    parent_id: &str,
+    parent_type: &str,
+    phone: &str,
+    company: &str,
+    email: &str,
+    remark: &str,
+) -> String {
+    // 统一处理 project_id：去掉 PROJECT- 前缀
+    let raw_pid = project_id.trim();
+    let clean_pid = raw_pid.strip_prefix("PROJECT-").unwrap_or(raw_pid);
+
+    // 查找项目的辅助函数
+    let find_project = |pid: &str| -> Option<(String, String)> {
+        database::get("SELECT id, name FROM projects WHERE id=?1", &[json!(pid)])
+            .ok().flatten()
+            .map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()))
+    };
+
+    // 查找渠道/供应商的辅助函数
+    let find_channel = |cid: &str| -> Option<(String, String, String)> {
+        database::get("SELECT id, project_id, name FROM channel_partners WHERE id=?1", &[json!(cid)])
+            .ok().flatten()
+            .map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["project_id"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()))
+    };
+    let find_vendor = |vid: &str| -> Option<(String, String, String)> {
+        database::get("SELECT id, project_id, name FROM vendor_partners WHERE id=?1", &[json!(vid)])
+            .ok().flatten()
+            .map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["project_id"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()))
+    };
+
+    match action {
+        // ═══ 项目 CRUD ═══
+        "create" => {
+            if name.trim().is_empty() { return "创建项目需要提供 name。".into(); }
+            let id = uuid::Uuid::new_v4().to_string();
+            let bid = if bid_time.trim().is_empty() { None } else { Some(bid_time.trim()) };
+            let st = if status.trim().is_empty() { "Lead" } else { status.trim() };
+            let b = if budget > 0.0 { budget } else { 0.0 };
+            match database::run(
+                "INSERT INTO projects(id,name,description,status,owner,budget,customer,bid_time,customer_contact,customer_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime('now','localtime'),datetime('now','localtime'))",
+                &[json!(&id), json!(name.trim()), json!(description.trim()), json!(st), json!(owner.trim()), json!(b), json!(customer.trim()), json!(bid), json!(customer_contact.trim()), json!(customer_phone.trim())],
+            ) {
+                Ok(r) if r.changes > 0 => {
+                    // 记录动态
+                    let did = uuid::Uuid::new_v4().to_string();
+                    database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,'AI Agent')", &[json!(&did), json!(&id), json!(format!("创建项目：{}", name.trim()))]).ok();
+                    // 通知知识库
+                    crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
+                    format!("已创建项目「{}」(ID: {})", name.trim(), id)
+                },
+                Err(e) => format!("创建项目失败: {}", e),
+                _ => "创建项目失败".into(),
+            }
+        }
+        "update" => {
+            if clean_pid.is_empty() { return "更新项目需要提供 project_id。".into(); }
+            let found = find_project(clean_pid);
+            match found {
+                Some((fid, fname)) => {
+                    let mut sets = vec!["updated_at=datetime('now','localtime')".to_string()];
+                    let mut params: Vec<serde_json::Value> = Vec::new();
+                    if !name.trim().is_empty() { sets.push(format!("name=?{}", params.len()+1)); params.push(json!(name.trim())); }
+                    if !customer.trim().is_empty() { sets.push(format!("customer=?{}", params.len()+1)); params.push(json!(customer.trim())); }
+                    if !customer_contact.trim().is_empty() { sets.push(format!("customer_contact=?{}", params.len()+1)); params.push(json!(customer_contact.trim())); }
+                    if !customer_phone.trim().is_empty() { sets.push(format!("customer_phone=?{}", params.len()+1)); params.push(json!(customer_phone.trim())); }
+                    if !owner.trim().is_empty() { sets.push(format!("owner=?{}", params.len()+1)); params.push(json!(owner.trim())); }
+                    if budget > 0.0 { sets.push(format!("budget=?{}", params.len()+1)); params.push(json!(budget)); }
+                    if !description.trim().is_empty() { sets.push(format!("description=?{}", params.len()+1)); params.push(json!(description.trim())); }
+                    if !bid_time.trim().is_empty() { sets.push(format!("bid_time=?{}", params.len()+1)); params.push(json!(bid_time.trim())); }
+                    if !status.trim().is_empty() { sets.push(format!("status=?{}", params.len()+1)); params.push(json!(status.trim())); }
+                    if params.is_empty() { return "更新项目需要提供要修改的字段。".into(); }
+                    params.push(json!(&fid));
+                    let sql = format!("UPDATE projects SET {} WHERE id=?", sets.join(", "));
+                    match database::run(&sql, &params) {
+                        Ok(r) if r.changes > 0 => {
+                            crate::services::knowledge_lifecycle::notify_changed("PROJECT", &fid);
+                            format!("已更新项目「{}」", fname)
+                        },
+                        Err(e) => format!("更新项目失败: {}", e),
+                        _ => format!("项目「{}」无变更。", fname),
+                    }
+                }
+                None => format!("未找到项目：{}", clean_pid),
+            }
+        }
+        "delete" => {
+            if clean_pid.is_empty() { return "删除项目需要提供 project_id。".into(); }
+            let found = find_project(clean_pid);
+            match found {
+                Some((fid, fname)) => {
+                    // 级联删除关联数据
+                    database::run("DELETE FROM project_dynamics WHERE project_id=?1", &[json!(&fid)]).ok();
+                    database::run("DELETE FROM note_project_mapping WHERE project_id=?1", &[json!(&fid)]).ok();
+                    database::run("DELETE FROM todo_project_mapping WHERE project_id=?1", &[json!(&fid)]).ok();
+                    database::run("DELETE FROM tag_mappings WHERE entity_type='projects' AND entity_id=?1", &[json!(&fid)]).ok();
+                    // 删除方案及子项
+                    if let Ok(solutions) = database::all("SELECT id FROM solutions WHERE project_id=?1", &[json!(&fid)]) {
+                        for sol in &solutions {
+                            if let Some(sid) = sol["id"].as_str() {
+                                if let Ok(versions) = database::all("SELECT id FROM solution_versions WHERE solution_id=?1", &[json!(sid)]) {
+                                    for ver in &versions {
+                                        if let Some(vid) = ver["id"].as_str() {
+                                            database::run("DELETE FROM solution_items WHERE solution_version_id=?1", &[json!(vid)]).ok();
+                                        }
+                                    }
+                                    database::run("DELETE FROM solution_versions WHERE solution_id=?1", &[json!(sid)]).ok();
+                                }
+                            }
+                        }
+                        database::run("DELETE FROM solutions WHERE project_id=?1", &[json!(&fid)]).ok();
+                    }
+                    // 删除渠道及联系人
+                    if let Ok(channels) = database::all("SELECT id FROM channel_partners WHERE project_id=?1", &[json!(&fid)]) {
+                        for ch in &channels {
+                            if let Some(cid) = ch["id"].as_str() {
+                                database::run("DELETE FROM channel_contacts WHERE channel_id=?1", &[json!(cid)]).ok();
+                            }
+                        }
+                        database::run("DELETE FROM channel_partners WHERE project_id=?1", &[json!(&fid)]).ok();
+                    }
+                    // 删除供应商及联系人
+                    if let Ok(vendors) = database::all("SELECT id FROM vendor_partners WHERE project_id=?1", &[json!(&fid)]) {
+                        for v in &vendors {
+                            if let Some(vid) = v["id"].as_str() {
+                                database::run("DELETE FROM vendor_contacts WHERE vendor_id=?1", &[json!(vid)]).ok();
+                            }
+                        }
+                        database::run("DELETE FROM vendor_partners WHERE project_id=?1", &[json!(&fid)]).ok();
+                    }
+                    // 删除项目
+                    match database::run("DELETE FROM projects WHERE id=?1", &[json!(&fid)]) {
+                        Ok(r) if r.changes > 0 => {
+                            crate::services::knowledge_lifecycle::notify_deleted("PROJECT", &fid);
+                            format!("已删除项目「{}」及所有关联数据", fname)
+                        },
+                        Err(e) => format!("删除项目失败: {}", e),
+                        _ => format!("项目「{}」删除失败。", fname),
+                    }
+                }
+                None => format!("未找到项目：{}", clean_pid),
+            }
+        }
+
+        // ═══ 渠道管理 ═══
+        "add_channel" => {
+            if clean_pid.is_empty() || name.trim().is_empty() { return "添加渠道需要 project_id 和 name。".into(); }
+            if find_project(clean_pid).is_none() { return format!("未找到项目：{}", clean_pid); }
+            let id = uuid::Uuid::new_v4().to_string();
+            match database::run(
+                "INSERT INTO channel_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'))",
+                &[json!(&id), json!(clean_pid), json!(name.trim()), json!(phone.trim()), json!(company.trim()), json!(remark.trim())],
+            ) {
+                Ok(r) if r.changes > 0 => {
+                    let did = uuid::Uuid::new_v4().to_string();
+                    database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,'AI Agent')", &[json!(&did), json!(clean_pid), json!(format!("添加渠道伙伴：{}", name.trim()))]).ok();
+                    format!("已添加渠道「{}」(channel_id: {})", name.trim(), id)
+                },
+                Err(e) => format!("添加渠道失败: {}", e),
+                _ => "添加渠道失败".into(),
+            }
+        }
+        "update_channel" => {
+            if channel_id.trim().is_empty() { return "更新渠道需要 channel_id。".into(); }
+            let found = find_channel(channel_id.trim());
+            match found {
+                Some((fid, _pid, fname)) => {
+                    let mut sets = Vec::new();
+                    let mut params: Vec<serde_json::Value> = Vec::new();
+                    if !name.trim().is_empty() { sets.push(format!("name=?{}", params.len()+1)); params.push(json!(name.trim())); }
+                    if !phone.trim().is_empty() { sets.push(format!("phone=?{}", params.len()+1)); params.push(json!(phone.trim())); }
+                    if !company.trim().is_empty() { sets.push(format!("company=?{}", params.len()+1)); params.push(json!(company.trim())); }
+                    if !remark.trim().is_empty() { sets.push(format!("remark=?{}", params.len()+1)); params.push(json!(remark.trim())); }
+                    if params.is_empty() { return "更新渠道需要提供要修改的字段。".into(); }
+                    params.push(json!(&fid));
+                    let sql = format!("UPDATE channel_partners SET {} WHERE id=?", sets.join(", "));
+                    match database::run(&sql, &params) {
+                        Ok(r) if r.changes > 0 => format!("已更新渠道「{}」", fname),
+                        Err(e) => format!("更新渠道失败: {}", e),
+                        _ => format!("渠道「{}」无变更。", fname),
+                    }
+                }
+                None => format!("未找到渠道：{}", channel_id.trim()),
+            }
+        }
+        "delete_channel" => {
+            if channel_id.trim().is_empty() { return "删除渠道需要 channel_id。".into(); }
+            let found = find_channel(channel_id.trim());
+            match found {
+                Some((fid, _pid, fname)) => {
+                    database::run("DELETE FROM channel_contacts WHERE channel_id=?1", &[json!(&fid)]).ok();
+                    match database::run("DELETE FROM channel_partners WHERE id=?1", &[json!(&fid)]) {
+                        Ok(r) if r.changes > 0 => format!("已删除渠道「{}」及联系人", fname),
+                        Err(e) => format!("删除渠道失败: {}", e),
+                        _ => format!("渠道「{}」删除失败。", fname),
+                    }
+                }
+                None => format!("未找到渠道：{}", channel_id.trim()),
+            }
+        }
+
+        // ═══ 供应商管理 ═══
+        "add_vendor" => {
+            if clean_pid.is_empty() || name.trim().is_empty() { return "添加供应商需要 project_id 和 name。".into(); }
+            if find_project(clean_pid).is_none() { return format!("未找到项目：{}", clean_pid); }
+            let id = uuid::Uuid::new_v4().to_string();
+            match database::run(
+                "INSERT INTO vendor_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'))",
+                &[json!(&id), json!(clean_pid), json!(name.trim()), json!(phone.trim()), json!(company.trim()), json!(remark.trim())],
+            ) {
+                Ok(r) if r.changes > 0 => {
+                    let did = uuid::Uuid::new_v4().to_string();
+                    database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,'AI Agent')", &[json!(&did), json!(clean_pid), json!(format!("添加供应商伙伴：{}", name.trim()))]).ok();
+                    format!("已添加供应商「{}」(vendor_id: {})", name.trim(), id)
+                },
+                Err(e) => format!("添加供应商失败: {}", e),
+                _ => "添加供应商失败".into(),
+            }
+        }
+        "update_vendor" => {
+            if vendor_id.trim().is_empty() { return "更新供应商需要 vendor_id。".into(); }
+            let found = find_vendor(vendor_id.trim());
+            match found {
+                Some((fid, _pid, fname)) => {
+                    let mut sets = Vec::new();
+                    let mut params: Vec<serde_json::Value> = Vec::new();
+                    if !name.trim().is_empty() { sets.push(format!("name=?{}", params.len()+1)); params.push(json!(name.trim())); }
+                    if !phone.trim().is_empty() { sets.push(format!("phone=?{}", params.len()+1)); params.push(json!(phone.trim())); }
+                    if !company.trim().is_empty() { sets.push(format!("company=?{}", params.len()+1)); params.push(json!(company.trim())); }
+                    if !remark.trim().is_empty() { sets.push(format!("remark=?{}", params.len()+1)); params.push(json!(remark.trim())); }
+                    if params.is_empty() { return "更新供应商需要提供要修改的字段。".into(); }
+                    params.push(json!(&fid));
+                    let sql = format!("UPDATE vendor_partners SET {} WHERE id=?", sets.join(", "));
+                    match database::run(&sql, &params) {
+                        Ok(r) if r.changes > 0 => format!("已更新供应商「{}」", fname),
+                        Err(e) => format!("更新供应商失败: {}", e),
+                        _ => format!("供应商「{}」无变更。", fname),
+                    }
+                }
+                None => format!("未找到供应商：{}", vendor_id.trim()),
+            }
+        }
+        "delete_vendor" => {
+            if vendor_id.trim().is_empty() { return "删除供应商需要 vendor_id。".into(); }
+            let found = find_vendor(vendor_id.trim());
+            match found {
+                Some((fid, _pid, fname)) => {
+                    database::run("DELETE FROM vendor_contacts WHERE vendor_id=?1", &[json!(&fid)]).ok();
+                    match database::run("DELETE FROM vendor_partners WHERE id=?1", &[json!(&fid)]) {
+                        Ok(r) if r.changes > 0 => format!("已删除供应商「{}」及联系人", fname),
+                        Err(e) => format!("删除供应商失败: {}", e),
+                        _ => format!("供应商「{}」删除失败。", fname),
+                    }
+                }
+                None => format!("未找到供应商：{}", vendor_id.trim()),
+            }
+        }
+
+        // ═══ 联系人管理 ═══
+        "add_contact" => {
+            if parent_id.trim().is_empty() || name.trim().is_empty() { return "添加联系人需要 parent_id 和 name。".into(); }
+            let id = uuid::Uuid::new_v4().to_string();
+            let result = match parent_type.trim() {
+                "channel" => {
+                    if find_channel(parent_id.trim()).is_none() { return format!("未找到渠道：{}", parent_id.trim()); }
+                    database::run(
+                        "INSERT INTO channel_contacts(id,channel_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'))",
+                        &[json!(&id), json!(parent_id.trim()), json!(name.trim()), json!(phone.trim()), json!(email.trim()), json!(remark.trim())],
+                    )
+                }
+                "vendor" => {
+                    if find_vendor(parent_id.trim()).is_none() { return format!("未找到供应商：{}", parent_id.trim()); }
+                    database::run(
+                        "INSERT INTO vendor_contacts(id,vendor_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'))",
+                        &[json!(&id), json!(parent_id.trim()), json!(name.trim()), json!(phone.trim()), json!(email.trim()), json!(remark.trim())],
+                    )
+                }
+                _ => return "parent_type 必须是 channel 或 vendor。".into(),
+            };
+            match result {
+                Ok(r) if r.changes > 0 => format!("已添加联系人「{}」", name.trim()),
+                Err(e) => format!("添加联系人失败: {}", e),
+                _ => "添加联系人失败".into(),
+            }
+        }
+        "delete_contact" => {
+            if contact_id.trim().is_empty() { return "删除联系人需要 contact_id。".into(); }
+            let result = match parent_type.trim() {
+                "channel" => database::run("DELETE FROM channel_contacts WHERE id=?1", &[json!(contact_id.trim())]),
+                "vendor" => database::run("DELETE FROM vendor_contacts WHERE id=?1", &[json!(contact_id.trim())]),
+                _ => return "parent_type 必须是 channel 或 vendor。".into(),
+            };
+            match result {
+                Ok(r) if r.changes > 0 => "已删除联系人".to_string(),
+                Err(e) => format!("删除联系人失败: {}", e),
+                _ => "未找到联系人或已删除。".to_string(),
+            }
+        }
+
+        _ => format!("未知操作「{}」。支持：create, update, delete, add_channel, add_vendor, add_contact, update_channel, update_vendor, delete_channel, delete_vendor, delete_contact。", action),
+    }
+}
+
 fn execute_act(action: &str, project_id: &str, new_status: &str) -> String {
     match action {
         "update_project_status" => {
@@ -2301,6 +2622,31 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                 }
                                 _ => "参数不完整：需要content或id".to_string(),
                             };
+                            (res, vec![])
+                        }
+                        "ext_tool_manage_project" => {
+                            let res = ext_tool_manage_project(
+                                a["action"].as_str().unwrap_or(""),
+                                a["project_id"].as_str().unwrap_or(""),
+                                a["name"].as_str().unwrap_or(""),
+                                a["customer"].as_str().unwrap_or(""),
+                                a["customer_contact"].as_str().unwrap_or(""),
+                                a["customer_phone"].as_str().unwrap_or(""),
+                                a["owner"].as_str().unwrap_or(""),
+                                a["budget"].as_f64().unwrap_or(0.0),
+                                a["description"].as_str().unwrap_or(""),
+                                a["bid_time"].as_str().unwrap_or(""),
+                                a["status"].as_str().unwrap_or(""),
+                                a["channel_id"].as_str().unwrap_or(""),
+                                a["vendor_id"].as_str().unwrap_or(""),
+                                a["contact_id"].as_str().unwrap_or(""),
+                                a["parent_id"].as_str().unwrap_or(""),
+                                a["parent_type"].as_str().unwrap_or(""),
+                                a["phone"].as_str().unwrap_or(""),
+                                a["company"].as_str().unwrap_or(""),
+                                a["email"].as_str().unwrap_or(""),
+                                a["remark"].as_str().unwrap_or(""),
+                            );
                             (res, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
