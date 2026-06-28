@@ -199,11 +199,13 @@ async function handleSendMessage() {
   })
   const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [] }
   session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
+  let unlistenStream: (() => void) | null = null
+  let unlistenThought: (() => void) | null = null
   try {
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
-    const unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
-    const unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);scrollToBottomIfNear();if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
+    unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
+    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);scrollToBottomIfNear();if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue

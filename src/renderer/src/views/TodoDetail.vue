@@ -52,9 +52,9 @@ const dateInput = ref(props.todo?.dueDate || '')
 function setDate(v: string) { dateInput.value = v; emit('update', props.todo.id, { dueDate: v || null }) }
 function clearDate() { dateInput.value = ''; emit('update', props.todo.id, { dueDate: null }) }
 const displayDate = computed(() => {
-  if (!props.todo.dueDate) return ''
+  if (!props.todo?.dueDate) return ''
   try {
-    const d = new Date(props.todo.dueDate)
+    const d = new Date(props.todo!.dueDate)
     if (isNaN(d.getTime())) return ''
     const today = new Date(); today.setHours(0,0,0,0)
     const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate()+1)
@@ -66,7 +66,7 @@ const displayDate = computed(() => {
   } catch { return '' }
 })
 const isOverdue = computed(() => {
-  if (!props.todo.dueDate) return false
+  if (!props.todo?.dueDate) return false
   const d = new Date(props.todo.dueDate)
   if (isNaN(d.getTime())) return false
   const today = new Date(); today.setHours(0,0,0,0)
@@ -77,7 +77,7 @@ const isOverdue = computed(() => {
 const priorityOpen = ref(false)
 function setPriority(p: 'P1'|'P2'|'P3') { emit('update', props.todo.id, { priority: p }); priorityOpen.value = false }
 function clearPriority() { emit('update', props.todo.id, { priority: null }); priorityOpen.value = false }
-const priorityInfo = computed(() => PRIORITY_OPTIONS.find(o => o.key === props.todo.priority))
+const priorityInfo = computed(() => PRIORITY_OPTIONS.find(o => o.key === props.todo?.priority))
 
 // ── Project picker ──
 const projectOpen = ref(false)
@@ -145,7 +145,7 @@ defineExpose({ insertFileAtCursor })
 
 // Editor
 const editor = useEditor({
-  content: props.todo.content || '',
+  content: props.todo?.content || '',
   extensions: [
     StarterKit.configure({ heading: { levels: [1, 2, 3] } }), Underline,
     Table.configure({ resizable: true }), TableRow, TableCell, TableHeader,
@@ -168,7 +168,7 @@ const editor = useEditor({
   editorProps: { attributes: { class: 'tiptap-editor text-left' } },
 })
 
-watch(() => props.todo.id, () => { nextTick(() => editor.value?.commands.setContent(props.todo.content || '')); dateInput.value = props.todo.dueDate || '' })
+watch(() => props.todo?.id, () => { nextTick(() => editor.value?.commands.setContent(props.todo?.content || '')); dateInput.value = props.todo?.dueDate || '' })
 
 function execFormat(cmd: string) { if (!editor.value) return; const ed = editor.value.chain().focus(); switch (cmd) { case 'bold': ed.toggleBold().run(); break; case 'italic': ed.toggleItalic().run(); break; case 'underline': ed.toggleUnderline().run(); break; case 'strikeThrough': ed.toggleStrike().run(); break; case 'justifyLeft': ed.setTextAlign('left').run(); break; case 'justifyCenter': ed.setTextAlign('center').run(); break; case 'justifyRight': ed.setTextAlign('right').run(); break; case 'insertHorizontalRule': ed.setHorizontalRule().run(); break; case 'insertTable': ed.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); break; case 'addColumnBefore': ed.addColumnBefore().run(); break; case 'addColumnAfter': ed.addColumnAfter().run(); break; case 'deleteColumn': ed.deleteColumn().run(); break; case 'addRowBefore': ed.addRowBefore().run(); break; case 'addRowAfter': ed.addRowAfter().run(); break; case 'deleteRow': ed.deleteRow().run(); break; case 'deleteTable': ed.deleteTable().run(); break; } }
 function insertHeading(level: number) { editor.value?.chain().focus().toggleHeading({ level: level as 1 | 2 | 3 }).run(); headingOpen.value = false }

@@ -459,8 +459,8 @@ function isOverdue(t: Todo): boolean {
   <TodoDetail
     :key="'td-' + todoLoadGen"
     ref="todoDetailRef"
-    v-if="selectedTodoId"
-    :todo="selectedTodo!"
+    v-if="selectedTodo"
+    :todo="selectedTodo"
     :projects="projects"
     @update="(id, data) => updateTodoLocal(id, data)"
     @close="selectedTodoId = null"

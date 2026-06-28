@@ -126,6 +126,9 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     migrate_folder_to_library_locations(&conn);
     fix_assets_fts_schema(&conn);
 
+    // ★ 迁移 user_policies → source_data (POLICY)
+    migrate_user_policies_to_source_data(&conn);
+
     // ★ KB FTS5 triggers always initialized (core retrieval infrastructure)
     init_kb_fts_triggers(&conn)?;
     seed_kb_fts(&conn);
@@ -325,6 +328,7 @@ fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS todos (
             id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '',
             done INTEGER NOT NULL DEFAULT 0, priority TEXT DEFAULT NULL, due_date TEXT DEFAULT NULL,
+            repeat TEXT DEFAULT NULL,
             created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
         CREATE TABLE IF NOT EXISTS todo_project_mapping (
@@ -1980,5 +1984,30 @@ pub fn migrate_source_data_to_text_id(conn: &rusqlite::Connection) -> rusqlite::
     
     println!("[数据库] source_data.id 迁移完成");
     Ok(())
+}
+
+/// 迁移 user_policies 表数据到 source_data (POLICY 类型)
+fn migrate_user_policies_to_source_data(conn: &rusqlite::Connection) {
+    // 检查 user_policies 表是否存在
+    let table_exists: bool = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='user_policies'")
+        .ok()
+        .and_then(|mut s| s.query_row([], |_| Ok(true)).ok())
+        .unwrap_or(false);
+    if !table_exists { return; }
+
+    // 检查是否有活跃数据
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM user_policies WHERE is_active=1", [], |r| r.get(0))
+        .unwrap_or(0);
+    if count == 0 { return; }
+
+    eprintln!("[迁移] 迁移 {} 条 user_policies → source_data(POLICY)...", count);
+    let _ = conn.execute_batch(
+        "INSERT OR IGNORE INTO source_data(source_type,source_id,title,content,updated_at)
+         SELECT 'POLICY', 'policy-' || id, substr(content,1,50), content, created_at
+         FROM user_policies WHERE is_active=1"
+    );
+    println!("[数据库] user_policies 迁移完成");
 }
 
