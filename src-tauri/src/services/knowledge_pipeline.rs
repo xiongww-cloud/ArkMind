@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+use serde_json::json;
 
 static PIPELINE_RUNNING: AtomicBool = AtomicBool::new(false);
 static LAST_SYNC_TIME: Mutex<String> = Mutex::new(String::new());
@@ -52,6 +53,16 @@ pub fn is_running() -> bool {
     PIPELINE_RUNNING.load(Ordering::Acquire)
 }
 
+/// 重置同步时间戳，让管线重新处理所有对象
+pub fn reset_sync_time() {
+    crate::database::run(
+        "DELETE FROM system_settings WHERE key='last_sync_time'",
+        &[],
+    ).ok();
+    *LAST_SYNC_TIME.lock().unwrap() = "1970-01-01 00:00:00".to_string();
+    println!("[知识管线] 已重置同步时间戳，将重新物化所有对象");
+}
+
 // ─── Startup helpers ──────────────────────────────────────────────
 
 fn cleanup_legacy_triggers() {
@@ -65,14 +76,22 @@ fn cleanup_legacy_triggers() {
 }
 
 fn init_sync_timestamp() {
-    // 从 source_data 获取最新时间戳作为初始值
-    let latest = crate::database::get(
-        "SELECT MAX(updated_at) as ts FROM source_data", &[],
-    ).ok().flatten().and_then(|r| r["ts"].as_str().map(String::from));
+    // 从数据库加载上次同步时间戳
+    let saved = crate::database::get(
+        "SELECT value FROM system_settings WHERE key='last_sync_time'",
+        &[],
+    ).ok().flatten().and_then(|r| r["value"].as_str().map(String::from));
     
     let mut last_sync = LAST_SYNC_TIME.lock().unwrap();
-    *last_sync = latest.unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
+    *last_sync = saved.unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
     println!("[知识管线] 初始同步时间戳: {}", *last_sync);
+}
+
+fn save_sync_timestamp(ts: &str) {
+    let _ = crate::database::run(
+        "INSERT OR REPLACE INTO system_settings(key, value, updated_at) VALUES('last_sync_time', ?1, datetime('now','localtime'))",
+        &[json!(ts)],
+    );
 }
 
 fn clean_vector_cache() {
@@ -100,7 +119,7 @@ async fn sync_loop() {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
 
         let last_sync = LAST_SYNC_TIME.lock().unwrap().clone();
-        let changed = crate::services::knowledge_lifecycle::get_changed_since(&last_sync, 20);
+        let changed = crate::services::knowledge_lifecycle::get_changed_since(&last_sync, 100);
         
         if !changed.is_empty() {
             println!("[知识管线] 发现 {} 个变更对象（since {}）", changed.len(), last_sync);
@@ -110,21 +129,10 @@ async fn sync_loop() {
                 if updated_at > &max_updated {
                     max_updated = updated_at.clone();
                 }
-                // 转换 source_type 为 source_table 格式
-                let source_table = match source_type.as_str() {
-                    "NOTE" => "notes",
-                    "PRODUCT" => "products",
-                    "PROJECT" => "projects",
-                    "TODO" => "todos",
-                    "FILE" => "files",
-                    "CHAT" => "chat_sessions",
-                    _ => continue,
-                };
-                
                 // 获取 source_data_id
                 if let Some(sd_id) = crate::services::knowledge_lifecycle::get_source_data_id(source_type, source_id) {
-                    // 调用现有的物化逻辑
-                    match crate::services::ai_sync::materialize_and_store(source_table, source_id, sd_id, content).await {
+                    // 直接传入 source_type，由 materialize_and_store 内部处理类型转换
+                    match crate::services::ai_sync::materialize_and_store(source_type, source_id, sd_id, content).await {
                         Ok(_) => {},
                         Err(e) => eprintln!("[知识管线] 物化失败 {}/{}: {}", source_type, source_id, e),
                     }
@@ -132,24 +140,43 @@ async fn sync_loop() {
             }
             
             // 更新同步时间戳
-            *LAST_SYNC_TIME.lock().unwrap() = max_updated;
+            *LAST_SYNC_TIME.lock().unwrap() = max_updated.clone();
+            save_sync_timestamp(&max_updated);
         }
         
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 
-/// 向量化循环：每 60s 调一次 embedding API，每批最多 20 个
+/// 向量化循环：持续处理直到没有待向量化的块
 async fn embed_loop() {
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
-        run_timeout("vectorize", || async {
-            match crate::services::hybrid_knowledge::vectorize_new_chunks(20).await {
-                Ok(n) => { if n > 0 { println!("[知识管线] 已向量化: {n} 个块"); } n > 0 }
-                Err(e) => { eprintln!("[知识管线] 向量化错误: {e}"); false }
+        
+        // 持续处理直到没有待向量化的块
+        let mut had_work = false;
+        for _ in 0..10 {  // 每轮最多处理 10 批（50 个块）
+            let batch_size = 5;
+            match crate::services::hybrid_knowledge::vectorize_new_chunks(batch_size).await {
+                Ok(n) => { 
+                    if n > 0 { 
+                        println!("[知识管线] 已向量化: {n} 个块"); 
+                        had_work = true;
+                    } else {
+                        break; // 没有待处理的块，退出循环
+                    }
+                }
+                Err(e) => { eprintln!("[知识管线] 向量化错误: {e}"); break; }
             }
-        }).await;
-        tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::task::yield_now().await;  // 让出 CPU，避免阻塞
+        }
+        
+        // 如果有工作，快速继续；否则等待 10 秒
+        if had_work {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        } else {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
     }
 }
 

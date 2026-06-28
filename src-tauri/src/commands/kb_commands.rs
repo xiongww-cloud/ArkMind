@@ -176,7 +176,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
             let st = r["source_type"].as_str().unwrap_or(""); let sid = r["source_id"].as_str().unwrap_or("");
             let dedup = format!("{}-{}", st, sid);
             if !dedup.trim_matches('-').is_empty() && !seen.insert(dedup) { continue; }
-            let _total_parents: i64 = r["source_data_id"].as_i64().map(|sdid| database::get("SELECT COUNT(*) as cnt FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent'", &[serde_json::json!(sdid)]).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0)).unwrap_or(0);
+            let _total_parents: i64 = r["source_data_id"].as_str().map(|sdid| database::get("SELECT COUNT(*) as cnt FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent'", &[serde_json::json!(sdid)]).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0)).unwrap_or(0);
             let _chunk_id = r["chunk_id"].as_str().unwrap_or(""); let _chunk_index = r["chunk_index"].as_i64().unwrap_or(0);
             if let Some(c) = r["content"].as_str() { count += 1; let t: String = c.chars().take(1300).collect();
                 let meta = crate::services::agent_workflow::build_chunk_metadata(st, sid);
@@ -205,18 +205,15 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
     let sessions = data["sessions"].as_array().ok_or("missing sessions array")?;
     for s in sessions.iter() {
         let id = s["id"].as_str().ok_or("missing session id")?;
-        let title = s["title"].as_str().or_else(|| s["name"].as_str()).unwrap_or("");
-        // 使用前端传来的 updatedAt，若无则用当前时间
+        let _title = s["title"].as_str().or_else(|| s["name"].as_str()).unwrap_or("");
         let updated_at = s["updatedAt"].as_str().or_else(|| s["updated_at"].as_str())
             .unwrap_or(&chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string())
             .to_string();
-        // ★ UPSERT：保留已有会话的 created_at，只更新 title / updated_at
         database::run("INSERT INTO chat_sessions(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3) ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
-            &[json!(id), json!(title), json!(updated_at)]).map_err(|e| e.to_string())?;
+            &[json!(id), json!(_title), json!(updated_at)]).map_err(|e| e.to_string())?;
         let msgs_raw = s["messages"].as_array().cloned().or_else(|| s["messages"].as_str().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()));
         if let Some(ref msgs) = msgs_raw {
             database::run("DELETE FROM chat_messages WHERE session_id=?", &[json!(id)]).ok();
-            let mut chat_text = String::new();
             for m in msgs {
                 let role = m["role"].as_str().unwrap_or("");
                 let content = m["content"].as_str().unwrap_or("");
@@ -224,25 +221,44 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
                 if content.trim().is_empty() { continue; }
                 database::run("INSERT INTO chat_messages(session_id,role,content) VALUES(?1,?2,?3)",
                     &[json!(id), json!(role), json!(content)]).ok();
-                if !chat_text.is_empty() { chat_text.push('\n'); }
-                chat_text.push_str(&format!("[{}]: {}", role, content));
             }
-            if !chat_text.trim().is_empty() {
-                // ★ P0: 仅在最终答案时保存 CHAT (最后一条是 assistant 且内容 > 100 字符)
-                let is_final = msgs_raw.as_ref().and_then(|a| a.last()).map(|m| {
-                    m["role"].as_str() == Some("assistant") && m["content"].as_str().map_or(false, |c| c.len() > 100)
-                }).unwrap_or(false);
-                if is_final {
-                    database::run("DELETE FROM source_data WHERE source_type='CHAT' AND source_id=?", &[json!(id)]).ok();
-                    if let Err(_) = database::run(
-                        "INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('CHAT',?1,?2,?3,datetime('now','localtime'))",
-                        &[json!(id), json!(title), json!(chat_text)],
-                    ) {}
-                    crate::services::ai_sync::trigger_sync("chat", id);
-                } else {
-                    // 推理中不保存
+            // 为每个问答对创建独立的 source_data 条目
+            let mut qa_pairs: Vec<(String, String)> = Vec::new();
+            let mut current_user = String::new();
+            for m in msgs {
+                let role = m["role"].as_str().unwrap_or("");
+                let content = m["content"].as_str().unwrap_or("").trim();
+                if content.is_empty() { continue; }
+                if role == "user" {
+                    current_user = content.to_string();
+                } else if role == "assistant" && !current_user.is_empty() && !content.is_empty() {
+                    qa_pairs.push((current_user.clone(), content.to_string()));
+                    current_user.clear();
                 }
             }
+            for (qi, (q, a)) in qa_pairs.iter().enumerate() {
+                let chat_id = format!("{}-{}", id, qi);
+                let content = format!("[用户问]: {}\n[AI答]: {}", q, a);
+                // 只在内容实际变化时才写入 source_data，避免所有 QA 对都被 sync_loop 重新物化
+                let existing = database::get(
+                    "SELECT content FROM source_data WHERE source_type='CHAT' AND source_id=?1",
+                    &[json!(&chat_id)],
+                ).ok().flatten().and_then(|r| r["content"].as_str().map(String::from));
+                if existing.as_deref() == Some(&content) {
+                    continue; // 内容未变，跳过
+                }
+                database::run("DELETE FROM source_data WHERE source_type='CHAT' AND source_id=?", &[json!(chat_id)]).ok();
+                if let Err(_) = database::run(
+                    "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'CHAT',?1,?2,?3,?4)",
+                    &[json!(chat_id), json!(q), json!(content), json!(&updated_at)],
+                ) {}
+            }
+            // 清理会话缩短后的旧问答对（source_id 格式: "{session_id}-{index}"）
+            let prefix = format!("{}-", id);
+            database::run(
+                "DELETE FROM source_data WHERE source_type='CHAT' AND source_id LIKE ?1 AND CAST(SUBSTR(source_id, LENGTH(?1)+1) AS INTEGER) >= ?2",
+                &[json!(&prefix), json!(qa_pairs.len() as i64)],
+            ).ok();
         }
     }
     Ok(json!({"success":true}))

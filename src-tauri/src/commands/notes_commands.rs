@@ -42,7 +42,7 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
         conn.execute("COMMIT",[]).map(|_|())?;
         Ok(())
     }).map_err(|e|e.to_string())?;
-    crate::services::source_doc_sync::sync_entity_to_source_docs("NOTE", &note_id, title, content);
+    crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Created);
     Ok(json!({"success":true,"noteId":note_id}))
 }
@@ -60,12 +60,7 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
     if let Some(pids) = data["projectIds"].as_array() { database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(note_id)]).ok(); for p in pids { database::run("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?,?)",&[json!(note_id),p.clone()]).ok(); } }
     if let Some(tids) = data["tagIds"].as_array() { database::run("DELETE FROM tag_mappings WHERE entity_type='notes' AND entity_id=?",&[json!(note_id)]).ok(); for t in tids { database::run("INSERT OR IGNORE INTO tag_mappings(entity_type,entity_id,tag_id) VALUES('notes',?,?)",&[json!(note_id),t.clone()]).ok(); } }
     database::save().map_err(|e|e.to_string())?;
-    // 同步到 source_data（通过清洗管道）
-    if let Ok(Some(row)) = database::get("SELECT title,content FROM notes WHERE note_id=? AND deleted_at IS NULL",&[json!(&note_id)]) {
-        let title = row["title"].as_str().unwrap_or("");
-        let content = row["content"].as_str().unwrap_or("");
-        crate::services::source_doc_sync::sync_entity_to_source_docs("NOTE", &note_id, title, content);
-    }
+    crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }

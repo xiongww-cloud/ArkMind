@@ -7,11 +7,51 @@ import {
   fetchSettings, updateSettings, browseFolder,
   updateAiConfig, fetchAiConfig,
   migrateFiles, pipelineClearVectors,
+  getUserPolicies, setUserPolicies, managePolicy,
 } from '@/api/db-client'
+import type { UserPolicy } from '@/api/db-client'
 
 // ─── Vite define: 替换为 Cargo.toml 中的版本号
 const appVersion = __APP_VERSION__
 const aiTab = ref('llm')
+
+// ─── User Policies (用户策略/宪法) ─────────────────────────────────────
+const policies = ref<UserPolicy[]>([])
+const policiesLoading = ref(false)
+const policiesSaving = ref(false)
+const newPolicyText = ref('')
+
+async function loadPolicies() {
+  policiesLoading.value = true
+  try {
+    const r = await getUserPolicies()
+    policies.value = r.policies || []
+  } catch (e) { console.warn('Failed to load policies:', e) }
+  finally { policiesLoading.value = false }
+}
+
+async function addPolicy() {
+  const text = newPolicyText.value.trim()
+  if (!text) return
+  policiesSaving.value = true
+  try {
+    await managePolicy(undefined, text)
+    newPolicyText.value = ''
+    await loadPolicies()
+    toast({ message: '策略已添加', type: 'success' })
+  } catch (e) { toast({ message: '添加失败', type: 'error' }) }
+  finally { policiesSaving.value = false }
+}
+
+async function deletePolicy(id: number) {
+  policiesSaving.value = true
+  try {
+    await managePolicy(id)
+    await loadPolicies()
+    toast({ message: '策略已删除', type: 'success' })
+  } catch (e) { toast({ message: '删除失败', type: 'error' }) }
+  finally { policiesSaving.value = false }
+}
 
 // ─── License ──────────────────────────────────────────────────────────────
 const licenseActivated = ref(false)
@@ -711,6 +751,7 @@ onMounted(async () => {
     loadStorageConfig(),
     loadLicense(),
     loadAiConfig(),
+    loadPolicies(),
   ])
 })
 </script>
@@ -881,6 +922,41 @@ onMounted(async () => {
           </div>
           <p v-if="licenseError" class="text-[10px] text-red-500 mt-2">{{ licenseError }}</p>
           <p v-if="licenseSuccess" class="text-[10px] text-emerald-600 mt-2">{{ licenseSuccess }}</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 用户策略（宪法） -->
+    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-[13px] font-semibold text-surface-700">用户策略（宪法）</h2>
+        <span class="text-[10px] text-surface-400">这些规则会被 LLM 严格遵守</span>
+      </div>
+      
+      <!-- 添加新策略 -->
+      <div class="flex gap-2 mb-3">
+        <input 
+          v-model="newPolicyText" 
+          class="flex-1 border border-surface-200 rounded-lg px-3 py-1.5 text-[11px] outline-none focus:border-brand-400"
+          placeholder="输入新规则，例如：以后叫我张总"
+          @keyup.enter="addPolicy"
+        />
+        <button 
+          class="px-3 py-1.5 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+          :disabled="policiesSaving || !newPolicyText.trim()"
+          @click="addPolicy"
+        >{{ policiesSaving ? '...' : '添加' }}</button>
+      </div>
+      
+      <!-- 策略列表 -->
+      <div v-if="policiesLoading" class="text-[11px] text-surface-400 py-2">加载中...</div>
+      <div v-else-if="policies.length === 0" class="text-[11px] text-surface-400 py-2">暂无策略。在聊天中说「以后...」即可自动添加。</div>
+      <div v-else class="space-y-2">
+        <div v-for="policy in policies" :key="policy.id" class="flex items-start gap-2 group">
+          <span class="text-[10px] text-surface-300 mt-0.5">{{ policies.indexOf(policy) + 1 }}.</span>
+          <span class="flex-1 text-[11px] text-surface-600">{{ policy.content }}</span>
+          <span class="text-[9px] text-surface-300">{{ policy.created_at?.slice(0, 10) }}</span>
+          <button @click="deletePolicy(policy.id)" class="text-[10px] text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">删除</button>
         </div>
       </div>
     </div>

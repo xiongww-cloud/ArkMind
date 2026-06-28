@@ -1,4 +1,4 @@
-﻿//! SQLite database — rusqlite powered, WAL mode, FTS5 full-text search
+//! SQLite database — rusqlite powered, WAL mode, FTS5 full-text search
 //!
 //! 35+ tables: core business + AI pipeline + knowledge base + FTS5 virtual tables
 
@@ -36,6 +36,76 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     conn.pragma_update(None, "recursive_triggers", "ON")?;
 
     create_schema(&conn)?;
+
+    // ★ 列出所有残留触发器（调试用）
+    {
+        let mut stmt = conn.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger'").unwrap();
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap();
+        for row in rows.flatten() {
+            let (name, sql) = row;
+            if sql.contains("source_data_old") || name.starts_with("sd_") {
+                eprintln!("[数据库] 残留触发器: {} => {}", name, &sql[..sql.len().min(300)]);
+            }
+        }
+    }
+
+    // ★ 清理所有旧的 source_data 触发器（避免引用不存在的 source_data_old 表）
+    eprintln!("[数据库] 清理旧触发器...");
+    conn.execute_batch("
+        DROP TRIGGER IF EXISTS sd_notes_insert;
+        DROP TRIGGER IF EXISTS sd_notes_update;
+        DROP TRIGGER IF EXISTS sd_notes_delete;
+        DROP TRIGGER IF EXISTS sd_products_insert;
+        DROP TRIGGER IF EXISTS sd_products_update;
+        DROP TRIGGER IF EXISTS sd_products_delete;
+        DROP TRIGGER IF EXISTS sd_projects_insert;
+        DROP TRIGGER IF EXISTS sd_projects_update;
+        DROP TRIGGER IF EXISTS sd_projects_delete;
+        DROP TRIGGER IF EXISTS sd_todos_insert;
+        DROP TRIGGER IF EXISTS sd_todos_update;
+        DROP TRIGGER IF EXISTS sd_todos_delete;
+        DROP TRIGGER IF EXISTS sd_files_insert;
+        DROP TRIGGER IF EXISTS sd_files_update;
+        DROP TRIGGER IF EXISTS sd_files_delete;
+        DROP TRIGGER IF EXISTS sd_chats_insert;
+        DROP TRIGGER IF EXISTS sd_chats_update;
+        DROP TRIGGER IF EXISTS sd_chats_delete;
+        DROP TRIGGER IF EXISTS sd_project_solution_insert;
+        DROP TRIGGER IF EXISTS sd_project_solution_update;
+        DROP TRIGGER IF EXISTS sd_project_solution_delete;
+        DROP TRIGGER IF EXISTS sd_project_dynamics_insert;
+        DROP TRIGGER IF EXISTS sd_project_dynamics_update;
+        DROP TRIGGER IF EXISTS sd_project_dynamics_delete;
+        DROP TRIGGER IF EXISTS sd_channel_partners_insert;
+        DROP TRIGGER IF EXISTS sd_channel_partners_update;
+        DROP TRIGGER IF EXISTS sd_channel_partners_delete;
+        DROP TRIGGER IF EXISTS sd_vendor_partners_insert;
+        DROP TRIGGER IF EXISTS sd_vendor_partners_update;
+        DROP TRIGGER IF EXISTS sd_vendor_partners_delete;
+        DROP TRIGGER IF EXISTS sd_files_delete;
+        DROP TRIGGER IF EXISTS sd_dynamics_delete;
+        DROP TRIGGER IF EXISTS sd_reset_sync_on_update;
+        DROP TRIGGER IF EXISTS sd_reset_sync_on_insert;
+        DROP TRIGGER IF EXISTS sd_fts_insert;
+        DROP TRIGGER IF EXISTS sd_fts_update;
+        DROP TRIGGER IF EXISTS sd_fts_delete;
+        DROP TRIGGER IF EXISTS sd_chunks_delete;
+        DROP TRIGGER IF EXISTS sd_todos_done_cleanup;
+    ").ok();
+    eprintln!("[数据库] 旧触发器清理完成");
+
+    // ★ 列出清理后所有触发器（调试用）
+    {
+        let mut stmt = conn.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger'").unwrap();
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap();
+        for row in rows.flatten() {
+            let (name, sql) = row;
+            if sql.contains("source_data_old") {
+                eprintln!("[数据库] ⚠️ 仍引用 source_data_old: {} => {}", name, &sql[..sql.len().min(300)]);
+            }
+        }
+    }
+
     run_migrations(&conn)?;
 
     // ★ 文件索引：file_relations.file_id 索引
@@ -60,11 +130,31 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     init_kb_fts_triggers(&conn)?;
     seed_kb_fts(&conn);
 
-    // ★ FTS5 自动镜像 + 结构化数据同步（无条件执行，不依赖 Premium 许可）
-    init_struct_source_data_triggers(&conn)?;
+    // ★ FTS5 自动镜像（已移除写入触发器，改为业务命令调用 notify_changed）
+    // init_struct_source_data_triggers(&conn)?;
 
-    // ★ 初始化 AI 触发器（激活即全功能）
-    init_ai_queue_triggers(&conn)?;
+    // ★ 迁移 source_data.id 为 TEXT（使用 source_id）
+    migrate_source_data_to_text_id(&conn)?;
+
+    // ★ FTS5 触发器在迁移后创建，确保引用正确的表名
+    eprintln!("[数据库] 创建 FTS5 触发器...");
+    init_source_data_fts_triggers(&conn)?;
+    eprintln!("[数据库] FTS5 触发器创建完成");
+
+    // ★ 最终检查：列出所有触发器
+    {
+        let mut stmt = conn.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger'").unwrap();
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap();
+        for row in rows.flatten() {
+            let (name, sql) = row;
+            if sql.contains("source_data_old") {
+                eprintln!("[数据库] ⚠️ 最终检查 - 仍引用 source_data_old: {} => {}", name, &sql[..sql.len().min(300)]);
+            }
+        }
+    }
+
+    // ★ 初始化 AI 触发器（已禁用，改用时间戳驱动）
+    // init_ai_queue_triggers(&conn)?;
 
     // ★ ★ CHAT 去重：清理重复 + 唯一索引（P0 修复）
     let _ = conn.execute_batch("DELETE FROM source_data WHERE rowid NOT IN (SELECT MIN(rowid) FROM source_data GROUP BY source_type, source_id)");
@@ -327,6 +417,8 @@ fn create_schema(conn: &Connection) -> SqliteResult<()> {
         -- ★ 大一统全局搜索引擎 (external content on source_data)
         CREATE VIRTUAL TABLE IF NOT EXISTS global_search_fts USING fts5(source_type UNINDEXED, source_id UNINDEXED, title, content, content='source_data', content_rowid='rowid');
         CREATE TABLE IF NOT EXISTS system_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, notification_type TEXT DEFAULT 'general', project_id TEXT, payload TEXT DEFAULT '{}', is_read INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now', 'localtime')));
+        CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now', 'localtime')));
+        CREATE TABLE IF NOT EXISTS user_policies (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now', 'localtime')), is_active INTEGER DEFAULT 1);
     ")?;
     Ok(())
 }
@@ -1019,11 +1111,8 @@ fn init_struct_source_data_triggers(conn: &rusqlite::Connection) -> rusqlite::Re
     }
 
     // ★★★ FTS5 自动镜像: source_data → global_search_fts ★★★
-    // FTS5 external content 不会自动镜像数据，必须通过触发器手动维护倒排索引。
-    // INSERT/UPDATE/DELETE 三个触发器覆盖 source_data 的所有变更路径：
-    //   - 业务表触发器执行 INSERT OR REPLACE INTO source_data → DELETE + INSERT 各触发一次
-    //   - source_doc_sync 模块直接写入 source_data → INSERT 触发
-    init_source_data_fts_triggers(conn)?;
+    // 延迟到 migrate_source_data_to_text_id 之后创建，避免触发器引用被重命名的表
+    // init_source_data_fts_triggers(conn)?;
 
     // 全量重建 FTS5 索引（幂等操作，确保存量数据完整索引）
     rebuild_global_search_fts(conn);
@@ -1732,7 +1821,7 @@ pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) {
     if parsed_text.is_empty() { return; }
     let result = with_db(|c| {
         c.execute(
-            "INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('FILE',?1,'',?2,datetime('now', 'localtime')) ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
+            "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'FILE',?1,'',?2,datetime('now', 'localtime')) ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
             rusqlite::params![file_id, parsed_text],
         ).map(|_|())
     });
@@ -1778,5 +1867,118 @@ pub fn batch_get_parent_blocks(parent_ids: &[i64]) -> SqliteResult<Vec<(i64, Str
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     })
+}
+
+/// 迁移：将 source_data.id 从 INTEGER 改为 TEXT（使用 source_id）
+/// 同时将 knowledge_chunks.source_data_id 改为 TEXT
+pub fn migrate_source_data_to_text_id(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    // 检查是否已迁移（source_data.id 是否为 TEXT）
+    let id_type: String = conn.query_row(
+        "SELECT type FROM pragma_table_info('source_data') WHERE name='id'",
+        [], |r| r.get(0),
+    ).unwrap_or_default();
+    
+    eprintln!("[迁移] source_data.id 类型: {}", id_type);
+    
+    if id_type == "TEXT" {
+        eprintln!("[迁移] 已迁移，跳过");
+        return Ok(()); // 已迁移
+    }
+    
+    eprintln!("[迁移] 开始迁移 source_data.id 为 TEXT...");
+    
+    eprintln!("[迁移] 创建 source_data_new 表...");
+    // 1. 创建新表
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS source_data_new (
+            id TEXT PRIMARY KEY,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            title TEXT DEFAULT '',
+            content TEXT NOT NULL DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(source_type, source_id)
+        );
+    ")?;
+    
+    eprintln!("[迁移] 复制数据到 source_data_new...");
+    // 2. 迁移数据（id = source_id）
+    conn.execute_batch("
+        INSERT OR REPLACE INTO source_data_new (id, source_type, source_id, title, content, created_at, updated_at)
+        SELECT source_id, source_type, source_id, title, content, created_at, updated_at
+        FROM source_data;
+    ")?;
+    
+    eprintln!("[迁移] 重命名表...");
+    // 3. 备份旧表，重命名新表
+    conn.execute_batch("
+        DROP TABLE IF EXISTS source_data_old;
+        ALTER TABLE source_data RENAME TO source_data_old;
+        ALTER TABLE source_data_new RENAME TO source_data;
+    ")?;
+    
+    eprintln!("[迁移] 重建 FTS5 索引...");
+    // 4. 重建 FTS5 索引
+    conn.execute_batch("
+        DROP TABLE IF EXISTS global_search_fts;
+        CREATE VIRTUAL TABLE IF NOT EXISTS global_search_fts USING fts5(
+            source_type UNINDEXED, source_id UNINDEXED, title, content, 
+            content='source_data', 
+            content_rowid='rowid'
+        );
+        INSERT INTO global_search_fts(global_search_fts) VALUES('rebuild');
+    ")?;
+    
+    eprintln!("[迁移] 检查 knowledge_chunks 是否需要更新...");
+    // 5. 迁移 knowledge_chunks.source_data_id 为 TEXT
+    let has_sd_id_text: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('knowledge_chunks') WHERE name='source_type'",
+        [], |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0;
+    
+    eprintln!("[迁移] knowledge_chunks 已有 source_type 字段: {}", has_sd_id_text);
+    
+    if !has_sd_id_text {
+        eprintln!("[迁移] 添加 source_type 和 source_id 字段...");
+        // 添加 source_type 和 source_id 字段
+        conn.execute_batch("ALTER TABLE knowledge_chunks ADD COLUMN source_type TEXT DEFAULT '';")?;
+        conn.execute_batch("ALTER TABLE knowledge_chunks ADD COLUMN source_id TEXT DEFAULT '';")?;
+        
+        // 检查 source_data_old 是否存在
+        let has_old_table: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='source_data_old'",
+            [], |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) > 0;
+        
+        eprintln!("[迁移] source_data_old 存在: {}", has_old_table);
+        
+        // 从 source_data 填充数据
+        let source_table = if has_old_table { "source_data_old" } else { "source_data" };
+        eprintln!("[迁移] 从 {} 填充 knowledge_chunks...", source_table);
+        conn.execute_batch(&format!(
+            "UPDATE knowledge_chunks SET 
+                source_type = (SELECT source_type FROM {} WHERE id = knowledge_chunks.source_data_id),
+                source_id = (SELECT source_id FROM {} WHERE id = knowledge_chunks.source_data_id)
+            WHERE source_data_id IS NOT NULL;",
+            source_table, source_table
+        ))?;
+        eprintln!("[迁移] knowledge_chunks 更新完成");
+    }
+    
+    eprintln!("[迁移] 清理 source_data_old...");
+    // 6. 清理旧表
+    conn.execute_batch("DROP TABLE IF EXISTS source_data_old;")?;
+    
+    eprintln!("[迁移] 迁移完成");
+    
+    // 7. 重建索引
+    conn.execute_batch("
+        CREATE INDEX IF NOT EXISTS idx_kc_source ON knowledge_chunks(source_type, source_id);
+        CREATE INDEX IF NOT EXISTS idx_sd_type_id ON source_data(source_type, source_id);
+    ")?;
+    
+    println!("[数据库] source_data.id 迁移完成");
+    Ok(())
 }
 

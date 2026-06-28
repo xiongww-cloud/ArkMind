@@ -12,10 +12,11 @@ pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &st
     let clean = crate::services::file_parser::sanitize_chars(content);
     if clean.trim().is_empty() { return; }
     let _ = crate::database::run(
-        "INSERT OR REPLACE INTO source_data(source_type,source_id,title,content,updated_at) VALUES(?1,?2,?3,?4,datetime('now','localtime'))",
+        "INSERT OR REPLACE INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,?2,?3,?4,?5,datetime('now','localtime'))",
         &[
-            serde_json::json!(source_type),
-            serde_json::json!(source_id),
+            serde_json::json!(source_id),  // id = source_id
+            serde_json::json!(source_type), // source_type
+            serde_json::json!(source_id),  // source_id
             serde_json::json!(title),
             serde_json::json!(&clean),
         ],

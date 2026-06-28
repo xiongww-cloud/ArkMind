@@ -135,6 +135,12 @@ export async function updateSettings(data: Record<string,any>): Promise<{success
 export async function fetchAiConfig(): Promise<AiConfig> { return invoke('get_ai_config') }
 export async function updateAiConfig(data: Record<string,any>): Promise<{success: boolean}> { return invoke('update_ai_config', { data: { ai_config: JSON.stringify(data) } }) }
 
+// ─── User Policies (用户策略/宪法) ───────────────────────────────
+export interface UserPolicy { id: number; content: string; created_at: string; is_active: number }
+export async function getUserPolicies(): Promise<{success:boolean;policies:UserPolicy[]}> { return invoke('get_user_policies') }
+export async function setUserPolicies(policies: string): Promise<{success:boolean}> { return invoke('set_user_policies', { policies }) }
+export async function managePolicy(id?: number, content?: string): Promise<{success:boolean;action?:string;message?:string}> { return invoke('manage_policy', { id: id ?? null, content: content ?? null }) }
+
 // ─── Notes ─────────────────────────────────────────────────────
 export async function fetchNotes(): Promise<FetchNotesResponse> { return invoke('notes_list_all') }
 export async function fetchDailyNotes(): Promise<FetchNotesResponse> { return invoke('notes_list_daily') }
@@ -257,6 +263,8 @@ export async function extToolGetProjectContext(projectId: string): Promise<any> 
 export async function aiSyncForceResync(): Promise<any> { return invoke('ai_sync_force_resync') }
 export async function aiSyncRetryFailed(): Promise<any> { return invoke('ai_sync_retry_failed') }
 export async function cleanupRetryFailed(): Promise<any> { return invoke('cleanup_retry_failed') }
+export async function cleanupOrphanData(): Promise<{success:boolean;message?:string}> { return invoke('cleanup_orphan_data') }
+export async function pipelineFullResync(): Promise<{success:boolean;message?:string}> { return invoke('pipeline_full_resync') }
 export async function knowledgePipelineStatus(): Promise<any> { return invoke('knowledge_pipeline_status') }
 export async function pipelineDebugStatus(): Promise<any> { return invoke('pipeline_debug_status') }
 export async function pipelineClearKnowledge(): Promise<any> { return invoke('pipeline_clear_knowledge') }

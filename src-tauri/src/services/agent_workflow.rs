@@ -5,7 +5,7 @@ use crate::services::search_assets;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 use tauri::Emitter;
 use futures::StreamExt;
@@ -15,6 +15,9 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 
 ## 当前日期
 {{today}}
+
+## 用户策略（必须严格遵守）
+{{user_policies}}
 
 ## 当前会话工作记忆
 {{session_scratchpad}}
@@ -41,16 +44,22 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 最终回答应围绕用户的问题组织，而不是围绕检索结果组织。
 
 ## 工具
-- ext_tool_object: 搜索记忆中的对象。传入 id 返回完整内容（前3个父块）；无关键词时按时间线浏览；有关键词时按名称搜索。支持类型和时间过滤。
-- ext_tool_search: 从长期记忆中检索相关知识，支持 time_range 时间范围过滤
-- ext_tool_traverse: 查看同一知识片段附近的上下文
+- ext_tool_object: 搜索和浏览记忆中的对象。mode=search 用于定位（FTS+排序+TopK），mode=recall 用于回忆（按天分组+完整展示+关联计数）。recall 模式下超长会自动分页。
+- ext_tool_search: 从长期记忆中检索相关知识片段（chunks），支持 time_range 时间范围过滤。用于查找具体的知识内容。
+- ext_tool_traverse: 沿知识图谱的关联关系漫游（next/prev/related/references）。用于查看某个知识片段的前后文或关联实体。不要用它来翻页浏览对象列表。
 - ext_tool_act: 执行动作
+- ext_tool_manage_policy: 管理用户规则（宪法）。有id+content=更新，有id+无content=删除，无id+有content=新增。当用户表达「以后...」「记住...」「不要...」「总是...」「删掉...」等规则性指令时使用。
+
+## 用户策略（必须严格遵守）
+{{user_policies}}
+
+## 当前会话工作记忆
+{{session_scratchpad}}
 
 ## 工具调用格式（必须遵守）
 你必须使用标准的 tool_calls 格式调用工具。禁止在 content 字段中输出 XML 格式的工具调用。如果模型返回了 XML 格式的工具调用，那是错误的行为。
 
 - 每轮检索后评估证据是否足够。如果足够，直接输出最终答案。
-- 第一轮先用 object 发现相关对象（建立注意力范围），再决定是否 search。
 
 ## 👥 交互与独白
 - 工具调用前必须用一句话告诉用户（"让我想想/我记得/翻一下笔记/回忆一下"）
@@ -357,13 +366,61 @@ impl SessionMemory {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// SessionEffect — 并行工具执行的延迟会话更新
+// ═══════════════════════════════════════════════════════════════════
+#[derive(Debug, Clone)]
+enum SessionEffect {
+    RecordSearch(Vec<String>),
+    MarkSourceVisited(String),
+    UpdateObject { obj_type: String, obj_id: String, name: String },
+    UpdateObjectScore { obj_type: String, obj_id: String, score_delta: f64 },
+    MarkChunkVisited(String),
+}
+
+impl SessionMemory {
+    fn apply_effect(&mut self, effect: &SessionEffect) {
+        match effect {
+            SessionEffect::RecordSearch(kw) => self.record_search(kw),
+            SessionEffect::MarkSourceVisited(s) => self.mark_source_visited(s),
+            SessionEffect::UpdateObject { obj_type, obj_id, name } => self.update(obj_type, obj_id, name),
+            SessionEffect::UpdateObjectScore { obj_type, obj_id, score_delta } => {
+                if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == *obj_type && o.obj_id == *obj_id) {
+                    existing.score = existing.score * 0.5 + score_delta;
+                }
+            }
+            SessionEffect::MarkChunkVisited(cid) => self.mark_chunk_visited(cid),
+        }
+    }
+}
+
+/// 从 session 的 active_objects 计算 scope（用于限定搜索范围）
+fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collections::HashSet<i64>> {
+    let default_scope: Vec<String> = {
+        let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
+        sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
+        sorted.iter().take(10).filter_map(|o| {
+            let p = match o.obj_type.as_str() {
+                "product" => "PRODUCT", "project" => "PROJECT",
+                "file" => "FILE", "note" => "NOTE", "chat" => "CHAT",
+                _ => return None,
+            };
+            if o.obj_id.starts_with(p) { Some(o.obj_id.clone()) } else { None }
+        }).collect()
+    };
+    if default_scope.is_empty() { return None; }
+    let s = resolve_scope_to_rowids(&default_scope);
+    if s.is_empty() { None } else { Some(s) }
+}
+
 fn build_tools_definitions() -> Value {
     json!([
         {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。支持时间范围过滤。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
-        {"type":"function","function":{"name":"ext_tool_object","description":"搜索记忆中的对象。无关键词时按时间线浏览（适合「昨天聊了什么」），有关键词时按名称搜索（适合「5310是什么」）。","parameters":{"type":"object","properties":{"query":{"type":"string","description":"对象名称关键词，留空按时间线浏览"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"返回数量，默认20"}},"required":[]}}},
+        {"type":"function","function":{"name":"ext_tool_object","description":"搜索和浏览记忆中的对象。mode=search用于定位（FTS+排序+TopK），mode=recall用于回忆（按天分组+完整展示+关联计数）。recall模式超长时自动分页。","parameters":{"type":"object","properties":{"query":{"type":"string","description":"对象名称关键词（search模式用）"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"mode":{"type":"string","enum":["search","recall"],"description":"search=检索定位，recall=时间线回忆，默认search"},"limit":{"type":"integer","description":"每页数量，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。chunk_id 必须来自 search() 结果中的「ChunkID」字段，不要传其他ID。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"必须来自 search() 结果的 ChunkID 字段"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_act","description":"执行操作","parameters":{"type":"object","properties":{"action":{"type":"string","description":"create_todo/update_todo_status/update_project_status"},"project_id":{"type":"string","description":"项目ID"},"todo_title":{"type":"string","description":"待办标题"},"todo_content":{"type":"string","description":"待办内容"},"todo_id":{"type":"string","description":"待办ID"},"new_status":{"type":"string","description":"新状态"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_batch_search","description":"批量并发检索多个独立指标。仅当用户在单轮中询问≥3个独立指标时使用。每个指标返回2个最相关结果。简单问题和单指标请用 ext_tool_search。","parameters":{"type":"object","properties":{"queries":{"type":"array","items":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~3 个核心关键词"}},"required":["keywords"]},"description":"3~10 个独立子查询"}},"required":["queries"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户的规则/策略（宪法）。有id+content=更新规则，有id+无content=删除规则，无id+有content=新增规则。当用户表达「以后...」「记住...」「不要...」「总是...」「删掉...」等规则性指令时使用。","parameters":{"type":"object","properties":{"id":{"type":"integer","description":"策略ID（更新或删除时必填）"},"content":{"type":"string","description":"规则内容（新增或更新时必填）"}},"required":[]}}},
     ])
 }
 
@@ -845,7 +902,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
             if content.trim().chars().count() < 60 { continue; }
             let chunk_id = r["chunk_id"].as_str().unwrap_or("").to_string();
             let chunk_index = r["chunk_index"].as_i64().unwrap_or(0);
-            let sdid = r["source_data_id"].as_i64().unwrap_or(0);
+            let sdid = r["source_data_id"].as_str().unwrap_or("").to_string();
             let is_in_scope = scope_rowids.as_ref().map(|sids| sids.contains(&cr)).unwrap_or(false);
 
             let base_rrf = if matched_sources.contains(&(st.clone(), sid.clone())) { rrf * 1.5 } else { *rrf };
@@ -1020,12 +1077,12 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
 }
 
 
-fn execute_traverse(chunk_id: &str, edge_type: &str, radius: usize, visited: &std::collections::HashSet<String>, target_name: &str, traverse_source_counter: &mut std::collections::HashMap<i64, usize>) -> String {
+fn execute_traverse(chunk_id: &str, edge_type: &str, radius: usize, visited: &std::collections::HashSet<String>, target_name: &str, traverse_source_counter: &mut std::collections::HashMap<String, usize>) -> String {
     if chunk_id.trim().is_empty() { return "请提供 ChunkID。".into(); }
     let cid = chunk_id.trim();
     let row = match database::get("SELECT p.chunk_id, p.content, p.chunk_index, p.source_data_id, sd.source_type, sd.source_id FROM knowledge_chunks p LEFT JOIN source_data sd ON sd.id=p.source_data_id WHERE p.chunk_type='parent' AND p.chunk_id LIKE ?1",&[json!(format!("{}%", cid))]) { Ok(Some(r)) => r, _ => return format!("未找到 ChunkID「{}」对应的块。", cid) };
     let current_index = row["chunk_index"].as_i64().unwrap_or(0);
-    let sdid = match row["source_data_id"].as_i64() { Some(id) => id, None => return "该块无关联源数据。".into() };
+    let sdid = match row["source_data_id"].as_str() { Some(id) => id.to_string(), None => return "该块无关联源数据。".into() };
     let total: i64 = database::get("SELECT COUNT(*) as cnt FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent'",&[json!(sdid)]).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     let r = radius.max(1).min(20);
     let _row_st = row["source_type"].as_str().unwrap_or("").to_string();
@@ -1501,10 +1558,32 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     let (mut iters, mut pt, mut ct) = (0i32, 0i64, 0i64);
     let mut budget = 100i32;
     let mut search_cost = 10i32;
-    let mut traverse_source_counter: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    
+    // 加载用户策略（policy）— 带 ID 供 LLM 管理
+    let user_policies = {
+        let rows = crate::database::all(
+            "SELECT id, content, created_at FROM user_policies WHERE is_active=1 ORDER BY created_at DESC",
+            &[],
+        ).unwrap_or_default();
+        if rows.is_empty() {
+            "无特殊策略要求。".to_string()
+        } else {
+            let mut lines: Vec<String> = Vec::new();
+            for r in rows.iter() {
+                if let (Some(id), Some(content)) = (r["id"].as_i64(), r["content"].as_str()) {
+                    let date = r["created_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
+                    lines.push(format!("[ID:{}] {} {}", id, date, content));
+                }
+            }
+            lines.join("\n")
+        }
+    };
+    
     // 注入初始 scratchpad（空），后续每轮由循环内代码更新
     let empty_sys = AGENT_SYSTEM_PROMPT
         .replace("{{today}}", &chrono::Local::now().format("%Y年%m月%d日").to_string())
+        .replace("{{user_policies}}", &user_policies)
         .replace("{{session_scratchpad}}", "");
     messages[0].content = Some(empty_sys);
 
@@ -1518,6 +1597,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         let scratchpad = session.generate_scratchpad();
         let new_sys = AGENT_SYSTEM_PROMPT
             .replace("{{today}}", &chrono::Local::now().format("%Y年%m月%d日").to_string())
+            .replace("{{user_policies}}", &user_policies)
             .replace("{{session_scratchpad}}", &scratchpad);
         let budget_info = format!("\n\n## 🧠 思维预算\n- 剩余: {} | 本轮成本: {}\n- 预算有限，不要全部搜索轮次都用完。证据足够就立刻回答。", budget, search_cost);
         let new_sys = format!("{}{}", new_sys, budget_info);
@@ -1541,7 +1621,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             }
         }
 
-        if !ac.is_empty() && tcs.is_none() { if let Some(ref h) = app_handle { let _ = h.emit("agent:thought", json!({"text": ac})); } }
+        if !ac.is_empty() { if let Some(ref h) = app_handle { let _ = h.emit("agent:thought", json!({"text": ac})); } }
 
         match tcs {
             None => {
@@ -1569,16 +1649,25 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 }
             // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
 
-fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize) -> String {
+fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: usize) -> String {
+    // 先获取总数
+    let total: i64 = database::get(
+        "SELECT COUNT(*) as cnt FROM source_data WHERE (source_type=?1 OR ?1='') AND date(updated_at)>=?2 AND date(updated_at)<=?3",
+        &[json!(obj_type), json!(start), json!(end)],
+    ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    
     let rows = database::all(
         "SELECT source_type, source_id, title, substr(content,1,100) as preview, updated_at FROM source_data
          WHERE (source_type=?1 OR ?1='')
            AND date(updated_at) >= ?2 AND date(updated_at) <= ?3
-         ORDER BY updated_at DESC LIMIT ?4",
-        &[json!(obj_type), json!(start), json!(end), json!(limit)],
+         ORDER BY updated_at DESC LIMIT ?4 OFFSET ?5",
+        &[json!(obj_type), json!(start), json!(end), json!(limit), json!(offset)],
     ).unwrap_or_default();
-    if rows.is_empty() { return format!("时间范围内无{}对象。", if obj_type.is_empty() { "任何" } else { obj_type }); }
+    if rows.is_empty() { return if offset > 0 { format!("已无更多对象（共 {} 条）。", total) } else { format!("时间范围内无{}对象。", if obj_type.is_empty() { "任何" } else { obj_type }) }; }
     let mut out = String::new();
+    // 添加分页信息头
+    let end_pos = (offset + rows.len()).min(total as usize);
+    out.push_str(&format!("┌─ 共 {} 条，显示 {}-{} ─┐\n\n", total, offset + 1, end_pos));
     let expand = |sid: &str| -> std::collections::HashSet<String> {
         let n = crate::services::synapse::expand_object_links(&[sid.to_string()], 10);
         n.into_iter().filter(|(_,w)| *w > 0.0).map(|(id,_)| id).collect()
@@ -1628,62 +1717,199 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize) -> String
         prev_neighbors = Some(current_neighbors);
         prev_ts = Some(ts.to_string());
     }
+    // 添加分页提示
+    if end_pos < total as usize {
+        out.push_str(&format!("└─ 还有 {} 条未显示，传 offset={} 继续查看 ─┘", total as usize - end_pos, end_pos));
+    }
     out
 }
 
-fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limit: usize) -> String {
-    let q = query.trim(); if q.is_empty() { return timeline_mode(obj_type, start, end, limit); }
+fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limit: usize, offset: usize) -> String {
+    let q = query.trim(); if q.is_empty() { return timeline_mode(obj_type, start, end, limit, offset); }
     let words: Vec<String> = q.split_whitespace().map(|k| k.replace('"',"")).collect();
     let fts_q = if words.len() > 1 { format!("NEAR(({}), 30)", words.join(" ")) } else { words.first().cloned().unwrap_or_default() };
     let results = match database::fts5_search_content(&fts_q, 30) { Ok(r) => r, Err(_) => Vec::new() };
     let mut seen = std::collections::HashSet::new();
-    let mut out = String::new();
-    let mut count = 0usize;
+    let mut matched: Vec<Value> = Vec::new();
+    // 关键词搜索：不按日期过滤，直接按 FTS5 结果从 source_data 取数据
     for r in &results {
-        if count >= limit { break; }
         let st = r.entity_type.to_uppercase();
         if !obj_type.is_empty() && st != obj_type.to_uppercase() { continue; }
         let sid = r.entity_id.trim().to_string();
         if !seen.insert(format!("{}-{}", st, sid)) { continue; }
-        // time filter
-        if let Ok(Some(row)) = database::get("SELECT title, content, updated_at FROM source_data WHERE source_type=?1 AND source_id=?2 AND date(updated_at)>=?3 AND date(updated_at)<=?4", &[json!(st), json!(sid), json!(start), json!(end)]) {
-            let name = row["title"].as_str().unwrap_or("");
-            let preview = row["content"].as_str().unwrap_or("").chars().take(100).collect::<String>();
-            let ts = row["updated_at"].as_str().unwrap_or("");
-            let rel = relative_time(ts);
-            out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
-            count += 1;
+        if let Ok(Some(row)) = database::get("SELECT title, content, updated_at FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(sid)]) {
+            matched.push(json!({"st": st, "sid": sid, "name": row["title"], "preview": row["content"], "ts": row["updated_at"]}));
         }
     }
-    // LIKE fallback
-    if out.is_empty() {
+    // LIKE fallback：同时搜索 title 和 content
+    if matched.is_empty() {
         let like = format!("%{}%", q);
         if let Ok(rows) = database::all(
-            "SELECT source_type, source_id, title, substr(content,1,100) as preview, updated_at FROM source_data WHERE title LIKE ?1 AND (source_type=?2 OR ?2='') AND date(updated_at)>=?3 AND date(updated_at)<=?4 ORDER BY updated_at DESC LIMIT ?5",
-            &[json!(&like), json!(obj_type), json!(start), json!(end), json!(limit)],
+            "SELECT source_type, source_id, title, substr(content,1,100) as preview, updated_at FROM source_data WHERE (title LIKE ?1 OR content LIKE ?1) AND (source_type=?2 OR ?2='') ORDER BY updated_at DESC",
+            &[json!(&like), json!(obj_type)],
         ) {
             for r in &rows {
-                let st = r["source_type"].as_str().unwrap_or("");
-                let sid = r["source_id"].as_str().unwrap_or("");
-                let name = r["title"].as_str().unwrap_or("");
-                let preview = r["preview"].as_str().unwrap_or("");
-                let ts = r["updated_at"].as_str().unwrap_or("");
-                let rel = relative_time(ts);
-                out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
+                let st = r["source_type"].as_str().unwrap_or("").to_uppercase();
+                let sid = r["source_id"].as_str().unwrap_or("").to_string();
+                if !seen.insert(format!("{}-{}", st, sid)) { continue; }
+                matched.push(json!({"st": st, "sid": sid, "name": r["title"], "preview": r["preview"], "ts": r["updated_at"]}));
             }
         }
     }
-    if out.is_empty() { format!("未找到匹配「{}」的对象。", q) } else { out }
+    if matched.is_empty() { return format!("未找到匹配「{}」的对象。", q); }
+    let total = matched.len();
+    let start_pos = offset.min(total);
+    let end_pos = (offset + limit).min(total);
+    let page: Vec<&Value> = matched.iter().skip(start_pos).take(limit).collect();
+    let mut out = format!("┌─ 共 {} 条，显示 {}-{} ─┐\n\n", total, start_pos + 1, end_pos);
+    for r in &page {
+        let st = r["st"].as_str().unwrap_or("");
+        let sid = r["sid"].as_str().unwrap_or("");
+        let name = r["name"].as_str().unwrap_or("");
+        let preview = r["preview"].as_str().unwrap_or("").chars().take(100).collect::<String>();
+        let ts = r["ts"].as_str().unwrap_or("");
+        let rel = relative_time(ts);
+        out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
+    }
+    if end_pos < total {
+        out.push_str(&format!("└─ 还有 {} 条未显示，传 offset={} 继续查看 ─┘", total - end_pos, end_pos));
+    }
+    out
 }
 
-fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, String)>, limit: usize) -> String {
-    let limit = if limit == 0 { 20 } else { limit };
+/// Recall 模式：按天分组展示所有对象，不去重、不排序，完整回放
+fn recall_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: usize) -> String {
+    let rows = database::all(
+        "SELECT source_type, source_id, title, updated_at FROM source_data
+         WHERE (source_type=?1 OR ?1='')
+           AND date(updated_at) >= ?2 AND date(updated_at) <= ?3
+         ORDER BY updated_at ASC",
+        &[json!(obj_type), json!(start), json!(end)],
+    ).unwrap_or_default();
+    
+    if rows.is_empty() {
+        return format!("时间范围内无{}对象。", if obj_type.is_empty() { "任何" } else { obj_type });
+    }
+    
+    // 按日期分组
+    let mut day_groups: std::collections::BTreeMap<String, Vec<&serde_json::Value>> = std::collections::BTreeMap::new();
+    for r in &rows {
+        let date = r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("未知").to_string();
+        day_groups.entry(date).or_default().push(r);
+    }
+    
+    let total_days = day_groups.len();
+    let days: Vec<_> = day_groups.iter().collect();
+    let start_day = offset.min(total_days);
+    let end_day = (offset + limit).min(total_days);
+    
+    if start_day >= total_days {
+        return format!("已无更多数据（共 {} 天）。", total_days);
+    }
+    
+    let mut out = format!("┌─ 共 {} 天，显示第 {}-{} 天 ─┐\n\n", total_days, start_day + 1, end_day);
+    let mut total_chars = out.len();
+    
+    for (date, items) in days.iter().skip(start_day).take(limit) {
+        // 统计新增和修改数量
+        let mut new_count = 0;
+        let mut update_count = 0;
+        for r in items.iter() {
+            let created = r["created_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
+            let updated = r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
+            if created == *date {
+                new_count += 1;
+            } else if updated == *date {
+                update_count += 1;
+            }
+        }
+        let day_header = format!("==== {} (新增: {}, 修改: {}) ====\n", date, new_count, update_count);
+        out.push_str(&day_header);
+        
+        for r in items.iter() {
+            let st = r["source_type"].as_str().unwrap_or("");
+            let sid = r["source_id"].as_str().unwrap_or("");
+            let mut name = r["title"].as_str().unwrap_or("").to_string();
+            let created = r["created_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
+            let updated = r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
+            
+            // 判断标记：+新增 *修改 -其他
+            let marker = if created == *date { "+" } else if updated == *date { "*" } else { "-" };
+            
+            // FILE 类型：从 file_relations 获取 custom_name
+            if st == "FILE" && name.is_empty() {
+                if let Ok(Some(fr)) = database::get(
+                    "SELECT custom_name FROM file_relations WHERE file_id=?1 ORDER BY id LIMIT 1",
+                    &[json!(sid)],
+                ) {
+                    if let Some(cn) = fr["custom_name"].as_str().filter(|s| !s.is_empty()) {
+                        name = cn.to_string();
+                    }
+                }
+            }
+            
+            // 查询关联对象
+            let seed = format!("{}-{}", st, sid);
+            let neighbors = crate::services::synapse::expand_object_links(&[seed], 5);
+            
+            // 输出主对象
+            out.push_str(&format!("{} [{}] {}\n", marker, st, name));
+            
+            // 输出关联对象
+            for (nid, _) in &neighbors {
+                if let Some(dash) = nid.find('-') {
+                    let nst = &nid[..dash];
+                    let nsid = &nid[dash+1..];
+                    // 查询关联对象的名称
+                    let n_name = if nst == "FILE" {
+                        database::get(
+                            "SELECT custom_name FROM file_relations WHERE file_id=?1 ORDER BY id LIMIT 1",
+                            &[json!(nsid)],
+                        ).ok().flatten().and_then(|r| r["custom_name"].as_str().filter(|s| !s.is_empty()).map(String::from))
+                        .unwrap_or_else(|| "未命名文件".to_string())
+                    } else {
+                        database::get(
+                            "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
+                            &[json!(nst.to_uppercase()), json!(nsid)],
+                        ).ok().flatten().and_then(|r| r["title"].as_str().filter(|s| !s.is_empty()).map(String::from))
+                        .unwrap_or_else(|| "未知".to_string())
+                    };
+                    out.push_str(&format!("  └ [{}] {}\n", nst.to_uppercase(), n_name));
+                }
+            }
+            out.push('\n');
+        }
+        out.push('\n');
+        
+        total_chars = out.len();
+        // 如果超过约 200K 字符（约 50K token），截断并提示分页
+        if total_chars > 200_000 {
+            let remaining_days = total_days - (start_day + (out.matches("====").count() - start_day));
+            out.push_str(&format!("└─ 输出已截断（{} 字符），还有约 {} 天的数据，传 offset={} 继续 ─┘", total_chars, remaining_days, end_day));
+            break;
+        }
+    }
+    
+    if end_day < total_days && total_chars <= 200_000 {
+        out.push_str(&format!("└─ 还有 {} 天未显示，传 offset={} 继续查看 ─┘", total_days - end_day, end_day));
+    }
+    
+    out
+}
+
+fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, String)>, limit: usize, offset: usize, mode: &str) -> String {
+    let limit = if limit == 0 { 50 } else { limit.min(100) };
     let (start, end) = match time_range {
         Some((s, e)) => (s, e),
         None => (chrono::Local::now().format("%Y-%m-%d").to_string(), "2099-12-31".to_string()),
     };
-    if query.trim().is_empty() { timeline_mode(obj_type, &start, &end, limit) }
-    else { keyword_object_mode(query, obj_type, &start, &end, limit) }
+    if mode == "recall" {
+        recall_mode(obj_type, &start, &end, limit, offset)
+    } else if query.trim().is_empty() {
+        timeline_mode(obj_type, &start, &end, limit, offset)
+    } else {
+        keyword_object_mode(query, obj_type, &start, &end, limit, offset)
+    }
 }
 
     let mut current_round = json!({"round":iters,"thought":ac,"tools":[]});
@@ -1695,6 +1921,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     atc.push(ToolCall{id:id.clone(),call_type:"function".into(),function:FunctionCall{name:name.into(),arguments:args.clone()}});
                 }
                 messages.push(ChatMessage{role:MessageRole::Assistant,content:None,tool_calls:Some(atc.clone()),tool_call_id:None,name:None,reasoning_content:reasoning.clone()});
+                // ═══ 并行工具调度：async 工具并行执行，sync 工具顺序执行 ═══
                 let mut round_tools = Vec::new();
                 let mut dedup_cache: std::collections::HashMap<(String,String),String> = std::collections::HashMap::new();
                 let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1702,72 +1929,233 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                 for r in &tool_log { if let Some(tools) = r["tools"].as_array() { extract_chunk_ids(tools); } }
                 extract_chunk_ids(&round_tools);
                 session.visited_chunks.extend(visited.iter().cloned());
-                for tc in &atc {
+
+                // 快照并行工具需要的只读状态
+                let scope_snapshot = compute_scope_from_session(&session);
+                let visited_sources_snapshot = session.visited_sources.clone();
+                let visited_chunks_snapshot = session.visited_chunks.clone();
+
+                // 预去重 + 分组：async 工具 vs sync 工具
+                let mut async_tasks: Vec<(usize, String, String)> = Vec::new(); // (index, name, args)
+                let mut sync_tasks: Vec<(usize, String, String)> = Vec::new();
+                let mut cached_results_map: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+
+                for (i, tc) in atc.iter().enumerate() {
                     let key = (tc.function.name.clone(), tc.function.arguments.clone());
-                    let result = if let Some(cached) = dedup_cache.get(&key) {
+                    if let Some(cached) = dedup_cache.get(&key) {
                         if let Some(ref h) = app_handle {
                             let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": tc.function.name, "cached": true, "result_len": cached.len()}));
                         }
-                        cached.clone()
+                        cached_results_map.insert(i, cached.clone());
                     } else {
-                        eprintln!("[LLM检索] 迭代#{} 工具={}", iters, tc.function.name);
-                        let res = match tc.function.name.as_str() {
-                            "ext_tool_search" | "ext_tool_search_knowledge_base" => {
-                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); let kw: Vec<String> = a["keywords"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect())).unwrap_or_default(); let _ft: Option<Vec<String>> = a["filter_tags"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()); let time_range = a["start_time"].as_str().and_then(|s| a["end_time"].as_str().map(|e| (resolve_time(s), resolve_time(e)))); session.record_search(&kw); let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE","chat"=>"CHAT",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() }; let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } }; let (res, new_sources) = execute_search_knowledge(&kw, scope_opt.clone(), &session.visited_sources, &session.visited_chunks, time_range.clone()).await;
-                                let (res, new_sources) = if new_sources.len() < 2 && scope_opt.is_some() {
-                                    let fb = execute_search_knowledge(&kw, None, &session.visited_sources, &session.visited_chunks, time_range.clone()).await;
-                                    eprintln!("[LLM检索] scope fallback: {} old_sources → {} new_sources", default_scope.len(), fb.1.len());
-                                    fb
-                                } else { (res, new_sources) };
-                                for s in &new_sources { session.mark_source_visited(s);
-                                    // ★ search 发现的对象自动注入 active_objects
-                                    if let Some(dash) = s.find('-') {
-                                        let (ot, oi) = s.split_at(dash);
-                                        let oi = &oi[1..];
-                                        let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
-                                        if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
-                                            session.update(&ot.to_lowercase(), oi, &name);
-                                            // ★ 检索发现 → score += 0.9
-                                            if let Some(existing) = session.active_objects.iter_mut().find(|o| o.obj_type == ot.to_lowercase() && o.obj_id == oi) {
-                                                existing.score = existing.score * 0.5 + 0.9;
+                        match tc.function.name.as_str() {
+                            "ext_tool_search" | "ext_tool_search_knowledge_base" | "ext_tool_batch_search" => {
+                                async_tasks.push((i, tc.function.name.clone(), tc.function.arguments.clone()));
+                            }
+                            _ => {
+                                sync_tasks.push((i, tc.function.name.clone(), tc.function.arguments.clone()));
+                            }
+                        }
+                    }
+                }
+
+                // 并行执行 async 工具
+                let results_mutex: Mutex<Vec<(usize, String, Vec<SessionEffect>)>> = Mutex::new(Vec::new());
+                if !async_tasks.is_empty() {
+                    let mut handles = Vec::new();
+                    for (orig_idx, name, args_str) in &async_tasks {
+                        let name = name.clone();
+                        let args_str = args_str.clone();
+                        let orig_idx = *orig_idx;
+                        let scope = scope_snapshot.clone();
+                        let vs = visited_sources_snapshot.clone();
+                        let vc = visited_chunks_snapshot.clone();
+                        handles.push(tokio::spawn(async move {
+                            let a: Value = serde_json::from_str(&args_str).unwrap_or(json!({}));
+                            let (res, effects) = match name.as_str() {
+                                "ext_tool_search" | "ext_tool_search_knowledge_base" => {
+                                    let kw: Vec<String> = a["keywords"].as_array()
+                                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                        .or_else(|| a["keywords"].as_str().map(|s| s.split_whitespace().map(String::from).collect()))
+                                        .unwrap_or_default();
+                                    let time_range = a["start_time"].as_str()
+                                        .and_then(|s| a["end_time"].as_str().map(|e| (resolve_time(s), resolve_time(e))));
+                                    let (mut res, new_sources) = execute_search_knowledge(
+                                        &kw, scope.clone(), &vs, &vc, time_range.clone()
+                                    ).await;
+                                    if new_sources.len() < 2 && scope.is_some() {
+                                        let fb = execute_search_knowledge(&kw, None, &vs, &vc, time_range).await;
+                                        res = fb.0;
+                                        let mut effects = vec![SessionEffect::RecordSearch(kw)];
+                                        for s in &fb.1 {
+                                            effects.push(SessionEffect::MarkSourceVisited(s.clone()));
+                                            if let Some(dash) = s.find('-') {
+                                                let (ot, oi) = s.split_at(dash);
+                                                let oi = &oi[1..];
+                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                                if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
+                                                    effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name });
+                                                    effects.push(SessionEffect::UpdateObjectScore { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), score_delta: 0.9 });
+                                                }
+                                            }
+                                        }
+                                        (res, effects)
+                                    } else {
+                                        let mut effects = vec![SessionEffect::RecordSearch(kw)];
+                                        for s in &new_sources {
+                                            effects.push(SessionEffect::MarkSourceVisited(s.clone()));
+                                            if let Some(dash) = s.find('-') {
+                                                let (ot, oi) = s.split_at(dash);
+                                                let oi = &oi[1..];
+                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                                if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
+                                                    effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name });
+                                                    effects.push(SessionEffect::UpdateObjectScore { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), score_delta: 0.9 });
+                                                }
+                                            }
+                                        }
+                                        (res, effects)
+                                    }
+                                }
+                                "ext_tool_batch_search" => {
+                                    let queries_raw = a["queries"].as_array();
+                                    let mut sub_queries: Vec<Vec<String>> = Vec::new();
+                                    if let Some(arr) = queries_raw {
+                                        for q in arr.iter().take(10) {
+                                            if let Some(kw) = q["keywords"].as_array() {
+                                                let k: Vec<String> = kw.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                                                if !k.is_empty() { sub_queries.push(k); }
                                             }
                                         }
                                     }
+                                    let res = execute_batch_search(&sub_queries, scope, &vs).await;
+                                    (res, vec![])
                                 }
-                                // ★ 学习: new_sources → object_links（先 dedup）
-                                let mut adopted: Vec<String> = new_sources.iter().filter(|s| !s.is_empty()).cloned().collect();
-                                adopted.sort(); adopted.dedup();
-                                eprintln!("[LLM检索] new_sources adopted: {:?}", adopted); res }
-                            "ext_tool_object" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); if a.get("id").and_then(|v|v.as_str()).filter(|s|!s.is_empty()).is_some() { fetch_parent_chunks(a["id"].as_str().unwrap_or("")) } else { let q = a["query"].as_str().unwrap_or(""); let t = a["type"].as_str().unwrap_or(""); let s = a["start_time"].as_str().map(resolve_time); let e = a["end_time"].as_str().map(resolve_time); let tr = s.and_then(|s| e.map(|e| (s, e))); let limit = a["limit"].as_u64().unwrap_or(20) as usize; let res = execute_object_get(q, t, tr, limit); for line in res.lines() { if let Some(si) = line.split("source_id: ").nth(1) { let sid = si.trim(); if sid.is_empty() { continue; } if let Some(dash) = sid.find('-') { let (ot, oi) = sid.split_at(dash); let oi = &oi[1..]; let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(ot),json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default(); if !ot.is_empty() && !oi.is_empty() && !name.is_empty() { session.update(&ot.to_lowercase(), oi, &name); } } } } res } }
-                            "ext_tool_traverse" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_traverse(a["chunk_id"].as_str().unwrap_or(""), a["edge_type"].as_str().unwrap_or("Next"), a["radius"].as_i64().unwrap_or(10) as usize, &visited, a["target_name"].as_str().unwrap_or(""), &mut traverse_source_counter) }
-                            "ext_tool_act" => { let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({})); execute_act(a["action"].as_str().unwrap_or(""), a["project_id"].as_str().unwrap_or(""), a["todo_title"].as_str().unwrap_or(""), a["todo_content"].as_str().unwrap_or(""), a["todo_id"].as_str().unwrap_or(""), a["new_status"].as_str().unwrap_or("")) }
-                            "ext_tool_batch_search" => {
-                                let a:Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
-                                let queries_raw = a["queries"].as_array();
-                                let mut sub_queries: Vec<Vec<String>> = Vec::new();
-                                if let Some(arr) = queries_raw {
-                                    for q in arr.iter().take(10) {
-                                        if let Some(kw) = q["keywords"].as_array() {
-                                            let k: Vec<String> = kw.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-                                            if !k.is_empty() { sub_queries.push(k); }
+                                _ => unreachable!(),
+                            };
+                            (orig_idx, res, effects)
+                        }));
+                    }
+                    for handle in handles {
+                        if let Ok(result) = handle.await {
+                            results_mutex.lock().unwrap().push(result);
+                        }
+                    }
+                }
+                let async_results: Vec<(usize, String, Vec<SessionEffect>)> = {
+                    let guard = results_mutex.lock().unwrap();
+                    guard.clone()
+                };
+
+                // 顺序执行 sync 工具
+                let mut sync_results: Vec<(usize, String, Vec<SessionEffect>)> = Vec::new();
+                for (idx, name, args_str) in &sync_tasks {
+                    let a: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                    let (result, effects) = match name.as_str() {
+                        "ext_tool_object" => {
+                            let res = if a.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).is_some() {
+                                fetch_parent_chunks(a["id"].as_str().unwrap_or(""))
+                            } else {
+                                let q = a["query"].as_str().unwrap_or("");
+                                let t = a["type"].as_str().unwrap_or("");
+                                let s = a["start_time"].as_str().map(resolve_time);
+                                let e = a["end_time"].as_str().map(resolve_time);
+                                let tr = s.and_then(|s| e.map(|e| (s, e)));
+                                let limit = a["limit"].as_u64().unwrap_or(50) as usize;
+                                let offset = a["offset"].as_u64().unwrap_or(0) as usize;
+                                let mode = a["mode"].as_str().unwrap_or("search");
+                                execute_object_get(q, t, tr, limit, offset, mode)
+                            };
+                            let mut effects = Vec::new();
+                            for line in res.lines() {
+                                if let Some(si) = line.split("source_id: ").nth(1) {
+                                    let sid = si.trim();
+                                    if sid.is_empty() { continue; }
+                                    if let Some(dash) = sid.find('-') {
+                                        let (ot, oi) = sid.split_at(dash);
+                                        let oi = &oi[1..];
+                                        let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                        if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
+                                            effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name });
                                         }
                                     }
                                 }
-                                let default_scope: Vec<String> = { let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect(); sorted.sort_by(|a,b|b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order))); sorted.iter().take(10).filter_map(|o|{let p=match o.obj_type.as_str(){"product"=>"PRODUCT","project"=>"PROJECT","file"=>"FILE","note"=>"NOTE","chat"=>"CHAT",_=>return None};if o.obj_id.starts_with(p){Some(o.obj_id.clone())}else{None}}).collect() };
-                                let scope_opt = if default_scope.is_empty() { None } else { let s = resolve_scope_to_rowids(&default_scope); if s.is_empty() { None } else { Some(s) } };
-                                execute_batch_search(&sub_queries, scope_opt, &session.visited_sources).await
-                                }
-                            _ => format!("未知工具: {}", tc.function.name),
-                        };
-                        dedup_cache.insert(key, res.clone());
-                        if let Some(ref h) = app_handle {
-                            let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": tc.function.name, "result_len": res.chars().count()}));
+                            }
+                            (res, effects)
                         }
-                        res
+                        "ext_tool_traverse" => {
+                            let res = execute_traverse(
+                                a["chunk_id"].as_str().unwrap_or(""),
+                                a["edge_type"].as_str().unwrap_or("Next"),
+                                a["radius"].as_i64().unwrap_or(10) as usize,
+                                &visited,
+                                a["target_name"].as_str().unwrap_or(""),
+                                &mut traverse_source_counter,
+                            );
+                            (res, vec![])
+                        }
+                        "ext_tool_act" => {
+                            let res = execute_act(
+                                a["action"].as_str().unwrap_or(""),
+                                a["project_id"].as_str().unwrap_or(""),
+                                a["todo_title"].as_str().unwrap_or(""),
+                                a["todo_content"].as_str().unwrap_or(""),
+                                a["todo_id"].as_str().unwrap_or(""),
+                                a["new_status"].as_str().unwrap_or(""),
+                            );
+                            (res, vec![])
+                        }
+                        "ext_tool_manage_policy" => {
+                            let id = a["id"].as_i64();
+                            let content = a["content"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                            let res = match (id, content) {
+                                (Some(pid), Some(ref c)) => {
+                                    let r = database::run("UPDATE user_policies SET content=?1, created_at=datetime('now','localtime') WHERE id=?2 AND is_active=1", &[json!(c), json!(pid)]);
+                                    match r { Ok(_) => format!("已更新策略：{}", c), Err(e) => format!("更新失败：{}", e) }
+                                }
+                                (Some(pid), None) => {
+                                    let r = database::run("UPDATE user_policies SET is_active=0 WHERE id=?1", &[json!(pid)]);
+                                    match r { Ok(_) => "已删除策略".to_string(), Err(e) => format!("删除失败：{}", e) }
+                                }
+                                (None, Some(ref c)) => {
+                                    let r = database::run("INSERT INTO user_policies(content, is_active) VALUES(?1, 1)", &[json!(c)]);
+                                    match r { Ok(_) => format!("已记入宪法：{}", c), Err(e) => format!("记录失败：{}", e) }
+                                }
+                                _ => "参数不完整：需要content或id".to_string(),
+                            };
+                            (res, vec![])
+                        }
+                        _ => (format!("未知工具: {}", name), vec![]),
                     };
+                    sync_results.push((*idx, result, effects));
+                }
+
+                // 合并所有结果并按原始顺序排列
+                let mut all_results: Vec<(usize, String, Vec<SessionEffect>)> = Vec::new();
+                all_results.extend(async_results);
+                all_results.extend(sync_results);
+                all_results.sort_by_key(|(idx, _, _)| *idx);
+
+                // 合并缓存结果
+                for (idx, cached) in &cached_results_map {
+                    all_results.push((*idx, cached.clone(), vec![]));
+                }
+                all_results.sort_by_key(|(idx, _, _)| *idx);
+
+                // 顺序应用 SessionEffects + 构建 round_tools + messages
+                for (idx, result, effects) in &all_results {
+                    for effect in effects {
+                        session.apply_effect(effect);
+                    }
+                    let tc = &atc[*idx];
+                    let key = (tc.function.name.clone(), tc.function.arguments.clone());
+                    dedup_cache.insert(key, result.clone());
+                    if let Some(ref h) = app_handle {
+                        let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": tc.function.name, "result_len": result.chars().count()}));
+                    }
                     let parsed_args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                     round_tools.push(json!({"tool":tc.function.name,"args":parsed_args,"result":result,"result_len":result.chars().count()}));
-                    messages.push(ChatMessage{role:MessageRole::Tool,content:Some(result),tool_calls:None,tool_call_id:Some(tc.id.clone()),reasoning_content:None,name:Some(tc.function.name.clone())});
+                    messages.push(ChatMessage{role:MessageRole::Tool,content:Some(result.clone()),tool_calls:None,tool_call_id:Some(tc.id.clone()),reasoning_content:None,name:Some(tc.function.name.clone())});
                 }
                 current_round["tools"] = json!(round_tools);
                 tool_log.push(current_round);

@@ -68,11 +68,13 @@ const sessions = ref<ChatSession[]>([])
 const currentSessionId = ref<string|null>(null)
 const sessionNameEdit = ref('')
 const editingSessionId = ref<string|null>(null)
+const sessionDirty = ref(false)  // 标记当前会话是否有变更
+let lastSavedContent = ''  // 上次保存时的内容快照
 
 function newSession() {
   stopAllTypewriters()
   const id = crypto.randomUUID()
-  sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+  sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toLocaleString('sv-SE'), updatedAt: new Date().toLocaleString('sv-SE') })
   currentSessionId.value = id; saveToStorage()
 }
 
@@ -101,11 +103,29 @@ async function selectSession(id: string) {
 }
 const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
 
-function saveToStorage() { const s = currentSession.value; if (s && s.messages.length > 0) { s.updatedAt = new Date().toISOString(); sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) }; kbSaveSessions(sessions.value).catch((e) => console.error('[Agent] 保存会话失败:', e)) }
+function saveToStorage() { 
+  const s = currentSession.value; 
+  if (s && s.messages.length > 0 && sessionDirty.value) {
+    // 只有内容实际变化时才更新时间戳
+    const currentContent = JSON.stringify(s.messages)
+    if (currentContent === lastSavedContent) {
+      sessionDirty.value = false
+      return
+    }
+    s.updatedAt = new Date().toLocaleString('sv-SE'); 
+    sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()); 
+    sessionDirty.value = false;
+    lastSavedContent = currentContent
+    kbSaveSessions([s]).catch((e) => console.error('[Agent] 保存会话失败:', e)); 
+  }
+}
 async function loadFromStorage() {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt })).sort((a: any, b: any) => new Date(b.updatedAt || a.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
   if (!sessions.value.length) { newSession(); return }
   currentSessionId.value = sessions.value[0].id
+  // 初始化内容快照
+  const s = currentSession.value
+  if (s) lastSavedContent = JSON.stringify(s.messages)
   // Render markdown for loaded AI messages — await all renders
   const msgs = sessions.value[0].messages
   await Promise.all(msgs.map((m, i) => {
@@ -135,7 +155,7 @@ function executeDelete() {
   sessions.value = sessions.value.filter(s => s.id !== id)
   if (currentSessionId.value === id) currentSessionId.value = sessions.value[0]?.id ?? null
   confirmDeleteId.value = null
-  saveToStorage()
+  sessionDirty.value = true; saveToStorage()
 }
 
 let initialScrollDone = false
@@ -169,8 +189,8 @@ async function handleSendMessage() {
   if (!q || isChatting.value) return
   const session = currentSession.value; if (!session) return
   session.messages.push({ role: 'user', content: q })
-  if (session.name === '新对话') { session.name = q.slice(0, 30); saveToStorage() }
-  inputMessage.value = ''; saveToStorage(); scrollToBottomIfNear()
+  if (session.name === '新对话') { session.name = q.slice(0, 30) }
+  sessionDirty.value = true; inputMessage.value = ''; saveToStorage(); scrollToBottomIfNear()
   isChatting.value = true
   thinkingProgress.value = ''
   // ★ Real Cognitive Stream: 实时进度
@@ -178,18 +198,7 @@ async function handleSendMessage() {
     thinkingProgress.value = ev.payload.msg; scrollToBottomIfNear()
   })
   const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [] }
-  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; saveToStorage(); scrollToBottomIfNear()
-  const unlistenFinal = await listen('agent:final-tokens', (event: any) => {
-    const data = event.payload as any
-    finalTokens += (data.tokens || '')
-    const msg = session.messages[aiIdx]
-    if (msg) {
-      msg.content = finalTokens
-      msg.isThinking = false
-      renderMessageContent(aiIdx)
-    }
-    saveToStorage(); scrollToBottomIfNear()
-  })
+  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
   try {
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
@@ -231,7 +240,7 @@ async function handleSendMessage() {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
-    isChatting.value = false; saveToStorage(); scrollToBottomIfNear()
+    isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
     try { ;unlistenStream(); unlistenThought(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
   }
 }
@@ -278,7 +287,7 @@ function copyFullTrace(idx: number) {
 async function refreshAnswer(idx: number) {
   const m = currentSession.value?.messages[idx]
   if (!m?.content || isRefining.value) return; isRefining.value = true
-  try { const r: any = await kbChat({ query: `请将以下标书应答内容润色优化：\n\n${m.content}` }); if (r.success) { m.content = r.answer || m.content; saveToStorage() } }
+  try { const r: any = await kbChat({ query: `请将以下标书应答内容润色优化：\n\n${m.content}` }); if (r.success) { m.content = r.answer || m.content; sessionDirty.value = true; saveToStorage() } }
   catch (e: any) { toast({ message: e.message || '润色失败', type: 'error' }) }
   finally { isRefining.value = false }
 }
@@ -311,7 +320,7 @@ onUnmounted(() => {
       :editingSessionId="editingSessionId" :sessionNameEdit="sessionNameEdit"
       @select="selectSession" @new="newSession" @confirmDelete="confirmDeleteSession"
       @startRename="(id:string)=>{editingSessionId=id;const s=sessions.find(x=>x.id===id);if(s)sessionNameEdit=s.name}"
-      @saveRename="(id:string)=>{const s=sessions.find(x=>x.id===id);if(s){s.name=sessionNameEdit.trim()||s.name;editingSessionId=null;saveToStorage()}}"
+      @saveRename="(id:string)=>{const s=sessions.find(x=>x.id===id);if(s){s.name=sessionNameEdit.trim()||s.name;editingSessionId=null;sessionDirty.value=true;saveToStorage()}}"
       @updateSessionNameEdit="(val:string)=>sessionNameEdit=val"
       @cancelRename="editingSessionId=null" />
   </transition>

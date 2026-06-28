@@ -73,6 +73,21 @@ pub async fn cleanup_retry_failed() -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub async fn cleanup_orphan_data() -> Result<Value, String> {
+    crate::services::cleanup_pipeline::cleanup_orphan_source_data();
+    Ok(json!({"success":true,"message":"孤儿数据清理已完成"}))
+}
+
+#[tauri::command]
+pub async fn pipeline_full_resync() -> Result<Value, String> {
+    // 清空旧的 ai_sync_queue
+    crate::database::run("DELETE FROM ai_sync_queue", &[]).ok();
+    // 重置同步时间戳，让管线重新处理所有对象
+    crate::services::knowledge_pipeline::reset_sync_time();
+    Ok(json!({"success":true,"message":"已清空 ai_sync_queue 并重置同步时间戳，知识管线将在下一轮重新物化所有对象"}))
+}
+
+#[tauri::command]
 pub async fn ai_sync_force_resync() -> Result<Value, String> {
     let r = database::run("UPDATE ai_sync_queue SET is_embedded=0,retry_count=0,last_error='' WHERE is_embedded IN (1,-1)",&[]).map_err(|e|e.to_string())?;
     crate::services::knowledge_pipeline::start();
@@ -368,7 +383,7 @@ pub async fn pipeline_browse_source(source_type: Option<String>, limit: Option<i
 }
 
 #[tauri::command]
-pub async fn pipeline_get_source_content(id: i64) -> Result<Value, String> {
+pub async fn pipeline_get_source_content(id: String) -> Result<Value, String> {
     let row = database::get(
         "SELECT id, source_type, source_id, title, content, created_at, updated_at FROM source_data WHERE id=?",
         &[json!(id)],

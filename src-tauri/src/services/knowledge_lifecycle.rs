@@ -41,12 +41,8 @@ pub fn get_changed_since(since: &str, limit: i64) -> Vec<(String, String, String
 }
 
 /// 获取指定 source_data 的 id（供知识管线调用）
-pub fn get_source_data_id(source_type: &str, source_id: &str) -> Option<i64> {
-    crate::database::get(
-        "SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",
-        &[json!(source_type), json!(source_id)],
-    )
-    .ok()
-    .flatten()
-    .and_then(|r| r["id"].as_i64())
+/// 现在 source_data.id = source_id（TEXT）
+pub fn get_source_data_id(source_type: &str, source_id: &str) -> Option<String> {
+    // 直接返回 source_id，因为 source_data.id = source_id
+    Some(source_id.to_string())
 }

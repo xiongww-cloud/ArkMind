@@ -15,7 +15,7 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
         .unwrap_or(0.0);
     database::run("INSERT INTO projects(id,name,status,description,budget,customer,owner,user_id,bid_time,customer_contact,customer_phone) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
     &[json!(&id),json!(&name),json!(status),json!(&desc),json!(budget_val),json!(data["customer"].as_str().unwrap_or("")),json!(data["owner"].as_str().unwrap_or("")),json!(data["userId"].as_str().unwrap_or("")),json!(data["bidTime"].as_str().unwrap_or("")),json!(data["customerContact"].as_str().unwrap_or("")),json!(data["customerPhone"].as_str().unwrap_or(""))]).map_err(|e| e.to_string())?;
-    // ★ trigger 已自动同步 KV 格式到 source_data
+    crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &id, crate::services::object_changed::Action::Created);
     database::get("SELECT * FROM projects WHERE id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null))
 }
@@ -32,7 +32,7 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     if fields.is_empty() { return Ok(()); }
     fields.push("updated_at=datetime('now', 'localtime')".into()); values.push(json!(id));
     database::run(&format!("UPDATE projects SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
-    // ★ trigger 已自动同步 KV 格式到 source_data
+    crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &id, crate::services::object_changed::Action::Updated);
     Ok(())
 }
@@ -76,8 +76,8 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     }
     Ok(())
 }
-#[tauri::command] pub async fn project_update_status(project_id: String, new_status: String, operator: String) -> Result<(), String> { database::run("UPDATE projects SET status=?,updated_at=datetime('now', 'localtime') WHERE id=?", &[json!(new_status),json!(project_id)]).map_err(|e| e.to_string())?; let id = uuid::Uuid::new_v4().to_string(); database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,?4)", &[json!(id),json!(project_id),json!(format!("项目状态更新为：{}",new_status)),json!(operator)]).ok(); crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &project_id, crate::services::object_changed::Action::Updated); Ok(()) }
-#[tauri::command] pub async fn project_archive(project_id: String, _operator: String) -> Result<(), String> { database::run("UPDATE projects SET status='Archived',updated_at=datetime('now', 'localtime') WHERE id=?", &[json!(project_id)]).map_err(|e| e.to_string())?; crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &project_id, crate::services::object_changed::Action::Updated); Ok(()) }
+#[tauri::command] pub async fn project_update_status(project_id: String, new_status: String, operator: String) -> Result<(), String> { database::run("UPDATE projects SET status=?,updated_at=datetime('now', 'localtime') WHERE id=?", &[json!(new_status),json!(project_id)]).map_err(|e| e.to_string())?; let id = uuid::Uuid::new_v4().to_string(); database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,?4)", &[json!(id),json!(project_id),json!(format!("项目状态更新为：{}",new_status)),json!(operator)]).ok(); crate::services::knowledge_lifecycle::notify_changed("PROJECT", &project_id); crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &project_id, crate::services::object_changed::Action::Updated); Ok(()) }
+#[tauri::command] pub async fn project_archive(project_id: String, _operator: String) -> Result<(), String> { database::run("UPDATE projects SET status='Archived',updated_at=datetime('now', 'localtime') WHERE id=?", &[json!(project_id)]).map_err(|e| e.to_string())?; crate::services::knowledge_lifecycle::notify_changed("PROJECT", &project_id); crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &project_id, crate::services::object_changed::Action::Updated); Ok(()) }
 
 async fn project_export_inner(project_id: &str) -> Result<Value, String> {
     use std::io::Write;

@@ -93,7 +93,7 @@ pub async fn todos_create(data: Value) -> Result<Value, String> {
     )
     .map_err(|e| e.to_string())?
     .unwrap_or(json!({}));
-    // ★ trigger 已自动同步 KV 格式到 source_data
+    crate::services::knowledge_lifecycle::notify_changed("TODO", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Created);
     Ok(json!({ "success": true, "todo": todo }))
 }
@@ -165,7 +165,7 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
     )
     .map_err(|e| e.to_string())?
     .unwrap_or(json!({}));
-    // ★ trigger 已自动同步 KV 格式到 source_data
+    crate::services::knowledge_lifecycle::notify_changed("TODO", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Updated);
     Ok(json!({ "success": true, "todo": todo }))
 }
@@ -221,6 +221,7 @@ pub async fn todos_toggle(id: String) -> Result<Value, String> {
                 "UPDATE todos SET done=1, updated_at=datetime('now', 'localtime') WHERE id=?",
                 &[json!(&id)],
             ).map_err(|e| { let m = format!("[todos_toggle] repeat mark done fail: {}", e); eprintln!("{}", m); m })?;
+            crate::services::knowledge_lifecycle::notify_changed("TODO", &id);
             let todo = database::get(
                 "SELECT t.*, tpm.project_id, p.name as project_name FROM todos t \
                  LEFT JOIN todo_project_mapping tpm ON t.id = tpm.todo_id \
@@ -236,6 +237,7 @@ pub async fn todos_toggle(id: String) -> Result<Value, String> {
         "UPDATE todos SET done = CASE WHEN done=0 THEN 1 ELSE 0 END, updated_at=datetime('now', 'localtime') WHERE id=?",
         &[json!(&id)],
     ).map_err(|e| e.to_string())?;
+    crate::services::knowledge_lifecycle::notify_changed("TODO", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Updated);
     // 标记完成时入队清理 source_data + 向量
     let todo = database::get(

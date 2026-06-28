@@ -182,7 +182,7 @@ pub fn run() {
             commands::ext_tool_translate_filter, commands::ext_tool_search_filtered,
             // AI sync
             commands::ai_sync_status, commands::ai_sync_trigger, commands::ai_sync_diagnose, commands::ai_sync_reset,
-            commands::ai_sync_retry_failed, commands::cleanup_retry_failed, commands::ai_sync_force_resync, commands::ai_sync_diagnose_failed_files,
+            commands::ai_sync_retry_failed, commands::cleanup_retry_failed, commands::cleanup_orphan_data, commands::pipeline_full_resync, commands::ai_sync_force_resync, commands::ai_sync_diagnose_failed_files,
             commands::knowledge_pipeline_status,
             commands::pipeline_debug_status, commands::pipeline_clear_knowledge, commands::pipeline_clear_vectors, commands::pipeline_clear_all, commands::pipeline_clear_tag_pipeline, commands::pipeline_resync, commands::pipeline_browse_source, commands::pipeline_get_source_content, commands::pipeline_retag_all,
             // Assets
@@ -195,6 +195,7 @@ pub fn run() {
             commands::entity_get_tags, commands::entity_add_tag, commands::entity_remove_tag,
             // Settings
             commands::settings_get, commands::settings_update, commands::get_ai_config, commands::update_ai_config, commands::ai_test_provider, commands::ai_test_embedding,
+            commands::get_user_policies, commands::set_user_policies, commands::manage_policy,
             commands::user_profile, commands::user_profile_update,
             // Window
             commands::window_minimize, commands::window_toggle_maximize, commands::window_close,

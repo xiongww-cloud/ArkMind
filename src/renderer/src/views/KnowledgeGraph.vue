@@ -8,7 +8,7 @@ import {
   kbDashboardStats, tagList, tagCreate, tagDelete, tagListCategories, tagStats,
   pipelineDebugStatus,
   pipelineClearKnowledge, pipelineClearAll, pipelineClearTagPipeline,
-  aiSyncRetryFailed, cleanupRetryFailed,
+  aiSyncRetryFailed, cleanupRetryFailed, cleanupOrphanData, pipelineFullResync,
   kbPipelineDebug,
 } from '@/api/db-client'
 
@@ -65,6 +65,8 @@ async function handleClearKnowledge() { if (!(await dangerConfirm({ title: '重�
 async function handleClearTagPipeline() { if (!(await dangerConfirm({ title: '重置标签管线', message: '确定重置所有标签映射？将清除已有标签并重新打标。', confirmText: '重置' }))) return; try { await pipelineClearTagPipeline(); toast({ message: '已重置标签管线，正在重新打标', type: 'success' }); await loadPipelineStatus() } catch (e) { console.error('[KG] clearTagPipeline failed:', e); toast({ message: '重置失败', type: 'error' }) } }
 async function handleRetryFailedSync() { try { const r = await aiSyncRetryFailed(); toast({ message: `已重置 ${r?.retried ?? 0} 个失败同步任务`, type: 'success' }); await loadStats(); await loadPipelineStatus() } catch (e) { console.error('[KG] retryFailedSync failed:', e); toast({ message: '重试失败', type: 'error' }) } }
 async function handleRetryFailedCleanup() { try { const r = await cleanupRetryFailed(); toast({ message: `已重置 ${r?.retried ?? 0} 个失败清理任务`, type: 'success' }); await loadStats(); await loadPipelineStatus() } catch (e) { console.error('[KG] retryFailedCleanup failed:', e); toast({ message: '重试失败', type: 'error' }) } }
+async function handleOrphanCleanup() { try { await cleanupOrphanData(); toast({ message: '孤儿数据清理已完成', type: 'success' }); await loadStats(); await loadPipelineStatus() } catch (e) { console.error('[KG] orphanCleanup failed:', e); toast({ message: '清理失败', type: 'error' }) } }
+async function handleFullResync() { try { await pipelineFullResync(); toast({ message: '已重置，知识管线将重新物化', type: 'success' }); await loadStats(); await loadPipelineStatus() } catch (e) { console.error('[KG] fullResync failed:', e); toast({ message: '重置失败', type: 'error' }) } }
 
 const debugData = ref<any>(null)
 async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch (e) { console.error('[KG] loadDebug failed:', e) } }
@@ -257,6 +259,8 @@ onMounted(() => { loadStats(); loadTags(); loadPipelineStatus(); document.addEve
             <span class="w-px h-6 bg-surface-200 self-center" />
             <button @click="handleRetryFailedSync" class="px-3 py-1 text-[11px] rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重试失败同步</button>
             <button @click="handleRetryFailedCleanup" class="px-3 py-1 text-[11px] rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重试失败清理</button>
+            <button @click="handleOrphanCleanup" class="px-3 py-1 text-[11px] rounded-lg border border-purple-300 text-purple-600 hover:bg-purple-50 transition">清理孤儿数据</button>
+            <button @click="handleFullResync" class="px-3 py-1 text-[11px] rounded-lg border border-orange-300 text-orange-600 hover:bg-orange-50 transition">重新物化全部</button>
             <router-link to="/inspector" class="px-3 py-1 text-[11px] rounded-lg border border-surface-300 text-surface-500 hover:bg-surface-50 transition flex items-center gap-1">
               <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
               索引检查

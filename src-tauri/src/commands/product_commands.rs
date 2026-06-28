@@ -32,7 +32,7 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     let series_id = data["seriesId"].as_str().map(|s| json!(s));
     database::run("INSERT INTO products(id,name,series_id,description,price,standard_specs,full_specs) VALUES(?,?,?,?,?,?,?)",
     &[json!(id),json!(&name),series_id.unwrap_or(Value::Null),json!(&desc),json!(data["price"].as_f64().unwrap_or(0.0)),json!(&std_specs),json!(&specs)]).map_err(|e| e.to_string())?;
-    // ★ trigger 已自动同步 KV 格式到 source_data
+    crate::services::knowledge_lifecycle::notify_changed("PRODUCT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, &id, crate::services::object_changed::Action::Created);
     database::get("SELECT * FROM products WHERE id=?",&[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null))
 }
@@ -47,7 +47,7 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     fields.push("updated_at=datetime('now', 'localtime')".into());
     values.push(json!(id));
     database::run(&format!("UPDATE products SET {} WHERE id=?",fields.join(",")),&values).map_err(|e|e.to_string())?;
-    // ★ trigger 已自动同步 KV 格式到 source_data，无需额外写入
+    crate::services::knowledge_lifecycle::notify_changed("PRODUCT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, &id, crate::services::object_changed::Action::Updated);
     Ok(())
 }

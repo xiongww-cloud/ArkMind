@@ -1,4 +1,4 @@
-﻿//! 数据摄入中台 (Data Ingestion Mid-Platform)
+//! 数据摄入中台 (Data Ingestion Mid-Platform)
 //!
 //! 统一摄入所有业务实体到 source_data 表，轮转顺序：
 //!   ① file   → PENDING文件：解析→清洗→落盘→广播
@@ -289,7 +289,7 @@ fn ingest_pending_notes() {
         if clean.chars().count() > LONG_NOTE_THRESHOLD {
             // 长笔记：保留原文以支持 chunk，入 ai_sync_queue
             let _ = crate::database::run(
-                "INSERT OR REPLACE INTO source_data(source_type,source_id,title,content,updated_at) VALUES('NOTE',?1,?2,?3,datetime('now','localtime'))",
+                "INSERT OR REPLACE INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'NOTE',?1,?2,?3,datetime('now','localtime'))",
                 &[serde_json::json!(&note_id), serde_json::json!(&title), serde_json::json!(&clean)],
             );
             crate::services::ai_sync::trigger_sync("notes", &note_id);
@@ -303,7 +303,7 @@ fn ingest_pending_notes() {
             if !preview.is_empty() { lines.push(format!("content: {}", preview)); }
             let kv = lines.join("\n");
             let _ = crate::database::run(
-                "INSERT OR REPLACE INTO source_data(source_type,source_id,title,content,updated_at) VALUES('NOTE',?1,?2,?3,datetime('now','localtime'))",
+                "INSERT OR REPLACE INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'NOTE',?1,?2,?3,datetime('now','localtime'))",
                 &[serde_json::json!(&note_id), serde_json::json!(&title), serde_json::json!(&kv)],
             );
             println!("[数据摄入中台] 📝 短笔记 {} 已摄入 ({} 字符)", &note_id[..note_id.len().min(8)], kv.len());
@@ -350,7 +350,7 @@ fn ingest_pending_products() {
         let clean = crate::services::file_parser::sanitize_chars(&content);
         if clean.trim().is_empty() { continue; }
         let _ = crate::database::run(
-            "INSERT OR REPLACE INTO source_data(source_type,source_id,title,content,updated_at) VALUES('PRODUCT',?1,?2,?3,datetime('now','localtime'))",
+            "INSERT OR REPLACE INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'PRODUCT',?1,?2,?3,datetime('now','localtime'))",
             &[serde_json::json!(&prod_id), serde_json::json!(&name), serde_json::json!(&clean)],
         );
         // ★ 不入 ai_sync_queue，结构化数据不走 chunk
@@ -400,7 +400,7 @@ fn ingest_pending_projects() {
         let clean = crate::services::file_parser::sanitize_chars(&content);
         if clean.trim().is_empty() { continue; }
         let _ = crate::database::run(
-            "INSERT OR REPLACE INTO source_data(source_type,source_id,title,content,updated_at) VALUES('PROJECT',?1,?2,?3,datetime('now','localtime'))",
+            "INSERT OR REPLACE INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'PROJECT',?1,?2,?3,datetime('now','localtime'))",
             &[serde_json::json!(&proj_id), serde_json::json!(&name), serde_json::json!(&clean)],
         );
         // ★ 不入 ai_sync_queue，结构化数据不走 chunk
@@ -424,7 +424,7 @@ fn ingest_pending_todos() {
         let clean = crate::services::file_parser::sanitize_chars(&markdown);
         if clean.trim().is_empty() { continue; }
         let _ = crate::database::run(
-            "INSERT OR REPLACE INTO source_data(source_type,source_id,title,content,updated_at) VALUES('TODO',?1,?2,?3,datetime('now','localtime'))",
+            "INSERT OR REPLACE INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'TODO',?1,?2,?3,datetime('now','localtime'))",
             &[serde_json::json!(&id), serde_json::json!(title), serde_json::json!(&clean)],
         );
         println!("[data ingestion] todo {} ingested ({} chars)", &id[..id.len().min(8)], clean.len());

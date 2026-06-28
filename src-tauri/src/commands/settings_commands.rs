@@ -148,3 +148,67 @@ pub async fn ai_test_embedding(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn storage_migrate_progress() -> Result<Value, String> { Ok(json!({"status":"idle","total":0,"current":0})) }
 #[tauri::command] pub async fn storage_default_path() -> Result<String, String> { Ok(".".to_string()) }
 #[tauri::command] pub async fn oss_raw_diagnose() -> Result<Value, String> { Ok(json!({"success":true})) }
+
+// ─── User Policies (用户策略/宪法) ─────────────────────────────────────
+#[tauri::command]
+pub async fn get_user_policies() -> Result<Value, String> {
+    let rows = database::all(
+        "SELECT id, content, created_at, is_active FROM user_policies WHERE is_active=1 ORDER BY created_at DESC",
+        &[],
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({"success": true, "policies": rows}))
+}
+
+#[tauri::command]
+pub async fn set_user_policies(policies: String) -> Result<Value, String> {
+    database::run("UPDATE user_policies SET is_active=0", &[]).ok();
+    for line in policies.lines() {
+        let content = line.trim().trim_start_matches('•').trim_start_matches('-').trim();
+        if content.is_empty() { continue; }
+        database::run(
+            "INSERT INTO user_policies(content, is_active) VALUES(?1, 1)",
+            &[json!(content)],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(json!({"success": true}))
+}
+
+/// 统一策略管理：有id+content=更新，有id+无content=删除，无id+有content=新增
+#[tauri::command]
+pub async fn manage_policy(id: Option<i64>, content: Option<String>) -> Result<Value, String> {
+    match (id, content) {
+        // 有 id + 有 content → 更新
+        (Some(policy_id), Some(ref c)) => {
+            let c = c.trim();
+            if c.is_empty() {
+                return Ok(json!({"success": false, "error": "策略内容不能为空"}));
+            }
+            database::run(
+                "UPDATE user_policies SET content=?1, created_at=datetime('now','localtime') WHERE id=?2 AND is_active=1",
+                &[json!(c), json!(policy_id)],
+            ).map_err(|e| e.to_string())?;
+            Ok(json!({"success": true, "action": "updated", "message": format!("已更新策略：{}", c)}))
+        }
+        // 有 id + 无 content → 删除
+        (Some(policy_id), None) => {
+            database::run(
+                "UPDATE user_policies SET is_active=0 WHERE id=?1",
+                &[json!(policy_id)],
+            ).map_err(|e| e.to_string())?;
+            Ok(json!({"success": true, "action": "deleted", "message": "已删除策略"}))
+        }
+        // 无 id + 有 content → 新增
+        (None, Some(ref c)) => {
+            let c = c.trim();
+            if c.is_empty() {
+                return Ok(json!({"success": false, "error": "策略内容不能为空"}));
+            }
+            database::run(
+                "INSERT INTO user_policies(content, is_active) VALUES(?1, 1)",
+                &[json!(c)],
+            ).map_err(|e| e.to_string())?;
+            Ok(json!({"success": true, "action": "added", "message": format!("已记入宪法：{}", c)}))
+        }
+        _ => Ok(json!({"success": false, "error": "参数不完整"})),
+    }
+}

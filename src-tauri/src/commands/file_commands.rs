@@ -7,21 +7,10 @@ use std::fs::File;
 /// Unified knowledge base cleanup for any source type.
 /// Flow: collect chunk_ids → delete source_data (triggers knowledge_chunks + FTS5) → clean vector_cache + LanceDB
 pub fn cleanup_kb(source_type: &str, source_id: &str) {
-    let sd_row = database::get(
-        "SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",
-        &[json!(source_type), json!(source_id)],
-    );
-    let sd_id = match sd_row {
-        Ok(Some(ref r)) => r["id"].as_i64(),
-        Err(e) => { eprintln!("[KB清理] source_data 查询失败 {}/{}: {}", source_type, source_id, e); return; }
-        _ => { eprintln!("[KB清理] 未找到 source_data: {}/{}", source_type, source_id); return; }
-    };
-    let sd_id = match sd_id {
-        Some(id) => id,
-        None => { eprintln!("[KB清理] source_data id 为 NULL: {}/{}", source_type, source_id); return; }
-    };
+    // 使用 source_type + source_id 清理，不依赖 source_data.id
     let chunk_ids: Vec<i64> = database::all(
-        "SELECT id FROM knowledge_chunks WHERE source_data_id=?", &[json!(sd_id)]
+        "SELECT id FROM knowledge_chunks WHERE source_type=?1 AND source_id=?2",
+        &[json!(source_type), json!(source_id)],
     ).unwrap_or_default().iter().filter_map(|r| r["id"].as_i64()).collect();
 
     for cid in &chunk_ids {
@@ -43,11 +32,11 @@ pub fn cleanup_kb(source_type: &str, source_id: &str) {
             Err(e) => eprintln!("[KB清理] knowledge_chunks 删除失败: {:#?}", e),
         }
     }
-    match database::run("DELETE FROM source_data WHERE id=?", &[json!(sd_id)]) {
-        Ok(r) => eprintln!("[KB清理] 已删除 source_data id={} ({}行)", sd_id, r.changes),
-        Err(e) => eprintln!("[KB清理] 删除 source_data 失败 id={}: {:#?}", sd_id, e),
+    match database::run("DELETE FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(source_type), json!(source_id)]) {
+        Ok(r) => eprintln!("[KB清理] 已删除 source_data {}/{} ({}行)", source_type, source_id, r.changes),
+        Err(e) => eprintln!("[KB清理] 删除 source_data 失败 {}/{}: {:#?}", source_type, source_id, e),
     }
-    database::run("CREATE TRIGGER IF NOT EXISTS sd_chunks_delete AFTER DELETE ON source_data BEGIN DELETE FROM knowledge_chunks WHERE source_data_id = old.id; END", &[]).ok();
+    database::run("CREATE TRIGGER IF NOT EXISTS sd_chunks_delete AFTER DELETE ON source_data BEGIN DELETE FROM knowledge_chunks WHERE source_type = old.source_type AND source_id = old.source_id; END", &[]).ok();
     database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_delete AFTER DELETE ON source_data BEGIN INSERT INTO global_search_fts(global_search_fts, rowid, source_type, source_id, title, content) VALUES ('delete', old.rowid, old.source_type, old.source_id, old.title, old.content); END", &[]).ok();
     database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_update AFTER UPDATE ON source_data BEGIN INSERT INTO global_search_fts(global_search_fts, rowid, source_type, source_id, title, content) VALUES ('delete', old.rowid, old.source_type, old.source_id, old.title, old.content); INSERT INTO global_search_fts(rowid, source_type, source_id, title, content) VALUES (new.rowid, new.source_type, new.source_id, new.title, new.content); END", &[]).ok();
     database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks WHEN old.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES ('delete', old.rowid); END", &[]).ok();
