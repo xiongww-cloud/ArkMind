@@ -239,21 +239,18 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
             for (qi, (q, a)) in qa_pairs.iter().enumerate() {
                 let chat_id = format!("{}-{}", id, qi);
                 let content = format!("[用户问]: {}\n[AI答]: {}", q, a);
-                // 只在内容实际变化时才写入 source_data，避免所有 QA 对都被 sync_loop 重新物化
                 let existing = database::get(
                     "SELECT content FROM source_data WHERE source_type='CHAT' AND source_id=?1",
                     &[json!(&chat_id)],
                 ).ok().flatten().and_then(|r| r["content"].as_str().map(String::from));
-                if existing.as_deref() == Some(&content) {
-                    continue; // 内容未变，跳过
-                }
-                database::run("DELETE FROM source_data WHERE source_type='CHAT' AND source_id=?", &[json!(chat_id)]).ok();
+                if existing.as_deref() == Some(&content) { continue; }
+                database::run("DELETE FROM source_data WHERE source_type='CHAT' AND source_id=?", &[json!(&chat_id)]).ok();
                 if let Err(_) = database::run(
                     "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'CHAT',?1,?2,?3,?4)",
                     &[json!(chat_id), json!(q), json!(content), json!(&updated_at)],
                 ) {}
+                crate::services::ai_sync::trigger_sync("chat", &chat_id);
             }
-            // 清理会话缩短后的旧问答对（source_id 格式: "{session_id}-{index}"）
             let prefix = format!("{}-", id);
             database::run(
                 "DELETE FROM source_data WHERE source_type='CHAT' AND source_id LIKE ?1 AND CAST(SUBSTR(source_id, LENGTH(?1)+1) AS INTEGER) >= ?2",

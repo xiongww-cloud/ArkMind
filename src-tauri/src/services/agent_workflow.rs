@@ -1408,7 +1408,7 @@ fn ext_tool_create_memory(title: &str, content: &str) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     let actual_content = if statement.is_empty() { title } else { statement };
     match database::run(
-        "INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('MEMORY',?1,?2,?3,datetime('now','localtime'))",
+        "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'MEMORY',?1,?2,?3,datetime('now','localtime'))",
         &[json!(&id), json!(title), json!(&actual_content)],
     ) {
         Ok(r) if r.changes > 0 => format!("已记住：{}", title),
@@ -1996,45 +1996,6 @@ fn extract_citations(text: &str) -> Vec<String> {
     vec![]
 }
 
-/// 记录认知经历：用户问了什么、查了什么、用了什么工具、完成了什么
-fn record_experience(query: &str, session: &SessionMemory, tool_log: &[Value]) {
-    if query.trim().is_empty() { return; }
-
-    // 提取查阅的来源：从 session.active_objects 中获取被访问的对象
-    let sources: Vec<String> = session.active_objects.iter().take(5).map(|o| {
-        format!("{}-{}", o.obj_type.to_uppercase(), &o.obj_id[o.obj_id.find('-').map(|d| d+1).unwrap_or(0)..])
-    }).collect();
-    let sources_str = if sources.is_empty() { "无特定来源".to_string() } else { sources.join("、") };
-
-    // 提取使用的工具
-    let tools: Vec<String> = tool_log.iter().flat_map(|r| {
-        r["tools"].as_array().map(|arr| arr.iter().filter_map(|t| {
-            let name = t["tool"].as_str()?;
-            let args = t["args"].as_object()?;
-            let summary = match name {
-                "ext_tool_search" => args.get("keywords").and_then(|k| k.as_array())
-                    .map(|k| format!("search({})", k.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))),
-                "ext_tool_object" => args.get("query").and_then(|q| q.as_str())
-                    .map(|q| format!("object(\"{}\")", q)),
-                "ext_tool_traverse" => args.get("chunk_id").and_then(|c| c.as_str())
-                    .map(|c| format!("traverse({})", &c[..c.len().min(8)])),
-                _ => Some(format!("{}", name)),
-            };
-            Some(summary.unwrap_or_else(|| name.to_string()))
-        }).collect::<Vec<_>>()).into_iter().flatten()
-    }).collect();
-    let tools_str = if tools.is_empty() { "无工具调用".to_string() } else { tools.join("、") };
-
-    let id = uuid::Uuid::new_v4().to_string();
-    let content = format!(
-        "[用户问] {}\n[查阅] {}\n[工具] {}\n[结论] 完成回答",
-        query, sources_str, tools_str
-    );
-    let _ = database::run(
-        "INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('MEMORY',?1,?2,?3,datetime('now','localtime'))",
-        &[json!(&id), json!(query), json!(&content)],
-    );
-}
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>) -> Result<Value, String> {
@@ -2183,7 +2144,6 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 let answer = if ac.is_empty() { "未能生成有效回答。" } else { ac };
                 if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
                 if !ac.is_empty() { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } }
-                record_experience(&query, &session, &tool_log);
                 let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
@@ -2195,7 +2155,6 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     }
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
-                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
                 if iters >= max_iters {
@@ -2203,7 +2162,6 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
-                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
             // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
@@ -2898,7 +2856,6 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
-                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
 
@@ -2906,7 +2863,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                 budget -= search_cost;
                 search_cost = ((search_cost as f64 * 1.2) as i32).max(1);
             }
-            _ => { let ws = session.generate_scratchpad(); record_experience(&query, &session, &tool_log); return Ok(json!({"success":true,"answer":format!("根据当前信息：\n\n{}",ac),"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log})); }
+            _ => { let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":format!("根据当前信息：\n\n{}",ac),"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log})); }
         }
     }
 }
