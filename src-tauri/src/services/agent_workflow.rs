@@ -48,7 +48,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_search: 从长期记忆中回忆相关知识片段，支持 time_range 时间范围过滤。用于回忆具体的知识内容。
 - ext_tool_traverse: 沿记忆关联网络漫游（next/prev/related/references）。用于查看某个记忆片段的前后文或关联实体。不要用它来翻页浏览对象列表。
 - ext_tool_manage_todo: 管理待办。action=create(创建，title必填，priority从用户原话提取填入此字段不要写进content，due_date从用户原话提取，repeat可选daily/weekly/monthly)，action=update(更新，用todo_id或title匹配)，action=delete(删除，用todo_id或title匹配)。
-- ext_tool_create_memory: 记住用户教的知识。title=完整知识点，content=原始陈述。只有用户明确告诉你的信息才创建。更新时直接新建。
+- ext_tool_manage_memory: 管理记忆。action=create(创建，title=知识点，content=原始陈述，replace_ids=旧记忆source_id逗号分隔，自动删除旧的)，action=delete(删除，用memory_id精确匹配或title模糊匹配)。整理流程：搜索→获取旧记忆source_id→create汇总+replace_ids→旧记忆自动清理。只有用户明确告诉你的信息才创建记忆。
 - ext_tool_manage_policy: 管理用户规则（宪法）。有id+content=更新，有id+无content=删除，无id+有content=新增。
 - ext_tool_manage_project: 管理项目。action=create(创建项目，name必填，可选customer/owner/budget/description/status等)，action=update(更新项目，project_id必填)，action=delete(删除项目及所有关联数据)，action=add_channel(添加渠道，project_id+name必填)，action=add_vendor(添加供应商，project_id+name必填)，action=add_contact(添加联系人，parent_id+parent_type(channel/vendor)+name必填)。
 
@@ -399,21 +399,35 @@ impl SessionMemory {
 }
 
 /// 从 session 的 active_objects 计算 scope（用于限定搜索范围）
+/// 取 top 5 高分对象 + 所有新加来源（score < 1 的新进入注意力的对象）
 fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collections::HashSet<i64>> {
-    let default_scope: Vec<String> = {
-        let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
-        sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
-        sorted.iter().take(10).filter_map(|o| {
+    let mut scope_ids: Vec<String> = Vec::new();
+    // 1. top 5 高分对象
+    let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
+    sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
+    for o in sorted.iter().take(5) {
+        let p = match o.obj_type.as_str() {
+            "product" => "PRODUCT", "project" => "PROJECT",
+            "file" => "FILE", "note" => "NOTE", "chat" => "CHAT",
+            _ => continue,
+        };
+        if o.obj_id.starts_with(p) { scope_ids.push(o.obj_id.clone()); }
+    }
+    // 2. 新加入的来源（score < 1 的，来自 MEMORY 引用等）
+    for o in session.active_objects.iter() {
+        if o.score < 1.0 {
             let p = match o.obj_type.as_str() {
                 "product" => "PRODUCT", "project" => "PROJECT",
                 "file" => "FILE", "note" => "NOTE", "chat" => "CHAT",
-                _ => return None,
+                _ => continue,
             };
-            if o.obj_id.starts_with(p) { Some(o.obj_id.clone()) } else { None }
-        }).collect()
-    };
-    if default_scope.is_empty() { return None; }
-    let s = resolve_scope_to_rowids(&default_scope);
+            if o.obj_id.starts_with(p) && !scope_ids.contains(&o.obj_id) {
+                scope_ids.push(o.obj_id.clone());
+            }
+        }
+    }
+    if scope_ids.is_empty() { return None; }
+    let s = resolve_scope_to_rowids(&scope_ids);
     if s.is_empty() { None } else { Some(s) }
 }
 
@@ -424,7 +438,7 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。chunk_id 必须来自 search() 结果中的「ChunkID」字段，不要传其他ID。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"必须来自 search() 结果的 ChunkID 字段"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。action=create(title必填,priority从用户原话提取,due_date从用户原话提取,repeat可选daily/weekly/monthly,project_id关联项目), action=update, action=delete","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待办标题"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_act","description":"执行项目操作。action: update_project_status=更新项目状态(project_id+new_status)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["update_project_status"]},"project_id":{"type":"string","description":"项目ID"},"new_status":{"type":"string","description":"新状态"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_create_memory","description":"记住用户教的知识。只有用户明确告诉你的信息才创建。更新时直接新建。","parameters":{"type":"object","properties":{"title":{"type":"string","description":"完整知识点，如'5310适用于中小企业'"},"content":{"type":"string","description":"用户的原始陈述"}},"required":["title"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_memory","description":"管理记忆。action=create(创建，title=知识点，content=原始陈述，replace_ids=旧记忆source_id逗号分隔，自动删除旧的)，action=delete(删除，用memory_id或title匹配)。整理流程：搜索→获取旧记忆source_id→create汇总+replace_ids→旧记忆自动清理。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete"]},"title":{"type":"string","description":"知识标题或记忆标题"},"content":{"type":"string","description":"记忆内容(create用)"},"memory_id":{"type":"string","description":"记忆source_id(delete精确匹配)"},"replace_ids":{"type":"string","description":"逗号分隔的旧记忆source_id(create时自动删除)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_batch_search","description":"批量并发检索多个独立指标。仅当用户在单轮中询问≥3个独立指标时使用。每个指标返回2个最相关结果。简单问题和单指标请用 ext_tool_search。","parameters":{"type":"object","properties":{"queries":{"type":"array","items":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~3 个核心关键词"}},"required":["keywords"]},"description":"3~10 个独立子查询"}},"required":["queries"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户的规则/策略（宪法）。有id+content=更新规则，有id+无content=删除规则，无id+有content=新增规则。当用户表达「以后...」「记住...」「不要...」「总是...」「删掉...」等规则性指令时使用。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"策略source_id（更新或删除时必填）"},"content":{"type":"string","description":"规则内容（新增或更新时必填）"}},"required":[]}}},
         {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建项目), update(更新项目字段), delete(删除项目及关联数据), add_channel(添加渠道伙伴), add_vendor(添加供应商), add_contact(添加联系人), update_channel(更新渠道), update_vendor(更新供应商), delete_channel(删除渠道), delete_vendor(删除供应商), delete_contact(删除联系人)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","add_channel","add_vendor","add_contact","update_channel","update_vendor","delete_channel","delete_vendor","delete_contact"]},"project_id":{"type":"string","description":"项目ID(update/delete/add_channel/add_vendor用)"},"name":{"type":"string","description":"项目名称(create)或渠道/供应商/联系人名称"},"customer":{"type":"string","description":"客户名称"},"customer_contact":{"type":"string","description":"客户联系人"},"customer_phone":{"type":"string","description":"客户联系电话"},"owner":{"type":"string","description":"项目负责人"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/Won/Lost/Archived"},"channel_id":{"type":"string","description":"渠道ID(update_channel/delete_channel用)"},"vendor_id":{"type":"string","description":"供应商ID(update_vendor/delete_vendor用)"},"contact_id":{"type":"string","description":"联系人ID(delete_contact用)"},"parent_id":{"type":"string","description":"父级ID(add_contact时为channel_id或vendor_id)"},"parent_type":{"type":"string","description":"父级类型: channel/vendor(add_contact/delete_contact用)"},"phone":{"type":"string","description":"联系电话"},"company":{"type":"string","description":"公司名称"},"email":{"type":"string","description":"邮箱"},"remark":{"type":"string","description":"备注"}},"required":["action"]}}}
@@ -1002,6 +1016,36 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
         let preview: String = content.chars().take(1300).collect();
         if meta.is_empty() { out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}", idx + 1, rrf_tag, boost_tag, preview)); }
         else { out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}\n--------\n{}", idx + 1, rrf_tag, boost_tag, meta, preview)); }
+
+        // ★ MEMORY 类型：自动附带引用来源的摘要，并将来源加入 found_sources（进入注意力范围）
+        if st == "MEMORY" {
+            if let Some(refs_start) = content.find("[查阅]") {
+                if let Some(refs_end) = content[refs_start..].find("\n") {
+                    let refs_line = &content[refs_start+4..refs_start+refs_end];
+                    let ref_ids: Vec<&str> = refs_line.split(|c| c == '、' || c == ',').map(|s| s.trim()).filter(|s| !s.is_empty() && *s != "无特定来源").collect();
+                    if !ref_ids.is_empty() {
+                        out.push_str("\n📎 引用来源：");
+                        for ref_id in &ref_ids {
+                            if let Some(dash_pos) = ref_id.find('-') {
+                                let ref_type = &ref_id[..dash_pos];
+                                let ref_sid = &ref_id[dash_pos+1..];
+                                // 将引用来源加入 found_sources，使其进入注意力范围
+                                found_sources.push(ref_id.to_string());
+                                if let Ok(Some(ref_row)) = database::get(
+                                    "SELECT title, substr(content,1,100) as preview FROM source_data WHERE source_type=?1 AND source_id=?2",
+                                    &[json!(ref_type), json!(ref_sid)],
+                                ) {
+                                    let ref_title = ref_row["title"].as_str().unwrap_or("");
+                                    let ref_preview = ref_row["preview"].as_str().unwrap_or("");
+                                    out.push_str(&format!("\n  [{}] {} — {}", ref_type, ref_title, ref_preview));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         found_sources.push(format!("{}-{}", st, sid));
 
         // ★ 关联对象自动进入 workspace
@@ -1401,19 +1445,69 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
     }
 }
 
-fn ext_tool_create_memory(title: &str, content: &str) -> String {
-    let title = title.trim();
-    let statement = content.trim();
-    if title.is_empty() { return "创建记忆需要提供 title（完整知识点）。".into(); }
-    let id = uuid::Uuid::new_v4().to_string();
-    let actual_content = if statement.is_empty() { title } else { statement };
-    match database::run(
-        "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'MEMORY',?1,?2,?3,datetime('now','localtime'))",
-        &[json!(&id), json!(title), json!(&actual_content)],
-    ) {
-        Ok(r) if r.changes > 0 => format!("已记住：{}", title),
-        Err(e) => format!("记忆失败: {}", e),
-        _ => "记忆失败".into(),
+fn ext_tool_manage_memory(action: &str, title: &str, content: &str, memory_id: &str, replace_ids: &str) -> String {
+    match action {
+        "create" => {
+            let title = title.trim();
+            let statement = content.trim();
+            if title.is_empty() { return "创建记忆需要提供 title（完整知识点）。".into(); }
+            let id = uuid::Uuid::new_v4().to_string();
+            let actual_content = if statement.is_empty() { title } else { statement };
+            match database::run(
+                "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'MEMORY',?1,?2,?3,datetime('now','localtime'))",
+                &[json!(&id), json!(title), json!(&actual_content)],
+            ) {
+                Ok(r) if r.changes > 0 => {
+                    // 自动删除被替换的旧记忆
+                    let mut deleted_count = 0;
+                    if !replace_ids.trim().is_empty() {
+                        for rid in replace_ids.split(',') {
+                            let rid = rid.trim();
+                            if !rid.is_empty() && rid != id {
+                                if let Ok(r) = database::run("DELETE FROM source_data WHERE source_type='MEMORY' AND source_id=?1", &[json!(rid)]) {
+                                    if r.changes > 0 { deleted_count += 1; }
+                                }
+                            }
+                        }
+                    }
+                    if deleted_count > 0 {
+                        format!("已记住：{}（同时清理了 {} 条旧记忆）", title, deleted_count)
+                    } else {
+                        format!("已记住：{}", title)
+                    }
+                },
+                Err(e) => format!("记忆失败: {}", e),
+                _ => "记忆失败".into(),
+            }
+        }
+        "delete" => {
+            if !memory_id.trim().is_empty() {
+                let sid = memory_id.trim();
+                match database::run("DELETE FROM source_data WHERE source_type='MEMORY' AND source_id=?1", &[json!(sid)]) {
+                    Ok(r) if r.changes > 0 => format!("已删除记忆: {}", sid),
+                    Err(e) => format!("删除失败: {}", e),
+                    _ => format!("未找到记忆: {}", sid),
+                }
+            } else if !title.trim().is_empty() {
+                let like = format!("%{}%", title.trim());
+                let found = database::get("SELECT source_id, title FROM source_data WHERE source_type='MEMORY' AND title LIKE ?1 ORDER BY created_at DESC LIMIT 1", &[json!(&like)]).ok().flatten();
+                match found {
+                    Some(row) => {
+                        let sid = row["source_id"].as_str().unwrap_or("");
+                        let name = row["title"].as_str().unwrap_or("");
+                        match database::run("DELETE FROM source_data WHERE source_type='MEMORY' AND source_id=?1", &[json!(sid)]) {
+                            Ok(r) if r.changes > 0 => format!("已删除记忆: {}", name),
+                            Err(e) => format!("删除失败: {}", e),
+                            _ => "删除失败。".into(),
+                        }
+                    }
+                    None => format!("未找到匹配「{}」的记忆。", title.trim()),
+                }
+            } else {
+                "删除需要提供 memory_id 或 title。".into()
+            }
+        }
+        _ => format!("未知操作「{}」。支持：create, delete。", action),
     }
 }
 
@@ -1996,6 +2090,47 @@ fn extract_citations(text: &str) -> Vec<String> {
     vec![]
 }
 
+/// 记录认知经历：用户问了什么、查了什么、用了什么工具、完成了什么
+/// 写入 MEMORY 类型（认知过程格式）
+fn record_experience(query: &str, session: &SessionMemory, tool_log: &[Value]) {
+    if query.trim().is_empty() { return; }
+
+    // 提取查阅的来源
+    let sources: Vec<String> = session.active_objects.iter().take(5).map(|o| {
+        format!("{}-{}", o.obj_type.to_uppercase(), &o.obj_id[o.obj_id.find('-').map(|d| d+1).unwrap_or(0)..])
+    }).collect();
+    let sources_str = if sources.is_empty() { "无特定来源".to_string() } else { sources.join("、") };
+
+    // 提取使用的工具
+    let tools: Vec<String> = tool_log.iter().flat_map(|r| {
+        r["tools"].as_array().map(|arr| arr.iter().filter_map(|t| {
+            let name = t["tool"].as_str()?;
+            let args = t["args"].as_object()?;
+            let summary = match name {
+                "ext_tool_search" => args.get("keywords").and_then(|k| k.as_array())
+                    .map(|k| format!("search({})", k.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))),
+                "ext_tool_object" => args.get("query").and_then(|q| q.as_str())
+                    .map(|q| format!("object(\"{}\")", q)),
+                "ext_tool_traverse" => args.get("chunk_id").and_then(|c| c.as_str())
+                    .map(|c| format!("traverse({})", &c[..c.len().min(8)])),
+                _ => Some(format!("{}", name)),
+            };
+            Some(summary.unwrap_or_else(|| name.to_string()))
+        }).collect::<Vec<_>>()).into_iter().flatten()
+    }).collect();
+    let tools_str = if tools.is_empty() { "无工具调用".to_string() } else { tools.join("、") };
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let content = format!(
+        "[用户问] {}\n[查阅] {}\n[工具] {}\n[结论] 完成回答",
+        query, sources_str, tools_str
+    );
+    let _ = database::run(
+        "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'MEMORY',?1,?2,?3,datetime('now','localtime'))",
+        &[json!(&id), json!(query), json!(&content)],
+    );
+}
+
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>) -> Result<Value, String> {
@@ -2106,7 +2241,12 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     loop {
         eprintln!("[LLM检索] 预算: {}/{} cost={}", budget, 100i32, search_cost);
         // ★ 每轮注意力衰减
+        let prev_count = session.active_objects.len();
         for o in &mut session.active_objects { o.score *= 0.5; }
+        // 移除从未被搜索命中的对象（score=0 说明从未被检索命中）
+        session.active_objects.retain(|o| o.score > 0.0 || o.access_order >= session.access_counter.saturating_sub(1));
+        let removed = prev_count - session.active_objects.len();
+        if removed > 0 { eprintln!("[注意力] 衰减后移除 {} 个未命中对象，剩余 {}", removed, session.active_objects.len()); }
         iters += 1;
 
         // ★ 注入 scratchpad + budget_info 到 system prompt（供当前轮 LLM 读取）
@@ -2144,6 +2284,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 let answer = if ac.is_empty() { "未能生成有效回答。" } else { ac };
                 if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
                 if !ac.is_empty() { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } }
+                record_experience(&query, &session, &tool_log);
                 let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
@@ -2155,6 +2296,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     }
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
+                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
                 if iters >= max_iters {
@@ -2162,6 +2304,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
+                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
             // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
@@ -2666,10 +2809,13 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             );
                             (res, vec![])
                         }
-                        "ext_tool_create_memory" => {
-                            let res = ext_tool_create_memory(
+                        "ext_tool_manage_memory" => {
+                            let res = ext_tool_manage_memory(
+                                a["action"].as_str().unwrap_or(""),
                                 a["title"].as_str().unwrap_or(""),
                                 a["content"].as_str().unwrap_or(""),
+                                a["memory_id"].as_str().unwrap_or(""),
+                                a["replace_ids"].as_str().unwrap_or(""),
                             );
                             (res, vec![])
                         }
@@ -2694,9 +2840,9 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     match r { Ok(_) => "已删除策略".to_string(), Err(e) => format!("删除失败：{}", e) }
                                 }
                                 (None, Some(ref c)) => {
-                                    let new_id = format!("policy-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                                    let new_id = format!("policy-{}", uuid::Uuid::new_v4());
                                     let title: String = c.chars().take(50).collect();
-                                    let r = database::run("INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('POLICY',?1,?2,?3,datetime('now','localtime'))", &[json!(&new_id), json!(&title), json!(c)]);
+                                    let r = database::run("INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'POLICY',?1,?2,?3,datetime('now','localtime'))", &[json!(&new_id), json!(&title), json!(c)]);
                                     match r { Ok(_) => format!("已记入宪法：{}", c), Err(e) => format!("记录失败：{}", e) }
                                 }
                                 _ => "参数不完整：需要content或id".to_string(),
@@ -2856,6 +3002,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
+                    record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
 

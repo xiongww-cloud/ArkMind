@@ -165,10 +165,10 @@ pub async fn set_user_policies(policies: String) -> Result<Value, String> {
     for line in policies.lines() {
         let content = line.trim().trim_start_matches('•').trim_start_matches('-').trim();
         if content.is_empty() { continue; }
-        let id = format!("policy-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let id = format!("policy-{}", uuid::Uuid::new_v4());
         let title: String = content.chars().take(50).collect();
         database::run(
-            "INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('POLICY',?1,?2,?3,datetime('now','localtime'))",
+            "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'POLICY',?1,?2,?3,datetime('now','localtime'))",
             &[json!(&id), json!(&title), json!(content)],
         ).map_err(|e| e.to_string())?;
     }
@@ -202,10 +202,10 @@ pub async fn manage_policy(id: Option<String>, content: Option<String>) -> Resul
             if c.is_empty() {
                 return Ok(json!({"success": false, "error": "策略内容不能为空"}));
             }
-            let new_id = format!("policy-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+            let new_id = format!("policy-{}", uuid::Uuid::new_v4());
             let title: String = c.chars().take(50).collect();
             database::run(
-                "INSERT INTO source_data(source_type,source_id,title,content,updated_at) VALUES('POLICY',?1,?2,?3,datetime('now','localtime'))",
+                "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'POLICY',?1,?2,?3,datetime('now','localtime'))",
                 &[json!(&new_id), json!(&title), json!(c)],
             ).map_err(|e| e.to_string())?;
             Ok(json!({"success": true, "action": "added", "message": format!("已记入宪法：{}", c)}))

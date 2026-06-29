@@ -208,9 +208,14 @@ pub(crate) async fn upload_file_core(
     }
 
     let file_id = uuid::Uuid::new_v4().to_string();
+    let original_name = if custom_name.is_empty() {
+        std::path::Path::new(file_path).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string()
+    } else {
+        custom_name.to_string()
+    };
     database::run(
-        "INSERT INTO file_assets(id,file_ext,file_size,content_hash,parse_status) VALUES(?1,?2,?3,?4,'PENDING')",
-        &[json!(&file_id), json!(&ext), json!(file_size as i64), json!(&hash)]
+        "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name,parse_status) VALUES(?1,?2,?3,?4,?5,'PENDING')",
+        &[json!(&file_id), json!(&ext), json!(file_size as i64), json!(&hash), json!(&original_name)]
     ).map_err(|e| e.to_string())?;
 
     for &eid in entity_ids {

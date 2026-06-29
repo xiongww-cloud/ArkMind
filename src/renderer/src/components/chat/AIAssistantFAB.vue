@@ -255,6 +255,7 @@ onMounted(() => { initFabY() })
 /* ═══ Orb ═══ */
 .fab-root { position: fixed; right: 16px; z-index: 9999; cursor: grab; touch-action: none; user-select: none; }
 .fab-root:active { cursor: grabbing; }
+.fab-root:has(.fab-panel) { cursor: default; }
 
 .fab-button {
   position: relative; width: 40px; height: 40px; border-radius: 50%;
@@ -391,6 +392,7 @@ onMounted(() => { initFabY() })
 .fab-panel__body {
   flex: 1; min-height: 0; overflow-y: auto; padding: 12px; background: transparent;
   scrollbar-width: thin; scrollbar-color: rgba(37,99,235,0.2) transparent;
+  cursor: text; user-select: text;
 }
 .fab-panel__body::-webkit-scrollbar { width: 3px; }
 .fab-panel__body::-webkit-scrollbar-track { background: transparent; }
@@ -419,9 +421,7 @@ onMounted(() => { initFabY() })
 /* ═══ AI Bubble ═══ */
 .fab-bubble-ai {
   background: rgba(255,255,255,0.9);
-  border: 1px solid rgba(37,99,235,0.08);
-  border-left: 2px solid transparent;
-  border-image: linear-gradient(180deg, #06b6d4, #2563eb, #6366f1) 1;
+  border: 1px solid #e5e5ea;
   border-radius: 0 12px 12px 12px;
   padding: 8px 12px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);

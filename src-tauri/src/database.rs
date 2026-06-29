@@ -139,6 +139,9 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
          CREATE INDEX IF NOT EXISTS idx_si_version ON solution_items(solution_version_id);"
     );
 
+    // ★ 添加 file_assets.original_name 列
+    let _ = conn.execute_batch("ALTER TABLE file_assets ADD COLUMN original_name TEXT DEFAULT ''");
+
     // ★ KB FTS5 triggers always initialized (core retrieval infrastructure)
     init_kb_fts_triggers(&conn)?;
     seed_kb_fts(&conn);
@@ -291,6 +294,7 @@ fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS file_assets (
             id TEXT PRIMARY KEY, file_ext TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
             content_hash TEXT NOT NULL UNIQUE, parse_status TEXT DEFAULT 'PENDING',
+            original_name TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
         CREATE TABLE IF NOT EXISTS library_folders (
@@ -1833,10 +1837,18 @@ pub fn fts5_search_content(query: &str, limit: i64) -> SqliteResult<Vec<Fts5Resu
 /// 文件解析完成后写入 source_data（FTS5 external content 自动同步索引）
 pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) {
     if parsed_text.is_empty() { return; }
+    // 从 file_assets 获取原始文件名作为 title
+    let title = with_db(|c| {
+        c.query_row(
+            "SELECT original_name FROM file_assets WHERE id=?1",
+            rusqlite::params![file_id],
+            |row| row.get::<_, String>(0),
+        )
+    }).unwrap_or_default();
     let result = with_db(|c| {
         c.execute(
-            "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'FILE',?1,'',?2,datetime('now', 'localtime')) ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
-            rusqlite::params![file_id, parsed_text],
+            "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'FILE',?1,?2,?3,datetime('now', 'localtime')) ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
+            rusqlite::params![file_id, title, parsed_text],
         ).map(|_|())
     });
     if let Err(e) = result {
@@ -2014,8 +2026,8 @@ fn migrate_user_policies_to_source_data(conn: &rusqlite::Connection) {
 
     eprintln!("[迁移] 迁移 {} 条 user_policies → source_data(POLICY)...", count);
     let _ = conn.execute_batch(
-        "INSERT OR IGNORE INTO source_data(source_type,source_id,title,content,updated_at)
-         SELECT 'POLICY', 'policy-' || id, substr(content,1,50), content, created_at
+        "INSERT OR IGNORE INTO source_data(id,source_type,source_id,title,content,updated_at)
+         SELECT 'policy-' || id, 'POLICY', 'policy-' || id, substr(content,1,50), content, created_at
          FROM user_policies WHERE is_active=1"
     );
     println!("[数据库] user_policies 迁移完成");

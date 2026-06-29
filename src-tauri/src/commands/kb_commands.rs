@@ -221,40 +221,8 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
                 database::run("INSERT INTO chat_messages(session_id,role,content) VALUES(?1,?2,?3)",
                     &[json!(id), json!(role), json!(content)]).ok();
             }
-            // 为每个问答对创建独立的 source_data 条目
-            let mut qa_pairs: Vec<(String, String)> = Vec::new();
-            let mut current_user = String::new();
-            for m in msgs {
-                let role = m["role"].as_str().unwrap_or("");
-                let content = m["content"].as_str().unwrap_or("").trim();
-                if content.is_empty() { continue; }
-                if role == "user" {
-                    current_user = content.to_string();
-                } else if role == "assistant" && !current_user.is_empty() && !content.is_empty() {
-                    qa_pairs.push((current_user.clone(), content.to_string()));
-                    current_user.clear();
-                }
-            }
-            for (qi, (q, a)) in qa_pairs.iter().enumerate() {
-                let chat_id = format!("{}-{}", id, qi);
-                let content = format!("[用户问]: {}\n[AI答]: {}", q, a);
-                let existing = database::get(
-                    "SELECT content FROM source_data WHERE source_type='CHAT' AND source_id=?1",
-                    &[json!(&chat_id)],
-                ).ok().flatten().and_then(|r| r["content"].as_str().map(String::from));
-                if existing.as_deref() == Some(&content) { continue; }
-                database::run("DELETE FROM source_data WHERE source_type='CHAT' AND source_id=?", &[json!(&chat_id)]).ok();
-                if let Err(_) = database::run(
-                    "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'CHAT',?1,?2,?3,?4)",
-                    &[json!(chat_id), json!(q), json!(content), json!(&updated_at)],
-                ) {}
-                crate::services::ai_sync::trigger_sync("chat", &chat_id);
-            }
-            let prefix = format!("{}-", id);
-            database::run(
-                "DELETE FROM source_data WHERE source_type='CHAT' AND source_id LIKE ?1 AND CAST(SUBSTR(source_id, LENGTH(?1)+1) AS INTEGER) >= ?2",
-                &[json!(&prefix), json!(qa_pairs.len() as i64)],
-            ).ok();
+            // 对话记录由后端 agent_chat_workflow 以 MEMORY 类型（认知过程格式）自动创建
+            // 前端不再创建 CHAT source_data，只保存 chat_messages 表（显示用）
         }
     }
     Ok(json!({"success":true}))
