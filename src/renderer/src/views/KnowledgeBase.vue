@@ -36,6 +36,7 @@ function renderedContent(idx: number): string { return rendered.value[idx] || ''
 
 // ─── Typewriter ─────────────────────────────────────────────────
 const activeTypewriters = new Set<ChatMessage>()
+const typewriterTimers = new Map<ChatMessage, ReturnType<typeof setInterval>>()
 function startTypewriter(msg: ChatMessage, fullText: string, speed = 8) {
   stopTypewriter(msg)
   if (!fullText) { msg.typewriterText = ''; msg.typewriterDone = true; return }
@@ -49,13 +50,16 @@ function startTypewriter(msg: ChatMessage, fullText: string, speed = 8) {
   const timer = setInterval(() => {
     pos += TYPEWRITER_CHUNK_SIZE
     if (pos >= fullText.length) {
-      pos = fullText.length; clearInterval(timer); activeTypewriters.delete(msg)
+      pos = fullText.length; clearInterval(timer); typewriterTimers.delete(msg); activeTypewriters.delete(msg)
       msg.typewriterText = fullText; msg.typewriterDone = true; return
     }
     msg.typewriterText = fullText.slice(0, pos)
   }, speed)
+  typewriterTimers.set(msg, timer)
 }
 function stopTypewriter(msg: ChatMessage) {
+  const timer = typewriterTimers.get(msg)
+  if (timer) { clearInterval(timer); typewriterTimers.delete(msg) }
   if (msg.typewriterText !== undefined && !msg.typewriterDone) { msg.typewriterDone = true }
   activeTypewriters.delete(msg)
 }

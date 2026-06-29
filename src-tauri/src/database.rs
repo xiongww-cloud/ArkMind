@@ -129,6 +129,16 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     // ★ 迁移 user_policies → source_data (POLICY)
     migrate_user_policies_to_source_data(&conn);
 
+    // ★ 添加缺失的索引
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_cp_project ON channel_partners(project_id);
+         CREATE INDEX IF NOT EXISTS idx_cc_channel ON channel_contacts(channel_id);
+         CREATE INDEX IF NOT EXISTS idx_vp_project ON vendor_partners(project_id);
+         CREATE INDEX IF NOT EXISTS idx_vc_vendor ON vendor_contacts(vendor_id);
+         CREATE INDEX IF NOT EXISTS idx_pd_project ON project_dynamics(project_id);
+         CREATE INDEX IF NOT EXISTS idx_si_version ON solution_items(solution_version_id);"
+    );
+
     // ★ KB FTS5 triggers always initialized (core retrieval infrastructure)
     init_kb_fts_triggers(&conn)?;
     seed_kb_fts(&conn);
@@ -166,7 +176,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
 
     // Store in global AFTER all init is done
     {
-        let mut db = DB.lock().unwrap();
+        let mut db = DB.lock().unwrap_or_else(|e| e.into_inner());
         *db = Some(conn);
     }
 
@@ -179,7 +189,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
 
 pub fn with_db<F, T>(f: F) -> SqliteResult<T>
 where F: FnOnce(&Connection) -> SqliteResult<T> {
-    let db = DB.lock().unwrap();
+    let db = DB.lock().unwrap_or_else(|e| e.into_inner());
     let conn = db.as_ref().expect("Database not initialized");
     f(conn)
 }

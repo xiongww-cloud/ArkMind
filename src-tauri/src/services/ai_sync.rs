@@ -328,11 +328,6 @@ pub async fn process_single_entity(source_table: &str, source_id: &str) -> bool 
                     "UPDATE ai_sync_queue SET is_embedded=1,last_dedup_key=?,last_content_hash=?,updated_at=datetime('now', 'localtime') WHERE id=?",
                     &[json!(doc_id), json!(&content_hash), json!(task_id)],
                 ).ok();
-                if source_table == "files" { }
-                else if source_table == "notes" { }
-                else if source_table == "products" { }
-                else if source_table == "projects" { }
-                else if source_table == "todos" { }
                 println!("[AI同步] 已嵌入: {source_table}:{source_id} ({n} 个块)");
             }
             _ => {
@@ -423,14 +418,6 @@ pub async fn process_sync_task() -> bool {
                     "UPDATE ai_sync_queue SET is_embedded=1,last_dedup_key=?,last_content_hash=?,updated_at=datetime('now', 'localtime') WHERE id=?",
                     &[json!(doc_id), json!(&content_hash), json!(task_id)],
                 ).ok();
-                if source_table == "files" { }
-                else if source_table == "notes" { }
-                else if source_table == "products" { }
-                else if source_table == "projects" { }
-                else if source_table == "todos" { }
-                if source_table == "files" || source_table == "notes" || source_table == "products" || source_table == "projects" || source_table == "todos" {
-                    
-                }
                 println!("[AI同步] 已嵌入: {source_table}:{source_id} ({n} 个块)");
             }
             Err(e) => {

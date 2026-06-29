@@ -146,7 +146,6 @@ use tauri::Emitter;
 }
 
 // Agent tools
-fn enforce_output_cap(text: String) -> String { text }
 
 #[tauri::command]
 pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: Option<String>, filter_tags: Option<Vec<String>>) -> Result<String, String> {
@@ -187,7 +186,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
     }
     if output.trim().is_empty() { return Ok("父块文本未能加载".into()); }
     let _ = project_id;
-    Ok(enforce_output_cap(output.trim().to_string()))
+    Ok(output.trim().to_string())
 }
 #[tauri::command] pub async fn ext_tool_get_document_page(doc_id: String, _page_num: usize) -> Result<String, String> {
     let doc = database::get("SELECT content FROM documents_parent WHERE document_id=? LIMIT 1",&[json!(doc_id)]).ok().flatten();
