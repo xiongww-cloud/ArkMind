@@ -197,15 +197,37 @@ async function handleSendMessage() {
   sessionDirty.value = true; inputMessage.value = ''; saveToStorage(); scrollToBottomIfNear()
   isChatting.value = true
   thinkingProgress.value = ''
+  const aiMsg = { role: 'assistant' as const, content: '', isThinking: true }
+  session.messages.push(aiMsg)
+  const aiIdx = session.messages.length - 1
+  // ★ 冷启动障眼法：立即显示拟人化短句
+  const thinkingPhrases = ['让我想想啊……', '嗯……我回忆一下。', '别急，我翻一下脑子里的记录。', '稍等，我查查看……', '嗯，我想想……']
+  const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)]
+  aiMsg.content = randomPhrase; scrollToBottomIfNear()
   // ★ Real Cognitive Stream: 实时进度
   const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
     thinkingProgress.value = ev.payload.msg; scrollToBottomIfNear()
   })
-  const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [] }
-  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
   let unlistenStream: (() => void) | null = null
   let unlistenThought: (() => void) | null = null
+  let unlistenStatus: (() => void) | null = null
   try {
+    // ★ 监听 status 事件，动态演变拟人化文案
+    const toolHints: Record<string, string> = {
+      ext_tool_search: '我正在检索相关资料……',
+      ext_tool_object: '我在翻看记忆中的对象……',
+      ext_tool_traverse: '我在继续往后翻看……',
+      ext_tool_batch_search: '我在同时查几个方向……',
+    }
+    unlistenStatus = await listen<{ stage: string; tool?: string; target?: string }>('agent:status', (ev) => {
+      const { stage, tool, target } = ev.payload
+      if (stage === 'tool_start' && tool) {
+        const hint = toolHints[tool] || `正在调用 ${tool}……`
+        const targetHint = target ? `「${target.slice(0, 20)}」` : ''
+        session.messages[aiIdx].content = `${hint}${targetHint ? ' ' + targetHint : ''}`
+        scrollToBottomIfNear()
+      }
+    })
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
     unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
@@ -247,7 +269,7 @@ async function handleSendMessage() {
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
     isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-    try { ;unlistenStream(); unlistenThought(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
+    try { ;unlistenStream(); unlistenThought(); unlistenStatus?.(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
   }
 }
 
@@ -380,7 +402,7 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <div v-if="msg.isThinking && msg.blocks && msg.blocks.length > 0" class="space-y-1.5 mb-2">
+            <div v-else-if="msg.isThinking && msg.blocks && msg.blocks.length > 0" class="space-y-1.5 mb-2">
               <div v-for="(block, bi) in msg.blocks" :key="bi" class="text-[12px] text-surface-600 bg-surface-50 px-3 py-1.5 rounded-lg border-l-2 border-surface-200 italic">{{ block.content }}</div>
             </div>
             <div v-else-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
