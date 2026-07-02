@@ -49,6 +49,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_traverse: 沿记忆关联网络漫游（next/prev/related/references）。用于查看某个记忆片段的前后文或关联实体。⚠️ chunk_id 必须是 search 返回结果中的「ChunkID」字段（如 47beae9a），绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。
 - ext_tool_manage_todo: 管理待办。action=create(创建，title必填，priority从用户原话提取填入此字段不要写进content，due_date从用户原话提取，repeat可选daily/weekly/monthly)，action=update(更新，用todo_id或title匹配)，action=delete(删除，用todo_id或title匹配)。
 - ext_tool_manage_memory: 管理记忆。action=create(创建，title=知识点，content=原始陈述，replace_ids=旧记忆source_id逗号分隔，自动删除旧的)，action=delete(删除，用memory_id精确匹配或title模糊匹配)。整理流程：搜索→获取旧记忆source_id→create汇总+replace_ids→旧记忆自动清理。只有用户明确告诉你的信息才创建记忆。
+- ext_tool_record_learning: 记录认知经历。在回答过程中主动调用，记录你认为值得记住的知识点或发现。不消耗预算。参数：question(用户问题)、provider(查阅的文档名)、answer(结论要点)。
 - ext_tool_manage_policy: 管理用户规则（宪法）。有id+content=更新，有id+无content=删除，无id+有content=新增。
 - ext_tool_manage_project: 管理项目。action=create(创建项目，name必填，可选customer/owner/budget/description/status等)，action=update(更新项目，project_id必填)，action=delete(删除项目及所有关联数据)，action=add_channel(添加渠道，project_id+name必填)，action=add_vendor(添加供应商，project_id+name必填)，action=add_contact(添加联系人，parent_id+parent_type(channel/vendor)+name必填)。
 
@@ -433,6 +434,7 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_manage_memory","description":"管理记忆。action=create(创建，title=知识点，content=原始陈述，replace_ids=旧记忆source_id逗号分隔，自动删除旧的)，action=delete(删除，用memory_id或title匹配)。整理流程：搜索→获取旧记忆source_id→create汇总+replace_ids→旧记忆自动清理。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete"]},"title":{"type":"string","description":"知识标题或记忆标题"},"content":{"type":"string","description":"记忆内容(create用)"},"memory_id":{"type":"string","description":"记忆source_id(delete精确匹配)"},"replace_ids":{"type":"string","description":"逗号分隔的旧记忆source_id(create时自动删除)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_batch_search","description":"批量并发检索多个独立指标。仅当用户在单轮中询问≥3个独立指标时使用。每个指标返回2个最相关结果。简单问题和单指标请用 ext_tool_search。","parameters":{"type":"object","properties":{"queries":{"type":"array","items":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~3 个核心关键词"}},"required":["keywords"]},"description":"3~10 个独立子查询"}},"required":["queries"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户的规则/策略（宪法）。有id+content=更新规则，有id+无content=删除规则，无id+有content=新增规则。当用户表达「以后...」「记住...」「不要...」「总是...」「删掉...」等规则性指令时使用。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"策略source_id（更新或删除时必填）"},"content":{"type":"string","description":"规则内容（新增或更新时必填）"}},"required":[]}}},
+        {"type":"function","function":{"name":"ext_tool_record_learning","description":"记录认知经历。在回答过程中主动调用，记录你认为值得记住的知识点或发现。不消耗预算。","parameters":{"type":"object","properties":{"question":{"type":"string","description":"用户的问题或主题"},"provider":{"type":"string","description":"查阅的文档或来源"},"answer":{"type":"string","description":"结论要点"}},"required":["question","provider","answer"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建项目), update(更新项目字段), delete(删除项目及关联数据), add_channel(添加渠道伙伴), add_vendor(添加供应商), add_contact(添加联系人), update_channel(更新渠道), update_vendor(更新供应商), delete_channel(删除渠道), delete_vendor(删除供应商), delete_contact(删除联系人)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","add_channel","add_vendor","add_contact","update_channel","update_vendor","delete_channel","delete_vendor","delete_contact"]},"project_id":{"type":"string","description":"项目ID(update/delete/add_channel/add_vendor用)"},"name":{"type":"string","description":"项目名称(create)或渠道/供应商/联系人名称"},"customer":{"type":"string","description":"客户名称"},"customer_contact":{"type":"string","description":"客户联系人"},"customer_phone":{"type":"string","description":"客户联系电话"},"owner":{"type":"string","description":"项目负责人"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/Won/Lost/Archived"},"channel_id":{"type":"string","description":"渠道ID(update_channel/delete_channel用)"},"vendor_id":{"type":"string","description":"供应商ID(update_vendor/delete_vendor用)"},"contact_id":{"type":"string","description":"联系人ID(delete_contact用)"},"parent_id":{"type":"string","description":"父级ID(add_contact时为channel_id或vendor_id)"},"parent_type":{"type":"string","description":"父级类型: channel/vendor(add_contact/delete_contact用)"},"phone":{"type":"string","description":"联系电话"},"company":{"type":"string","description":"公司名称"},"email":{"type":"string","description":"邮箱"},"remark":{"type":"string","description":"备注"}},"required":["action"]}}}
     ])
 }
@@ -2023,6 +2025,20 @@ fn record_experience(query: &str, session: &SessionMemory, _tool_log: &[Value], 
     );
 }
 
+fn ext_tool_record_learning(question: &str, provider: &str, answer: &str) -> String {
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let id = uuid::Uuid::new_v4().to_string();
+    let content = format!(
+        "[时间] {}\n[用户问] {}\n[查阅] {}\n[结论] {}",
+        now, question, provider, answer
+    );
+    let _ = database::run(
+        "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'MEMORY',?1,?2,?3,datetime('now','localtime'))",
+        &[json!(&id), json!(question), json!(&content)],
+    );
+    format!("已记录认知经历: {}", question)
+}
+
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>) -> Result<Value, String> {
@@ -2722,6 +2738,14 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                 a["content"].as_str().unwrap_or(""),
                                 a["memory_id"].as_str().unwrap_or(""),
                                 a["replace_ids"].as_str().unwrap_or(""),
+                            );
+                            (res, vec![])
+                        }
+                        "ext_tool_record_learning" => {
+                            let res = ext_tool_record_learning(
+                                a["question"].as_str().unwrap_or(""),
+                                a["provider"].as_str().unwrap_or(""),
+                                a["answer"].as_str().unwrap_or(""),
                             );
                             (res, vec![])
                         }
