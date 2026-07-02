@@ -2001,30 +2001,6 @@ fn extract_citations(text: &str) -> Vec<String> {
     vec![]
 }
 
-/// 记录认知经历：用户问了什么、查了什么、用了什么工具、完成了什么
-/// 写入 MEMORY 类型（认知过程格式）
-fn record_experience(query: &str, session: &SessionMemory, _tool_log: &[Value], answer: &str) {
-    if query.trim().is_empty() { return; }
-
-    let sources: Vec<String> = session.active_objects.iter().take(5).map(|o| {
-        format!("{} ({})", o.name, o.obj_type.to_uppercase())
-    }).collect();
-    let sources_str = if sources.is_empty() { "无特定来源".to_string() } else { sources.join("、") };
-
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-    let answer_summary: String = answer.chars().take(200).collect();
-
-    let id = uuid::Uuid::new_v4().to_string();
-    let content = format!(
-        "[时间] {}\n[用户问] {}\n[查阅] {}\n[结论] {}",
-        now, query, sources_str, answer_summary
-    );
-    let _ = database::run(
-        "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'MEMORY',?1,?2,?3,datetime('now','localtime'))",
-        &[json!(&id), json!(query), json!(&content)],
-    );
-}
-
 fn ext_tool_record_learning(question: &str, provider: &str, answer: &str) -> String {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
     let id = uuid::Uuid::new_v4().to_string();
@@ -2193,7 +2169,6 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 let answer = if ac.is_empty() { "未能生成有效回答。" } else { ac };
                 if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
                 if !ac.is_empty() { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } }
-                record_experience(&query, &session, &tool_log, answer);
                 let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
@@ -2205,7 +2180,6 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     }
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
-                    record_experience(&query, &session, &tool_log, &ans);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
                 if iters >= max_iters {
@@ -2213,7 +2187,6 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
-                    record_experience(&query, &session, &tool_log, &ans);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
             // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
@@ -2932,7 +2905,6 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
-                    record_experience(&query, &session, &tool_log, &ans);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
 
