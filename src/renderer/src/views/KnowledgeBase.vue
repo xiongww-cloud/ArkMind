@@ -9,45 +9,63 @@ import { sanitizeHtml, sanitizeHtmlSync } from '@/utils/sanitize'
 import { listen } from '@tauri-apps/api/event'
 
 // ─── Markdown renderer ──────────────────────────────────────────
-let _markedInstance: any = null
-async function getMarkedInstance() {
-  if (_markedInstance) return _markedInstance
-  const mod = await import('marked')
-  const Marked = mod.Marked || (mod as any).default?.Marked || (mod as any).default
-  if (Marked && typeof Marked === 'function') {
-    _markedInstance = new Marked({ gfm: true, breaks: true })
-  } else {
-    _markedInstance = (mod as any).marked
-  }
-  return _markedInstance
-}
 async function renderMarkdown(text: string): Promise<string> {
   if (!text) return ''
   try {
-    const m = await getMarkedInstance()
-    const result = typeof m.parse === 'function' ? m.parse(text) : m(text)
-    const html = typeof result === 'string' ? result : await result
-    return await sanitizeHtml(html || '')
+    const mod = await import('marked')
+    const Marked = mod.Marked || (mod as any).default?.Marked || (mod as any).default
+    let html = ''
+    if (Marked && typeof Marked === 'function') { const marked = new Marked({ gfm: true, breaks: true }); html = marked.parse(text) || '' }
+    else { const { marked } = mod as any; html = (marked?.parse || marked)(text) || '' }
+    return sanitizeHtml(html)
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 // ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; isStreaming?: boolean; contextDocs?: any[]; workspace?: string }
+interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
-const rendered = ref<Record<string,string>>({})
-async function renderMessageContent(msg: ChatMessage) {
-  if (!msg.content) return ''
-  const key = msg.content.length.toString(36) + '_' + msg.content.slice(0, 32)
-  if (rendered.value[key] !== undefined) return rendered.value[key]
-  const safeText = msg.content.replace(/~/g, '～')
-  rendered.value[key] = await renderMarkdown(safeText)
-  return rendered.value[key]
+const rendered = ref<Record<number,string>>({})
+async function renderMessageContent(idx: number) {
+  const msgs = currentSession.value?.messages; if (!msgs || !msgs[idx]) return ''
+  if (rendered.value[idx] !== undefined) return rendered.value[idx]
+  const text = msgs[idx].content || ''; if (!text) return ''
+  const safeText = text.replace(/~/g, '～')
+  rendered.value[idx] = await renderMarkdown(safeText)
 }
-function renderedContent(msg: ChatMessage): string {
-  if (!msg.content) return ''
-  const key = msg.content.length.toString(36) + '_' + msg.content.slice(0, 32)
-  return rendered.value[key] || ''
+function renderedContent(idx: number): string { return rendered.value[idx] || '' }
+
+// ─── Typewriter ─────────────────────────────────────────────────
+const activeTypewriters = new Set<ChatMessage>()
+const typewriterTimers = new Map<ChatMessage, ReturnType<typeof setInterval>>()
+function startTypewriter(msg: ChatMessage, fullText: string, speed = 8) {
+  stopTypewriter(msg)
+  if (!fullText) { msg.typewriterText = ''; msg.typewriterDone = true; return }
+  const idx = currentSession.value?.messages.indexOf(msg) ?? -1
+  if (idx >= 0) renderMarkdown(fullText.replace(/~/g, '～')).then(html => { rendered.value[idx] = html })
+  const TYPEWRITER_CHUNK_SIZE = 5
+  let pos = 0
+  msg.typewriterText = fullText.slice(0, pos)
+  msg.typewriterDone = false
+  activeTypewriters.add(msg)
+  const timer = setInterval(() => {
+    pos += TYPEWRITER_CHUNK_SIZE
+    if (pos >= fullText.length) {
+      pos = fullText.length; clearInterval(timer); typewriterTimers.delete(msg); activeTypewriters.delete(msg)
+      msg.typewriterText = fullText; msg.typewriterDone = true; return
+    }
+    msg.typewriterText = fullText.slice(0, pos)
+  }, speed)
+  typewriterTimers.set(msg, timer)
 }
+function stopTypewriter(msg: ChatMessage) {
+  const timer = typewriterTimers.get(msg)
+  if (timer) { clearInterval(timer); typewriterTimers.delete(msg) }
+  if (msg.typewriterText !== undefined && !msg.typewriterDone) { msg.typewriterDone = true }
+  activeTypewriters.delete(msg)
+}
+function stopAllTypewriters() { for (const msg of activeTypewriters) { stopTypewriter(msg) } }
+function typewriterText(msg: ChatMessage): string { return msg.typewriterText || '' }
+function isTypewriting(msg: ChatMessage): boolean { return msg.typewriterText !== undefined && !msg.typewriterDone }
 
 // ─── Session management ─────────────────────────────────────────
 const sessions = ref<ChatSession[]>([])
@@ -58,7 +76,7 @@ const sessionDirty = ref(false)  // 标记当前会话是否有变更
 let lastSavedContent = ''  // 上次保存时的内容快照
 
 function newSession() {
-  if (thoughtTimer) { clearInterval(thoughtTimer); thoughtTimer = null }
+  stopAllTypewriters()
   const id = crypto.randomUUID()
   sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toLocaleString('sv-SE'), updatedAt: new Date().toLocaleString('sv-SE') })
   currentSessionId.value = id; saveToStorage()
@@ -74,13 +92,13 @@ onMounted(async () => {
 onActivated(() => { nextTick(() => scrollToBottomIfNear()) })
 async function selectSession(id: string) {
   currentSessionId.value = id; rendered.value = {}
-  if (thoughtTimer) { clearInterval(thoughtTimer); thoughtTimer = null }
+  stopAllTypewriters()
   // Trigger markdown rendering for all AI messages — await all
   const session = sessions.value.find(s => s.id === id)
   if (session) {
-    await Promise.all(session.messages.map((m) => {
+    await Promise.all(session.messages.map((m, i) => {
       if (m.role === 'assistant' && m.content && !m.isThinking) {
-        return renderMessageContent(m)
+        return renderMessageContent(i)
       }
       return Promise.resolve()
     }))
@@ -114,9 +132,9 @@ async function loadFromStorage() {
   if (s) lastSavedContent = JSON.stringify(s.messages)
   // Render markdown for loaded AI messages — await all renders
   const msgs = sessions.value[0].messages
-  await Promise.all(msgs.map((m) => {
+  await Promise.all(msgs.map((m, i) => {
     if (m.role === 'assistant' && m.content) {
-      return renderMessageContent(m)
+      return renderMessageContent(i)
     }
     return Promise.resolve()
   }))
@@ -179,48 +197,19 @@ async function handleSendMessage() {
   sessionDirty.value = true; inputMessage.value = ''; saveToStorage(); scrollToBottomIfNear()
   isChatting.value = true
   thinkingProgress.value = ''
-  if (thoughtTimer) { clearInterval(thoughtTimer); thoughtTimer = null }
-  const aiMsg = { role: 'assistant' as const, content: '', isThinking: true }
-  session.messages.push(aiMsg)
-  const aiIdx = session.messages.length - 1
-  // ★ 冷启动障眼法：立即显示拟人化短句
-  const thinkingPhrases = ['让我想想啊……', '嗯……我回忆一下。', '别急，我翻一下脑子里的记录。', '稍等，我查查看……', '嗯，我想想……']
-  const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)]
-  aiMsg.content = randomPhrase; scrollToBottomIfNear()
   // ★ Real Cognitive Stream: 实时进度
   const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
-    thinkingProgress.value = ev.payload.msg
+    thinkingProgress.value = ev.payload.msg; scrollToBottomIfNear()
   })
+  const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [] }
+  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
+  let unlistenStream: (() => void) | null = null
   let unlistenThought: (() => void) | null = null
-  let unlistenStatus: (() => void) | null = null
   try {
-    // ★ 监听 status 事件，动态演变拟人化文案
-    const toolHints: Record<string, string> = {
-      ext_tool_search: '我正在检索相关资料……',
-      ext_tool_object: '我在翻看记忆中的对象……',
-      ext_tool_traverse: '我在继续往后翻看……',
-      ext_tool_batch_search: '我在同时查几个方向……',
-    }
-    unlistenStatus = await listen<{ stage: string; tool?: string; target?: string }>('agent:status', (ev) => {
-      const { stage, tool, target } = ev.payload
-      if (stage === 'tool_start' && tool) {
-        const hint = toolHints[tool] || `正在调用 ${tool}……`
-        const targetHint = target ? `「${target.slice(0, 20)}」` : ''
-        thinkingProgress.value = `${hint}${targetHint ? ' ' + targetHint : ''}`
-      }
-    })
-    // ★ 流式token监听：逐token更新msg.content
-    let unlistenToken: (() => void) | null = null
-    unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
-      aiMsg.content += ev.payload.token
-      aiMsg.isStreaming = true
-    })
-    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => {
-      if (thoughtTimer) { clearInterval(thoughtTimer) }
-      let idx=0; const full=ev.payload.text; thinkingProgress.value=''
-      const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);if(idx>=full.length){clearInterval(t);thoughtTimer=null}},30)
-      thoughtTimer=t as any
-    })
+    // ★ 流式监听：实时显示 LLM thought + 最终答案
+    const streamedContent = ref('')
+    unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
+    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);scrollToBottomIfNear();if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
@@ -233,17 +222,13 @@ async function handleSendMessage() {
       }
     }
     const result: any = await kbAgentChat({ query: q, history })
-    const msg = session.messages[aiIdx]
+    const msg = session.messages[aiIdx]; msg.isThinking = false
     if (result.success) {
-      // 如果流式token没有累积到内容，用result.answer作为兜底
-      if (!msg.content || msg.content === randomPhrase) {
-        msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-      } else {
-        msg.content = msg.content.replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-      }
+      msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
       thinkingProgress.value = ''
-      msg.isStreaming = false
+      if (streamedContent.value) { msg.content = streamedContent.value.replace(/<refs>[\s\S]*<\/refs>/g, '').trim(); streamedContent.value = '' }
       msg.toolCalls = result.tool_log || []
+      startTypewriter(msg, msg.content)
       const rawCalls: any[] = []; const toolResults: any[] = []
       for (const r of (result.tool_log || [])) {
         for (const t of (r.tools || [])) {
@@ -255,18 +240,14 @@ async function handleSendMessage() {
       }
       msg.rawToolCalls = rawCalls; msg.toolResults = toolResults; msg.contextDocs = result.context_docs || result.sources || [];
       msg.workspace = result.workspace || '';
-      await renderMessageContent(msg)
-      msg.isThinking = false
-    } else {
-      msg.isThinking = false
-      msg.error = result.answer || result.error || '失败'
-    }
+      renderMessageContent(aiIdx)
+    } else { msg.error = result.answer || result.error || '失败' }
   } catch (e: any) {
-    const msg = session.messages[aiIdx]; msg.isThinking = false; msg.isStreaming = false
+    const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
     isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-    try { ;unlistenToken?.(); unlistenThought(); unlistenStatus?.(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
+    try { ;unlistenStream(); unlistenThought(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
   }
 }
 
@@ -320,9 +301,7 @@ async function refreshAnswer(idx: number) {
 const notebookPickerOpen = ref(false); const notebookSearch = ref(''); const savingMsgIdx = ref<number|null>(null); const notebooks = ref<{id:string;name:string}[]>([])
 const filteredNotebooks = computed(() => { const q = notebookSearch.value.trim().toLowerCase(); if (!q) return notebooks.value; return notebooks.value.filter(n => n.name.toLowerCase().includes(q)) })
 async function saveToNotebook(nbId: string) {
-  const msgIdx = savingMsgIdx.value
-  const msg = currentSession.value?.messages[msgIdx ?? -1]
-  const html = msg ? renderedContent(msg) : ''
+  const msgIdx = savingMsgIdx.value; const html = renderedContent(msgIdx ?? -1)
   if (msgIdx == null || !html) return
   try { await notesV2Create({ title: 'AI 问答记录', content: html, isDaily: false, notebookId: nbId }); toast({ message: '已保存到笔记', type: 'success' }) }
   catch (e: any) { toast({ message: e.message || '保存失败', type: 'error' }) }
@@ -334,7 +313,7 @@ async function openNotebookPicker(idx: number) { savingMsgIdx.value = idx; noteb
 onMounted(loadFromStorage)
 onUnmounted(() => {
   saveToStorage()
-  if (thoughtTimer) { clearInterval(thoughtTimer); thoughtTimer = null }
+  stopAllTypewriters()
 })
 </script>
 
@@ -401,7 +380,7 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <div v-else-if="msg.isThinking && msg.blocks && msg.blocks.length > 0" class="space-y-1.5 mb-2">
+            <div v-if="msg.isThinking && msg.blocks && msg.blocks.length > 0" class="space-y-1.5 mb-2">
               <div v-for="(block, bi) in msg.blocks" :key="bi" class="text-[12px] text-surface-600 bg-surface-50 px-3 py-1.5 rounded-lg border-l-2 border-surface-200 italic">{{ block.content }}</div>
             </div>
             <div v-else-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
@@ -410,8 +389,10 @@ onUnmounted(() => {
                 <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
               </template>
               <template v-else>
-                <div v-if="msg.isStreaming" class="text-[13px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">{{ msg.content }}<span class="inline-block w-[2px] h-[1em] bg-[#2563eb] ml-0.5 align-middle animate-pulse">▌</span></div>
-                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg)"></div>
+                <div v-if="isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">
+                  {{ typewriterText(msg) }}<span class="inline-block w-[2px] h-[1em] bg-[#2563eb] ml-0.5 align-middle animate-pulse">▌</span>
+                </div>
+                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: renderedContent(idx) ? 1 : 0, transform: renderedContent(idx) ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(idx)"></div>
                 <div class="flex items-center gap-1 mt-3 pt-3 border-t border-[#e5e5ea]">
                   <button @click="copyAnswer(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3.5 h-3.5" /></button>
                   <button @click="copyFullTrace(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制完整对话">
