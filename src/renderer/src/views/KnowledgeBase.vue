@@ -224,7 +224,7 @@ async function handleSendMessage() {
       if (stage === 'tool_start' && tool) {
         const hint = toolHints[tool] || `正在调用 ${tool}……`
         const targetHint = target ? `「${target.slice(0, 20)}」` : ''
-        session.messages[aiIdx].content = `${hint}${targetHint ? ' ' + targetHint : ''}`
+        thinkingProgress.value = `${hint}${targetHint ? ' ' + targetHint : ''}`
         scrollToBottomIfNear()
       }
     })
