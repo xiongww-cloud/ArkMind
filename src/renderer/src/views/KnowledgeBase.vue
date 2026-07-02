@@ -21,7 +21,7 @@ async function renderMarkdown(text: string): Promise<string> {
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 // ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean }
+interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
 const rendered = ref<Record<number,string>>({})
@@ -34,39 +34,6 @@ async function renderMessageContent(idx: number) {
 }
 function renderedContent(idx: number): string { return rendered.value[idx] || '' }
 
-// ─── Typewriter ─────────────────────────────────────────────────
-const activeTypewriters = new Set<ChatMessage>()
-const typewriterTimers = new Map<ChatMessage, ReturnType<typeof setInterval>>()
-function startTypewriter(msg: ChatMessage, fullText: string, speed = 8) {
-  stopTypewriter(msg)
-  if (!fullText) { msg.typewriterText = ''; msg.typewriterDone = true; return }
-  const idx = currentSession.value?.messages.indexOf(msg) ?? -1
-  if (idx >= 0) renderMarkdown(fullText.replace(/~/g, '～')).then(html => { rendered.value[idx] = html })
-  const TYPEWRITER_CHUNK_SIZE = 5
-  let pos = 0
-  msg.typewriterText = fullText.slice(0, pos)
-  msg.typewriterDone = false
-  activeTypewriters.add(msg)
-  const timer = setInterval(() => {
-    pos += TYPEWRITER_CHUNK_SIZE
-    if (pos >= fullText.length) {
-      pos = fullText.length; clearInterval(timer); typewriterTimers.delete(msg); activeTypewriters.delete(msg)
-      msg.typewriterText = fullText; msg.typewriterDone = true; return
-    }
-    msg.typewriterText = fullText.slice(0, pos)
-  }, speed)
-  typewriterTimers.set(msg, timer)
-}
-function stopTypewriter(msg: ChatMessage) {
-  const timer = typewriterTimers.get(msg)
-  if (timer) { clearInterval(timer); typewriterTimers.delete(msg) }
-  if (msg.typewriterText !== undefined && !msg.typewriterDone) { msg.typewriterDone = true }
-  activeTypewriters.delete(msg)
-}
-function stopAllTypewriters() { for (const msg of activeTypewriters) { stopTypewriter(msg) } }
-function typewriterText(msg: ChatMessage): string { return msg.typewriterText || '' }
-function isTypewriting(msg: ChatMessage): boolean { return msg.typewriterText !== undefined && !msg.typewriterDone }
-
 // ─── Session management ─────────────────────────────────────────
 const sessions = ref<ChatSession[]>([])
 const currentSessionId = ref<string|null>(null)
@@ -76,7 +43,7 @@ const sessionDirty = ref(false)  // 标记当前会话是否有变更
 let lastSavedContent = ''  // 上次保存时的内容快照
 
 function newSession() {
-  stopAllTypewriters()
+  if (thoughtTimer) { clearInterval(thoughtTimer); thoughtTimer = null }
   const id = crypto.randomUUID()
   sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toLocaleString('sv-SE'), updatedAt: new Date().toLocaleString('sv-SE') })
   currentSessionId.value = id; saveToStorage()
@@ -92,7 +59,7 @@ onMounted(async () => {
 onActivated(() => { nextTick(() => scrollToBottomIfNear()) })
 async function selectSession(id: string) {
   currentSessionId.value = id; rendered.value = {}
-  stopAllTypewriters()
+  if (thoughtTimer) { clearInterval(thoughtTimer); thoughtTimer = null }
   // Trigger markdown rendering for all AI messages — await all
   const session = sessions.value.find(s => s.id === id)
   if (session) {
@@ -230,7 +197,12 @@ async function handleSendMessage() {
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
     unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token })
-    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
+    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => {
+      if (thoughtTimer) { clearInterval(thoughtTimer) }
+      let idx=0; const full=ev.payload.text; thinkingProgress.value=''
+      const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);if(idx>=full.length){clearInterval(t);thoughtTimer=null}},30)
+      thoughtTimer=t as any
+    })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
@@ -333,7 +305,7 @@ async function openNotebookPicker(idx: number) { savingMsgIdx.value = idx; noteb
 onMounted(loadFromStorage)
 onUnmounted(() => {
   saveToStorage()
-  stopAllTypewriters()
+  if (thoughtTimer) { clearInterval(thoughtTimer); thoughtTimer = null }
 })
 </script>
 
