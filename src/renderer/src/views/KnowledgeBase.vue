@@ -187,7 +187,7 @@ const recalledContext = computed(() => {
 const suggestions = ['分析一下这个项目的关键信息', '请帮我写一份投标应答', '搜索关于S12700E的参数信息', '最近项目有什么进展']
 
 // ─── Send message ───────────────────────────────────────────────
-let thoughtTimer: any = null
+
 async function handleSendMessage() {
   const q = inputMessage.value.trim()
   if (!q || isChatting.value) return
@@ -209,7 +209,7 @@ async function handleSendMessage() {
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
     unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
-    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);scrollToBottomIfNear();if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
+    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { thinkingProgress.value = ev.payload.text; scrollToBottomIfNear() })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
