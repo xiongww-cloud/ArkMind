@@ -24,15 +24,20 @@ async function renderMarkdown(text: string): Promise<string> {
 interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
-const rendered = ref<Record<number,string>>({})
-async function renderMessageContent(idx: number) {
-  const msgs = currentSession.value?.messages; if (!msgs || !msgs[idx]) return ''
-  if (rendered.value[idx] !== undefined) return rendered.value[idx]
-  const text = msgs[idx].content || ''; if (!text) return ''
-  const safeText = text.replace(/~/g, '～')
-  rendered.value[idx] = await renderMarkdown(safeText)
+const rendered = ref<Record<string,string>>({})
+async function renderMessageContent(msg: ChatMessage) {
+  if (!msg.content) return ''
+  const key = msg.content.length.toString(36) + '_' + msg.content.slice(0, 32)
+  if (rendered.value[key] !== undefined) return rendered.value[key]
+  const safeText = msg.content.replace(/~/g, '～')
+  rendered.value[key] = await renderMarkdown(safeText)
+  return rendered.value[key]
 }
-function renderedContent(idx: number): string { return rendered.value[idx] || '' }
+function renderedContent(msg: ChatMessage): string {
+  if (!msg.content) return ''
+  const key = msg.content.length.toString(36) + '_' + msg.content.slice(0, 32)
+  return rendered.value[key] || ''
+}
 
 // ─── Session management ─────────────────────────────────────────
 const sessions = ref<ChatSession[]>([])
@@ -63,9 +68,9 @@ async function selectSession(id: string) {
   // Trigger markdown rendering for all AI messages — await all
   const session = sessions.value.find(s => s.id === id)
   if (session) {
-    await Promise.all(session.messages.map((m, i) => {
+    await Promise.all(session.messages.map((m) => {
       if (m.role === 'assistant' && m.content && !m.isThinking) {
-        return renderMessageContent(i)
+        return renderMessageContent(m)
       }
       return Promise.resolve()
     }))
@@ -99,9 +104,9 @@ async function loadFromStorage() {
   if (s) lastSavedContent = JSON.stringify(s.messages)
   // Render markdown for loaded AI messages — await all renders
   const msgs = sessions.value[0].messages
-  await Promise.all(msgs.map((m, i) => {
+  await Promise.all(msgs.map((m) => {
     if (m.role === 'assistant' && m.content) {
-      return renderMessageContent(i)
+      return renderMessageContent(m)
     }
     return Promise.resolve()
   }))
@@ -232,7 +237,7 @@ async function handleSendMessage() {
       }
       msg.rawToolCalls = rawCalls; msg.toolResults = toolResults; msg.contextDocs = result.context_docs || result.sources || [];
       msg.workspace = result.workspace || '';
-      renderMessageContent(aiIdx)
+      renderMessageContent(msg)
     } else { msg.error = result.answer || result.error || '失败' }
   } catch (e: any) {
     const msg = session.messages[aiIdx]; msg.isThinking = false
@@ -293,7 +298,9 @@ async function refreshAnswer(idx: number) {
 const notebookPickerOpen = ref(false); const notebookSearch = ref(''); const savingMsgIdx = ref<number|null>(null); const notebooks = ref<{id:string;name:string}[]>([])
 const filteredNotebooks = computed(() => { const q = notebookSearch.value.trim().toLowerCase(); if (!q) return notebooks.value; return notebooks.value.filter(n => n.name.toLowerCase().includes(q)) })
 async function saveToNotebook(nbId: string) {
-  const msgIdx = savingMsgIdx.value; const html = renderedContent(msgIdx ?? -1)
+  const msgIdx = savingMsgIdx.value
+  const msg = currentSession.value?.messages[msgIdx ?? -1]
+  const html = msg ? renderedContent(msg) : ''
   if (msgIdx == null || !html) return
   try { await notesV2Create({ title: 'AI 问答记录', content: html, isDaily: false, notebookId: nbId }); toast({ message: '已保存到笔记', type: 'success' }) }
   catch (e: any) { toast({ message: e.message || '保存失败', type: 'error' }) }
@@ -381,7 +388,7 @@ onUnmounted(() => {
                 <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
               </template>
               <template v-else>
-                <div class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(idx)"></div>
+                <div class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg)"></div>
                 <div class="flex items-center gap-1 mt-3 pt-3 border-t border-[#e5e5ea]">
                   <button @click="copyAnswer(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3.5 h-3.5" /></button>
                   <button @click="copyFullTrace(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制完整对话">
