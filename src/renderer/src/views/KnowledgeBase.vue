@@ -190,7 +190,6 @@ async function handleSendMessage() {
   const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
     thinkingProgress.value = ev.payload.msg
   })
-  let unlistenStream: (() => void) | null = null
   let unlistenThought: (() => void) | null = null
   let unlistenStatus: (() => void) | null = null
   try {
@@ -209,9 +208,6 @@ async function handleSendMessage() {
         thinkingProgress.value = `${hint}${targetHint ? ' ' + targetHint : ''}`
       }
     })
-    // ★ 流式监听：实时显示 LLM thought + 最终答案
-    const streamedContent = ref('')
-    unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token })
     unlistenThought = await listen<{text:string}>('agent:thought', (ev) => {
       if (thoughtTimer) { clearInterval(thoughtTimer) }
       let idx=0; const full=ev.payload.text; thinkingProgress.value=''
@@ -234,7 +230,6 @@ async function handleSendMessage() {
     if (result.success) {
       msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
       thinkingProgress.value = ''
-      if (streamedContent.value) { msg.content = streamedContent.value.replace(/<refs>[\s\S]*<\/refs>/g, '').trim(); streamedContent.value = '' }
       msg.toolCalls = result.tool_log || []
       const rawCalls: any[] = []; const toolResults: any[] = []
       for (const r of (result.tool_log || [])) {
@@ -258,7 +253,7 @@ async function handleSendMessage() {
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
     isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-    try { ;unlistenStream(); unlistenThought(); unlistenStatus?.(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
+    try { ;unlistenThought(); unlistenStatus?.(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
   }
 }
 
