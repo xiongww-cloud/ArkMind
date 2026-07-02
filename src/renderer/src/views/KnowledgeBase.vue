@@ -250,7 +250,6 @@ async function handleSendMessage() {
       thinkingProgress.value = ''
       if (streamedContent.value) { msg.content = streamedContent.value.replace(/<refs>[\s\S]*<\/refs>/g, '').trim(); streamedContent.value = '' }
       msg.toolCalls = result.tool_log || []
-      startTypewriter(msg, msg.content)
       const rawCalls: any[] = []; const toolResults: any[] = []
       for (const r of (result.tool_log || [])) {
         for (const t of (r.tools || [])) {
@@ -411,10 +410,7 @@ onUnmounted(() => {
                 <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
               </template>
               <template v-else>
-                <div v-if="isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">
-                  {{ typewriterText(msg) }}<span class="inline-block w-[2px] h-[1em] bg-[#2563eb] ml-0.5 align-middle animate-pulse">▌</span>
-                </div>
-                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: renderedContent(idx) ? 1 : 0, transform: renderedContent(idx) ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(idx)"></div>
+                <div class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(idx)"></div>
                 <div class="flex items-center gap-1 mt-3 pt-3 border-t border-[#e5e5ea]">
                   <button @click="copyAnswer(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3.5 h-3.5" /></button>
                   <button @click="copyFullTrace(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制完整对话">
