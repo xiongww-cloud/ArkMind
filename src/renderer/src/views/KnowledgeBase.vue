@@ -179,6 +179,7 @@ async function handleSendMessage() {
   sessionDirty.value = true; inputMessage.value = ''; saveToStorage(); scrollToBottomIfNear()
   isChatting.value = true
   thinkingProgress.value = ''
+  if (thoughtTimer) { clearInterval(thoughtTimer); thoughtTimer = null }
   const aiMsg = { role: 'assistant' as const, content: '', isThinking: true }
   session.messages.push(aiMsg)
   const aiIdx = session.messages.length - 1
