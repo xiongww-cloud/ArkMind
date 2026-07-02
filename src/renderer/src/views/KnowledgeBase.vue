@@ -206,7 +206,7 @@ async function handleSendMessage() {
   aiMsg.content = randomPhrase; scrollToBottomIfNear()
   // ★ Real Cognitive Stream: 实时进度
   const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
-    thinkingProgress.value = ev.payload.msg; scrollToBottomIfNear()
+    thinkingProgress.value = ev.payload.msg
   })
   let unlistenStream: (() => void) | null = null
   let unlistenThought: (() => void) | null = null
@@ -225,13 +225,12 @@ async function handleSendMessage() {
         const hint = toolHints[tool] || `正在调用 ${tool}……`
         const targetHint = target ? `「${target.slice(0, 20)}」` : ''
         thinkingProgress.value = `${hint}${targetHint ? ' ' + targetHint : ''}`
-        scrollToBottomIfNear()
       }
     })
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
-    unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
-    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);scrollToBottomIfNear();if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
+    unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token })
+    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { let idx=0; const full=ev.payload.text; thinkingProgress.value=''; const t=setInterval(()=>{thinkingProgress.value=full.slice(0,++idx);if(idx>=full.length)clearInterval(t)},30); thoughtTimer=t as any })
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
