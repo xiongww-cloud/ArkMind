@@ -9,25 +9,25 @@ import { sanitizeHtml, sanitizeHtmlSync } from '@/utils/sanitize'
 import { listen } from '@tauri-apps/api/event'
 
 // ─── Markdown renderer ──────────────────────────────────────────
-let _markedParse: ((text: string) => string) | null = null
-async function getMarkedParse(): Promise<(text: string) => string> {
-  if (_markedParse) return _markedParse
+let _markedInstance: any = null
+async function getMarkedInstance() {
+  if (_markedInstance) return _markedInstance
   const mod = await import('marked')
   const Marked = mod.Marked || (mod as any).default?.Marked || (mod as any).default
   if (Marked && typeof Marked === 'function') {
-    const m = new Marked({ gfm: true, breaks: true })
-    _markedParse = (text: string) => m.parse(text) || ''
+    _markedInstance = new Marked({ gfm: true, breaks: true })
   } else {
-    const { marked } = mod as any
-    _markedParse = (text: string) => (marked?.parse || marked)(text) || ''
+    _markedInstance = (mod as any).marked
   }
-  return _markedParse
+  return _markedInstance
 }
 async function renderMarkdown(text: string): Promise<string> {
   if (!text) return ''
   try {
-    const parse = await getMarkedParse()
-    return sanitizeHtml(parse(text))
+    const m = await getMarkedInstance()
+    const result = typeof m.parse === 'function' ? m.parse(text) : m(text)
+    const html = typeof result === 'string' ? result : await result
+    return await sanitizeHtml(html || '')
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 // ─── Types ──────────────────────────────────────────────────────
