@@ -220,7 +220,7 @@ async function handleSendMessage() {
       }
     }
     const result: any = await kbAgentChat({ query: q, history })
-    const msg = session.messages[aiIdx]; msg.isThinking = false
+    const msg = session.messages[aiIdx]
     if (result.success) {
       msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
       thinkingProgress.value = ''
@@ -237,8 +237,12 @@ async function handleSendMessage() {
       }
       msg.rawToolCalls = rawCalls; msg.toolResults = toolResults; msg.contextDocs = result.context_docs || result.sources || [];
       msg.workspace = result.workspace || '';
-      renderMessageContent(msg)
-    } else { msg.error = result.answer || result.error || '失败' }
+      await renderMessageContent(msg)
+      msg.isThinking = false
+    } else {
+      msg.isThinking = false
+      msg.error = result.answer || result.error || '失败'
+    }
   } catch (e: any) {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
