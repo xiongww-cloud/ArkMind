@@ -31,7 +31,7 @@ async function renderMarkdown(text: string): Promise<string> {
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 // ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string }
+interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; isStreaming?: boolean; contextDocs?: any[]; workspace?: string }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
 const rendered = ref<Record<string,string>>({})
@@ -209,6 +209,12 @@ async function handleSendMessage() {
         thinkingProgress.value = `${hint}${targetHint ? ' ' + targetHint : ''}`
       }
     })
+    // ★ 流式token监听：逐token更新msg.content
+    let unlistenToken: (() => void) | null = null
+    unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
+      aiMsg.content += ev.payload.token
+      aiMsg.isStreaming = true
+    })
     unlistenThought = await listen<{text:string}>('agent:thought', (ev) => {
       if (thoughtTimer) { clearInterval(thoughtTimer) }
       let idx=0; const full=ev.payload.text; thinkingProgress.value=''
@@ -229,8 +235,14 @@ async function handleSendMessage() {
     const result: any = await kbAgentChat({ query: q, history })
     const msg = session.messages[aiIdx]
     if (result.success) {
-      msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+      // 如果流式token没有累积到内容，用result.answer作为兜底
+      if (!msg.content || msg.content === randomPhrase) {
+        msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+      } else {
+        msg.content = msg.content.replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+      }
       thinkingProgress.value = ''
+      msg.isStreaming = false
       msg.toolCalls = result.tool_log || []
       const rawCalls: any[] = []; const toolResults: any[] = []
       for (const r of (result.tool_log || [])) {
@@ -250,11 +262,11 @@ async function handleSendMessage() {
       msg.error = result.answer || result.error || '失败'
     }
   } catch (e: any) {
-    const msg = session.messages[aiIdx]; msg.isThinking = false
+    const msg = session.messages[aiIdx]; msg.isThinking = false; msg.isStreaming = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
     isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-    try { ;unlistenThought(); unlistenStatus?.(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
+    try { ;unlistenToken?.(); unlistenThought(); unlistenStatus?.(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
   }
 }
 
@@ -398,7 +410,8 @@ onUnmounted(() => {
                 <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
               </template>
               <template v-else>
-                <div class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg)"></div>
+                <div v-if="msg.isStreaming" class="text-[13px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">{{ msg.content }}<span class="inline-block w-[2px] h-[1em] bg-[#2563eb] ml-0.5 align-middle animate-pulse">▌</span></div>
+                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg)"></div>
                 <div class="flex items-center gap-1 mt-3 pt-3 border-t border-[#e5e5ea]">
                   <button @click="copyAnswer(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3.5 h-3.5" /></button>
                   <button @click="copyFullTrace(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制完整对话">
