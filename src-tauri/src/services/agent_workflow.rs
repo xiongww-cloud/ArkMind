@@ -46,7 +46,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 ## 工具
 - ext_tool_object: 在记忆中寻找对象。mode=search 用于定位（按相关性排序），mode=recall 用于回忆（按天分组+完整展示+关联计数）。recall 模式下超长会自动分页。
 - ext_tool_search: 从长期记忆中回忆相关知识片段，支持 time_range 时间范围过滤。用于回忆具体的知识内容。
-- ext_tool_traverse: 沿记忆关联网络漫游（next/prev/related/references）。用于查看某个记忆片段的前后文或关联实体。不要用它来翻页浏览对象列表。
+- ext_tool_traverse: 沿记忆关联网络漫游（next/prev/related/references）。用于查看某个记忆片段的前后文或关联实体。⚠️ chunk_id 必须是 search 返回结果中的「ChunkID」字段（如 47beae9a），绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。
 - ext_tool_manage_todo: 管理待办。action=create(创建，title必填，priority从用户原话提取填入此字段不要写进content，due_date从用户原话提取，repeat可选daily/weekly/monthly)，action=update(更新，用todo_id或title匹配)，action=delete(删除，用todo_id或title匹配)。
 - ext_tool_manage_memory: 管理记忆。action=create(创建，title=知识点，content=原始陈述，replace_ids=旧记忆source_id逗号分隔，自动删除旧的)，action=delete(删除，用memory_id精确匹配或title模糊匹配)。整理流程：搜索→获取旧记忆source_id→create汇总+replace_ids→旧记忆自动清理。只有用户明确告诉你的信息才创建记忆。
 - ext_tool_manage_policy: 管理用户规则（宪法）。有id+content=更新，有id+无content=删除，无id+有content=新增。
@@ -63,15 +63,10 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 
 - 每轮检索后评估证据是否足够。如果足够，直接输出最终答案。
 
-## 👥 交互与独白
-- 工具调用前必须用一句话告诉用户（只能用"回忆"相关表达，如"让我想想"、"我回忆一下"、"我记得..."、"嗯，想起来了"）
-- 严禁使用动作类表达：检索、搜索、查询、工具、翻看笔记、查找资料、查看记录、翻阅文档、读取数据
-- 所有信息获取行为都表现为"回忆"，不是"查找"。你是用户的记忆伙伴，不是搜索引擎
-
 ## 引用
 时间回忆类问题（「昨天发生了什么」「最近聊了什么」）：先用 object 按时间范围回忆相关对象，直接回答中按主题聚类和总结，不要使用 search。
 日期范围用「至」代替「~」（如「6月15日至6月21日」）。
-回答中使用口语化、拟人化表达，所有信息获取行为都表现为"回忆"，禁止使用检索、搜索、查询、工具、翻看、查找、查看、翻阅等术语。
+回答中使用口语化表达。
 
 最终答案末尾用 <refs> 标签列出引用对象ID：<refs>PRODUCT-xxx, PROJECT-yyy</refs>"#;
 
@@ -402,27 +397,24 @@ impl SessionMemory {
 /// 取 top 5 高分对象 + 所有新加来源（score < 1 的新进入注意力的对象）
 fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collections::HashSet<i64>> {
     let mut scope_ids: Vec<String> = Vec::new();
+    let type_prefix = |t: &str| -> Option<&str> {
+        match t { "product" => Some("PRODUCT"), "project" => Some("PROJECT"),
+            "file" => Some("FILE"), "note" => Some("NOTE"), "chat" => Some("CHAT"), _ => None }
+    };
     // 1. top 5 高分对象
     let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
     sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
     for o in sorted.iter().take(5) {
-        let p = match o.obj_type.as_str() {
-            "product" => "PRODUCT", "project" => "PROJECT",
-            "file" => "FILE", "note" => "NOTE", "chat" => "CHAT",
-            _ => continue,
-        };
-        if o.obj_id.starts_with(p) { scope_ids.push(o.obj_id.clone()); }
+        if let Some(p) = type_prefix(&o.obj_type) {
+            scope_ids.push(format!("{}-{}", p, o.obj_id));
+        }
     }
     // 2. 新加入的来源（score < 1 的，来自 MEMORY 引用等）
     for o in session.active_objects.iter() {
         if o.score < 1.0 {
-            let p = match o.obj_type.as_str() {
-                "product" => "PRODUCT", "project" => "PROJECT",
-                "file" => "FILE", "note" => "NOTE", "chat" => "CHAT",
-                _ => continue,
-            };
-            if o.obj_id.starts_with(p) && !scope_ids.contains(&o.obj_id) {
-                scope_ids.push(o.obj_id.clone());
+            if let Some(p) = type_prefix(&o.obj_type) {
+                let key = format!("{}-{}", p, o.obj_id);
+                if !scope_ids.contains(&key) { scope_ids.push(key); }
             }
         }
     }
@@ -435,7 +427,7 @@ fn build_tools_definitions() -> Value {
     json!([
         {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。支持时间范围过滤。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
         {"type":"function","function":{"name":"ext_tool_object","description":"搜索和浏览记忆中的对象。mode=search用于定位（FTS+排序+TopK），mode=recall用于回忆（按天分组+完整展示+关联计数）。recall模式超长时自动分页。","parameters":{"type":"object","properties":{"query":{"type":"string","description":"对象名称关键词（search模式用）"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"mode":{"type":"string","enum":["search","recall"],"description":"search=检索定位，recall=时间线回忆，默认search"},"limit":{"type":"integer","description":"每页数量，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
-        {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。chunk_id 必须来自 search() 结果中的「ChunkID」字段，不要传其他ID。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"必须来自 search() 结果的 ChunkID 字段"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
+        {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。⚠️ chunk_id 是8位短ID（如 47beae9a），来自 search() 结果中的「ChunkID」字段。绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID（如 47beae9a），必须来自 search() 结果的 ChunkID 字段，不是 source_id"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。action=create(title必填,priority从用户原话提取,due_date从用户原话提取,repeat可选daily/weekly/monthly,project_id关联项目), action=update, action=delete","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待办标题"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_act","description":"执行项目操作。action: update_project_status=更新项目状态(project_id+new_status)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["update_project_status"]},"project_id":{"type":"string","description":"项目ID"},"new_status":{"type":"string","description":"新状态"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_memory","description":"管理记忆。action=create(创建，title=知识点，content=原始陈述，replace_ids=旧记忆source_id逗号分隔，自动删除旧的)，action=delete(删除，用memory_id或title匹配)。整理流程：搜索→获取旧记忆source_id→create汇总+replace_ids→旧记忆自动清理。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete"]},"title":{"type":"string","description":"知识标题或记忆标题"},"content":{"type":"string","description":"记忆内容(create用)"},"memory_id":{"type":"string","description":"记忆source_id(delete精确匹配)"},"replace_ids":{"type":"string","description":"逗号分隔的旧记忆source_id(create时自动删除)"}},"required":["action"]}}},
@@ -540,195 +532,101 @@ async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<ta
 // ═══════════════════════════════════════════════════════════════════
 
 /// 从 source_type / source_id 查询所有关联元数据，返回格式化信息块
+/// 数据来源：business_relations（关联关系）+ source_data.title（名称）
 pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
     if source_type.is_empty() || source_id.is_empty() { return String::new(); }
-    let st = format!("{}s", source_type.to_lowercase().trim_end_matches('s'));
-    let sid = source_id;
+
+    // ── 1. 来源标题（从 source_data.title）──
+    let title = database::get(
+        "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
+        &[json!(source_type), json!(source_id)],
+    ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
 
     let mut lines: Vec<String> = Vec::new();
+    if !title.is_empty() {
+        let type_label = match source_type { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", _ => source_type };
+        lines.push(format!("来源：{} · {}", type_label, title));
+    }
 
-    // ── 1. 来源类型 + 标题 ──
-    match st.as_str() {
-        "notes" => {
-            if let Ok(Some(row)) = database::get(
-                "SELECT n.title, nb.name as nb_name FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1",
-                &[json!(sid)],
-            ) {
-                if let Some(t) = row["title"].as_str().filter(|t| !t.is_empty()) {
-                    lines.push(format!("来源：笔记 · {}", t));
-                }
-                if let Some(nb) = row["nb_name"].as_str().filter(|n| !n.is_empty()) {
-                    lines.push(format!("笔记簿：{}", nb));
-                }
+    // ── 2. 从 business_relations 查所有关联 ──
+    let rels = database::all(
+        "SELECT target_type, target_id, relation_type, metadata FROM business_relations WHERE source_type=?1 AND source_id=?2",
+        &[json!(source_type), json!(source_id)],
+    ).unwrap_or_default();
+    let reverse_rels = database::all(
+        "SELECT source_type as target_type, source_id as target_id, relation_type, metadata FROM business_relations WHERE target_type=?1 AND target_id=?2",
+        &[json!(source_type), json!(source_id)],
+    ).unwrap_or_default();
+
+    // 合并双向关联，去重
+    let mut all_rels: Vec<(String, String, String, String)> = rels.into_iter()
+        .chain(reverse_rels.into_iter())
+        .filter_map(|r| {
+            Some((r["target_type"].as_str()?.to_string(), r["target_id"].as_str()?.to_string(), r["relation_type"].as_str().unwrap_or("").to_string(), r["metadata"].as_str().unwrap_or("{}").to_string()))
+        }).collect();
+    all_rels.sort_by(|a,b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    all_rels.dedup_by(|a,b| a.0 == b.0 && a.1 == b.1);
+
+    if all_rels.is_empty() {
+        // 无关联时输出占位行
+        let is_self = |t: &str| t.to_uppercase() == source_type;
+        for label in &["项目", "产品", "笔记", "待办", "文件"] {
+            let type_key = match *label { "项目" => "PROJECT", "产品" => "PRODUCT", "笔记" => "NOTE", "待办" => "TODO", "文件" => "FILE", _ => "" };
+            if !is_self(type_key) { lines.push(format!("{}：无关联{}", label, label)); }
+        }
+        if lines.is_empty() { return String::new(); }
+        return lines.join("\n");
+    }
+
+    // ── 3. 批量查名称 ──
+    let mut name_cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut targets_by_type: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
+    for (tt, tid, _rt, _meta) in &all_rels {
+        targets_by_type.entry(tt.clone()).or_default().push((tid.clone(), _meta.clone()));
+    }
+    for (tt, targets) in &targets_by_type {
+        let ids: Vec<String> = targets.iter().map(|(id,_)| id.clone()).collect();
+        if ids.is_empty() { continue; }
+        let ph: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let params: Vec<serde_json::Value> = ids.iter().map(|id| json!(id)).collect();
+        let type_upper = tt.to_uppercase();
+        // FILE 类型：从 source_data.title 取名称（已存原始文件名）
+        let rows = database::all(
+            &format!("SELECT source_id, title FROM source_data WHERE source_type=?1 AND source_id IN ({})", ph.join(",")),
+            &[json!(&type_upper)].iter().chain(params.iter()).cloned().collect::<Vec<_>>().as_slice(),
+        ).unwrap_or_default();
+        for r in &rows {
+            if let (Some(id), Some(t)) = (r["source_id"].as_str(), r["title"].as_str()) {
+                if !t.is_empty() { name_cache.insert(format!("{}-{}", type_upper, id), t.to_string()); }
             }
         }
-        "files" => {
-            let file_meta = database::get(
-                "SELECT fa.id, fa.file_ext, fa.parse_status
-                 FROM file_assets fa
-                 WHERE fa.id=?1 LIMIT 1",
-                &[json!(sid)],
-            ).ok().flatten();
-            if let Some(ref r) = file_meta {
-                let ext = r["file_ext"].as_str().unwrap_or("");
-                // Get custom name from file_relations (by file_id)
-                let custom_name: String = database::get(
-                    "SELECT custom_name FROM file_relations WHERE file_id=?1 AND custom_name != '' LIMIT 1",
-                    &[json!(r["id"].as_str().unwrap_or(""))],
-                ).ok().flatten().and_then(|r| r["custom_name"].as_str().map(|s| s.to_string())).unwrap_or_default();
-                // Get folder name
-                let folder_name: String = database::get(
-                    "SELECT lf.name FROM library_file_locations lfl JOIN library_folders lf ON lf.id=lfl.folder_id WHERE lfl.file_id=?1 LIMIT 1",
-                    &[json!(r["id"].as_str().unwrap_or(""))],
-                ).ok().flatten().and_then(|r| r["name"].as_str().map(|s| s.to_string())).unwrap_or_default();
-                let name = if !custom_name.is_empty() { custom_name } else { "文件".to_string() };
-                lines.push(format!("来源：文件 · {}{}", name, ext));
-                if !folder_name.is_empty() { lines.push(format!("文库位置：{}", folder_name)); }
-            } else {
-                lines.push("来源：文件".into());
-            }
+    }
+
+    // ── 4. 按类型格式化 ──
+    let format_targets = |tt: &str, targets: &[(String, String)]| -> Vec<String> {
+        targets.iter().filter_map(|(tid, meta)| {
+            let name = name_cache.get(&format!("{}-{}", tt, tid)).map(|s| s.as_str()).unwrap_or("");
+            if name.is_empty() { return None; }
+            let meta_val: Value = serde_json::from_str(meta).unwrap_or(Value::Null);
+            let custom = meta_val.get("custom_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+            let mut extra = String::new();
+            if let Some(cn) = custom { extra.push_str(&format!(" — 作为「{}」", cn)); }
+            Some(format!("· {}{}", name, extra))
+        }).collect()
+    };
+
+    for (label, type_key) in &[("项目", "PROJECT"), ("产品", "PRODUCT"), ("笔记", "NOTE"), ("待办", "TODO"), ("文件", "FILE")] {
+        if type_key == &source_type { continue; } // 跳过自身类型
+        if let Some(targets) = targets_by_type.get(*type_key) {
+            let items = format_targets(type_key, targets);
+            if !items.is_empty() { lines.push(format!("{}：\n{}", label, items.join("\n"))); }
+            else { lines.push(format!("{}：无关联{}", label, label)); }
+        } else {
+            lines.push(format!("{}：无关联{}", label, label));
         }
-        "products" => {
-            if let Ok(Some(row)) = database::get(
-                "SELECT name, series_name FROM products WHERE id=?1",
-                &[json!(sid)],
-            ) {
-                let name = row["name"].as_str().unwrap_or("");
-                lines.push(format!("来源：产品 · {}", name));
-            }
-        }
-        "projects" => {
-            if let Ok(Some(row)) = database::get(
-                "SELECT name, status, customer FROM projects WHERE id=?1",
-                &[json!(sid)],
-            ) {
-                let name = row["name"].as_str().unwrap_or("");
-                lines.push(format!("来源：项目 · {}", name));
-            }
-        }
-        _ => {}
     }
 
-    if st == "notes" {
-        let projs: Vec<String> = database::all(
-            "SELECT p.name, p.status, p.customer FROM projects p JOIN note_project_mapping npm ON npm.project_id=p.id WHERE npm.note_id=?1",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| {
-            let n = r["name"].as_str()?; let s = r["status"].as_str().filter(|x|!x.is_empty()); let c = r["customer"].as_str().filter(|x|!x.is_empty());
-            let mut extra = String::new();
-            if let Some(st2)=s{extra.push_str(&format!(" ({})",st2));} if let Some(cu)=c{extra.push_str(&format!(" · 客户：{}",cu));}
-            Some(format!("· {}{}", n, extra))
-        }).collect();
-        if !projs.is_empty() { lines.push(format!("项目：\n{}",projs.join("\n"))); }
-    }
-    if st == "notes" {
-        let todos: Vec<String> = database::all(
-            "SELECT t.title, t.status, t.priority FROM todos t JOIN todo_project_mapping tpm ON tpm.todo_id=t.id WHERE t.deleted_at IS NULL AND tpm.project_id IN (SELECT npm.project_id FROM note_project_mapping npm WHERE npm.note_id=?1) LIMIT 10",&[json!(sid)]
-        ).unwrap_or_default().into_iter().filter_map(|r| { let t=r["title"].as_str()?; let s=r["status"].as_str().filter(|x|!x.is_empty()).unwrap_or("-"); let p=r["priority"].as_str().filter(|x|!x.is_empty()).unwrap_or("-"); Some(format!("· {} [{}] 「{}」",t,p,s)) }).collect();
-        if !todos.is_empty() { lines.push(format!("待办：\n{}",todos.join("\n"))); }
-    }
-
-    if st == "files" {
-        let projs: Vec<String> = database::all(
-            "SELECT p.name, p.status, p.customer, fr.custom_name FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id JOIN projects p ON p.id=fr.entity_id WHERE fr.entity_type='project' AND fa.id=?1",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| {
-            let n=r["name"].as_str()?; let cn=r["custom_name"].as_str().filter(|x|!x.is_empty()); let s=r["status"].as_str().filter(|x|!x.is_empty()); let c=r["customer"].as_str().filter(|x|!x.is_empty());
-            let mut extra = String::new();
-            if let Some(st2)=s{extra.push_str(&format!(" ({})",st2));} if let Some(cu)=c{extra.push_str(&format!(" · 客户：{}",cu));} if let Some(nm)=cn{extra.push_str(&format!(" — 作为「{}」",nm));}
-            Some(format!("· {}{}", n, extra))
-        }).collect();
-        if !projs.is_empty() { lines.push(format!("项目：\n{}",projs.join("\n"))); }
-        let prods: Vec<String> = database::all(
-            "SELECT pr.name, fr.custom_name FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id JOIN products pr ON pr.id=fr.entity_id WHERE fr.entity_type='product' AND fa.id=?1",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| {
-            let n=r["name"].as_str()?; let cn=r["custom_name"].as_str().filter(|x|!x.is_empty());
-            let mut extra = String::new();
-            if let Some(nm)=cn{extra.push_str(&format!(" — 作为「{}」",nm));}
-            Some(format!("· {}{}", n, extra))
-        }).collect();
-        if !prods.is_empty() { lines.push(format!("产品：\n{}",prods.join("\n"))); }
-        let notes: Vec<String> = database::all(
-            "SELECT n.title, fr.custom_name FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id JOIN notes n ON n.note_id=fr.entity_id WHERE fr.entity_type='note' AND fa.id=?1",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| {
-            let t=r["title"].as_str()?; let cn=r["custom_name"].as_str().filter(|x|!x.is_empty());
-            let mut extra = String::new();
-            if let Some(nm)=cn{extra.push_str(&format!(" — 作为「{}」",nm));}
-            Some(format!("· {}{}", t, extra))
-        }).collect();
-        if !notes.is_empty() { lines.push(format!("笔记：\n{}",notes.join("\n"))); }
-        let todos: Vec<String> = database::all(
-            "SELECT t.title, t.status, t.priority FROM todos t JOIN todo_project_mapping tpm ON tpm.todo_id=t.id WHERE t.deleted_at IS NULL AND tpm.project_id IN (SELECT fr.entity_id FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.entity_type='project' AND fa.id=?1) LIMIT 10",&[json!(sid)]
-        ).unwrap_or_default().into_iter().filter_map(|r| { let t=r["title"].as_str()?; let s=r["status"].as_str().filter(|x|!x.is_empty()).unwrap_or("-"); let p=r["priority"].as_str().filter(|x|!x.is_empty()).unwrap_or("-"); Some(format!("· {} [{}] 「{}」",t,p,s)) }).collect();
-        if !todos.is_empty() { lines.push(format!("待办：\n{}",todos.join("\n"))); }
-    }
-
-    if st == "products" {
-        let projs: Vec<String> = database::all(
-            "SELECT p.name, p.status FROM projects p JOIN project_product_mapping ppm ON ppm.project_id=p.id WHERE ppm.product_id=?1",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| {
-            let n=r["name"].as_str()?; let s=r["status"].as_str().filter(|x|!x.is_empty());
-            let mut extra = String::new();
-            if let Some(st2)=s{extra.push_str(&format!(" ({})",st2));}
-            Some(format!("· {}{}", n, extra))
-        }).collect();
-        if !projs.is_empty() { lines.push(format!("项目：\n{}",projs.join("\n"))); }
-        // 产品关联的文件（如彩页、规格书等）
-        let files: Vec<String> = database::all(
-            "SELECT fr.custom_name, fa.file_ext FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.entity_type='product' AND fr.entity_id=?1 LIMIT 5",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| {
-            let cn=r["custom_name"].as_str().filter(|x|!x.is_empty()).unwrap_or("文件"); let ext=r["file_ext"].as_str().unwrap_or("");
-            Some(format!("· {}{}", cn, ext))
-        }).collect();
-        if !files.is_empty() { lines.push(format!("文件：\n{}",files.join("\n"))); }
-    }
-
-    if st == "projects" {
-        let files: Vec<String> = database::all(
-            "SELECT fr.custom_name, fa.file_ext FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.entity_type='project' AND fr.entity_id=?1 LIMIT 10",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| {
-            let cn=r["custom_name"].as_str().filter(|x|!x.is_empty()).unwrap_or("文件"); let ext=r["file_ext"].as_str().unwrap_or("");
-            Some(format!("· {}{}", cn, ext))
-        }).collect();
-        if !files.is_empty() { lines.push(format!("文件：\n{}",files.join("\n"))); }
-        let prods: Vec<String> = database::all(
-            "SELECT pr.name FROM project_product_mapping ppm JOIN products pr ON pr.id=ppm.product_id WHERE ppm.project_id=?1 LIMIT 10",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| {
-            let n=r["name"].as_str()?;
-            Some(format!("· {}", n))
-        }).collect();
-        if !prods.is_empty() { lines.push(format!("产品：\n{}",prods.join("\n"))); }
-        let notes: Vec<String> = database::all(
-            "SELECT n.title FROM notes n JOIN note_project_mapping npm ON npm.note_id=n.note_id WHERE npm.project_id=?1 LIMIT 10",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| { let t=r["title"].as_str()?; Some(format!("· {}", t)) }).collect();
-        if !notes.is_empty() { lines.push(format!("笔记：\n{}",notes.join("\n"))); }
-        let todos: Vec<String> = database::all(
-            "SELECT t.title, t.status, t.priority FROM todos t JOIN todo_project_mapping tpm ON tpm.todo_id=t.id WHERE tpm.project_id=?1 AND t.deleted_at IS NULL LIMIT 10",
-            &[json!(sid)],
-        ).unwrap_or_default().into_iter().filter_map(|r| { let t=r["title"].as_str()?; let s=r["status"].as_str().filter(|x|!x.is_empty()).unwrap_or("-"); let p=r["priority"].as_str().filter(|x|!x.is_empty()).unwrap_or("-"); Some(format!("· {} [{}] 「{}」",t,p,s)) }).collect();
-        if !todos.is_empty() { lines.push(format!("待办：\n{}",todos.join("\n"))); }
-    }
-
-    // ── 占位行：确保 LLM 知道关联类型存在，即使当前无数据 ──
-    let had_projects: bool = st == "projects" || lines.iter().any(|l| l.starts_with("项目："));
-    let had_products: bool = lines.iter().any(|l| l.starts_with("产品："));
-    let had_notes: bool = lines.iter().any(|l| l.starts_with("笔记："));
-    let had_todos: bool = lines.iter().any(|l| l.starts_with("待办："));
-    let had_files: bool = lines.iter().any(|l| l.starts_with("文件："));
-    if !had_projects { lines.push("项目：无关联项目".into()); }
-    if !had_products { lines.push("产品：无关联产品".into()); }
-    if !had_notes { lines.push("笔记：无关联笔记".into()); }
-    if !had_todos { lines.push("待办：无关联待办".into()); }
-    if !had_files { lines.push("文件：无关联文件".into()); }
-
-    if lines.is_empty() { return String::new(); }
+    if lines.len() <= 1 { return String::new(); } // 只有标题没有关联
     lines.join("\n")
 }
 
@@ -878,19 +776,20 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     // ★ 始终走双路（FTS5 + Vector），不再因 scope 而跳过向量检索
 
     let vec_rowids: Vec<(String,f64)> = {
-        let qv = match crate::services::embedding_client::get_embedding_with_caller(&query, "agent_workflow").await {
-            Ok(qv) => qv,
-            Err(e) => return (format!("embed: {e}"), vec![]),
-        };
-        match crate::services::lancedb_client::get_lancedb() {
-            Ok(g) => match g.as_ref() {
-                Some(c) => {
-                    let raw = c.search_vectors_with_parent(&qv, if scope_rowids.is_some() { 120 } else { 30 }).unwrap_or_default();
-                    raw.into_iter().map(|(r,s,_,_,_)|(r.to_string(),s)).collect()
+        match crate::services::embedding_client::get_embedding_with_caller(&query, "agent_workflow").await {
+            Ok(qv) => {
+                match crate::services::lancedb_client::get_lancedb() {
+                    Ok(g) => match g.as_ref() {
+                        Some(c) => {
+                            let raw = c.search_vectors_with_parent(&qv, if scope_rowids.is_some() { 120 } else { 30 }).unwrap_or_default();
+                            raw.into_iter().map(|(r,s,_,_,_)|(r.to_string(),s)).collect()
+                        }
+                        None => vec![]
+                    }
+                    Err(_) => vec![]
                 }
-                None => vec![]
             }
-            Err(_) => vec![]
+            Err(_e) => vec![]
         }
     };
     let fts_limit = if scope_rowids.is_some() { 120 } else { 30 };
@@ -903,26 +802,31 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
         rows.into_iter().filter(|(id,_)| id.parse::<i64>().map(|r| tag_rowids.contains(&r)).unwrap_or(false)).collect()
     };
 
-    let fused = search_assets::rrf_fusion(&fuse(fts_rowids), &fuse(vec_rowids), 60.0);
+    let fts_filtered = fuse(fts_rowids.clone());
+    let vec_filtered = fuse(vec_rowids.clone());
+    let fused = search_assets::rrf_fusion(&fts_filtered, &vec_filtered, 60.0);
+
     if fused.is_empty() {
         let kw_display = keywords.join("、");
         let diag = format!("未找到关键词「{}」的匹配切片。\n\n💡 已在全库范围搜索，无匹配结果。建议：\n1. 使用更简短或不同的关键词重试（如去掉型号只留品牌）\n2. 使用 object 工具先查看知识库中的文件与产品范围\n3. 确认相关文件已导入知识库", kw_display);
         return (diag, vec![]);
     }
     let mut seen_hashes = std::collections::HashSet::new();
-    let mut disc_sources = std::collections::HashSet::new();
+    let mut disc_sources: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut found_sources: Vec<String> = Vec::new();
     let mut candidates: Vec<(f64, i64, String, String, String, String, String, i64, i64, bool, bool)> = Vec::new();
 
     for (rowid_str, rrf) in fused.iter() {
         let Ok(cr) = rowid_str.parse::<i64>() else { continue; };
-        if let Ok(Some(r)) = database::get("SELECT p.content,p.content_hash,p.doc_title,p.chunk_index,p.chunk_id,sd.source_type,sd.source_id,sd.id as source_data_id FROM knowledge_chunks c JOIN knowledge_chunks p ON p.chunk_id=c.parent_id LEFT JOIN source_data sd ON sd.id=p.source_data_id WHERE c.rowid=?1",&[json!(cr)]) {
+        if let Ok(Some(r)) = database::get("SELECT p.content,p.content_hash,p.doc_title,p.chunk_index,p.chunk_id,p.source_data_id as parent_sdid,sd.source_type,sd.source_id,sd.id as source_data_id FROM knowledge_chunks c JOIN knowledge_chunks p ON p.chunk_id=c.parent_id LEFT JOIN source_data sd ON sd.id=p.source_data_id WHERE c.rowid=?1",&[json!(cr)]) {
             let st = r["source_type"].as_str().unwrap_or("").to_string();
             let sid = r["source_id"].as_str().unwrap_or("").to_string();
             let dedup = format!("{}-{}", st, sid);
             let h = r["content_hash"].as_str().unwrap_or("").to_string();
             let content = r["content"].as_str().unwrap_or("").to_string();
-            if content.trim().chars().count() < 60 { continue; }
+            if content.trim().chars().count() < 60 {
+                continue;
+            }
             let chunk_id = r["chunk_id"].as_str().unwrap_or("").to_string();
             let chunk_index = r["chunk_index"].as_i64().unwrap_or(0);
             let sdid = r["source_data_id"].as_str().unwrap_or("").to_string();
@@ -934,12 +838,17 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
             let (score, is_scope_path) = if is_in_scope {
                 (effective_rrf, true)
             } else {
-                // discovery path: source dedup + visited filter + 0.5 weight
-                let already_seen_source = !disc_sources.insert(dedup.clone());
-                if already_seen_source || visited_sources.contains(&dedup) { continue; }
+                // discovery path: 每个 source 每轮最多展示 2 个 chunk
+                let count = disc_sources.entry(dedup.clone()).or_insert(0);
+                *count += 1;
+                if *count > 2 {
+                    continue;
+                }
                 (effective_rrf * 0.3, false)
             };
-            if !h.is_empty() && !seen_hashes.insert(h.clone()) { continue; }
+            if !h.is_empty() && !seen_hashes.insert(h.clone()) {
+                continue;
+            }
             // ★ 时间过滤
             if let Some((ref start, ref end)) = time_range {
                 let created_at: String = database::get("SELECT created_at FROM knowledge_chunks WHERE id=?1",&[json!(cr)]).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
@@ -976,7 +885,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
         if !chunk_id.is_empty() {
             let short: String = chunk_id.chars().take(8).collect();
             if !meta.is_empty(){meta.push('\n');}
-            meta.push_str(&format!("ChunkID：{}\n📋 漫游：traverse(chunk_id=\"{}\", edge_type=\"Next\") | traverse(chunk_id=\"{}\", edge_type=\"Prev\")", short, short, short));
+            meta.push_str(&format!("ChunkID：{}", short));
         }
         if *is_scope_path {
             meta.push_str("\n📍 该段落属于当前工作区");
@@ -2240,6 +2149,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
     loop {
         eprintln!("[LLM检索] 预算: {}/{} cost={}", budget, 100i32, search_cost);
+        if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking"})); }
         // ★ 每轮注意力衰减
         let prev_count = session.active_objects.len();
         for o in &mut session.active_objects { o.score *= 0.5; }
@@ -2282,7 +2192,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         match tcs {
             None => {
                 let answer = if ac.is_empty() { "未能生成有效回答。" } else { ac };
-                if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
+                if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
                 if !ac.is_empty() { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } }
                 record_experience(&query, &session, &tool_log);
                 let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
@@ -2303,7 +2213,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
-                    if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
+                    if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
                     record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
@@ -2621,6 +2531,19 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     atc.push(ToolCall{id:id.clone(),call_type:"function".into(),function:FunctionCall{name:name.into(),arguments:args.clone()}});
                 }
                 messages.push(ChatMessage{role:MessageRole::Assistant,content:None,tool_calls:Some(atc.clone()),tool_call_id:None,name:None,reasoning_content:reasoning.clone()});
+                // ★ 向前端广播工具调用状态
+                if let Some(ref h) = app_handle {
+                    for tc in atc.iter() {
+                        let args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
+                        let target = match tc.function.name.as_str() {
+                            "ext_tool_search" => args.get("keywords").and_then(|k| k.as_array()).map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("、")),
+                            "ext_tool_object" => args.get("query").and_then(|q| q.as_str()).map(String::from),
+                            "ext_tool_traverse" => args.get("chunk_id").and_then(|c| c.as_str()).map(|c| format!("chunk {}", &c[..c.len().min(8)])),
+                            _ => None,
+                        };
+                        let _ = h.emit("agent:status", json!({"stage":"tool_start","tool":tc.function.name,"target":target.unwrap_or_default()}));
+                    }
+                }
                 // ═══ 并行工具调度：async 工具并行执行，sync 工具顺序执行 ═══
                 let mut round_tools = Vec::new();
                 let mut dedup_cache: std::collections::HashMap<(String,String),String> = std::collections::HashMap::new();
@@ -3001,7 +2924,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
-                    if let Some(ref h) = app_handle { let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
+                    if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
                     record_experience(&query, &session, &tool_log);
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
