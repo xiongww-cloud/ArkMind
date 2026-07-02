@@ -56,7 +56,7 @@ const emit = defineEmits<{
       <template v-else>
         <div class="flex-1 min-w-0">
           <div class="truncate font-medium">{{ s.name }}</div>
-          <div v-if="s.messages.length" class="text-[10px] mt-0.5 text-surface-400 truncate">{{ s.messages[s.messages.length-1].content?.slice(0,40) || '...' }}</div>
+          <div v-if="s.messages.length" class="text-[10px] mt-0.5 text-surface-400 truncate">{{ (() => { const m = [...s.messages].reverse().find(m => !m.isThinking); return m?.content?.slice(0,40) || '...' })() }}</div>
           <div v-if="s.updatedAt || s.createdAt" class="text-[9px] mt-0.5 text-surface-400">{{ formatSessionTime(s.updatedAt || s.createdAt) }}</div>
         </div>
         <!-- Rename button — matches NotesPage notebook edit style -->
