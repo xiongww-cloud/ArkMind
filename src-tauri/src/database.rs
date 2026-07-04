@@ -147,18 +147,18 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     seed_kb_fts(&conn);
 
     // ★ KB FTS5 内容同步触发器（确保 knowledge_chunks 变更实时同步到 kk_chunks_fts）
+    // 使用 DROP + CREATE 确保触发器定义始终最新（CREATE TRIGGER IF NOT EXISTS 不会更新已有触发器）
+    // 注意：不创建 DELETE 触发器，FTS5 清理在应用代码中处理（更可靠）
     conn.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks
+        "DROP TRIGGER IF EXISTS kk_chunks_fts_insert;
+         DROP TRIGGER IF EXISTS kk_chunks_fts_delete;
+         DROP TRIGGER IF EXISTS kk_chunks_fts_update;
+         CREATE TRIGGER kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks
          WHEN new.chunk_type = 'child'
          BEGIN
              INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content);
          END;
-         CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks
-         WHEN old.chunk_type = 'child'
-         BEGIN
-             INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES ('delete', old.rowid);
-         END;
-         CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks
+         CREATE TRIGGER kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks
          WHEN old.chunk_type = 'child' OR new.chunk_type = 'child'
          BEGIN
              DELETE FROM kk_chunks_fts WHERE rowid = old.rowid;
@@ -167,7 +167,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
                WHERE new.chunk_type = 'child';
          END;"
     )?;
-    eprintln!("[数据库] kk_chunks_fts 触发器已创建");
+    eprintln!("[数据库] kk_chunks_fts 触发器已创建（INSERT + UPDATE）");
     // ★ 回填已有数据到 kk_chunks_fts（触发器不覆盖已有行）
     let seeded: i64 = conn.query_row(
         "SELECT COUNT(*) FROM kk_chunks_fts", [], |r| r.get(0)
@@ -373,7 +373,39 @@ fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS channel_contacts (id TEXT PRIMARY KEY, channel_id TEXT, name TEXT, phone TEXT, email TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS vendor_partners (id TEXT PRIMARY KEY, project_id TEXT, name TEXT, phone TEXT, company TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS vendor_contacts (id TEXT PRIMARY KEY, vendor_id TEXT, name TEXT, phone TEXT, email TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
-        -- ★ Project ↔ Channel/Vendor mapping (many-to-many)
+        CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT DEFAULT '', contact_person TEXT DEFAULT '', contact_phone TEXT DEFAULT '', remark TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime')));
+        CREATE TABLE IF NOT EXISTS customer_contacts (id TEXT PRIMARY KEY, customer_id TEXT, name TEXT, phone TEXT, email TEXT, position TEXT, remark TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')));
+        -- ★ 统一合作伙伴表（渠道/厂商/客户）
+        CREATE TABLE IF NOT EXISTS partners (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,  -- 'CHANNEL', 'VENDOR', 'CUSTOMER'
+            name TEXT NOT NULL,
+            phone TEXT DEFAULT '',
+            company TEXT DEFAULT '',
+            remark TEXT DEFAULT '',
+            contact_person TEXT DEFAULT '',  -- 客户专用
+            contact_phone TEXT DEFAULT '',   -- 客户专用
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+        -- ★ 统一联系人表（独立，不依赖 partner_id）
+        CREATE TABLE IF NOT EXISTS partner_contacts (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            phone TEXT DEFAULT '',
+            email TEXT DEFAULT '',
+            position TEXT DEFAULT '',
+            remark TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+        -- ★ Partner ↔ Contact 映射（多对多，替代 partner_contacts.partner_id）
+        CREATE TABLE IF NOT EXISTS partner_contact_mapping (
+            partner_id TEXT NOT NULL,
+            contact_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (partner_id, contact_id)
+        );
+        -- ★ Project ↔ Channel/Vendor mapping (many-to-many) - 旧表保留兼容
         CREATE TABLE IF NOT EXISTS project_channel_mapping (
             project_id TEXT NOT NULL, channel_id TEXT NOT NULL,
             selected_contact_id TEXT DEFAULT NULL,
@@ -385,6 +417,11 @@ fn create_schema(conn: &Connection) -> SqliteResult<()> {
             selected_contact_id TEXT DEFAULT NULL,
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             PRIMARY KEY (project_id, vendor_id)
+        );
+        CREATE TABLE IF NOT EXISTS project_customer_mapping (
+            project_id TEXT NOT NULL, customer_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (project_id, customer_id)
         );
         -- ★ Project ↔ Product mapping
         CREATE TABLE IF NOT EXISTS project_product_mapping (
@@ -963,9 +1000,7 @@ fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         "ALTER TABLE todo_project_mapping ADD COLUMN created_at TEXT DEFAULT (datetime('now', 'localtime'))",
         // contact remark columns (used by ProjectDetail 渠道/厂商 联系人)
         "ALTER TABLE channel_partners ADD COLUMN remark TEXT DEFAULT ''",
-        "ALTER TABLE channel_contacts ADD COLUMN remark TEXT DEFAULT ''",
         "ALTER TABLE vendor_partners ADD COLUMN remark TEXT DEFAULT ''",
-        "ALTER TABLE vendor_contacts ADD COLUMN remark TEXT DEFAULT ''",
         // 移除废弃的 products.category 列（存量数据库升级）
         "ALTER TABLE products DROP COLUMN category",
         // cleanup_queue snapshot columns
@@ -982,9 +1017,21 @@ fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
         "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id)",
         "ALTER TABLE chat_messages ADD COLUMN metadata TEXT DEFAULT NULL",
+        // push_pipeline debounce
+        "ALTER TABLE knowledge_push_queue ADD COLUMN debounce_until TEXT DEFAULT NULL",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
+    }
+
+    // ★ 重命名 partners 表的 company 列为 address
+    let has_company_col: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('partners') WHERE name='company'",
+        [], |r| r.get::<_,i64>(0),
+    ).unwrap_or(0) > 0;
+    if has_company_col {
+        conn.execute_batch("ALTER TABLE partners RENAME COLUMN company TO address").ok();
+        println!("[数据库] partners.company → address 迁移完成");
     }
 
     // ★ 迁移渠道/厂商数据到映射表（从 direct project_id 到 many-to-many mapping）
@@ -999,6 +1046,88 @@ fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("
         ALTER TABLE project_channel_mapping ADD COLUMN selected_contact_id TEXT DEFAULT NULL;
         ALTER TABLE project_vendor_mapping ADD COLUMN selected_contact_id TEXT DEFAULT NULL;
+    ");
+
+    // ★ 回填 project_customer_mapping → business_relations
+    let _ = conn.execute_batch(
+        "INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+         SELECT hex(randomblob(16)), 'CUSTOMER', pcm.customer_id, 'PROJECT', pcm.project_id, 'belongs_to', '{}', datetime('now','localtime'), datetime('now','localtime')
+         FROM project_customer_mapping pcm
+         WHERE pcm.customer_id IS NOT NULL AND pcm.customer_id != ''
+           AND pcm.project_id IS NOT NULL AND pcm.project_id != ''
+           AND NOT EXISTS (
+               SELECT 1 FROM business_relations br
+               WHERE br.source_type='CUSTOMER' AND br.source_id=pcm.customer_id
+               AND br.target_type='PROJECT' AND br.target_id=pcm.project_id
+           )"
+    );
+
+    // ★ 迁移旧表数据到统一合作伙伴表
+    let _ = conn.execute_batch("
+        -- 迁移渠道
+        INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, created_at)
+        SELECT id, 'CHANNEL', name, phone, company, remark, created_at FROM channel_partners;
+        -- 迁移厂商
+        INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, created_at)
+        SELECT id, 'VENDOR', name, phone, company, remark, created_at FROM vendor_partners;
+        -- 迁移客户
+        INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, contact_person, contact_phone, created_at, updated_at)
+        SELECT id, 'CUSTOMER', name, '', '', remark, contact_person, contact_phone, created_at, updated_at FROM customers;
+    ");
+
+    // ★ 删除旧表（不再需要）
+    let _ = conn.execute_batch("DROP TABLE IF EXISTS channel_contacts;");
+    let _ = conn.execute_batch("DROP TABLE IF EXISTS vendor_contacts;");
+    let _ = conn.execute_batch("DROP TABLE IF EXISTS customer_contacts;");
+
+    // ★ 迁移项目-合作伙伴映射到 business_relations（metadata 包含 selected_contact_id 和 remark）
+    let _ = conn.execute_batch("
+        -- 迁移渠道映射
+        INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+        SELECT hex(randomblob(16)), 'CHANNEL', channel_id, 'PROJECT', project_id, 'belongs_to',
+               json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
+               created_at, datetime('now','localtime')
+        FROM project_channel_mapping
+        WHERE channel_id IS NOT NULL AND project_id IS NOT NULL;
+        -- 迁移厂商映射
+        INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+        SELECT hex(randomblob(16)), 'VENDOR', vendor_id, 'PROJECT', project_id, 'belongs_to',
+               json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
+               created_at, datetime('now','localtime')
+        FROM project_vendor_mapping
+        WHERE vendor_id IS NOT NULL AND project_id IS NOT NULL;
+        -- 迁移客户映射
+        INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+        SELECT hex(randomblob(16)), 'CUSTOMER', customer_id, 'PROJECT', project_id, 'belongs_to',
+               json_object('remark', ''),
+               created_at, datetime('now','localtime')
+        FROM project_customer_mapping
+        WHERE customer_id IS NOT NULL AND project_id IS NOT NULL;
+    ");
+
+    // ★ 处理 partner_contacts 表 schema 变更（移除 partner_id 列）
+    let has_partner_id: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('partner_contacts') WHERE name='partner_id'",
+        [], |r| r.get::<_,i64>(0),
+    ).unwrap_or(0) > 0;
+    if has_partner_id {
+        // 旧表有 partner_id 列，需要迁移数据并重建表
+        let _ = conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS partner_contacts_backup AS SELECT id, name, phone, email, position, remark, created_at FROM partner_contacts;
+            DROP TABLE IF EXISTS partner_contacts;
+            ALTER TABLE partner_contacts_backup RENAME TO partner_contacts;
+        ");
+        println!("[数据库] partner_contacts 表已重建（移除 partner_id 列）");
+    }
+
+    // 确保 partner_contact_mapping 表存在
+    let _ = conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS partner_contact_mapping (
+            partner_id TEXT NOT NULL,
+            contact_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (partner_id, contact_id)
+        );
     ");
 
     // ★ 迁移 library_file_locations.object_id → file_id
@@ -1097,7 +1226,9 @@ fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
              CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks
              WHEN old.chunk_type = 'child'
              BEGIN
-                 INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES ('delete', old.rowid);
+                 INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid)
+                 SELECT 'delete', old.rowid
+                 WHERE EXISTS (SELECT 1 FROM kk_chunks_fts WHERE rowid = old.rowid);
              END;
              CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks
              WHEN old.chunk_type = 'child' OR new.chunk_type = 'child'

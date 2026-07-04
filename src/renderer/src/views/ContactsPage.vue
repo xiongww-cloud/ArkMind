@@ -37,7 +37,7 @@ const filteredEntities = computed(() => {
   const q = searchQuery.value.toLowerCase()
   return currentList.value.filter((e: any) =>
     (e.name || '').toLowerCase().includes(q) ||
-    (e.company || '').toLowerCase().includes(q) ||
+    (e.address || '').toLowerCase().includes(q) ||
     (e.phone || '').toLowerCase().includes(q) ||
     (e.contact_person || '').toLowerCase().includes(q)
   )
@@ -154,10 +154,10 @@ async function deleteContact(ct: any) {
 
 // ─── Create entity ───
 const showCreateModal = ref(false)
-const newEntity = ref({ name: '', phone: '', company: '', remark: '', contact_person: '', contact_phone: '' })
+const newEntity = ref({ name: '', phone: '', address: '', remark: '', contact_person: '', contact_phone: '' })
 
 function openCreate() {
-  newEntity.value = { name: '', phone: '', company: '', remark: '', contact_person: '', contact_phone: '' }
+  newEntity.value = { name: '', phone: '', address: '', remark: '', contact_person: '', contact_phone: '' }
   showCreateModal.value = true
 }
 
@@ -229,7 +229,7 @@ onMounted(loadAll)
             </div>
             <div class="flex-1 min-w-0">
               <p class="text-[11px] font-medium text-surface-800 truncate">{{ entity.name || '未命名' }}</p>
-              <p class="text-[10px] text-surface-400 truncate">{{ entity.company || entity.contact_person || entity.phone || '' }}</p>
+              <p class="text-[10px] text-surface-400 truncate">{{ entity.address || entity.contact_person || entity.phone || '' }}</p>
             </div>
             <span v-if="entity.contacts?.length" class="text-[9px] text-surface-400 bg-surface-100 px-1.5 py-0.5 rounded-full shrink-0">{{ entity.contacts.length }}</span>
           </div>
@@ -274,57 +274,37 @@ onMounted(loadAll)
               <div class="flex items-center gap-2 text-[11px]">
                 <span class="text-surface-400 w-12 shrink-0">名称</span>
                 <template v-if="isEditing(selectedEntity.id, 'name')">
-                  <input v-model="editValue" class="input-field !h-5 !text-xs w-48" @keyup.enter="saveEntityField(selectedEntity, 'name')" @blur="saveEntityField(selectedEntity, 'name')" @keyup.escape="cancelEdit" />
+                  <input v-model="editValue" class="input-field !h-5 !text-xs w-48" @keyup.enter="saveEntityField(selectedEntity, 'name')" @keyup.escape="cancelEdit" />
                 </template>
                 <template v-else>
                   <span class="text-surface-700 font-medium">{{ selectedEntity.name }}</span>
                   <button @click="startEdit(selectedEntity.id, 'name', selectedEntity.name)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors"><AppIcon name="edit" class="w-2.5 h-2.5" /></button>
                 </template>
               </div>
-              <div v-if="activeTab !== 'customers'" class="flex items-center gap-2 text-[11px]">
+              <div class="flex items-center gap-2 text-[11px]">
                 <span class="text-surface-400 w-12 shrink-0">电话</span>
                 <template v-if="isEditing(selectedEntity.id, 'phone')">
-                  <input v-model="editValue" class="input-field !h-5 !text-xs w-40" @keyup.enter="saveEntityField(selectedEntity, 'phone')" @blur="saveEntityField(selectedEntity, 'phone')" @keyup.escape="cancelEdit" />
+                  <input v-model="editValue" class="input-field !h-5 !text-xs w-40" @keyup.enter="saveEntityField(selectedEntity, 'phone')" @keyup.escape="cancelEdit" />
                 </template>
                 <template v-else>
                   <span class="text-surface-700">{{ selectedEntity.phone || '—' }}</span>
                   <button @click="startEdit(selectedEntity.id, 'phone', selectedEntity.phone)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors"><AppIcon name="edit" class="w-2.5 h-2.5" /></button>
                 </template>
               </div>
-              <div v-if="activeTab !== 'customers'" class="flex items-center gap-2 text-[11px]">
+              <div class="flex items-center gap-2 text-[11px]">
                 <span class="text-surface-400 w-12 shrink-0">地址</span>
-                <template v-if="isEditing(selectedEntity.id, 'company')">
-                  <input v-model="editValue" class="input-field !h-5 !text-xs w-40" @keyup.enter="saveEntityField(selectedEntity, 'company')" @blur="saveEntityField(selectedEntity, 'company')" @keyup.escape="cancelEdit" />
+                <template v-if="isEditing(selectedEntity.id, 'address')">
+                  <input v-model="editValue" class="input-field !h-5 !text-xs w-40" @keyup.enter="saveEntityField(selectedEntity, 'address')" @keyup.escape="cancelEdit" />
                 </template>
                 <template v-else>
-                  <span class="text-surface-700">{{ selectedEntity.company || '—' }}</span>
-                  <button @click="startEdit(selectedEntity.id, 'company', selectedEntity.company)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors"><AppIcon name="edit" class="w-2.5 h-2.5" /></button>
-                </template>
-              </div>
-              <div v-if="activeTab === 'customers'" class="flex items-center gap-2 text-[11px]">
-                <span class="text-surface-400 w-12 shrink-0">联系人</span>
-                <template v-if="isEditing(selectedEntity.id, 'contact_person')">
-                  <input v-model="editValue" class="input-field !h-5 !text-xs w-40" @keyup.enter="saveEntityField(selectedEntity, 'contact_person')" @blur="saveEntityField(selectedEntity, 'contact_person')" @keyup.escape="cancelEdit" />
-                </template>
-                <template v-else>
-                  <span class="text-surface-700">{{ selectedEntity.contact_person || '—' }}</span>
-                  <button @click="startEdit(selectedEntity.id, 'contact_person', selectedEntity.contact_person)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors"><AppIcon name="edit" class="w-2.5 h-2.5" /></button>
-                </template>
-              </div>
-              <div v-if="activeTab === 'customers'" class="flex items-center gap-2 text-[11px]">
-                <span class="text-surface-400 w-12 shrink-0">电话</span>
-                <template v-if="isEditing(selectedEntity.id, 'contact_phone')">
-                  <input v-model="editValue" class="input-field !h-5 !text-xs w-40" @keyup.enter="saveEntityField(selectedEntity, 'contact_phone')" @blur="saveEntityField(selectedEntity, 'contact_phone')" @keyup.escape="cancelEdit" />
-                </template>
-                <template v-else>
-                  <span class="text-surface-700">{{ selectedEntity.contact_phone || '—' }}</span>
-                  <button @click="startEdit(selectedEntity.id, 'contact_phone', selectedEntity.contact_phone)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors"><AppIcon name="edit" class="w-2.5 h-2.5" /></button>
+                  <span class="text-surface-700">{{ selectedEntity.address || '—' }}</span>
+                  <button @click="startEdit(selectedEntity.id, 'address', selectedEntity.address)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors"><AppIcon name="edit" class="w-2.5 h-2.5" /></button>
                 </template>
               </div>
               <div class="flex items-center gap-2 text-[11px]">
                 <span class="text-surface-400 w-12 shrink-0">备注</span>
                 <template v-if="isEditing(selectedEntity.id, 'remark')">
-                  <input v-model="editValue" class="input-field !h-5 !text-xs flex-1" @keyup.enter="saveEntityField(selectedEntity, 'remark')" @blur="saveEntityField(selectedEntity, 'remark')" @keyup.escape="cancelEdit" />
+                  <input v-model="editValue" class="input-field !h-5 !text-xs flex-1" @keyup.enter="saveEntityField(selectedEntity, 'remark')" @keyup.escape="cancelEdit" />
                 </template>
                 <template v-else>
                   <span class="text-surface-700">{{ selectedEntity.remark || '—' }}</span>
@@ -391,7 +371,7 @@ onMounted(loadAll)
               </div>
               <div>
                 <label class="text-[11px] text-surface-500 mb-1 block">地址</label>
-                <input v-model="newEntity.company" class="input-field !h-7 !text-[12px]" placeholder="公司地址" />
+                <input v-model="newEntity.address" class="input-field !h-7 !text-[12px]" placeholder="公司地址" />
               </div>
             </div>
             <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">

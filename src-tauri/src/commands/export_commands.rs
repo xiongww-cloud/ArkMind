@@ -22,12 +22,19 @@ pub async fn export_data(domains: Vec<String>, save_path: String) -> Result<Valu
                 let channel_contacts = crate::database::all("SELECT * FROM channel_contacts", &[]).unwrap_or_default();
                 let vendors = crate::database::all("SELECT * FROM vendor_partners", &[]).unwrap_or_default();
                 let vendor_contacts = crate::database::all("SELECT * FROM vendor_contacts", &[]).unwrap_or_default();
+                let customers = crate::database::all("SELECT * FROM customers", &[]).unwrap_or_default();
+                let customer_contacts = crate::database::all("SELECT * FROM customer_contacts", &[]).unwrap_or_default();
+                let channel_mappings = crate::database::all("SELECT * FROM project_channel_mapping", &[]).unwrap_or_default();
+                let vendor_mappings = crate::database::all("SELECT * FROM project_vendor_mapping", &[]).unwrap_or_default();
+                let customer_mappings = crate::database::all("SELECT * FROM project_customer_mapping", &[]).unwrap_or_default();
                 domain_data = json!({
                     "projects": projects, "solutions": solutions,
                     "solution_versions": solution_versions, "solution_items": solution_items,
                     "project_dynamics": dynamics, "channel_partners": channels,
                     "channel_contacts": channel_contacts, "vendor_partners": vendors,
-                    "vendor_contacts": vendor_contacts,
+                    "vendor_contacts": vendor_contacts, "customers": customers,
+                    "customer_contacts": customer_contacts, "project_channel_mapping": channel_mappings,
+                    "project_vendor_mapping": vendor_mappings, "project_customer_mapping": customer_mappings,
                 });
             }
             "products" => {
@@ -264,6 +271,23 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
     }
     if let Some(vcs) = data["vendor_contacts"].as_array() {
         for v in vcs { database::run("INSERT OR REPLACE INTO vendor_contacts(id,vendor_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(v["id"]),json!(v["vendor_id"]),json!(v["name"]),json!(v["phone"]),json!(v["email"]),json!(v["remark"]),json!(v["created_at"])]).ok(); }
+    }
+    // 客户
+    if let Some(custs) = data["customers"].as_array() {
+        for c in custs { database::run("INSERT OR REPLACE INTO customers(id,name,contact_person,contact_phone,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(c["id"]),json!(c["name"]),json!(c["contact_person"]),json!(c["contact_phone"]),json!(c["remark"]),json!(c["created_at"]),json!(c["updated_at"])]).ok(); }
+    }
+    if let Some(cts) = data["customer_contacts"].as_array() {
+        for c in cts { database::run("INSERT OR REPLACE INTO customer_contacts(id,customer_id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", &[json!(c["id"]),json!(c["customer_id"]),json!(c["name"]),json!(c["phone"]),json!(c["email"]),json!(c["position"]),json!(c["remark"]),json!(c["created_at"])]).ok(); }
+    }
+    // 映射表
+    if let Some(maps) = data["project_channel_mapping"].as_array() {
+        for m in maps { database::run("INSERT OR IGNORE INTO project_channel_mapping(project_id,channel_id,selected_contact_id,created_at) VALUES(?1,?2,?3,?4)", &[json!(m["project_id"]),json!(m["channel_id"]),json!(m["selected_contact_id"]),json!(m["created_at"])]).ok(); }
+    }
+    if let Some(maps) = data["project_vendor_mapping"].as_array() {
+        for m in maps { database::run("INSERT OR IGNORE INTO project_vendor_mapping(project_id,vendor_id,selected_contact_id,created_at) VALUES(?1,?2,?3,?4)", &[json!(m["project_id"]),json!(m["vendor_id"]),json!(m["selected_contact_id"]),json!(m["created_at"])]).ok(); }
+    }
+    if let Some(maps) = data["project_customer_mapping"].as_array() {
+        for m in maps { database::run("INSERT OR IGNORE INTO project_customer_mapping(project_id,customer_id,created_at) VALUES(?1,?2,?3)", &[json!(m["project_id"]),json!(m["customer_id"]),json!(m["created_at"])]).ok(); }
     }
     Ok(())
 }

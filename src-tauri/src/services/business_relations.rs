@@ -13,7 +13,8 @@ pub fn init() {
             relation_type TEXT NOT NULL,
             metadata TEXT DEFAULT '{}',
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            UNIQUE(source_type, source_id, target_type, target_id, relation_type)
         )", &[]
     );
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_br_source ON business_relations(source_type, source_id)", &[]);
@@ -179,7 +180,10 @@ pub fn upsert(
         &[json!(metadata), json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type)],
     );
     if let Ok(c) = changes {
-        if c.changes > 0 { return; }
+        if c.changes > 0 {
+            eprintln!("[business_relations] 更新: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
+            return;
+        }
     }
     // Insert new
     let id = uuid::Uuid::new_v4().to_string();
@@ -187,6 +191,7 @@ pub fn upsert(
         "INSERT INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,datetime('now','localtime'),datetime('now','localtime'))",
         &[json!(id), json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type), json!(metadata)],
     );
+    eprintln!("[business_relations] 新增: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
 }
 
 /// Delete a specific business relation
@@ -199,6 +204,7 @@ pub fn delete(
         "DELETE FROM business_relations WHERE source_type=? AND source_id=? AND target_type=? AND target_id=? AND relation_type=?",
         &[json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type)],
     );
+    eprintln!("[business_relations] 删除: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
 }
 
 /// Delete all relations where an entity is the source
@@ -207,6 +213,7 @@ pub fn delete_by_source(source_type: &str, source_id: &str) {
         "DELETE FROM business_relations WHERE source_type=? AND source_id=?",
         &[json!(source_type), json!(source_id)],
     );
+    eprintln!("[business_relations] 删除所有源关联: {}[{}]", source_type, source_id);
 }
 
 /// Delete all relations where an entity is the target
@@ -265,9 +272,9 @@ fn resolve_entity_name(entity_type: &str, entity_id: &str) -> String {
         "NOTE" => Some("SELECT title FROM notes WHERE note_id=?"),
         "TODO" => Some("SELECT title FROM todos WHERE id=?"),
         "FILE" => Some("SELECT custom_name FROM file_relations WHERE file_id=?1 ORDER BY id LIMIT 1"),
-        "CHANNEL" => Some("SELECT name FROM channel_partners WHERE id=?"),
-        "VENDOR" => Some("SELECT name FROM vendor_partners WHERE id=?"),
-        "CUSTOMER" => Some("SELECT name FROM customers WHERE id=?"),
+        "CHANNEL" => Some("SELECT name FROM partners WHERE id=? AND type='CHANNEL'"),
+        "VENDOR" => Some("SELECT name FROM partners WHERE id=? AND type='VENDOR'"),
+        "CUSTOMER" => Some("SELECT name FROM partners WHERE id=? AND type='CUSTOMER'"),
         _ => None,
     };
     if let Some(s) = sql {

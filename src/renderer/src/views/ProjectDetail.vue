@@ -10,7 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { formatDateTime } from '@/utils/time'
-import { deleteProjectBackend, fetchChannels, createChannel, updateChannel, deleteChannel, createChannelContact, updateChannelContact, deleteChannelContact, channelLinkProject, channelUnlinkProject, fetchVendors, createVendor, updateVendor, deleteVendor, createVendorContact, updateVendorContact, deleteVendorContact, vendorLinkProject, vendorUnlinkProject, fetchProjectNotes, createNote, updateNote, deleteNote, fetchTodos, createTodo, updateTodo, toggleTodo, deleteTodo, fetchProjects, fetchFiles, previewFile, updateFileMeta, fetchFileTree, contactsListChannels, contactsListVendors } from '@/api/db-client'
+import { deleteProjectBackend, fetchPartners, createPartner, updatePartner, deletePartner, createPartnerContact, updatePartnerContact, deletePartnerContact, partnerLinkProject, partnerUnlinkProject, partnerUpdateRemark, contactLinkProject, contactUnlinkProject, fetchChannels, createChannel, updateChannel, deleteChannel, createChannelContact, updateChannelContact, deleteChannelContact, channelLinkProject, channelUnlinkProject, fetchVendors, createVendor, updateVendor, deleteVendor, createVendorContact, updateVendorContact, deleteVendorContact, vendorLinkProject, vendorUnlinkProject, fetchProjectNotes, createNote, updateNote, deleteNote, fetchTodos, createTodo, updateTodo, toggleTodo, deleteTodo, fetchProjects, fetchFiles, previewFile, updateFileMeta, fetchFileTree, contactsListAll, contactsListChannels, contactsListVendors } from '@/api/db-client'
 import Timeline from '@/components/project/Timeline.vue'
 import FileManager from '@/components/project/FileManager.vue'
 import SolutionConfigurator from '@/components/project/SolutionConfigurator.vue'
@@ -270,6 +270,7 @@ const showChannelSelectModal = ref(false)
 const allChannels = ref<any[]>([])
 const selectedChannelId = ref('')
 const selectedChannelContactId = ref('')
+const channelRemark = ref('')  // 项目级备注
 
 const selectedChannel = computed(() => {
   return allChannels.value.find(c => c.id === selectedChannelId.value) || null
@@ -285,18 +286,20 @@ async function confirmChannelSelect() {
   const channel = selectedChannel.value
   const channelName = channel.name
   const selectedContactId = selectedChannelContactId.value || null
+  const remark = channelRemark.value || null
   
   // 关闭弹窗
   showChannelSelectModal.value = false
   selectedChannelId.value = ''
   selectedChannelContactId.value = ''
+  channelRemark.value = ''
   
   try {
-    // 关联已有渠道到项目，传入选中的联系人 ID
-    await channelLinkProject(channel.id, projectId.value, selectedContactId)
+    // 关联已有渠道到项目，传入选中的联系人 ID 和备注
+    await partnerLinkProject(channel.id, projectId.value, selectedContactId, remark)
     
     // 重新加载渠道列表
-    channels.value = await fetchChannels(projectId.value) || []
+    channels.value = await fetchPartners(projectId.value, 'CHANNEL') || []
     
     await projectStore.addProjectDynamic(projectId.value, `添加了渠道「${channelName}」`)
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
@@ -312,7 +315,7 @@ function toggleChannel(channelId) {
 }
 
 async function loadChannels() {
-  try { channels.value = await fetchChannels(projectId.value) } catch { channels.value = [] }
+  try { channels.value = await fetchPartners(projectId.value, 'CHANNEL') } catch { channels.value = [] }
 }
 
 // ── channel name inline edit ──
@@ -326,7 +329,7 @@ async function cancelEditChannelName() {
   channelEditNameId.value = ''
   if (ch && !ch.name) {
     try {
-      await deleteChannel(chId)
+      await deletePartner(chId)
       channels.value = channels.value.filter(c => c.id !== chId)
     } catch (e) { console.warn('取消添加渠道', e) }
   }
@@ -340,14 +343,14 @@ async function saveChannelName(channelId) {
   channelEditNameId.value = ''
   if (!n && ch && !ch.name) {
     try {
-      await deleteChannel(channelId)
+      await deletePartner(channelId)
       channels.value = channels.value.filter(c => c.id !== channelId)
     } catch (e) { console.warn('取消添加渠道', e) }
     return
   }
   try {
     const oldName = ch?.name || '未命名'
-    await updateChannel({ id: channelId, name: n || '' })
+    await updatePartner({ id: channelId, name: n || '' })
     if (ch) ch.name = n
     await projectStore.addProjectDynamic(projectId.value, `渠道「${oldName}」更名为「${n || '未命名'}」`)
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
@@ -357,17 +360,17 @@ async function saveChannelName(channelId) {
 // ── channel remark inline edit ──
 function startEditChannelRemark(ch) {
   channelEditRemarkId.value = ch.id
-  channelEditRemark.value = ch.remark || ''
+  channelEditRemark.value = ch.project_remark || ch.remark || ''
 }
 function cancelEditChannelRemark() { channelEditRemarkId.value = '' }
 async function saveChannelRemark(channelId) {
   const r = channelEditRemark.value.trim()
   const ch = channels.value.find(c => c.id === channelId)
-  if (ch && r === (ch.remark || '')) { channelEditRemarkId.value = ''; return }
+  if (ch && r === (ch.project_remark || ch.remark || '')) { channelEditRemarkId.value = ''; return }
   channelEditRemarkId.value = ''
   try {
-    await updateChannel({ id: channelId, remark: r || '' })
-    if (ch) ch.remark = r
+    await partnerUpdateRemark(channelId, projectId.value, r || null)
+    if (ch) ch.project_remark = r
   } catch (e) { console.warn('更新渠道备注失败', e) }
 }
 
@@ -375,12 +378,12 @@ async function addChannel() {
   // 打开渠道选择弹窗
   showChannelSelectModal.value = true
   try {
-    allChannels.value = await contactsListChannels() || []
+    allChannels.value = await contactsListAll('CHANNEL') || []
   } catch (e) { console.warn('加载渠道列表失败', e) }
 }
 async function removeChannel(channelId) {
   try {
-    await channelUnlinkProject(channelId, projectId.value)
+    await partnerUnlinkProject(channelId, projectId.value)
     channels.value = channels.value.filter(c => c.id !== channelId)
     await projectStore.addProjectDynamic(projectId.value, '移除了一个渠道')
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
@@ -394,10 +397,13 @@ async function removeChannel(channelId) {
 // ─── 渠道联系人（每字段独立编辑） ──────────────────────────────────────────
 const editingContactNameOf = ref('')    // contact id whose name is being edited
 const editingContactPhoneOf = ref('')   // contact id whose phone is being edited
-const editingContactRemarkOf = ref('')  // contact id whose remark is being edited, or 'new-{channelId}' for new contact
+const editingContactEmailOf = ref('')   // contact id whose email is being edited
+const editingContactPositionOf = ref('') // contact id whose position is being edited
+const addingContactToChannelId = ref('') // channel id for new contact form
 const contactEditName = ref('')
 const contactEditPhone = ref('')
-const contactEditRemark = ref('')
+const contactEditEmail = ref('')
+const contactEditPosition = ref('')
 
 async function startAddContact(channelId) {
   // 打开联系人选择弹窗
@@ -429,16 +435,16 @@ async function confirmContactSelect() {
   selectedContactId.value = ''
   
   try {
-    const ct = await createChannelContact({
-      channelId,
-      name: contact.name || '',
-      phone: contact.phone || '',
-      remark: contact.remark || ''
-    })
+    // 关联已有联系人到项目
+    await contactLinkProject(contact.id, projectId.value)
+    
+    // 在 UI 中显示联系人（关联到渠道）
     const ch = channels.value.find(c => c.id === channelId)
     if (ch) {
       if (!Array.isArray(ch.contacts)) ch.contacts = []
-      ch.contacts.push({ id: ct.id, name: ct.name, phone: ct.phone, remark: ct.remark })
+      if (!ch.contacts.find(c => c.id === contact.id)) {
+        ch.contacts.push({ id: contact.id, name: contact.name, phone: contact.phone, email: contact.email, position: contact.position })
+      }
     }
     await projectStore.addProjectDynamic(projectId.value, `添加了联系人「${contact.name}」`)
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
@@ -461,7 +467,7 @@ async function saveContactName(channelId, contactId) {
   editingContactNameOf.value = ''
   if (!n) return
   try {
-    await updateChannelContact({ id: contactId, name: n })
+    await updatePartnerContact({ id: contactId, name: n })
     const ch = channels.value.find(c => c.id === channelId)
     const ct = ch?.contacts?.find(c => c.id === contactId)
     const oldName = ct?.name || ''
@@ -481,7 +487,7 @@ async function saveContactPhone(channelId, contactId) {
   const p = contactEditPhone.value.trim()
   editingContactPhoneOf.value = ''
   try {
-    await updateChannelContact({ id: contactId, phone: p || '' })
+    await updatePartnerContact({ id: contactId, phone: p || '' })
     const ch = channels.value.find(c => c.id === channelId)
     const ct = ch?.contacts?.find(c => c.id === contactId)
     const op = ct?.phone || ''
@@ -491,62 +497,44 @@ async function saveContactPhone(channelId, contactId) {
   } catch (e) { console.warn('更新联系人电话失败', e) }
 }
 
-// ── contact remark inline edit ──
-function startEditContactRemark(ct) {
-  editingContactRemarkOf.value = ct.id
-  contactEditRemark.value = ct.remark || ''
-}
-function cancelEditContactRemark() { editingContactRemarkOf.value = '' }
-
-async function saveContactRemark(channelId, contactId) {
-  if (editingContactRemarkOf.value !== contactId) return
-  const r = contactEditRemark.value.trim()
-  editingContactRemarkOf.value = ''
-  try {
-    await updateChannelContact({ id: contactId, remark: r || '' })
-    const ch = channels.value.find(c => c.id === channelId)
-    const ct = ch?.contacts?.find(c => c.id === contactId)
-    const note = ct?.remark || ''
-    if (ct) ct.remark = r
-    const cname = ct?.name || '未命名'
-    await projectStore.addProjectDynamic(projectId.value, `渠道联系人「${cname}」备注从「${note}」改为「${r}」`)
-  } catch (e) { console.warn('更新联系人备注失败', e) }
-}
-
 function onNewContactFocusOut(event, channelId) {
   const container = event.currentTarget
   if (container.contains(event.relatedTarget)) return
   saveNewContact(channelId)
 }
 
-// ── new contact: save all 3 fields from the add form ──
+// ── new contact: save all fields from the add form ──
 async function saveNewContact(channelId) {
-  if (!editingContactRemarkOf.value || editingContactRemarkOf.value !== 'new-' + channelId) return
+  if (!addingContactToChannelId.value || addingContactToChannelId.value !== 'new-' + channelId) return
   const n = contactEditName.value.trim()
   const p = contactEditPhone.value.trim()
-  const r = contactEditRemark.value.trim()
-  editingContactRemarkOf.value = ''
-  if (!n && !p && !r) return
+  const e = contactEditEmail.value.trim()
+  const pos = contactEditPosition.value.trim()
+  addingContactToChannelId.value = ''
+  if (!n && !p && !e && !pos) return
   try {
-    const ct = await createChannelContact({ channelId, name: n, phone: p || '', remark: r || '' })
+    const ct = await createChannelContact({ channelId, name: n, phone: p || '', email: e || '', position: pos || '' })
     const ch = channels.value.find(c => c.id === channelId)
     if (ch) {
       if (!Array.isArray(ch.contacts)) ch.contacts = []
-      ch.contacts.push({ id: ct.id, name: ct.name || n, phone: ct.phone || p, remark: ct.remark || r })
+      ch.contacts.push({ id: ct.id, name: ct.name || n, phone: ct.phone || p, email: ct.email || e, position: ct.position || pos })
     }
+    // 关联联系人到项目
+    await contactLinkProject(ct.id, projectId.value)
     await projectStore.addProjectDynamic(projectId.value, `添加了联系人「${n}」`)
   } catch (e) { console.warn('添加联系人失败', e) }
 }
 
 async function removeContact(channelId, contactId) {
-  const ok = await dangerConfirm({ title: '删除联系人', message: '确定删除此联系人？', confirmText: '删除' })
-  if (!ok) return
   try {
-    await deleteChannelContact(contactId)
+    // 从项目中取消关联联系人
+    await contactUnlinkProject(contactId, projectId.value)
+    // 在 UI 中移除
     const ch = channels.value.find(c => c.id === channelId)
     if (ch?.contacts) { ch.contacts = ch.contacts.filter(c => c.id !== contactId) }
-    await projectStore.addProjectDynamic(projectId.value, '删除了一个联系人')
-  } catch (e) { console.warn('删除联系人失败', e) }
+    await projectStore.addProjectDynamic(projectId.value, '移除了一个联系人')
+    toast({ message: '已移除联系人', type: 'success' })
+  } catch (e) { console.warn('移除联系人失败', e) }
 }
 
 // ─── 厂商管理 ──────────────────────────────────────────────────────────
@@ -562,6 +550,7 @@ const showVendorSelectModal = ref(false)
 const allVendors = ref<any[]>([])
 const selectedVendorId = ref('')
 const selectedVendorContactId = ref('')
+const vendorRemark = ref('')  // 项目级备注
 
 const selectedVendor = computed(() => {
   return allVendors.value.find(v => v.id === selectedVendorId.value) || null
@@ -577,18 +566,20 @@ async function confirmVendorSelect() {
   const vendor = selectedVendor.value
   const vendorName = vendor.name
   const selectedContactId = selectedVendorContactId.value || null
+  const remark = vendorRemark.value || null
   
   // 关闭弹窗
   showVendorSelectModal.value = false
   selectedVendorId.value = ''
   selectedVendorContactId.value = ''
+  vendorRemark.value = ''
   
   try {
-    // 关联已有厂商到项目，传入选中的联系人 ID
-    await vendorLinkProject(vendor.id, projectId.value, selectedContactId)
+    // 关联已有厂商到项目，传入选中的联系人 ID 和备注
+    await partnerLinkProject(vendor.id, projectId.value, selectedContactId, remark)
     
     // 重新加载厂商列表
-    vendors.value = await fetchVendors(projectId.value) || []
+    vendors.value = await fetchPartners(projectId.value, 'VENDOR') || []
     
     await projectStore.addProjectDynamic(projectId.value, `添加了厂商「${vendorName}」`)
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
@@ -604,7 +595,7 @@ function toggleVendor(vendorId) {
 }
 
 async function loadVendors() {
-  try { vendors.value = await fetchVendors(projectId.value) } catch { vendors.value = [] }
+  try { vendors.value = await fetchPartners(projectId.value, 'VENDOR') } catch { vendors.value = [] }
 }
 
 function startEditVendorName(vd) {
@@ -617,7 +608,7 @@ async function cancelEditVendorName() {
   vendorEditNameId.value = ''
   if (vd && !vd.name) {
     try {
-      await deleteVendor(vdId)
+      await deletePartner(vdId)
       vendors.value = vendors.value.filter(v => v.id !== vdId)
     } catch (e) { console.warn('取消添加厂商', e) }
   }
@@ -630,14 +621,14 @@ async function saveVendorName(vendorId) {
   vendorEditNameId.value = ''
   if (!n && vd && !vd.name) {
     try {
-      await deleteVendor(vendorId)
+      await deletePartner(vendorId)
       vendors.value = vendors.value.filter(v => v.id !== vendorId)
     } catch (e) { console.warn('取消添加厂商', e) }
     return
   }
   try {
     const oldName = vd?.name || '未命名'
-    await updateVendor({ id: vendorId, name: n || '' })
+    await updatePartner({ id: vendorId, name: n || '' })
     if (vd) vd.name = n
     await projectStore.addProjectDynamic(projectId.value, `厂商「${oldName}」更名为「${n || '未命名'}」`)
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
@@ -646,17 +637,17 @@ async function saveVendorName(vendorId) {
 
 function startEditVendorRemark(vd) {
   vendorEditRemarkId.value = vd.id
-  vendorEditRemark.value = vd.remark || ''
+  vendorEditRemark.value = vd.project_remark || vd.remark || ''
 }
 function cancelEditVendorRemark() { vendorEditRemarkId.value = '' }
 async function saveVendorRemark(vendorId) {
   const r = vendorEditRemark.value.trim()
   const vd = vendors.value.find(v => v.id === vendorId)
-  if (vd && r === (vd.remark || '')) { vendorEditRemarkId.value = ''; return }
+  if (vd && r === (vd.project_remark || vd.remark || '')) { vendorEditRemarkId.value = ''; return }
   vendorEditRemarkId.value = ''
   try {
-    await updateVendor({ id: vendorId, remark: r || '' })
-    if (vd) vd.remark = r
+    await partnerUpdateRemark(vendorId, projectId.value, r || null)
+    if (vd) vd.project_remark = r
   } catch (e) { console.warn('更新厂商备注失败', e) }
 }
 
@@ -664,12 +655,12 @@ async function addVendor() {
   // 打开厂商选择弹窗
   showVendorSelectModal.value = true
   try {
-    allVendors.value = await contactsListVendors() || []
+    allVendors.value = await contactsListAll('VENDOR') || []
   } catch (e) { console.warn('加载厂商列表失败', e) }
 }
 async function removeVendor(vendorId) {
   try {
-    await vendorUnlinkProject(vendorId, projectId.value)
+    await partnerUnlinkProject(vendorId, projectId.value)
     vendors.value = vendors.value.filter(v => v.id !== vendorId)
     await projectStore.addProjectDynamic(projectId.value, '移除了一个厂商')
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
@@ -683,17 +674,20 @@ async function removeVendor(vendorId) {
 // ─── 厂商联系人 ────────────────────────────────────────────────────────
 const editingVendorContactNameOf = ref('')
 const editingVendorContactPhoneOf = ref('')
-const editingVendorContactRemarkOf = ref('')
+const editingVendorContactEmailOf = ref('')
+const editingVendorContactPositionOf = ref('')
+const addingContactToVendorId = ref('')
 const vendorContactEditName = ref('')
 const vendorContactEditPhone = ref('')
-const vendorContactEditRemark = ref('')
+const vendorContactEditEmail = ref('')
+const vendorContactEditPosition = ref('')
 
 async function startAddVendorContact(vendorId) {
   // 打开联系人选择弹窗
   vendorContactSelectVendorId.value = vendorId
   // 先加载厂商列表（如果未加载）
   if (allVendors.value.length === 0) {
-    try { allVendors.value = await contactsListVendors() || [] } catch {}
+    try { allVendors.value = await contactsListAll('VENDOR') || [] } catch {}
   }
   // 从 allVendors 中查找当前厂商的联系人
   const vd = vendors.value.find(v => v.id === vendorId)
@@ -718,16 +712,16 @@ async function confirmVendorContactSelect() {
   selectedVendorContactToAdd.value = ''
   
   try {
-    const ct = await createVendorContact({
-      vendorId,
-      name: contact.name || '',
-      phone: contact.phone || '',
-      remark: contact.remark || ''
-    })
+    // 关联已有联系人到项目
+    await contactLinkProject(contact.id, projectId.value)
+    
+    // 在 UI 中显示联系人（关联到厂商）
     const vd = vendors.value.find(v => v.id === vendorId)
     if (vd) {
       if (!Array.isArray(vd.contacts)) vd.contacts = []
-      vd.contacts.push({ id: ct.id, name: ct.name, phone: ct.phone, remark: ct.remark })
+      if (!vd.contacts.find(c => c.id === contact.id)) {
+        vd.contacts.push({ id: contact.id, name: contact.name, phone: contact.phone, email: contact.email, position: contact.position })
+      }
     }
     await projectStore.addProjectDynamic(projectId.value, `添加了厂商联系人「${contact.name}」`)
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
@@ -749,7 +743,7 @@ async function saveVendorContactName(vendorId, contactId) {
   editingVendorContactNameOf.value = ''
   if (!n) return
   try {
-    await updateVendorContact({ id: contactId, name: n })
+    await updatePartnerContact({ id: contactId, name: n })
     const vd = vendors.value.find(v => v.id === vendorId)
     const ct = vd?.contacts?.find(c => c.id === contactId)
     const oldName = ct?.name || ''
@@ -768,7 +762,7 @@ async function saveVendorContactPhone(vendorId, contactId) {
   const p = vendorContactEditPhone.value.trim()
   editingVendorContactPhoneOf.value = ''
   try {
-    await updateVendorContact({ id: contactId, phone: p || '' })
+    await updatePartnerContact({ id: contactId, phone: p || '' })
     const vd = vendors.value.find(v => v.id === vendorId)
     const ct = vd?.contacts?.find(c => c.id === contactId)
     const op = ct?.phone || ''
@@ -778,69 +772,51 @@ async function saveVendorContactPhone(vendorId, contactId) {
   } catch (e) { console.warn('更新厂商联系人电话失败', e) }
 }
 
-function startEditVendorContactRemark(ct) {
-  editingVendorContactRemarkOf.value = ct.id
-  vendorContactEditRemark.value = ct.remark || ''
-}
-function cancelEditVendorContactRemark() { editingVendorContactRemarkOf.value = '' }
-
 function onNewVendorContactFocusOut(event, vendorId) {
   const container = event.currentTarget
   if (container.contains(event.relatedTarget)) return
   saveNewVendorContact(vendorId)
 }
-async function saveVendorContactRemark(vendorId, contactId) {
-  if (editingVendorContactRemarkOf.value !== contactId) return
-  const r = vendorContactEditRemark.value.trim()
-  editingVendorContactRemarkOf.value = ''
-  try {
-    await updateVendorContact({ id: contactId, remark: r || '' })
-    const vd = vendors.value.find(v => v.id === vendorId)
-    const ct = vd?.contacts?.find(c => c.id === contactId)
-    const note = ct?.remark || ''
-    if (ct) ct.remark = r
-    const cname = ct?.name || '未命名'
-    await projectStore.addProjectDynamic(projectId.value, `厂商联系人「${cname}」备注从「${note}」改为「${r}」`)
-  } catch (e) { console.warn('更新厂商联系人备注失败', e) }
-}
 
 async function saveNewVendorContact(vendorId) {
-  if (!editingVendorContactRemarkOf.value || editingVendorContactRemarkOf.value !== 'new-' + vendorId) return
+  if (!addingContactToVendorId.value || addingContactToVendorId.value !== 'new-' + vendorId) return
   const n = vendorContactEditName.value.trim()
   const p = vendorContactEditPhone.value.trim()
-  const r = vendorContactEditRemark.value.trim()
-  editingVendorContactRemarkOf.value = ''
-  if (!n && !p && !r) return
+  const e = vendorContactEditEmail.value.trim()
+  const pos = vendorContactEditPosition.value.trim()
+  addingContactToVendorId.value = ''
+  if (!n && !p && !e && !pos) return
   try {
-    const ct = await createVendorContact({ vendorId, name: n, phone: p || '', remark: r || '' })
+    const ct = await createPartnerContact({
+      partnerId: vendorId,
+      name: n, phone: p || '', email: e || '', position: pos || ''
+    })
     const vd = vendors.value.find(v => v.id === vendorId)
     if (vd) {
       if (!Array.isArray(vd.contacts)) vd.contacts = []
-      vd.contacts.push({ id: ct.id, name: ct.name || n, phone: ct.phone || p, remark: ct.remark || r })
+      vd.contacts.push({ id: ct.id, name: ct.name || n, phone: ct.phone || p, email: ct.email || e, position: ct.position || pos })
     }
+    // 关联联系人到项目
+    await contactLinkProject(ct.id, projectId.value)
     await projectStore.addProjectDynamic(projectId.value, `添加了厂商联系人「${n}」`)
   } catch (e) { console.warn('添加厂商联系人失败', e) }
 }
 
 async function removeVendorContact(vendorId, contactId) {
-  const ok = await dangerConfirm({ title: '删除联系人', message: '确定删除此联系人？', confirmText: '删除' })
-  if (!ok) return
   try {
-    await deleteVendorContact(contactId)
+    // 从项目中取消关联联系人
+    await contactUnlinkProject(contactId, projectId.value)
+    // 在 UI 中移除
     const vd = vendors.value.find(v => v.id === vendorId)
     if (vd?.contacts) { vd.contacts = vd.contacts.filter(c => c.id !== contactId) }
-    await projectStore.addProjectDynamic(projectId.value, '删除了一个厂商联系人')
-  } catch (e) { console.warn('删除厂商联系人失败', e) }
+    await projectStore.addProjectDynamic(projectId.value, '移除了一个厂商联系人')
+    toast({ message: '已移除联系人', type: 'success' })
+  } catch (e) { console.warn('移除厂商联系人失败', e) }
 }
 
 // ─── 客户信息 — 已拆分到 ProjectDetailCustomer.vue ──────────────────────
-async function handleCustomerUpdate(data: { customer: string; customer_contact: string; customer_phone: string }) {
-  const old = project.value?.customer || ''
-  projectStore.updateProjectInList(projectId.value, data)
-  try {
-    await projectStore.updateProject(projectId.value, data)
-    await projectStore.addProjectDynamic(projectId.value, `客户从「${old || '无'}」改为「${data.customer || '无'}」`)
-  } catch (e) { console.warn('保存客户信息失败', e) }
+async function handleCustomerUpdate() {
+  dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
 }
 
 // ─── 投标时间日历下拉 ────────────────────────────────────────────────────
@@ -1040,7 +1016,10 @@ async function addProjectNote() {
     projectNotes.value.unshift(newNote)
     selectedNoteId.value = newNote.note_id
     editingNoteTitle.value = ''
-  } catch (e) { console.warn('创建笔记失败', e) }
+  } catch (e) {
+    console.warn('创建笔记失败', e)
+    toast({ message: '创建笔记失败', type: 'error' })
+  }
 }
 
 async function removeProjectNote(noteId: string) {
@@ -1116,7 +1095,7 @@ const noteEditor = useEditor({
 let noteSaveTimer: any = null
 function debouncedNoteSave(html: string) {
   if (noteSaveTimer) clearTimeout(noteSaveTimer)
-  noteSaveTimer = setTimeout(() => saveNoteContent(html), 1000)
+  noteSaveTimer = setTimeout(() => saveNoteContent(html), 3000)
 }
 
 watch(selectedNote, (note) => {
@@ -1322,8 +1301,13 @@ async function addProjectTodo() {
         projectId: t.project_id || undefined, projectName: t.project_name || '',
       })
       selectedTodoId.value = t.id
+    } else {
+      toast({ message: '创建待办失败', type: 'error' })
     }
-  } catch (e) { console.warn('创建待办失败', e) }
+  } catch (e) {
+    console.warn('创建待办失败', e)
+    toast({ message: '创建待办失败', type: 'error' })
+  }
 }
 
 async function toggleProjectTodo(todoId: string) {
@@ -1344,7 +1328,6 @@ async function removeProjectTodo(todoId: string) {
 async function handleTodoUpdate(todoId: string, data: Record<string, any>) {
   try {
     await updateTodo(todoId, data)
-    await loadProjectTodos()
   } catch (e) { console.warn('更新待办失败', e) }
 }
 
@@ -1612,7 +1595,7 @@ watch([projectNotes, projectTodos], () => {
           </div>
 
           <!-- 客户信息 -->
-          <ProjectDetailCustomer :project="project" :is-archived="project.isArchived" @update-customer="handleCustomerUpdate" />
+          <ProjectDetailCustomer :project="project" :is-archived="project.isArchived" :project-id="projectId" @update="handleCustomerUpdate" />
 
           <!-- 渠道信息 -->
           <div class="mt-4 border-t border-surface-100 pt-4">
@@ -1630,29 +1613,8 @@ watch([projectNotes, projectTodos], () => {
                   <AppIcon name="building" class="h-4 w-4" />
                 </div>
                 <div class="flex-1 min-w-0 flex items-center gap-3">
-                  <div class="flex items-center gap-1 group/ch-name flex-shrink-0">
-                    <template v-if="channelEditNameId === ch.id">
-                      <input v-model="channelEditName" type="text" :data-channel-name-input="ch.id" class="input-field !h-6 !text-xs w-36" placeholder="输入名称"
-                        @keyup.enter.stop="saveChannelName(ch.id)" @blur="saveChannelName(ch.id)" @keyup.escape.stop="cancelEditChannelName" @click.stop />
-                    </template>
-                    <template v-else>
-                      <p class="text-xs font-medium text-surface-600 whitespace-nowrap">{{ ch.name || '未命名' }}</p>
-                      <button v-if="!project.isArchived" @click.stop="startEditChannelName(ch)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ch-name:opacity-100 flex-shrink-0" title="编辑名称">
-                        <AppIcon name="edit" class="w-2.5 h-2.5" />
-                      </button>
-                    </template>
-                  </div>
-                  <div class="flex items-center gap-1 group/ch-remark flex-1 min-w-0">
-                    <template v-if="channelEditRemarkId === ch.id">
-                      <input v-model="channelEditRemark" type="text" class="input-field !h-6 !text-xs flex-1 min-w-0" placeholder="备注"
-                        @keyup.enter.stop="saveChannelRemark(ch.id)" @blur="saveChannelRemark(ch.id)" @keyup.escape.stop="cancelEditChannelRemark" @click.stop />
-                    </template>
-                    <template v-else>
-                      <span class="text-xs truncate" :class="ch.remark ? 'text-surface-500' : 'text-surface-400 italic'">{{ ch.remark || '无备注' }}</span>
-                      <button v-if="!project.isArchived" @click.stop="startEditChannelRemark(ch)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ch-remark:opacity-100 flex-shrink-0" title="编辑备注">
-                        <AppIcon name="edit" class="w-2.5 h-2.5" />
-                      </button>
-                    </template>
+                  <div class="flex items-center gap-1 flex-shrink-0">
+                    <p class="text-xs font-medium text-surface-600 whitespace-nowrap">{{ ch.name || '未命名' }}</p>
                   </div>
                 </div>
                 <div class="flex items-center gap-0.5 flex-shrink-0">
@@ -1667,94 +1629,30 @@ watch([projectNotes, projectTodos], () => {
               <!-- Collapsible contacts section -->
               <div v-show="expandedChannelId === ch.id" class="border-t border-surface-100 bg-gray-50/50">
                 <div class="p-4">
-                  <div v-if="(ch.contacts && ch.contacts.length > 0) || editingContactRemarkOf === 'new-' + ch.id">
+                  <div v-if="ch.contacts && ch.contacts.length > 0">
                     <table class="w-full text-xs">
                       <thead>
                         <tr class="text-slate-400 border-b border-slate-200">
-                          <th class="text-left font-medium py-2 w-[25%]">联系人</th>
-                          <th class="text-left font-medium py-2 w-[22%]">电话</th>
-                          <th class="text-left font-medium py-2">备注</th>
-                          <th class="w-10"></th>
+                          <th class="text-left font-medium py-2 w-[20%]">联系人</th>
+                          <th class="text-left font-medium py-2 w-[18%]">电话</th>
+                          <th class="text-left font-medium py-2 w-[18%]">职位</th>
+                          <th class="text-left font-medium py-2">邮箱</th>
                         </tr>
                       </thead>
                       <tbody>
-                        <tr v-for="ct in (ch.contacts || [])" :key="ct.id" class="border-b border-slate-100 group/ct-row hover:bg-white/60 transition-colors">
-                          <!-- Name -->
-                          <td class="py-2 pr-2">
-                            <div class="flex items-center gap-0.5 group/ct-name">
-                              <template v-if="editingContactNameOf === ct.id">
-                                <input v-model="contactEditName" type="text" class="input-field !h-5 !text-xs w-full" placeholder="姓名"
-                                  @keyup.enter="saveContactName(ch.id, ct.id)" @blur="saveContactName(ch.id, ct.id)" @keyup.escape="cancelEditContactName" />
-                              </template>
-                              <template v-else>
-                                <span class="text-xs truncate" :class="ct.name ? 'text-slate-600' : 'text-slate-400 italic'">{{ ct.name || '暂未指定联系人' }}</span>
-                                <button v-if="!project.isArchived" @click="startEditContactName(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-name:opacity-100 flex-shrink-0" title="编辑姓名">
-                                  <AppIcon name="edit" class="w-2.5 h-2.5" />
-                                </button>
-                              </template>
-                            </div>
-                          </td>
-                          <!-- Phone -->
-                          <td class="py-2 pr-2">
-                            <div class="flex items-center gap-0.5 group/ct-phone">
-                              <template v-if="editingContactPhoneOf === ct.id">
-                                <input v-model="contactEditPhone" type="text" class="input-field !h-5 !text-xs w-full" placeholder="电话"
-                                  @keyup.enter="saveContactPhone(ch.id, ct.id)" @blur="saveContactPhone(ch.id, ct.id)" @keyup.escape="cancelEditContactPhone" />
-                              </template>
-                              <template v-else>
-                                <span class="text-xs text-slate-500 truncate">{{ ct.phone || '无' }}</span>
-                                <button v-if="!project.isArchived" @click="startEditContactPhone(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-phone:opacity-100 flex-shrink-0" title="编辑电话">
-                                  <AppIcon name="edit" class="w-2.5 h-2.5" />
-                                </button>
-                              </template>
-                            </div>
-                          </td>
-                          <!-- Remark -->
-                          <td class="py-2 pr-2">
-                            <div class="flex items-center gap-0.5 group/ct-remark">
-                              <template v-if="editingContactRemarkOf === ct.id">
-                                <input v-model="contactEditRemark" type="text" class="input-field !h-5 !text-xs w-full" placeholder="备注"
-                                  @keyup.enter="saveContactRemark(ch.id, ct.id)" @blur="saveContactRemark(ch.id, ct.id)" @keyup.escape="cancelEditContactRemark" />
-                              </template>
-                              <template v-else>
-                                <span class="text-xs truncate" :class="ct.remark ? 'text-surface-500' : 'text-surface-400 italic'">{{ ct.remark || '无备注' }}</span>
-                                <button v-if="!project.isArchived" @click="startEditContactRemark(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-remark:opacity-100 flex-shrink-0" title="编辑备注">
-                                  <AppIcon name="edit" class="w-2.5 h-2.5" />
-                                </button>
-                              </template>
-                            </div>
-                          </td>
-                          <!-- Delete -->
-                          <td class="py-2 text-right">
-                            <button v-if="!project.isArchived" @click="removeContact(ch.id, ct.id)" class="btn-ghost !p-1 text-slate-400 hover:text-red-500 opacity-0 group-hover/ct-row:opacity-100 flex-shrink-0" title="删除联系人">
-                              <AppIcon name="trash" class="w-3 h-3" />
-                            </button>
-                          </td>
-                        </tr>
-                        <!-- New contact form row -->
-                        <tr v-if="editingContactRemarkOf === 'new-' + ch.id" class="border-b border-blue-100 bg-blue-50/30" @focusout="onNewContactFocusOut($event, ch.id)">
-                          <td class="py-2 pr-2">
-                            <input v-model="contactEditName" type="text" class="input-field !h-5 !text-xs w-full" placeholder="姓名"
-                              @keyup.enter="saveNewContact(ch.id)" @keyup.escape="editingContactRemarkOf = ''" />
-                          </td>
-                          <td class="py-2 pr-2">
-                            <input v-model="contactEditPhone" type="text" class="input-field !h-5 !text-xs w-full" placeholder="电话"
-                              @keyup.enter="saveNewContact(ch.id)" @keyup.escape="editingContactRemarkOf = ''" />
-                          </td>
-                          <td class="py-2 pr-2">
-                            <input v-model="contactEditRemark" type="text" class="input-field !h-5 !text-xs w-full" placeholder="备注"
-                              @keyup.enter="saveNewContact(ch.id)" @keyup.escape="editingContactRemarkOf = ''" />
-                          </td>
-                          <td></td>
+                        <tr v-for="ct in (ch.contacts || [])" :key="ct.id" class="border-b border-slate-100 hover:bg-white/60 transition-colors">
+                          <td class="py-2 pr-2"><span class="text-xs text-slate-600">{{ ct.name || '-' }}</span></td>
+                          <td class="py-2 pr-2"><span class="text-xs text-slate-500">{{ ct.phone || '-' }}</span></td>
+                          <td class="py-2 pr-2"><span class="text-xs text-slate-500">{{ ct.position || '-' }}</span></td>
+                          <td class="py-2 pr-2"><span class="text-xs text-slate-500">{{ ct.email || '-' }}</span></td>
                         </tr>
                       </tbody>
                     </table>
                   </div>
-                  <!-- Add contact button -->
-                  <button v-if="!project.isArchived && editingContactRemarkOf !== 'new-' + ch.id" @click="startAddContact(ch.id)" class="mt-3 btn-secondary">
+                  <p v-else class="text-xs text-slate-400 italic">暂无联系人</p>
+                  <button v-if="!project.isArchived" @click="startAddContact(ch.id)" class="mt-3 btn-secondary">
                     <AppIcon name="plus" class="w-2.5 h-2.5" /> 添加联系人
                   </button>
-                  <p v-if="(!ch.contacts || ch.contacts.length === 0) && editingContactRemarkOf !== 'new-' + ch.id" class="text-xs text-slate-400 italic mt-2">暂无联系人</p>
                 </div>
               </div>
             </div>
@@ -1776,29 +1674,8 @@ watch([projectNotes, projectTodos], () => {
                   <AppIcon name="building" class="h-4 w-4" />
                 </div>
                 <div class="flex-1 min-w-0 flex items-center gap-3">
-                  <div class="flex items-center gap-1 group/vd-name flex-shrink-0">
-                    <template v-if="vendorEditNameId === vd.id">
-                      <input v-model="vendorEditName" type="text" :data-vendor-name-input="vd.id" class="input-field !h-6 !text-xs w-36" placeholder="输入名称"
-                        @keyup.enter.stop="saveVendorName(vd.id)" @blur="saveVendorName(vd.id)" @keyup.escape.stop="cancelEditVendorName" @click.stop />
-                    </template>
-                    <template v-else>
-                      <p class="text-xs font-medium text-surface-600 whitespace-nowrap">{{ vd.name || '未命名' }}</p>
-                      <button v-if="!project.isArchived" @click.stop="startEditVendorName(vd)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/vd-name:opacity-100 flex-shrink-0" title="编辑名称">
-                        <AppIcon name="edit" class="w-2.5 h-2.5" />
-                      </button>
-                    </template>
-                  </div>
-                  <div class="flex items-center gap-1 group/vd-remark flex-1 min-w-0">
-                    <template v-if="vendorEditRemarkId === vd.id">
-                      <input v-model="vendorEditRemark" type="text" class="input-field !h-6 !text-xs flex-1 min-w-0" placeholder="备注"
-                        @keyup.enter.stop="saveVendorRemark(vd.id)" @blur="saveVendorRemark(vd.id)" @keyup.escape.stop="cancelEditVendorRemark" @click.stop />
-                    </template>
-                    <template v-else>
-                      <span class="text-xs truncate" :class="vd.remark ? 'text-surface-500' : 'text-surface-400 italic'">{{ vd.remark || '无备注' }}</span>
-                      <button v-if="!project.isArchived" @click.stop="startEditVendorRemark(vd)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/vd-remark:opacity-100 flex-shrink-0" title="编辑备注">
-                        <AppIcon name="edit" class="w-2.5 h-2.5" />
-                      </button>
-                    </template>
+                  <div class="flex items-center gap-1 flex-shrink-0">
+                    <p class="text-xs font-medium text-surface-600 whitespace-nowrap">{{ vd.name || '未命名' }}</p>
                   </div>
                 </div>
                 <div class="flex items-center gap-0.5 flex-shrink-0">
@@ -1813,89 +1690,30 @@ watch([projectNotes, projectTodos], () => {
               <!-- Collapsible contacts section -->
               <div v-show="expandedVendorId === vd.id" class="border-t border-surface-100 bg-gray-50/50">
                 <div class="p-4">
-                  <div v-if="(vd.contacts && vd.contacts.length > 0) || editingVendorContactRemarkOf === 'new-' + vd.id">
+                  <div v-if="vd.contacts && vd.contacts.length > 0">
                     <table class="w-full text-xs">
                       <thead>
                         <tr class="text-slate-400 border-b border-slate-200">
-                          <th class="text-left font-medium py-2 w-[25%]">联系人</th>
-                          <th class="text-left font-medium py-2 w-[22%]">电话</th>
-                          <th class="text-left font-medium py-2">备注</th>
-                          <th class="w-10"></th>
+                          <th class="text-left font-medium py-2 w-[20%]">联系人</th>
+                          <th class="text-left font-medium py-2 w-[18%]">电话</th>
+                          <th class="text-left font-medium py-2 w-[18%]">职位</th>
+                          <th class="text-left font-medium py-2">邮箱</th>
                         </tr>
                       </thead>
                       <tbody>
-                        <tr v-for="ct in (vd.contacts || [])" :key="ct.id" class="border-b border-slate-100 group/vct-row hover:bg-white/60 transition-colors">
-                          <td class="py-2 pr-2">
-                            <div class="flex items-center gap-0.5 group/vct-name">
-                              <template v-if="editingVendorContactNameOf === ct.id">
-                                <input v-model="vendorContactEditName" type="text" class="input-field !h-5 !text-xs w-full" placeholder="姓名"
-                                  @keyup.enter="saveVendorContactName(vd.id, ct.id)" @blur="saveVendorContactName(vd.id, ct.id)" @keyup.escape="cancelEditVendorContactName" />
-                              </template>
-                              <template v-else>
-                                <span class="text-xs truncate" :class="ct.name ? 'text-slate-600' : 'text-slate-400 italic'">{{ ct.name || '暂未指定联系人' }}</span>
-                                <button v-if="!project.isArchived" @click="startEditVendorContactName(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/vct-name:opacity-100 flex-shrink-0" title="编辑姓名">
-                                  <AppIcon name="edit" class="w-2.5 h-2.5" />
-                                </button>
-                              </template>
-                            </div>
-                          </td>
-                          <td class="py-2 pr-2">
-                            <div class="flex items-center gap-0.5 group/vct-phone">
-                              <template v-if="editingVendorContactPhoneOf === ct.id">
-                                <input v-model="vendorContactEditPhone" type="text" class="input-field !h-5 !text-xs w-full" placeholder="电话"
-                                  @keyup.enter="saveVendorContactPhone(vd.id, ct.id)" @blur="saveVendorContactPhone(vd.id, ct.id)" @keyup.escape="cancelEditVendorContactPhone" />
-                              </template>
-                              <template v-else>
-                                <span class="text-xs text-slate-500 truncate">{{ ct.phone || '无' }}</span>
-                                <button v-if="!project.isArchived" @click="startEditVendorContactPhone(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/vct-phone:opacity-100 flex-shrink-0" title="编辑电话">
-                                  <AppIcon name="edit" class="w-2.5 h-2.5" />
-                                </button>
-                              </template>
-                            </div>
-                          </td>
-                          <td class="py-2 pr-2">
-                            <div class="flex items-center gap-0.5 group/vct-remark">
-                              <template v-if="editingVendorContactRemarkOf === ct.id">
-                                <input v-model="vendorContactEditRemark" type="text" class="input-field !h-5 !text-xs w-full" placeholder="备注"
-                                  @keyup.enter="saveVendorContactRemark(vd.id, ct.id)" @blur="saveVendorContactRemark(vd.id, ct.id)" @keyup.escape="cancelEditVendorContactRemark" />
-                              </template>
-                              <template v-else>
-                                <span class="text-xs truncate" :class="ct.remark ? 'text-surface-500' : 'text-surface-400 italic'">{{ ct.remark || '无备注' }}</span>
-                                <button v-if="!project.isArchived" @click="startEditVendorContactRemark(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/vct-remark:opacity-100 flex-shrink-0" title="编辑备注">
-                                  <AppIcon name="edit" class="w-2.5 h-2.5" />
-                                </button>
-                              </template>
-                            </div>
-                          </td>
-                          <td class="py-2 text-right">
-                            <button v-if="!project.isArchived" @click="removeVendorContact(vd.id, ct.id)" class="btn-ghost !p-1 text-slate-400 hover:text-red-500 opacity-0 group-hover/vct-row:opacity-100 flex-shrink-0" title="删除联系人">
-                              <AppIcon name="trash" class="w-3 h-3" />
-                            </button>
-                          </td>
-                        </tr>
-                        <!-- New contact form row -->
-                        <tr v-if="editingVendorContactRemarkOf === 'new-' + vd.id" class="border-b border-blue-100 bg-blue-50/30" @focusout="onNewVendorContactFocusOut($event, vd.id)">
-                          <td class="py-2 pr-2">
-                            <input v-model="vendorContactEditName" type="text" class="input-field !h-5 !text-xs w-full" placeholder="姓名"
-                              @keyup.enter="saveNewVendorContact(vd.id)" @keyup.escape="editingVendorContactRemarkOf = ''" />
-                          </td>
-                          <td class="py-2 pr-2">
-                            <input v-model="vendorContactEditPhone" type="text" class="input-field !h-5 !text-xs w-full" placeholder="电话"
-                              @keyup.enter="saveNewVendorContact(vd.id)" @keyup.escape="editingVendorContactRemarkOf = ''" />
-                          </td>
-                          <td class="py-2 pr-2">
-                            <input v-model="vendorContactEditRemark" type="text" class="input-field !h-5 !text-xs w-full" placeholder="备注"
-                              @keyup.enter="saveNewVendorContact(vd.id)" @keyup.escape="editingVendorContactRemarkOf = ''" />
-                          </td>
-                          <td></td>
+                        <tr v-for="ct in (vd.contacts || [])" :key="ct.id" class="border-b border-slate-100 hover:bg-white/60 transition-colors">
+                          <td class="py-2 pr-2"><span class="text-xs text-slate-600">{{ ct.name || '-' }}</span></td>
+                          <td class="py-2 pr-2"><span class="text-xs text-slate-500">{{ ct.phone || '-' }}</span></td>
+                          <td class="py-2 pr-2"><span class="text-xs text-slate-500">{{ ct.position || '-' }}</span></td>
+                          <td class="py-2 pr-2"><span class="text-xs text-slate-500">{{ ct.email || '-' }}</span></td>
                         </tr>
                       </tbody>
                     </table>
                   </div>
-                  <button v-if="!project.isArchived && editingVendorContactRemarkOf !== 'new-' + vd.id" @click="startAddVendorContact(vd.id)" class="mt-3 btn-secondary">
+                  <p v-else class="text-xs text-slate-400 italic">暂无联系人</p>
+                  <button v-if="!project.isArchived" @click="startAddVendorContact(vd.id)" class="mt-3 btn-secondary">
                     <AppIcon name="plus" class="w-2.5 h-2.5" /> 添加联系人
                   </button>
-                  <p v-if="(!vd.contacts || vd.contacts.length === 0) && editingVendorContactRemarkOf !== 'new-' + vd.id" class="text-xs text-slate-400 italic mt-2">暂无联系人</p>
                 </div>
               </div>
             </div>
@@ -2246,7 +2064,7 @@ watch([projectNotes, projectTodos], () => {
           <label class="text-[11px] text-surface-500 mb-1 block">渠道</label>
           <SelectWithSearch
             v-model="selectedChannelId"
-            :options="allChannels.map(c => ({ id: c.id, name: c.name, company: c.company }))"
+            :options="allChannels.map(c => ({ id: c.id, name: c.name, address: c.address }))"
             placeholder="选择渠道..."
           />
         </div>
@@ -2258,6 +2076,11 @@ watch([projectNotes, projectTodos], () => {
             :options="channelContacts.map(c => ({ id: c.id, name: c.name, phone: c.phone }))"
             placeholder="选择联系人..."
           />
+        </div>
+
+        <div class="mb-4">
+          <label class="text-[11px] text-surface-500 mb-1 block">备注</label>
+          <input v-model="channelRemark" type="text" class="w-full px-3 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-blue-400" placeholder="项目级备注（可选）" />
         </div>
 
         <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
@@ -2281,7 +2104,7 @@ watch([projectNotes, projectTodos], () => {
           <label class="text-[11px] text-surface-500 mb-1 block">厂商</label>
           <SelectWithSearch
             v-model="selectedVendorId"
-            :options="allVendors.map(v => ({ id: v.id, name: v.name, company: v.company }))"
+            :options="allVendors.map(v => ({ id: v.id, name: v.name, address: v.address }))"
             placeholder="选择厂商..."
           />
         </div>
@@ -2293,6 +2116,11 @@ watch([projectNotes, projectTodos], () => {
             :options="vendorContacts.map(c => ({ id: c.id, name: c.name, phone: c.phone }))"
             placeholder="选择联系人..."
           />
+        </div>
+
+        <div class="mb-4">
+          <label class="text-[11px] text-surface-500 mb-1 block">备注</label>
+          <input v-model="vendorRemark" type="text" class="w-full px-3 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-blue-400" placeholder="项目级备注（可选）" />
         </div>
 
         <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
@@ -2351,7 +2179,7 @@ watch([projectNotes, projectTodos], () => {
 
         <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
           <button @click="showVendorContactSelectModal = false" class="py-1 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
-          <button @click="confirmVendorContactSelect" :disabled="!selectedVendorContactId" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors disabled:opacity-50">确定</button>
+          <button @click="confirmVendorContactSelect" :disabled="!selectedVendorContactToAdd" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors disabled:opacity-50">确定</button>
         </div>
       </div>
     </div>

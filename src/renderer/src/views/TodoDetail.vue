@@ -155,7 +155,7 @@ const editor = useEditor({
     ProjectExtension,
     FileExtension,
   ],
-  onUpdate: ({ editor: ed }) => { emit('update', props.todo.id, { content: ed.getHTML() }) },
+  onUpdate: ({ editor: ed }) => { debouncedEmit({ content: ed.getHTML() }) },
   onSelectionUpdate: ({ editor: ed }) => {
     if (ed.isActive('heading', { level: 1 })) headingLabel.value = '标题 1'
     else if (ed.isActive('heading', { level: 2 })) headingLabel.value = '标题 2'
@@ -177,6 +177,16 @@ function toggleTaskList() { editor.value?.chain().focus().toggleTaskList().run()
 function insertBlock(tag: string) { if (!editor.value) return; if (tag === 'pre') editor.value.chain().focus().toggleCodeBlock().run(); else if (tag === 'blockquote') editor.value.chain().focus().toggleBlockquote().run() }
 function execAlign(dir: 'left' | 'center' | 'right') { editor.value?.chain().focus().setTextAlign(dir).run(); alignLabel.value = dir === 'right' ? '右对齐' : dir === 'center' ? '居中' : '左对齐'; alignOpen.value = false }
 function insertTableCustom() { const r = Math.max(1, Math.min(10, tableRows.value)); const c = Math.max(1, Math.min(8, tableCols.value)); editor.value?.chain().focus().insertTable({ rows: r, cols: c, withHeaderRow: true }).run(); tableMenuOpen.value = false }
+
+// 防抖保存：3秒内多次编辑只触发一次 update
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+function debouncedEmit(data: Record<string, any>) {
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    emit('update', props.todo.id, data)
+  }, 3000)
+}
+
 function toggleDone() { emit('update', props.todo.id, { done: !props.todo.done }) }
 function closePopups() { headingOpen.value = false; listOpen.value = false; alignOpen.value = false; tableMenuOpen.value = false; datePickerOpen.value = false; priorityOpen.value = false; projectOpen.value = false }
 onUnmounted(() => editor.value?.destroy())
@@ -246,7 +256,7 @@ onUnmounted(() => editor.value?.destroy())
         <svg v-if="todo.done" class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path d="M4.5 12.75l6 6 9-13.5"/></svg>
       </button>
       <div class="flex-1">
-        <input :value="todo.title" @input="emit('update', todo.id, { title: ($event.target as HTMLInputElement).value })" class="w-full text-xl font-bold text-surface-800 bg-transparent outline-none placeholder:text-surface-300" placeholder="待办标题"/>
+        <input :value="todo.title" @input="debouncedEmit({ title: ($event.target as HTMLInputElement).value })" class="w-full text-xl font-bold text-surface-800 bg-transparent outline-none placeholder:text-surface-300" placeholder="待办标题"/>
         <!-- Metadata: project (row 1) -->
         <div class="flex items-center gap-2 mt-2">
           <!-- Project -->

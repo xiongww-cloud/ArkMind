@@ -117,6 +117,13 @@ pub fn cleanup_orphan_source_data() {
     println!("[清理管线] 发现 {} 条孤儿 knowledge_chunks", orphan_count);
     
     if orphan_count > 0 {
+        // 先清理 FTS5 索引（避免删除时触发器报错）
+        let _ = crate::database::run(
+            "DELETE FROM kk_chunks_fts WHERE rowid IN (SELECT id FROM knowledge_chunks WHERE NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type=knowledge_chunks.source_type AND sd.source_id=knowledge_chunks.source_id) AND chunk_type='child')",
+            &[],
+        );
+
+        // 删除孤儿 knowledge_chunks
         match crate::database::run(
             "DELETE FROM knowledge_chunks WHERE NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type=knowledge_chunks.source_type AND sd.source_id=knowledge_chunks.source_id)",
             &[],

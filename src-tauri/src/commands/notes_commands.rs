@@ -37,11 +37,15 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
         conn.execute("BEGIN",[])?;
         let r = conn.execute("INSERT INTO notes(note_id,title,content,is_daily,notebook_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", rusqlite::params![note_id,title,content,if is_daily{1i64}else{0i64},notebook_id.as_ref().map(|v|v.as_str().unwrap_or("")),ts,ts]);
         if let Err(e) = r { let _ = conn.execute("ROLLBACK",[]); return Err(e); }
-        for pid in &project_ids { conn.execute("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?1,?2)", rusqlite::params![note_id,pid]).ok(); crate::services::business_relations::upsert("NOTE", &note_id, "PROJECT", pid, "authored_by", "{}"); }
+        for pid in &project_ids { conn.execute("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?1,?2)", rusqlite::params![note_id,pid]).ok(); }
         for tid in &tag_ids { conn.execute("INSERT OR IGNORE INTO tag_mappings(entity_type,entity_id,tag_id) VALUES('notes',?1,?2)", rusqlite::params![note_id,tid]).ok(); }
         conn.execute("COMMIT",[]).map(|_|())?;
         Ok(())
     }).map_err(|e|e.to_string())?;
+    // business_relations::upsert must be called outside with_db to avoid mutex deadlock
+    for pid in &project_ids {
+        crate::services::business_relations::upsert("NOTE", &note_id, "PROJECT", pid, "authored_by", "{}");
+    }
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Created);
     Ok(json!({"success":true,"noteId":note_id}))

@@ -172,7 +172,22 @@ export async function createNotebookV1(data: {name:string;color?:string;id?:stri
 export async function updateNotebookV1(data: any): Promise<any> { return invoke('notebook_update', { data }) }
 export const deleteNotebookV1 = deleteNotebook
 
-// ─── Partners ──────────────────────────────────────────────────
+// ─── Partners (Unified) ─────────────────────────────────────
+export async function fetchPartners(projectId: string, partnerType?: string): Promise<any[]> { return invoke('partner_list', { projectId, partnerType: partnerType || null }) }
+export async function createPartner(data: Record<string,any>): Promise<any> { return invoke('partner_create', { data }) }
+export async function updatePartner(data: Record<string,any>): Promise<any> { return invoke('partner_update', { data }) }
+export async function deletePartner(id: string): Promise<any> { return invoke('partner_delete', { partnerId: id }) }
+export async function partnerLinkProject(partnerId: string, projectId: string, contactId?: string, remark?: string): Promise<any> { return invoke('partner_link_project', { partnerId, projectId, contactId: contactId || null, remark: remark || null }) }
+export async function partnerUnlinkProject(partnerId: string, projectId: string): Promise<any> { return invoke('partner_unlink_project', { partnerId, projectId }) }
+export async function createPartnerContact(data: Record<string,any>): Promise<any> { return invoke('partner_contact_create', { data }) }
+export async function updatePartnerContact(data: Record<string,any>): Promise<any> { return invoke('partner_contact_update', { data }) }
+export async function deletePartnerContact(id: string): Promise<any> { return invoke('partner_contact_delete', { contactId: id }) }
+export async function contactLinkProject(contactId: string, projectId: string): Promise<any> { return invoke('contact_link_project', { contactId, projectId }) }
+export async function contactUnlinkProject(contactId: string, projectId: string): Promise<any> { return invoke('contact_unlink_project', { contactId, projectId }) }
+export async function partnerUpdateRemark(partnerId: string, projectId: string, remark?: string): Promise<any> { return invoke('partner_update_remark', { partnerId, projectId, remark: remark || null }) }
+export async function contactsListAll(partnerType?: string): Promise<any[]> { return invoke('contacts_list_all', { partnerType: partnerType || null }) }
+
+// ─── Partners (Legacy aliases) ──────────────────────────────
 export async function fetchChannelPartners(projectId: string): Promise<any[]> { return invoke('channel_list', { projectId }) }
 export async function createChannelPartner(data: Record<string,any>): Promise<any> { return invoke('channel_create', { data }) }
 export async function updateChannelPartner(data: Record<string,any>): Promise<any> { return invoke('channel_update', { data }) }
@@ -181,7 +196,7 @@ export const fetchChannels = fetchChannelPartners; export const createChannel = 
 export async function createChannelContact(data: Record<string,any>): Promise<any> { return invoke('channel_contact_create', { data }) }
 export async function updateChannelContact(data: Record<string,any>): Promise<any> { return invoke('channel_contact_update', { data }) }
 export async function deleteChannelContact(id: string): Promise<any> { return invoke('channel_contact_delete', { contactId: id }) }
-export async function channelLinkProject(channelId: string, projectId: string, contactId?: string): Promise<any> { return invoke('channel_link_project', { channelId, projectId, contactId: contactId || null }) }
+export async function channelLinkProject(channelId: string, projectId: string, contactId?: string, remark?: string): Promise<any> { return invoke('channel_link_project', { channelId, projectId, contactId: contactId || null, remark: remark || null }) }
 export async function channelUnlinkProject(channelId: string, projectId: string): Promise<any> { return invoke('channel_unlink_project', { channelId, projectId }) }
 export async function fetchVendorPartners(projectId: string): Promise<any[]> { return invoke('vendor_list', { projectId }) }
 export async function createVendorPartner(data: Record<string,any>): Promise<any> { return invoke('vendor_create', { data }) }
@@ -191,7 +206,7 @@ export const fetchVendors = fetchVendorPartners; export const createVendor = cre
 export async function createVendorContact(data: Record<string,any>): Promise<any> { return invoke('vendor_contact_create', { data }) }
 export async function updateVendorContact(data: Record<string,any>): Promise<any> { return invoke('vendor_contact_update', { data }) }
 export async function deleteVendorContact(id: string): Promise<any> { return invoke('vendor_contact_delete', { contactId: id }) }
-export async function vendorLinkProject(vendorId: string, projectId: string, contactId?: string): Promise<any> { return invoke('vendor_link_project', { vendorId, projectId, contactId: contactId || null }) }
+export async function vendorLinkProject(vendorId: string, projectId: string, contactId?: string, remark?: string): Promise<any> { return invoke('vendor_link_project', { vendorId, projectId, contactId: contactId || null, remark: remark || null }) }
 export async function vendorUnlinkProject(vendorId: string, projectId: string): Promise<any> { return invoke('vendor_unlink_project', { vendorId, projectId }) }
 
 // ─── Solutions ─────────────────────────────────────────────────

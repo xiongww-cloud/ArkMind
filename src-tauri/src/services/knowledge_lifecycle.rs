@@ -208,8 +208,12 @@ fn restore_fts_triggers() {
     crate::database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_insert AFTER INSERT ON source_data BEGIN INSERT INTO global_search_fts(rowid) VALUES(new.rowid); END", &[]).ok();
     crate::database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_delete AFTER DELETE ON source_data BEGIN INSERT INTO global_search_fts(global_search_fts, rowid) VALUES('delete', old.rowid); END", &[]).ok();
     crate::database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_update AFTER UPDATE ON source_data BEGIN INSERT INTO global_search_fts(global_search_fts, rowid) VALUES('delete', old.rowid); INSERT INTO global_search_fts(rowid) VALUES(new.rowid); END", &[]).ok();
-    crate::database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks WHEN old.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES ('delete', old.rowid); END", &[]).ok();
-    crate::database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks WHEN new.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content); END", &[]).ok();
-    crate::database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks WHEN old.chunk_type='child' OR new.chunk_type='child' BEGIN DELETE FROM kk_chunks_fts WHERE rowid = old.rowid; INSERT INTO kk_chunks_fts(rowid, doc_title, content) SELECT new.rowid, new.doc_title, new.content WHERE new.chunk_type='child'; END", &[]).ok();
+    // kk_chunks_fts 触发器：使用 DROP + CREATE 确保定义始终最新
+    // 注意：不创建 DELETE 触发器，FTS5 清理在应用代码中处理（更可靠）
+    let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_delete", &[]);
+    let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_insert", &[]);
+    let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_update", &[]);
+    let _ = crate::database::run("CREATE TRIGGER kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks WHEN new.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content); END", &[]);
+    let _ = crate::database::run("CREATE TRIGGER kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks WHEN old.chunk_type='child' OR new.chunk_type='child' BEGIN DELETE FROM kk_chunks_fts WHERE rowid = old.rowid; INSERT INTO kk_chunks_fts(rowid, doc_title, content) SELECT new.rowid, new.doc_title, new.content WHERE new.chunk_type='child'; END", &[]);
     let _ = crate::database::with_db(|c| { c.pragma_update(None, "foreign_keys", "ON").ok(); Ok(()) });
 }

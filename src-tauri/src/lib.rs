@@ -179,13 +179,22 @@ pub fn run() {
             commands::notes_list_tag_mappings, commands::notes_add_tag_mapping, commands::notes_remove_tag_mapping, commands::notes_count_by_notebook,
             // Notebooks
             commands::notebook_list, commands::notebook_create, commands::notebook_update, commands::notebook_delete,
-            // Partners
+            // Partners (unified)
+            commands::partner_list, commands::partner_create, commands::partner_update, commands::partner_delete,
+            commands::partner_link_project, commands::partner_unlink_project,
+            commands::partner_contact_create, commands::partner_contact_update, commands::partner_contact_delete,
+            commands::partner_update_remark,
+            commands::contact_link_project, commands::contact_unlink_project,
+            commands::contacts_list_all,
+            // Partners (legacy aliases)
             commands::channel_list, commands::channel_create, commands::channel_update, commands::channel_delete,
             commands::channel_contact_create, commands::channel_contact_update, commands::channel_contact_delete,
             commands::channel_link_project, commands::channel_unlink_project,
+            commands::channel_update_remark,
             commands::vendor_list, commands::vendor_create, commands::vendor_update, commands::vendor_delete,
             commands::vendor_contact_create, commands::vendor_contact_update, commands::vendor_contact_delete,
             commands::vendor_link_project, commands::vendor_unlink_project,
+            commands::vendor_update_remark,
             commands::customer_list, commands::customer_create, commands::customer_update, commands::customer_delete,
             commands::customer_contact_create, commands::customer_contact_update, commands::customer_contact_delete,
             commands::customer_link_project, commands::customer_unlink_project,

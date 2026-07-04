@@ -480,6 +480,22 @@ async function sdv() {
       )
     } catch (e) { saveErr = e; console.error('[保存版本] savePlanVersion 失败:', e) }
     if (!saveErr && r) {
+      // 映射后端字段名 → 前端字段名（与 fetchProjectDetail 中的映射一致）
+      if (r.items && Array.isArray(r.items)) {
+        r.items = r.items.map(di => ({
+          uid: di.id,
+          productId: di.productId || '',
+          rowType: di.rowType || 'device',
+          name: di.name || '',
+          model: di.rowType === 'subnet' ? '' : (di.model || ''),
+          customName: di.rowType === 'subnet' ? '' : (di.deviceName || ''),
+          unitPrice: di.rowType === 'subnet' ? 0 : (di.price || 0),
+          quantity: di.rowType === 'subnet' ? 0 : (di.count || 1),
+          unit: di.rowType === 'subnet' ? '' : (di.unit || '台'),
+          mergedText: di.rowType === 'subnet' ? '' : (di.parameters || ''),
+          params: [],
+        }))
+      }
       cplan.value.history = [r, ...(cplan.value.history || [])]
     }
 

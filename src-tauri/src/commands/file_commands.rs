@@ -271,19 +271,20 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
         &[json!(todo_id)]
     ).map_err(|e| e.to_string())
 }
-#[tauri::command] pub async fn file_list_global(query: Option<String>) -> Result<Vec<Value>, String> {
-    if let Some(q) = query.filter(|q| !q.is_empty()) {
+#[tauri::command] pub async fn file_list_global(query: Option<String>) -> Result<Value, String> {
+    let files = if let Some(q) = query.filter(|q| !q.is_empty()) {
         let like = format!("%{}%", crate::database::escape_like(&q));
         database::all(
-            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 OR fa.file_ext LIKE ?1) ORDER BY fr.created_at DESC LIMIT 50",
+            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 OR fa.file_ext LIKE ?1) ORDER BY fr.created_at DESC LIMIT 50",
             &[json!(like)]
-        ).map_err(|e| e.to_string())
+        ).map_err(|e| e.to_string())?
     } else {
         database::all(
-            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' ORDER BY fr.created_at DESC LIMIT 200",
+            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' ORDER BY fr.created_at DESC LIMIT 200",
             &[]
-        ).map_err(|e| e.to_string())
-    }
+        ).map_err(|e| e.to_string())?
+    };
+    Ok(json!({"files": files}))
 }
 #[tauri::command] pub async fn file_list_all() -> Result<Vec<Value>, String> {
     database::all(

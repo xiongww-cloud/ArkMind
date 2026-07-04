@@ -5,7 +5,7 @@ import AppIcon from './AppIcon.vue'
 interface Option {
   id: string
   name: string
-  company?: string
+  address?: string
   [key: string]: any
 }
 
@@ -36,7 +36,7 @@ const filteredOptions = computed(() => {
   const q = searchQuery.value.toLowerCase()
   return props.options.filter(opt =>
     opt.name.toLowerCase().includes(q) ||
-    (opt.company && opt.company.toLowerCase().includes(q))
+    (opt.address && opt.address.toLowerCase().includes(q))
   )
 })
 
@@ -142,7 +142,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
           </div>
           <div class="flex-1 min-w-0">
             <p class="text-[11px] text-surface-700 truncate">{{ opt.name }}</p>
-            <p v-if="opt.company" class="text-[10px] text-surface-400 truncate">{{ opt.company }}</p>
+            <p v-if="opt.address" class="text-[10px] text-surface-400 truncate">{{ opt.address }}</p>
           </div>
         </div>
         <div v-if="filteredOptions.length === 0" class="px-3 py-4 text-center text-[11px] text-surface-400">

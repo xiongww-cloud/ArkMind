@@ -93,7 +93,6 @@ async fn import_sync_document(
             return Ok(0);  // 内容未变，0 个块
         }
     }
-
     // ★ Clear old chunks for this source (content changed or first import)
     //    同时清理对应 vector_cache 和 LanceDB 旧向量
     if let Some(ref sdid) = source_data_id {
@@ -104,12 +103,17 @@ async fn import_sync_document(
         ).unwrap_or_default().iter()
             .filter_map(|r| r["id"].as_i64())
             .collect();
-        // 先手动清 FTS5 索引，避免 kk_chunks_fts_delete 触发器失败导致 DELETE 不生效
-        for cid in &old_rowids {
-            let _ = database::run("INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES('delete', ?)", &[json!(cid)]);
-        }
+
+        // 先清理 FTS5 索引（避免触发器报错）
+        let _ = database::run(
+            "DELETE FROM kk_chunks_fts WHERE rowid IN (SELECT id FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='child')",
+            &[json!(sdid)]
+        );
+
+        // 删除旧块
         let old_count = database::run("DELETE FROM knowledge_chunks WHERE source_data_id=?", &[json!(sdid)]);
         eprintln!("[导入文档] 已删除旧块: source_data_id={}, deleted={:?}", sdid, old_count.map(|r| r.changes));
+
         // 清理 vector_cache 中的孤儿
         if !old_rowids.is_empty() {
             let placeholders: Vec<String> = old_rowids.iter().map(|_| "?".to_string()).collect();

@@ -12,16 +12,17 @@ use serde_json::json;
 static PUSH_RUNNING: AtomicBool = AtomicBool::new(false);
 static PUSH_NOTIFY: AtomicBool = AtomicBool::new(false);
 
-/// 业务层调用：将变更入队等待推送（同一实体只保留一条 pending）
+/// 业务层调用：将变更入队等待推送（同一实体只保留一条 pending，5秒防抖窗口）
 pub fn enqueue_push(source_type: &str, source_id: &str, operation: &str) {
     // 先删除同实体的 pending 条目，避免重复推送
     let _ = crate::database::run(
         "DELETE FROM knowledge_push_queue WHERE source_type=?1 AND source_id=?2 AND status='pending'",
         &[json!(source_type), json!(source_id)],
     );
+    // 插入新条目，设置 5 秒防抖窗口
     let _ = crate::database::run(
-        "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) \
-         VALUES(?1, ?2, ?3, 'pending')",
+        "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status, debounce_until) \
+         VALUES(?1, ?2, ?3, 'pending', datetime('now','localtime','+5 seconds'))",
         &[json!(source_type), json!(source_id), json!(operation)],
     );
     wake_push();
@@ -54,10 +55,11 @@ fn push_loop() {
             break;
         }
 
-        // 处理 pending 条目
+        // 处理 pending 条目（仅处理防抖窗口已过的条目）
         let pending = crate::database::all(
             "SELECT id, source_type, source_id, operation, retry_count \
              FROM knowledge_push_queue WHERE status='pending' \
+             AND (debounce_until IS NULL OR debounce_until <= datetime('now','localtime')) \
              ORDER BY created_at ASC LIMIT 10",
             &[],
         )
@@ -103,9 +105,10 @@ fn push_loop() {
                         );
                         eprintln!("[推送管线] ✗ {}/{} 超过最大重试次数: {}", source_type, source_id, e);
                     } else {
-                        // 退回 pending，等待下次重试
+                        // 退回 pending，重置防抖窗口，等待下次重试
                         let _ = crate::database::run(
                             "UPDATE knowledge_push_queue SET status='pending', \
+                             debounce_until=datetime('now','localtime','+5 seconds'), \
                              retry_count=?1, last_error=?2, \
                              updated_at=datetime('now','localtime') WHERE id=?3",
                             &[json!(new_retry), json!(&e), json!(id)],

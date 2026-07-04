@@ -377,7 +377,7 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer)
   isDirty.value = true
-  saveTimer = setTimeout(() => doSave(), 600)
+  saveTimer = setTimeout(() => doSave(), 3000)
 }
 async function saveBeforeSwitch() {
   if (isDirty.value && selectedNoteId.value) {
