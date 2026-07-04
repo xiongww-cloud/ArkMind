@@ -10,15 +10,15 @@ import { useAuthStore } from '@/stores/auth'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { formatDateTime } from '@/utils/time'
-import { deleteProjectBackend, fetchChannels, createChannel, updateChannel, deleteChannel, createChannelContact, updateChannelContact, deleteChannelContact, fetchVendors, createVendor, updateVendor, deleteVendor, createVendorContact, updateVendorContact, deleteVendorContact, fetchProjectNotes, createNote, updateNote, deleteNote, fetchTodos, createTodo, updateTodo, toggleTodo, deleteTodo, fetchProjects, fetchFiles, previewFile, updateFileMeta, fetchFileTree } from '@/api/db-client'
+import { deleteProjectBackend, fetchChannels, createChannel, updateChannel, deleteChannel, createChannelContact, updateChannelContact, deleteChannelContact, channelLinkProject, channelUnlinkProject, fetchVendors, createVendor, updateVendor, deleteVendor, createVendorContact, updateVendorContact, deleteVendorContact, vendorLinkProject, vendorUnlinkProject, fetchProjectNotes, createNote, updateNote, deleteNote, fetchTodos, createTodo, updateTodo, toggleTodo, deleteTodo, fetchProjects, fetchFiles, previewFile, updateFileMeta, fetchFileTree, contactsListChannels, contactsListVendors } from '@/api/db-client'
 import Timeline from '@/components/project/Timeline.vue'
 import FileManager from '@/components/project/FileManager.vue'
 import SolutionConfigurator from '@/components/project/SolutionConfigurator.vue'
 import ProjectDetailCustomer from '@/components/project/ProjectDetailCustomer.vue'
-import TagPanel from '@/components/common/TagPanel.vue'
 import TodoDetail from '@/views/TodoDetail.vue'
 import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
 import AppIcon from '@/components/common/AppIcon.vue'
+import SelectWithSearch from '@/components/common/SelectWithSearch.vue'
 
 const props = defineProps<{ id?: string; embedded?: boolean }>()
 
@@ -265,6 +265,48 @@ const channelEditName = ref('')
 const channelEditRemark = ref('')
 const expandedChannelId = ref(null)  // current expanded channel card
 
+// 渠道选择弹窗
+const showChannelSelectModal = ref(false)
+const allChannels = ref<any[]>([])
+const selectedChannelId = ref('')
+const selectedChannelContactId = ref('')
+
+const selectedChannel = computed(() => {
+  return allChannels.value.find(c => c.id === selectedChannelId.value) || null
+})
+
+const channelContacts = computed(() => {
+  return selectedChannel.value?.contacts || []
+})
+
+async function confirmChannelSelect() {
+  if (!selectedChannel.value) return
+  
+  const channel = selectedChannel.value
+  const channelName = channel.name
+  const selectedContactId = selectedChannelContactId.value || null
+  
+  // 关闭弹窗
+  showChannelSelectModal.value = false
+  selectedChannelId.value = ''
+  selectedChannelContactId.value = ''
+  
+  try {
+    // 关联已有渠道到项目，传入选中的联系人 ID
+    await channelLinkProject(channel.id, projectId.value, selectedContactId)
+    
+    // 重新加载渠道列表
+    channels.value = await fetchChannels(projectId.value) || []
+    
+    await projectStore.addProjectDynamic(projectId.value, `添加了渠道「${channelName}」`)
+    dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
+    toast({ message: `已添加渠道「${channelName}」`, type: 'success' })
+  } catch (e) {
+    console.warn('添加渠道失败', e)
+    toast({ message: '添加渠道失败', type: 'error' })
+  }
+}
+
 function toggleChannel(channelId) {
   expandedChannelId.value = expandedChannelId.value === channelId ? null : channelId
 }
@@ -304,9 +346,10 @@ async function saveChannelName(channelId) {
     return
   }
   try {
+    const oldName = ch?.name || '未命名'
     await updateChannel({ id: channelId, name: n || '' })
     if (ch) ch.name = n
-    await projectStore.addProjectDynamic(projectId.value, `渠道「${ch?.name || '未命名'}」更名为「${n || '未命名'}」`)
+    await projectStore.addProjectDynamic(projectId.value, `渠道「${oldName}」更名为「${n || '未命名'}」`)
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
   } catch (e) { console.warn('更新渠道名称失败', e) }
 }
@@ -329,26 +372,23 @@ async function saveChannelRemark(channelId) {
 }
 
 async function addChannel() {
+  // 打开渠道选择弹窗
+  showChannelSelectModal.value = true
   try {
-    const ch = await createChannel({ projectId: projectId.value, name: '' })
-    channels.value.push(ch)
-    channelEditNameId.value = ch.id
-    channelEditName.value = ''
-    nextTick(() => {
-      const input = document.querySelector(`[data-channel-name-input="${ch.id}"]`)
-      if (input) input.focus()
-    })
-  } catch (e) { console.warn('添加渠道失败', e) }
+    allChannels.value = await contactsListChannels() || []
+  } catch (e) { console.warn('加载渠道列表失败', e) }
 }
 async function removeChannel(channelId) {
-  const ok = await dangerConfirm({ title: '删除渠道', message: '确定删除此渠道？将同时删除关联的所有联系人。', confirmText: '删除' })
-  if (!ok) return
   try {
-    await deleteChannel(channelId)
+    await channelUnlinkProject(channelId, projectId.value)
     channels.value = channels.value.filter(c => c.id !== channelId)
-    await projectStore.addProjectDynamic(projectId.value, '删除了一个渠道')
+    await projectStore.addProjectDynamic(projectId.value, '移除了一个渠道')
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
-  } catch (e) { console.warn('删除渠道失败', e) }
+    toast({ message: '已移除渠道', type: 'success' })
+  } catch (e) {
+    console.warn('移除渠道失败', e)
+    toast({ message: '移除失败', type: 'error' })
+  }
 }
 
 // ─── 渠道联系人（每字段独立编辑） ──────────────────────────────────────────
@@ -359,11 +399,54 @@ const contactEditName = ref('')
 const contactEditPhone = ref('')
 const contactEditRemark = ref('')
 
-function startAddContact(channelId) {
-  editingContactRemarkOf.value = 'new-' + channelId
-  contactEditName.value = ''
-  contactEditPhone.value = ''
-  contactEditRemark.value = ''
+async function startAddContact(channelId) {
+  // 打开联系人选择弹窗
+  contactSelectChannelId.value = channelId
+  // 先加载渠道列表（如果未加载）
+  if (allChannels.value.length === 0) {
+    try { allChannels.value = await contactsListChannels() || [] } catch {}
+  }
+  // 从 allChannels 中查找当前渠道的联系人
+  const ch = channels.value.find(c => c.id === channelId)
+  const systemChannel = allChannels.value.find(sc => sc.name === ch?.name)
+  availableContacts.value = systemChannel?.contacts || []
+  showContactSelectModal.value = true
+}
+
+// ─── 联系人选择弹窗状态 ──────────────────────────────────────────
+const showContactSelectModal = ref(false)
+const contactSelectChannelId = ref('')
+const selectedContactId = ref('')
+const availableContacts = ref<any[]>([])
+
+async function confirmContactSelect() {
+  if (!selectedContactId.value || !contactSelectChannelId.value) return
+  const contact = availableContacts.value.find(c => c.id === selectedContactId.value)
+  if (!contact) return
+  
+  const channelId = contactSelectChannelId.value
+  showContactSelectModal.value = false
+  selectedContactId.value = ''
+  
+  try {
+    const ct = await createChannelContact({
+      channelId,
+      name: contact.name || '',
+      phone: contact.phone || '',
+      remark: contact.remark || ''
+    })
+    const ch = channels.value.find(c => c.id === channelId)
+    if (ch) {
+      if (!Array.isArray(ch.contacts)) ch.contacts = []
+      ch.contacts.push({ id: ct.id, name: ct.name, phone: ct.phone, remark: ct.remark })
+    }
+    await projectStore.addProjectDynamic(projectId.value, `添加了联系人「${contact.name}」`)
+    dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
+    toast({ message: `已添加联系人「${contact.name}」`, type: 'success' })
+  } catch (e) {
+    console.warn('添加联系人失败', e)
+    toast({ message: '添加联系人失败', type: 'error' })
+  }
 }
 
 // ── contact name inline edit ──
@@ -474,6 +557,48 @@ const vendorEditName = ref('')
 const vendorEditRemark = ref('')
 const expandedVendorId = ref(null)
 
+// 厂商选择弹窗
+const showVendorSelectModal = ref(false)
+const allVendors = ref<any[]>([])
+const selectedVendorId = ref('')
+const selectedVendorContactId = ref('')
+
+const selectedVendor = computed(() => {
+  return allVendors.value.find(v => v.id === selectedVendorId.value) || null
+})
+
+const vendorContacts = computed(() => {
+  return selectedVendor.value?.contacts || []
+})
+
+async function confirmVendorSelect() {
+  if (!selectedVendor.value) return
+  
+  const vendor = selectedVendor.value
+  const vendorName = vendor.name
+  const selectedContactId = selectedVendorContactId.value || null
+  
+  // 关闭弹窗
+  showVendorSelectModal.value = false
+  selectedVendorId.value = ''
+  selectedVendorContactId.value = ''
+  
+  try {
+    // 关联已有厂商到项目，传入选中的联系人 ID
+    await vendorLinkProject(vendor.id, projectId.value, selectedContactId)
+    
+    // 重新加载厂商列表
+    vendors.value = await fetchVendors(projectId.value) || []
+    
+    await projectStore.addProjectDynamic(projectId.value, `添加了厂商「${vendorName}」`)
+    dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
+    toast({ message: `已添加厂商「${vendorName}」`, type: 'success' })
+  } catch (e) {
+    console.warn('添加厂商失败', e)
+    toast({ message: '添加厂商失败', type: 'error' })
+  }
+}
+
 function toggleVendor(vendorId) {
   expandedVendorId.value = expandedVendorId.value === vendorId ? null : vendorId
 }
@@ -511,9 +636,10 @@ async function saveVendorName(vendorId) {
     return
   }
   try {
+    const oldName = vd?.name || '未命名'
     await updateVendor({ id: vendorId, name: n || '' })
     if (vd) vd.name = n
-    await projectStore.addProjectDynamic(projectId.value, `厂商「${vd?.name || '未命名'}」更名为「${n || '未命名'}」`)
+    await projectStore.addProjectDynamic(projectId.value, `厂商「${oldName}」更名为「${n || '未命名'}」`)
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
   } catch (e) { console.warn('更新厂商名称失败', e) }
 }
@@ -535,26 +661,23 @@ async function saveVendorRemark(vendorId) {
 }
 
 async function addVendor() {
+  // 打开厂商选择弹窗
+  showVendorSelectModal.value = true
   try {
-    const vd = await createVendor({ projectId: projectId.value, name: '' })
-    vendors.value.push(vd)
-    vendorEditNameId.value = vd.id
-    vendorEditName.value = ''
-    nextTick(() => {
-      const input = document.querySelector(`[data-vendor-name-input="${vd.id}"]`)
-      if (input) input.focus()
-    })
-  } catch (e) { console.warn('添加厂商失败', e) }
+    allVendors.value = await contactsListVendors() || []
+  } catch (e) { console.warn('加载厂商列表失败', e) }
 }
 async function removeVendor(vendorId) {
-  const ok = await dangerConfirm({ title: '删除厂商', message: '确定删除此厂商？将同时删除关联的所有联系人。', confirmText: '删除' })
-  if (!ok) return
   try {
-    await deleteVendor(vendorId)
+    await vendorUnlinkProject(vendorId, projectId.value)
     vendors.value = vendors.value.filter(v => v.id !== vendorId)
-    await projectStore.addProjectDynamic(projectId.value, '删除了一个厂商')
+    await projectStore.addProjectDynamic(projectId.value, '移除了一个厂商')
     dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
-  } catch (e) { console.warn('删除厂商失败', e) }
+    toast({ message: '已移除厂商', type: 'success' })
+  } catch (e) {
+    console.warn('移除厂商失败', e)
+    toast({ message: '移除失败', type: 'error' })
+  }
 }
 
 // ─── 厂商联系人 ────────────────────────────────────────────────────────
@@ -565,11 +688,54 @@ const vendorContactEditName = ref('')
 const vendorContactEditPhone = ref('')
 const vendorContactEditRemark = ref('')
 
-function startAddVendorContact(vendorId) {
-  editingVendorContactRemarkOf.value = 'new-' + vendorId
-  vendorContactEditName.value = ''
-  vendorContactEditPhone.value = ''
-  vendorContactEditRemark.value = ''
+async function startAddVendorContact(vendorId) {
+  // 打开联系人选择弹窗
+  vendorContactSelectVendorId.value = vendorId
+  // 先加载厂商列表（如果未加载）
+  if (allVendors.value.length === 0) {
+    try { allVendors.value = await contactsListVendors() || [] } catch {}
+  }
+  // 从 allVendors 中查找当前厂商的联系人
+  const vd = vendors.value.find(v => v.id === vendorId)
+  const systemVendor = allVendors.value.find(sv => sv.name === vd?.name)
+  availableVendorContacts.value = systemVendor?.contacts || []
+  showVendorContactSelectModal.value = true
+}
+
+// ─── 厂商联系人选择弹窗状态 ──────────────────────────────────────────
+const showVendorContactSelectModal = ref(false)
+const vendorContactSelectVendorId = ref('')
+const selectedVendorContactToAdd = ref('')
+const availableVendorContacts = ref<any[]>([])
+
+async function confirmVendorContactSelect() {
+  if (!selectedVendorContactToAdd.value || !vendorContactSelectVendorId.value) return
+  const contact = availableVendorContacts.value.find(c => c.id === selectedVendorContactToAdd.value)
+  if (!contact) return
+  
+  const vendorId = vendorContactSelectVendorId.value
+  showVendorContactSelectModal.value = false
+  selectedVendorContactToAdd.value = ''
+  
+  try {
+    const ct = await createVendorContact({
+      vendorId,
+      name: contact.name || '',
+      phone: contact.phone || '',
+      remark: contact.remark || ''
+    })
+    const vd = vendors.value.find(v => v.id === vendorId)
+    if (vd) {
+      if (!Array.isArray(vd.contacts)) vd.contacts = []
+      vd.contacts.push({ id: ct.id, name: ct.name, phone: ct.phone, remark: ct.remark })
+    }
+    await projectStore.addProjectDynamic(projectId.value, `添加了厂商联系人「${contact.name}」`)
+    dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
+    toast({ message: `已添加联系人「${contact.name}」`, type: 'success' })
+  } catch (e) {
+    console.warn('添加厂商联系人失败', e)
+    toast({ message: '添加联系人失败', type: 'error' })
+  }
 }
 
 function startEditVendorContactName(ct) {
@@ -668,6 +834,14 @@ async function removeVendorContact(vendorId, contactId) {
 }
 
 // ─── 客户信息 — 已拆分到 ProjectDetailCustomer.vue ──────────────────────
+async function handleCustomerUpdate(data: { customer: string; customer_contact: string; customer_phone: string }) {
+  const old = project.value?.customer || ''
+  projectStore.updateProjectInList(projectId.value, data)
+  try {
+    await projectStore.updateProject(projectId.value, data)
+    await projectStore.addProjectDynamic(projectId.value, `客户从「${old || '无'}」改为「${data.customer || '无'}」`)
+  } catch (e) { console.warn('保存客户信息失败', e) }
+}
 
 // ─── 投标时间日历下拉 ────────────────────────────────────────────────────
 const showBidCalendar = ref(false)
@@ -775,9 +949,9 @@ const isAddingDynamic = ref(false)
 
 onMounted(async () => {
   document.addEventListener('click', handleClickOutside)
+  document.addEventListener('click', closeNotePopups)
   await loadProjectData()
 })
-document.addEventListener('click', closeNotePopups)
 
 // ★ 切换项目时重新加载所有数据（onMounted 在路由参数变化时不会重复触发）
 watch(() => projectId.value, async () => {
@@ -1438,7 +1612,7 @@ watch([projectNotes, projectTodos], () => {
           </div>
 
           <!-- 客户信息 -->
-          <ProjectDetailCustomer :project="project" :is-archived="project.isArchived" />
+          <ProjectDetailCustomer :project="project" :is-archived="project.isArchived" @update-customer="handleCustomerUpdate" />
 
           <!-- 渠道信息 -->
           <div class="mt-4 border-t border-surface-100 pt-4">
@@ -1727,11 +1901,6 @@ watch([projectNotes, projectTodos], () => {
             </div>
           </div>
 
-          <!-- 标签 -->
-          <div class="mt-4 border-t border-surface-100 pt-4 px-1 pb-2">
-            <TagPanel entity-type="projects" :entity-id="projectId" />
-          </div>
-
         </div>
       </div>
 
@@ -1928,9 +2097,6 @@ watch([projectNotes, projectTodos], () => {
               </template>
               <div v-else class="text-center py-8"><p class="text-xs text-surface-400">暂无项目文件</p><p class="text-[10px] text-surface-300 mt-1">前往「文件」tab 上传</p></div>
             </div>
-            <!-- 标签 -->
-            <div class="px-3 py-2 border-t border-surface-100">
-            </div>
           </div>
           </div>
           <div v-else class="flex-1 flex items-center justify-center text-surface-300 text-xs bg-white min-w-0">从左侧选择一个笔记</div>
@@ -2038,9 +2204,6 @@ watch([projectNotes, projectTodos], () => {
                 </template>
                 <div v-else class="text-center py-8"><p class="text-xs text-surface-400">暂无项目文件</p><p class="text-[10px] text-surface-300 mt-1">前往「文件」tab 上传</p></div>
               </div>
-            <!-- 标签 -->
-            <div v-if="selectedTodoId" class="px-3 py-2 border-t border-surface-100">
-            </div>
             </div>
           </div>
         </div>
@@ -2070,6 +2233,130 @@ watch([projectNotes, projectTodos], () => {
   @select-file="insertFileLink"
   @close="atOpen = false"
 />
+
+<!-- 渠道选择弹窗 -->
+<Teleport to="body">
+  <Transition name="confirm-fade">
+    <div v-if="showChannelSelectModal" class="fixed inset-0 z-[80] flex items-center justify-center">
+      <div class="absolute inset-0 bg-black/20" @click="showChannelSelectModal = false" />
+      <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-lg mx-4 p-5 z-10">
+        <h3 class="text-sm font-semibold text-surface-800 mb-4">选择渠道</h3>
+        
+        <div class="mb-4">
+          <label class="text-[11px] text-surface-500 mb-1 block">渠道</label>
+          <SelectWithSearch
+            v-model="selectedChannelId"
+            :options="allChannels.map(c => ({ id: c.id, name: c.name, company: c.company }))"
+            placeholder="选择渠道..."
+          />
+        </div>
+
+        <div v-if="selectedChannel && channelContacts.length > 0" class="mb-4">
+          <label class="text-[11px] text-surface-500 mb-1 block">联系人</label>
+          <SelectWithSearch
+            v-model="selectedChannelContactId"
+            :options="channelContacts.map(c => ({ id: c.id, name: c.name, phone: c.phone }))"
+            placeholder="选择联系人..."
+          />
+        </div>
+
+        <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
+          <button @click="showChannelSelectModal = false" class="py-1 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
+          <button @click="confirmChannelSelect" :disabled="!selectedChannel" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors disabled:opacity-50">确定</button>
+        </div>
+      </div>
+    </div>
+  </Transition>
+</Teleport>
+
+<!-- 厂商选择弹窗 -->
+<Teleport to="body">
+  <Transition name="confirm-fade">
+    <div v-if="showVendorSelectModal" class="fixed inset-0 z-[80] flex items-center justify-center">
+      <div class="absolute inset-0 bg-black/20" @click="showVendorSelectModal = false" />
+      <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-lg mx-4 p-5 z-10">
+        <h3 class="text-sm font-semibold text-surface-800 mb-4">选择厂商</h3>
+        
+        <div class="mb-4">
+          <label class="text-[11px] text-surface-500 mb-1 block">厂商</label>
+          <SelectWithSearch
+            v-model="selectedVendorId"
+            :options="allVendors.map(v => ({ id: v.id, name: v.name, company: v.company }))"
+            placeholder="选择厂商..."
+          />
+        </div>
+
+        <div v-if="selectedVendor && vendorContacts.length > 0" class="mb-4">
+          <label class="text-[11px] text-surface-500 mb-1 block">联系人</label>
+          <SelectWithSearch
+            v-model="selectedVendorContactId"
+            :options="vendorContacts.map(c => ({ id: c.id, name: c.name, phone: c.phone }))"
+            placeholder="选择联系人..."
+          />
+        </div>
+
+        <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
+          <button @click="showVendorSelectModal = false" class="py-1 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
+          <button @click="confirmVendorSelect" :disabled="!selectedVendor" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors disabled:opacity-50">确定</button>
+        </div>
+      </div>
+    </div>
+  </Transition>
+</Teleport>
+
+<!-- 渠道联系人选择弹窗 -->
+<Teleport to="body">
+  <Transition name="confirm-fade">
+    <div v-if="showContactSelectModal" class="fixed inset-0 z-[80] flex items-center justify-center">
+      <div class="absolute inset-0 bg-black/20" @click="showContactSelectModal = false" />
+      <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-lg mx-4 p-5 z-10">
+        <h3 class="text-sm font-semibold text-surface-800 mb-4">选择联系人</h3>
+        
+        <div v-if="availableContacts.length > 0" class="mb-4">
+          <label class="text-[11px] text-surface-500 mb-1 block">联系人</label>
+          <SelectWithSearch
+            v-model="selectedContactId"
+            :options="availableContacts.map(c => ({ id: c.id, name: c.name, phone: c.phone }))"
+            placeholder="选择联系人..."
+          />
+        </div>
+        <div v-else class="text-[12px] text-surface-400 py-4 text-center">该渠道暂无联系人</div>
+
+        <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
+          <button @click="showContactSelectModal = false" class="py-1 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
+          <button @click="confirmContactSelect" :disabled="!selectedContactId" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors disabled:opacity-50">确定</button>
+        </div>
+      </div>
+    </div>
+  </Transition>
+</Teleport>
+
+<!-- 厂商联系人选择弹窗 -->
+<Teleport to="body">
+  <Transition name="confirm-fade">
+    <div v-if="showVendorContactSelectModal" class="fixed inset-0 z-[80] flex items-center justify-center">
+      <div class="absolute inset-0 bg-black/20" @click="showVendorContactSelectModal = false" />
+      <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-lg mx-4 p-5 z-10">
+        <h3 class="text-sm font-semibold text-surface-800 mb-4">选择联系人</h3>
+        
+        <div v-if="availableVendorContacts.length > 0" class="mb-4">
+          <label class="text-[11px] text-surface-500 mb-1 block">联系人</label>
+          <SelectWithSearch
+            v-model="selectedVendorContactToAdd"
+            :options="availableVendorContacts.map(c => ({ id: c.id, name: c.name, phone: c.phone }))"
+            placeholder="选择联系人..."
+          />
+        </div>
+        <div v-else class="text-[12px] text-surface-400 py-4 text-center">该厂商暂无联系人</div>
+
+        <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
+          <button @click="showVendorContactSelectModal = false" class="py-1 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
+          <button @click="confirmVendorContactSelect" :disabled="!selectedVendorContactId" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors disabled:opacity-50">确定</button>
+        </div>
+      </div>
+    </div>
+  </Transition>
+</Teleport>
 </template>
 
 <style scoped>

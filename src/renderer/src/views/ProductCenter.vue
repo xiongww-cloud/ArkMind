@@ -6,11 +6,11 @@ import { useSelectionStore } from '@/stores/selection'
 import { confirm, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
-import TagPanel from '@/components/common/TagPanel.vue'
 import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, getMaterialAssociations, updateMaterialAssociations, updateFileMeta } from '@/api/db-client'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { formatDateTime } from '@/utils/time'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 
 const store = useProductStore()
 const route = useRoute()
@@ -115,7 +115,7 @@ async function onDragUp() {
   }
   else if (type === 'product') { if (!pId) return; if (tid === store.uncategorizedSeriesId || tid === '__root__') return; try { await store.updateProduct(pId, { seriesId: tid }); await store.fetchProducts(); toast({ message: '产品已移动', type: 'success' }) } catch { toast({ message: '移动失败', type: 'error' }) } }
 }
-onUnmounted(() => { if (dragTimer.value) clearTimeout(dragTimer.value); document.removeEventListener('mousemove', onDragMove); document.removeEventListener('mouseup', onDragUp); document.removeEventListener('mouseup', onDragUpPre) })
+onUnmounted(() => { if (dragTimer.value) clearTimeout(dragTimer.value); document.removeEventListener('mousemove', onDragMove); document.removeEventListener('mouseup', onDragUp); document.removeEventListener('mouseup', onDragUpPre); unlistenDragDrop?.() })
 
 // ─── Products ────────────────────────────────────────────────────────
 const selectedProductId = ref<string|null>(null)
@@ -211,9 +211,9 @@ const assocProductIds = ref<string[]>([])
 function onMaterialDragOver(e: DragEvent) { e.preventDefault(); materialDragOver.value = true }
 function onMaterialDragLeave() { materialDragOver.value = false }
 function onMaterialDrop(e: DragEvent) {
-  e.preventDefault(); materialDragOver.value = false
-  const file = e.dataTransfer?.files?.[0]
-  if (file) materialFile.value = { name: file.name, path: (file as any).path || file.name, size: file.size }
+  e.preventDefault()
+  // Don't clear materialDragOver here — the Tauri native onDragDropEvent listener
+  // needs it to be true to capture the file path. It will be cleared by the listener.
 }
 
 const materialTypeOptions = ['彩页', '白皮书', '检测报告', '其他']
@@ -289,7 +289,7 @@ async function confirmUpload() {
 async function handleDeleteMaterial(mid: string) {
   const ok = await dangerConfirm({ title: '删除物料', message: '确定删除此物料？', confirmText: '删除' })
   if (!ok) return
-  try { await deleteMaterial(mid, selectedProductId.value!); await loadMaterials(); toast({ message: '物料已删除', type: 'success' }) } catch (e: any) { toast({ message: '删除失败', type: 'error' }) }
+  try { await deleteMaterial(mid); await loadMaterials(); toast({ message: '物料已删除', type: 'success' }) } catch (e: any) { toast({ message: '删除失败: ' + (e.message || ''), type: 'error' }) }
 }
 function startRenameMaterial(m: any) {
   editingMaterialId.value = m.id
@@ -318,7 +318,7 @@ async function openAssocMaterial(m: any) {
     const r = await getMaterialAssociations(m.id)
     // file_get_product_associations 返回 { success, products: [{id,...}] }
     if (r?.products && Array.isArray(r.products)) {
-      ids = r.products.map((p: any) => p.id).filter(Boolean)
+      ids = r.products.map((p: any) => p.entity_id || p.id).filter(Boolean)
     }
   } catch (e) { console.error('getMaterialAssociations failed:', e); ids = [] }
   assocProductIds.value = ids
@@ -343,9 +343,28 @@ const assocProductSearch = computed(() => {
   return (store.products as any[]).filter((p: any) => !q || p.name.toLowerCase().includes(q))
 })
 
+let unlistenDragDrop: (() => void) | null = null
+
 onMounted(async () => {
   await store.fetchSeries(); collapsedSeries.value = new Set(store.series.map(s => s.id)); await store.fetchProducts()
   selectedSeriesId.value = store.selectedSeriesId
+  // Use Tauri's native file drop event to get actual file paths
+  try {
+    const webview = getCurrentWebview()
+    unlistenDragDrop = await webview.onDragDropEvent((event) => {
+      if (event.payload.type === 'drop' && materialDragOver.value) {
+        const paths = event.payload.paths
+        if (paths && paths.length > 0) {
+          const filePath = paths[0]
+          const name = filePath.replace(/^.*[\\\/]/, '')
+          materialFile.value = { name, path: filePath, size: 0 }
+        }
+        materialDragOver.value = false
+      } else if (event.payload.type === 'leave') {
+        materialDragOver.value = false
+      }
+    })
+  } catch (e) { console.warn('[ProductCenter] Failed to listen drag-drop:', e) }
 })
 // ★ 响应全局搜索跳转
 let processingSeq = 0
@@ -487,10 +506,6 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
           </div>
       </div>
 
-      <div class="px-1 mt-4 pt-4 pb-2 border-t border-surface-100">
-        <TagPanel entity-type="products" :entity-id="selectedProductId" />
-      </div>
-
       <div class="border-t border-surface-100 shrink-0"></div>
     </template>
     <div v-else class="flex-1"></div>
@@ -513,7 +528,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
               @click="handleFilePick"
               @dragover="onMaterialDragOver"
               @dragleave="onMaterialDragLeave"
-              @drop="onMaterialDrop"
+              @drop.prevent="onMaterialDrop"
               class="w-full border-2 border-dashed rounded-xl p-5 text-center transition-all duration-200 cursor-pointer flex flex-col items-center justify-center"
               :class="materialDragOver ? 'border-brand-400 bg-brand-50/50' : materialFile ? 'border-emerald-300 bg-emerald-50/30' : 'border-surface-200 hover:border-brand-300 hover:bg-surface-50'"
             >

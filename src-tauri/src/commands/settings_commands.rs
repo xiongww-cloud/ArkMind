@@ -59,11 +59,34 @@ use serde_json::{json, Value};
 }
 #[tauri::command] pub async fn get_ai_config() -> Result<Value, String> { let row = database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'",&[]).map_err(|e| e.to_string())?; match row { Some(r) => { if let Some(s) = r["ai_config"].as_str() { let parsed: Value = serde_json::from_str(s).unwrap_or(json!({})); let machine = license::get_machine_hash(); Ok(crypto::decrypt_config_api_keys(&parsed, &machine)) } else { Ok(json!({})) } } None => Ok(json!({})) } }
 #[tauri::command] pub async fn update_ai_config(data: Value) -> Result<Value, String> {
-    let ai_config_str = data["aiConfig"].as_str().or(data["ai_config"].as_str()).unwrap_or("{}");
-    let parsed: Value = serde_json::from_str(ai_config_str).unwrap_or(json!({}));
+    // Support both wrapped (data.aiConfig) and direct (data itself) formats
+    let incoming: Value = if let Some(s) = data["aiConfig"].as_str().or(data["ai_config"].as_str()) {
+        serde_json::from_str(s).unwrap_or(json!({}))
+    } else if data.get("embedding").is_some() || data.get("providers").is_some() || data.get("visionProviders").is_some() || data.get("chatApiUrl").is_some() {
+        data.clone()
+    } else {
+        json!({})
+    };
+    // Read existing config and merge (so partial saves don't wipe other fields)
     let machine = license::get_machine_hash();
-    let encrypted = crypto::encrypt_config_api_keys(&parsed, &machine);
-    let encrypted_str = serde_json::to_string(&encrypted).unwrap_or_else(|_| ai_config_str.to_string());
+    let existing: Value = database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", &[]).ok().flatten()
+        .and_then(|r| r["ai_config"].as_str().map(|s| {
+            let v: Value = serde_json::from_str(s).unwrap_or(json!({}));
+            crypto::decrypt_config_api_keys(&v, &machine)
+        }))
+        .unwrap_or(json!({}));
+    let mut merged = existing;
+    if let (Some(obj), Some(patch)) = (merged.as_object_mut(), incoming.as_object()) {
+        for (k, v) in patch {
+            if v.is_null() {
+                obj.remove(k);
+            } else {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    let encrypted = crypto::encrypt_config_api_keys(&merged, &machine);
+    let encrypted_str = serde_json::to_string(&encrypted).unwrap_or_else(|_| serde_json::to_string(&merged).unwrap_or_default());
     let result = database::run("UPDATE system_config SET ai_config=?,updated_at=datetime('now', 'localtime') WHERE tenant_id='local-user'",&[json!(encrypted_str)]).map_err(|e| e.to_string())?;
     if result.changes == 0 {
         database::run("INSERT INTO system_config(tenant_id, ai_config, created_at, updated_at) VALUES('local-user', ?, datetime('now','localtime'), datetime('now','localtime'))",&[json!(encrypted_str)]).map_err(|e| e.to_string())?;
@@ -148,68 +171,3 @@ pub async fn ai_test_embedding(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn storage_migrate_progress() -> Result<Value, String> { Ok(json!({"status":"idle","total":0,"current":0})) }
 #[tauri::command] pub async fn storage_default_path() -> Result<String, String> { Ok(".".to_string()) }
 #[tauri::command] pub async fn oss_raw_diagnose() -> Result<Value, String> { Ok(json!({"success":true})) }
-
-// ─── User Policies (用户策略/宪法) ─── 统一到 source_data ─────────
-#[tauri::command]
-pub async fn get_user_policies() -> Result<Value, String> {
-    let rows = database::all(
-        "SELECT source_id, title, content, updated_at FROM source_data WHERE source_type='POLICY' ORDER BY updated_at DESC",
-        &[],
-    ).map_err(|e| e.to_string())?;
-    Ok(json!({"success": true, "policies": rows}))
-}
-
-#[tauri::command]
-pub async fn set_user_policies(policies: String) -> Result<Value, String> {
-    database::run("DELETE FROM source_data WHERE source_type='POLICY'", &[]).ok();
-    for line in policies.lines() {
-        let content = line.trim().trim_start_matches('•').trim_start_matches('-').trim();
-        if content.is_empty() { continue; }
-        let id = format!("policy-{}", uuid::Uuid::new_v4());
-        let title: String = content.chars().take(50).collect();
-        database::run(
-            "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'POLICY',?1,?2,?3,datetime('now','localtime'))",
-            &[json!(&id), json!(&title), json!(content)],
-        ).map_err(|e| e.to_string())?;
-    }
-    Ok(json!({"success": true}))
-}
-
-/// 统一策略管理：有id+content=更新，有id+无content=删除，无id+有content=新增
-#[tauri::command]
-pub async fn manage_policy(id: Option<String>, content: Option<String>) -> Result<Value, String> {
-    match (id, content) {
-        (Some(ref pid), Some(ref c)) => {
-            let c = c.trim();
-            if c.is_empty() {
-                return Ok(json!({"success": false, "error": "策略内容不能为空"}));
-            }
-            database::run(
-                "UPDATE source_data SET content=?1, updated_at=datetime('now','localtime') WHERE source_type='POLICY' AND source_id=?2",
-                &[json!(c), json!(pid)],
-            ).map_err(|e| e.to_string())?;
-            Ok(json!({"success": true, "action": "updated", "message": format!("已更新策略：{}", c)}))
-        }
-        (Some(ref pid), None) => {
-            database::run(
-                "DELETE FROM source_data WHERE source_type='POLICY' AND source_id=?1",
-                &[json!(pid)],
-            ).map_err(|e| e.to_string())?;
-            Ok(json!({"success": true, "action": "deleted", "message": "已删除策略"}))
-        }
-        (None, Some(ref c)) => {
-            let c = c.trim();
-            if c.is_empty() {
-                return Ok(json!({"success": false, "error": "策略内容不能为空"}));
-            }
-            let new_id = format!("policy-{}", uuid::Uuid::new_v4());
-            let title: String = c.chars().take(50).collect();
-            database::run(
-                "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'POLICY',?1,?2,?3,datetime('now','localtime'))",
-                &[json!(&new_id), json!(&title), json!(c)],
-            ).map_err(|e| e.to_string())?;
-            Ok(json!({"success": true, "action": "added", "message": format!("已记入宪法：{}", c)}))
-        }
-        _ => Ok(json!({"success": false, "error": "参数不完整"})),
-    }
-}

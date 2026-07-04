@@ -12,7 +12,8 @@ pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &st
     let clean = crate::services::file_parser::sanitize_chars(content);
     if clean.trim().is_empty() { return; }
     let _ = crate::database::run(
-        "INSERT OR REPLACE INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,?2,?3,?4,?5,datetime('now','localtime'))",
+        "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,?2,?3,?4,?5,datetime('now','localtime')) \
+         ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title, content=excluded.content, updated_at=CASE WHEN content!=excluded.content THEN excluded.updated_at ELSE updated_at END",
         &[
             serde_json::json!(source_id),  // id = source_id
             serde_json::json!(source_type), // source_type
@@ -47,6 +48,7 @@ pub fn sync_entity(source_type: &str, source_id: &str) {
         "TODO" => extract_todo(source_id),
         "FILE" => extract_file(source_id),
         "CHAT" => extract_chat(source_id),
+        "CONTACT" => extract_contact(source_id),
         _ => {
             eprintln!("[source_doc_sync] 未知 source_type: {}", source_type);
             return;
@@ -57,6 +59,28 @@ pub fn sync_entity(source_type: &str, source_id: &str) {
         return;
     }
     sync_entity_to_source_docs(source_type, source_id, &title, &content);
+}
+
+/// Resolve a human-readable name for an entity
+fn resolve_entity_name(entity_type: &str, entity_id: &str) -> String {
+    let sql = match entity_type {
+        "PROJECT" => Some("SELECT name FROM projects WHERE id=?"),
+        "PRODUCT" => Some("SELECT name FROM products WHERE id=?"),
+        "NOTE" => Some("SELECT title FROM notes WHERE note_id=?"),
+        "TODO" => Some("SELECT title FROM todos WHERE id=?"),
+        "FILE" => None, // files use custom_name from file_relations
+        _ => None,
+    };
+    if let Some(s) = sql {
+        if let Ok(Some(r)) = crate::database::get(s, &[serde_json::json!(entity_id)]) {
+            for key in &["name", "title"] {
+                if let Some(v) = r[*key].as_str().filter(|v| !v.is_empty()) {
+                    return v.to_string();
+                }
+            }
+        }
+    }
+    entity_id.to_string()
 }
 
 fn extract_note(note_id: &str) -> (String, String) {
@@ -95,7 +119,7 @@ fn extract_product(product_id: &str) -> (String, String) {
 
 fn extract_project(project_id: &str) -> (String, String) {
     let row = match crate::database::get(
-        "SELECT name, customer, description, status FROM projects WHERE id=?1",
+        "SELECT name, customer, description, status, owner, budget, bid_time, customer_contact, customer_phone FROM projects WHERE id=?1",
         &[serde_json::json!(project_id)],
     ) {
         Ok(Some(r)) => r,
@@ -107,6 +131,75 @@ fn extract_project(project_id: &str) -> (String, String) {
     if let Some(c) = row["customer"].as_str().filter(|c| !c.is_empty()) { parts.push(format!("customer: {}", c)); }
     if let Some(d) = row["description"].as_str().filter(|d| !d.is_empty()) { parts.push(format!("description: {}", d)); }
     if let Some(s) = row["status"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("status: {}", s)); }
+    if let Some(o) = row["owner"].as_str().filter(|o| !o.is_empty()) { parts.push(format!("owner: {}", o)); }
+    if let Some(b) = row["budget"].as_f64().filter(|b| *b > 0.0) { parts.push(format!("budget: {:.2}", b)); }
+    if let Some(bt) = row["bid_time"].as_str().filter(|bt| !bt.is_empty()) { parts.push(format!("bid_time: {}", bt)); }
+    if let Some(cc) = row["customer_contact"].as_str().filter(|cc| !cc.is_empty()) { parts.push(format!("customer_contact: {}", cc)); }
+    if let Some(cp) = row["customer_phone"].as_str().filter(|cp| !cp.is_empty()) { parts.push(format!("customer_phone: {}", cp)); }
+    // 解决方案产品
+    if let Ok(Some(sols)) = crate::database::get(
+        "SELECT GROUP_CONCAT(DISTINCT si.product_name) as products FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 AND COALESCE(si.product_name,'')!=''",
+        &[serde_json::json!(project_id)]
+    ) {
+        if let Some(products) = sols["products"].as_str().filter(|p| !p.is_empty()) {
+            parts.push(format!("solution_products: {}", products));
+        }
+    }
+    // 项目动态
+    if let Ok(dynamics) = crate::database::all(
+        "SELECT type, content, created_at FROM project_dynamics WHERE project_id=?1 ORDER BY created_at",
+        &[serde_json::json!(project_id)]
+    ) {
+        let dyn_str: Vec<String> = dynamics.iter().filter_map(|d| {
+            let t = d["type"].as_str().unwrap_or("");
+            let c = d["content"].as_str().unwrap_or("");
+            let dt = d["created_at"].as_str().unwrap_or("");
+            if !c.is_empty() { Some(format!("{}: {} ({})", t, c, dt)) } else { None }
+        }).collect();
+        if !dyn_str.is_empty() { parts.push(format!("dynamics: {}", dyn_str.join(" | "))); }
+    }
+    // 通过 business_relations 获取关联的渠道
+    if let Ok(channels) = crate::database::all(
+        "SELECT cp.name, cp.phone, cp.company FROM business_relations br JOIN channel_partners cp ON cp.id=br.source_id WHERE br.source_type='CHANNEL' AND br.target_type='PROJECT' AND br.target_id=?1 AND br.relation_type='belongs_to'",
+        &[serde_json::json!(project_id)]
+    ) {
+        let ch_str: Vec<String> = channels.iter().filter_map(|ch| {
+            let name = ch["name"].as_str().unwrap_or("");
+            if name.is_empty() { return None; }
+            let phone = ch["phone"].as_str().unwrap_or("");
+            let company = ch["company"].as_str().unwrap_or("");
+            Some(format!("{}（{}-{}）", company, name, phone))
+        }).collect();
+        if !ch_str.is_empty() { parts.push(format!("channels: {}", ch_str.join(", "))); }
+    }
+    // 通过 business_relations 获取关联的厂商
+    if let Ok(vendors) = crate::database::all(
+        "SELECT vp.name, vp.phone, vp.company FROM business_relations br JOIN vendor_partners vp ON vp.id=br.source_id WHERE br.source_type='VENDOR' AND br.target_type='PROJECT' AND br.target_id=?1 AND br.relation_type='belongs_to'",
+        &[serde_json::json!(project_id)]
+    ) {
+        let vd_str: Vec<String> = vendors.iter().filter_map(|vd| {
+            let name = vd["name"].as_str().unwrap_or("");
+            if name.is_empty() { return None; }
+            let phone = vd["phone"].as_str().unwrap_or("");
+            let company = vd["company"].as_str().unwrap_or("");
+            Some(format!("{}（{}-{}）", company, name, phone))
+        }).collect();
+        if !vd_str.is_empty() { parts.push(format!("vendors: {}", vd_str.join(", "))); }
+    }
+    // 通过 business_relations 获取关联的联系人
+    if let Ok(contacts) = crate::database::all(
+        "SELECT ct.name, ct.phone, ct.email FROM business_relations br JOIN channel_contacts ct ON ct.id=br.source_id WHERE br.source_type='CONTACT' AND br.target_type='PROJECT' AND br.target_id=?1 AND br.relation_type='belongs_to'",
+        &[serde_json::json!(project_id)]
+    ) {
+        let ct_str: Vec<String> = contacts.iter().filter_map(|ct| {
+            let name = ct["name"].as_str().unwrap_or("");
+            if name.is_empty() { return None; }
+            let phone = ct["phone"].as_str().unwrap_or("");
+            let email = ct["email"].as_str().unwrap_or("");
+            Some(format!("{}-{}-{}", name, phone, email))
+        }).collect();
+        if !ct_str.is_empty() { parts.push(format!("contacts: {}", ct_str.join(", "))); }
+    }
     (title, parts.join("\n"))
 }
 
@@ -166,4 +259,43 @@ fn extract_chat(session_id: &str) -> (String, String) {
         .collect::<Vec<_>>()
         .join("\n");
     (title, chat_text)
+}
+
+fn extract_contact(contact_id: &str) -> (String, String) {
+    let json_id = serde_json::json!(contact_id);
+    // Try channel_contacts first
+    if let Ok(Some(r)) = crate::database::get(
+        "SELECT cc.name, cc.phone, cc.email, cp.name as company, 'channel' as role FROM channel_contacts cc LEFT JOIN channel_partners cp ON cp.id=cc.channel_id WHERE cc.id=?1",
+        &[json_id.clone()],
+    ) {
+        return build_contact_content(&r);
+    }
+    // Try vendor_contacts
+    if let Ok(Some(r)) = crate::database::get(
+        "SELECT vc.name, vc.phone, vc.email, vp.name as company, 'vendor' as role FROM vendor_contacts vc LEFT JOIN vendor_partners vp ON vp.id=vc.vendor_id WHERE vc.id=?1",
+        &[json_id.clone()],
+    ) {
+        return build_contact_content(&r);
+    }
+    // Try customer_contacts
+    if let Ok(Some(r)) = crate::database::get(
+        "SELECT cc.name, cc.phone, cc.email, cu.name as company, 'customer' as role FROM customer_contacts cc LEFT JOIN customers cu ON cu.id=cc.customer_id WHERE cc.id=?1",
+        &[json_id],
+    ) {
+        return build_contact_content(&r);
+    }
+    (String::new(), String::new())
+}
+
+fn build_contact_content(row: &serde_json::Value) -> (String, String) {
+    let name = row["name"].as_str().unwrap_or("").to_string();
+    if name.is_empty() { return (String::new(), String::new()); }
+    let mut parts = vec![format!("name: {}", name)];
+    if let Some(v) = row["phone"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("phone: {}", v)); }
+    if let Some(v) = row["email"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("email: {}", v)); }
+    if let Some(v) = row["position"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("position: {}", v)); }
+    if let Some(v) = row["company"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("company: {}", v)); }
+    if let Some(v) = row["role"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("role: {}", v)); }
+    if let Some(v) = row["remark"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("remark: {}", v)); }
+    (name, parts.join("\n"))
 }

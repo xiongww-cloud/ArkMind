@@ -3,7 +3,6 @@ import { ref, computed, onMounted, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSelectionStore } from '@/stores/selection'
 import AppIcon from '@/components/common/AppIcon.vue'
-import TagPanel from '@/components/common/TagPanel.vue'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { useUploadProgress } from '@/composables/useUploadProgress'
@@ -587,10 +586,6 @@ function isOverdue(t: Todo): boolean {
         <p class="text-[10px] text-gray-300 mt-1" v-if="attTab !== 'project'">点击 + 上传文件</p>
       </div>
       </div>
-    </div>
-    <!-- 标签 -->
-    <div class="shrink-0 px-3 py-2 border-t border-surface-100">
-      <TagPanel entity-type="todos" :entity-id="selectedTodoId" />
     </div>
   </div>
 </div>

@@ -17,6 +17,7 @@ const navItems = [
   { path: '/projects', label: '项目', icon: 'folder-open' },
   { path: '/notes', label: '笔记', icon: 'file-doc' },
   { path: '/todos', label: '待办', icon: 'list' },
+  { path: '/contacts', label: '通讯录', icon: 'users' },
   { path: '/products', label: '产品', icon: 'cube' },
   { path: '/assets', label: '资料', icon: 'archive' },
   { path: '/knowledge-graph', label: '知识库', icon: 'network' },

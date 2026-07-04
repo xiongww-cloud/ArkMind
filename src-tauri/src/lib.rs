@@ -47,6 +47,14 @@ pub fn run() {
             let uri = request.uri().to_string();
             let path = uri.strip_prefix("pms://").unwrap_or(&uri);
             let (_host, id) = if let Some(p) = path.find('/') { (&path[..p], &path[p+1..]) } else { (path, "") };
+
+            // 验证 ID 格式：仅允许数字、字母、短横线（防止路径穿越）
+            if id.is_empty() || id.len() > 100 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+                let resp = tauri::http::Response::builder().status(400).body("Invalid ID".as_bytes().to_vec());
+                if let Ok(r) = resp { let _ = responder.respond(r); }
+                return;
+            }
+
             let file_path: Option<String> =
                 database::get("SELECT content_hash FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.id=?", &[serde_json::json!(id)]).ok().flatten()
                     .and_then(|r| r["content_hash"].as_str().filter(|h| !h.is_empty()).map(|h| crate::commands::file_commands::flat_disk_path(h)));
@@ -55,11 +63,18 @@ pub fn run() {
                     let path = std::path::PathBuf::from(&p);
                     if !path.exists() { tauri::http::Response::builder().status(404).body("File Missing".as_bytes().to_vec()) }
                     else {
-                        let buf = std::fs::read(&path).unwrap_or_default();
-                        let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
-                            "pdf"=>"application/pdf", "docx"=>"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xlsx"=>"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "png"=>"image/png", "jpg"|"jpeg"=>"image/jpeg", "gif"=>"image/gif", "webp"=>"image/webp", _=>"application/octet-stream"
-                        };
-                        tauri::http::Response::builder().status(200).header("Content-Type", mime).header("Access-Control-Allow-Origin","pms://localhost").body(buf)
+                        // 限制文件大小（100MB）
+                        const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
+                        let meta = std::fs::metadata(&path).ok();
+                        if meta.as_ref().map_or(false, |m| m.len() > MAX_FILE_SIZE) {
+                            tauri::http::Response::builder().status(413).body("File too large".as_bytes().to_vec())
+                        } else {
+                            let buf = std::fs::read(&path).unwrap_or_default();
+                            let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+                                "pdf"=>"application/pdf", "docx"=>"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xlsx"=>"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "png"=>"image/png", "jpg"|"jpeg"=>"image/jpeg", "gif"=>"image/gif", "webp"=>"image/webp", _=>"application/octet-stream"
+                            };
+                            tauri::http::Response::builder().status(200).header("Content-Type", mime).header("Access-Control-Allow-Origin","pms://localhost").body(buf)
+                        }
                     }
                 }
                 _ => tauri::http::Response::builder().status(404).body("Not Found".as_bytes().to_vec())
@@ -79,6 +94,9 @@ pub fn run() {
             if let Err(e) = database::init_database(&db_file) { eprintln!("DB init failed: {}", e); return Err(Box::new(e)); }
             log::info!("DB initialized: {:?}", db_file);
 
+            // Initialize business_relations table
+            services::business_relations::init();
+
             // Window maximize event
             {
                 let handle = app.handle().clone();
@@ -97,6 +115,12 @@ pub fn run() {
             migrate_fix_is_daily_corruption();
             commands::file_commands::cleanup_preview_links();
             if database::check_license_premium() { upgrade_fts5_triggers_on_startup(); }
+
+            // Start Push Pipeline (业务层 → source_data 推送管线，最早启动)
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                services::push_pipeline::start();
+            });
 
             // Start KnowledgePipeline
             std::thread::spawn(|| {
@@ -158,8 +182,14 @@ pub fn run() {
             // Partners
             commands::channel_list, commands::channel_create, commands::channel_update, commands::channel_delete,
             commands::channel_contact_create, commands::channel_contact_update, commands::channel_contact_delete,
+            commands::channel_link_project, commands::channel_unlink_project,
             commands::vendor_list, commands::vendor_create, commands::vendor_update, commands::vendor_delete,
             commands::vendor_contact_create, commands::vendor_contact_update, commands::vendor_contact_delete,
+            commands::vendor_link_project, commands::vendor_unlink_project,
+            commands::customer_list, commands::customer_create, commands::customer_update, commands::customer_delete,
+            commands::customer_contact_create, commands::customer_contact_update, commands::customer_contact_delete,
+            commands::customer_link_project, commands::customer_unlink_project,
+            commands::contacts_list_channels, commands::contacts_list_vendors,
             // Solutions
             commands::solution_list, commands::solution_create, commands::solution_rename, commands::solution_delete,
             commands::solution_version_list, commands::solution_version_create, commands::solution_version_update_meta,
@@ -176,32 +206,29 @@ pub fn run() {
             commands::ext_tool_search_knowledge_base, commands::ext_tool_get_document_page,
             commands::ext_tool_find_related_knowledge, commands::ext_tool_search_by_tag,
             commands::ext_tool_get_project_context,
-            commands::kb_memory_objects, commands::search_business, commands::search_source_data, commands::kb_project_note_ids, commands::kb_memory_parents,
+            commands::kb_memory_objects, commands::search_business, commands::search_source_data, commands::lookup_object_names, commands::kb_project_note_ids, commands::kb_memory_parents,
             commands::kb_memory_heatmap, commands::kb_memory_dashboard_stats,
             commands::kb_pipeline_debug,
             commands::ext_tool_translate_filter, commands::ext_tool_search_filtered,
             // AI sync
-            commands::ai_sync_status, commands::ai_sync_trigger, commands::ai_sync_diagnose, commands::ai_sync_reset,
-            commands::ai_sync_retry_failed, commands::cleanup_retry_failed, commands::cleanup_orphan_data, commands::pipeline_full_resync, commands::ai_sync_force_resync, commands::ai_sync_diagnose_failed_files,
+            commands::ai_sync_status, commands::ai_sync_trigger, commands::ai_sync_diagnose,
+            commands::cleanup_retry_failed, commands::cleanup_orphan_data,
             commands::knowledge_pipeline_status,
-            commands::pipeline_debug_status, commands::pipeline_clear_knowledge, commands::pipeline_clear_vectors, commands::pipeline_clear_all, commands::pipeline_clear_tag_pipeline, commands::pipeline_resync, commands::pipeline_browse_source, commands::pipeline_get_source_content, commands::pipeline_retag_all,
+            commands::pipeline_debug_status, commands::pipeline_clear_knowledge, commands::pipeline_clear_vectors, commands::pipeline_clear_all, commands::pipeline_resync, commands::pipeline_browse_source, commands::pipeline_get_source_content,
             // Assets
             commands::assets_search, commands::assets_search_fts5, commands::assets_list,
             commands::asset_sync_status, commands::asset_sync_trigger, commands::asset_diagnose,
             commands::asset_get_latest_version, commands::asset_get_parsed_text, commands::asset_rerun_migration,
             // Tags
-            commands::tag_get_state, commands::tag_list_registered, commands::tag_force_resync, commands::tag_tag_single,
             commands::tag_list, commands::tag_create, commands::tag_update, commands::tag_delete, commands::tag_list_categories, commands::tag_stats,
             commands::entity_get_tags, commands::entity_add_tag, commands::entity_remove_tag,
             // Settings
             commands::settings_get, commands::settings_update, commands::get_ai_config, commands::update_ai_config, commands::ai_test_provider, commands::ai_test_embedding,
-            commands::get_user_policies, commands::set_user_policies, commands::manage_policy,
             commands::user_profile, commands::user_profile_update,
             // Window
             commands::window_minimize, commands::window_toggle_maximize, commands::window_close,
             // Export
-            commands::export_data, commands::import_data, commands::db_export_raw,
-            commands::products_export, commands::products_export_file, commands::products_import, commands::products_import_file,
+            commands::export_data, commands::import_data,
             commands::solution_download_excel,
             // Todos
             commands::todos_list, commands::todos_create, commands::todos_update, commands::todos_delete,

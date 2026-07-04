@@ -482,18 +482,31 @@ fn try_macos_sips(path: &str) -> Option<Vec<String>> {
 
 /// 同步调用 OCR API 的阻塞封装（供同步 parse_file_smart 调用）
 fn ocr_image_sync(base64_uri: &str) -> String {
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(r) => r,
-        Err(e) => { eprintln!("[文件解析] tokio 运行时创建失败: {}", e); return String::new(); }
-    };
-    match rt.block_on(ocr_with_vision_api(base64_uri)) {
-        Ok(text) => text,
-        Err(e) => {
-            eprintln!("[文件解析] OCR 失败: {}", e);
-            String::new()
+    // 检查是否已在 tokio runtime 中，避免 "Cannot start a runtime from within a runtime" panic
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        // 已在 runtime 中，直接 block_on
+        match handle.block_on(ocr_with_vision_api(base64_uri)) {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("[文件解析] OCR 失败: {}", e);
+                String::new()
+            }
+        }
+    } else {
+        // 不在 runtime 中，创建新 runtime
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => { eprintln!("[文件解析] tokio 运行时创建失败: {}", e); return String::new(); }
+        };
+        match rt.block_on(ocr_with_vision_api(base64_uri)) {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("[文件解析] OCR 失败: {}", e);
+                String::new()
+            }
         }
     }
 }

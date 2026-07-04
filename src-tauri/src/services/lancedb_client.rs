@@ -108,7 +108,7 @@ impl LanceDBClient {
         if query.is_empty() { return Ok(Vec::new()); }
         if !self.table_exists()? { return Ok(Vec::new()); }
         let table = sync_run(self.db.open_table(&self.table_name).execute(), "open")?;
-        let filter = tags.iter().map(|t| format!("tags LIKE '%{}%'", t.replace('\'', "''"))).collect::<Vec<_>>().join(" OR ");
+        let filter = tags.iter().map(|t| format!("tags LIKE '%{}%'", crate::database::escape_like(&t.replace('\'', "''")))).collect::<Vec<_>>().join(" OR ");
         let stream = sync_run(table.vector_search(query.to_vec()).map_err(|e| format!("search: {e}"))?.only_if(&filter).limit(limit).execute(), "execute")?;
         let batches = collect(stream)?;
         let mut items = Vec::new();

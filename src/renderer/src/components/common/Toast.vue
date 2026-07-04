@@ -15,7 +15,7 @@ const typeStyles = {
     <TransitionGroup
       name="toast"
       tag="div"
-      class="fixed bottom-6 right-6 z-[100] flex flex-col items-end gap-2 pointer-events-none"
+      class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center gap-2 pointer-events-none"
     >
       <div
         v-for="t in toasts"
@@ -38,10 +38,10 @@ const typeStyles = {
 }
 .toast-enter-from {
   opacity: 0;
-  transform: translateX(20px);
+  transform: translateY(20px);
 }
 .toast-leave-to {
   opacity: 0;
-  transform: translateX(10px);
+  transform: translateY(10px);
 }
 </style>

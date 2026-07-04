@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import VueApexCharts from 'vue3-apexcharts'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
 import {
   kbDashboardStats,
   pipelineClearKnowledge, pipelineClearAll,
-  aiSyncRetryFailed, cleanupRetryFailed, cleanupOrphanData, pipelineFullResync,
+  cleanupRetryFailed, cleanupOrphanData,
   kbPipelineDebug,
 } from '@/api/db-client'
 
@@ -40,13 +40,19 @@ const chartColors = ['#60a5fa','#fbbf24','#a78bfa','#34d399','#94a3b8','#f59e0b'
 async function handleClearAll() { if (!(await dangerConfirm({ title: '重置全部数据', message: '确定重置全部数据？将重新从业务表抓取数据并重新物化打标。', confirmText: '重置' }))) return; try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] clearAll failed:', e); toast({ message: '重置失败', type: 'error' }) } }
 async function handleClearKnowledge() { if (!(await dangerConfirm({ title: '重置知识管线', message: '确定重置知识碎片和向量缓存？将重新从源数据物化。', confirmText: '重置' }))) return; try { await pipelineClearKnowledge(); toast({ message: '已重置知识管线，正在重新物化', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] clearKnowledge failed:', e); toast({ message: '重置失败', type: 'error' }) } }
 async function handleOrphanCleanup() { try { await cleanupOrphanData(); toast({ message: '孤儿数据清理已完成', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] orphanCleanup failed:', e); toast({ message: '清理失败', type: 'error' }) } }
-async function handleFullResync() { try { await pipelineFullResync(); toast({ message: '已重置，知识管线将重新物化', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] fullResync failed:', e); toast({ message: '重置失败', type: 'error' }) } }
 
 const debugData = ref<any>(null)
 async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch (e) { console.error('[KG] loadDebug failed:', e) } }
-function typeLabel(st: string): string { const m: Record<string,string> = { FILE:'文件',NOTE:'笔记',PRODUCT:'产品',PROJECT:'项目',TODO:'待办' }; return m[st] || st || '通用' }
+function typeLabel(st: string): string { const m: Record<string,string> = { FILE:'文件',NOTE:'笔记',PRODUCT:'产品',PROJECT:'项目',TODO:'待办',MEMORY:'记忆',POLICY:'策略' }; return m[st] || st || '通用' }
 function typeColor(st: string): string { const m: Record<string,string> = { FILE:'#60a5fa',NOTE:'#fbbf24',PRODUCT:'#a78bfa',PROJECT:'#34d399',TODO:'#94a3b8' }; return m[st] || '#94a3b8' }
-onMounted(() => { loadStats(); })
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  loadStats()
+  refreshTimer = setInterval(loadStats, 5000)
+})
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 <template>
   <div id="kg-root" class="h-full flex flex-col bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
@@ -60,104 +66,63 @@ onMounted(() => { loadStats(); })
       </div>
       <!-- 图表 -->
       <div class="grid grid-cols-2 gap-4">
-        <div class="bg-white rounded-2xl border border-surface-200 p-4 content-card">
+        <div class="bg-white rounded-2xl border border-surface-200 p-4 content-card flex flex-col">
           <h3 class="text-[12px] font-semibold text-surface-600 mb-3">对象分布</h3>
-          <div class="flex items-end gap-3">
-            <div v-for="item in (stats?.object_counts?.by_type || [])" :key="item.label" class="flex-1 text-center">
+          <div class="flex-1 flex items-end gap-3 h-[120px]">
+            <div v-for="item in (stats?.object_counts?.by_type || [])" :key="item.label" class="flex-1 flex flex-col items-center justify-end h-full group cursor-pointer">
               <div class="text-[18px] font-bold text-surface-800">{{ item.cnt }}</div>
-              <div class="h-1.5 rounded-full mt-1.5 mx-auto w-full" :style="{ background: typeColor(item.label), height: Math.max(4, item.cnt / Math.max(stats?.object_counts?.total || 1, 1) * 60) + 'px' }"></div>
+              <div class="w-full rounded-t mt-1 transition-all duration-200 group-hover:opacity-80 group-hover:shadow-lg" :style="{ background: typeColor(item.label), height: Math.max(4, (item.cnt / Math.max(...(stats?.object_counts?.by_type || []).map((x: any) => x.cnt), 1)) * 100) + '%' }"></div>
               <div class="text-[10px] text-surface-400 mt-1">{{ typeLabel(item.label) }}</div>
             </div>
           </div>
         </div>
-        <div class="bg-white rounded-2xl border border-surface-200 p-4 content-card">
-          <h3 class="text-[12px] font-semibold text-surface-600 mb-3">管线状态</h3>
-          <div class="grid grid-cols-3 gap-2 text-center pt-2">
-            <div><div class="text-[22px] font-bold text-emerald-600">{{ stats?.pipeline?.embedded ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">已嵌入</div></div>
-            <div><div class="text-[22px] font-bold text-amber-600">{{ stats?.pipeline?.pending ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">待处理</div></div>
-            <div><div class="text-[22px] font-bold text-red-500">{{ stats?.pipeline?.failed ?? '-' }}</div><div class="text-[10px] text-surface-400 mt-1">失败</div></div>
-          </div>
-        </div>
-      </div>
-      <div class="grid grid-cols-2 gap-4">
         <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
           <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识分布</h3>
           <VueApexCharts v-if="byTypeChart" type="donut" height="260" :series="byTypeChart.series" :options="{ labels: byTypeChart.labels, colors: byTypeChart.colors, legend: { position: 'bottom', fontSize: '12px', labels: { colors: '#64748b' } }, dataLabels: { enabled: true, formatter: (v: number) => v.toFixed(0) + '%' }, plotOptions: { pie: { donut: { size: '65%', labels: { show: true, total: { show: true, label: '总计', fontSize: '13px', color: '#334155' } } } } }, chart: { fontFamily: 'inherit' } }" />
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
         <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
           <h3 class="text-[12px] font-semibold text-surface-600 mb-3">遗忘曲线</h3>
           <VueApexCharts v-if="weightDistChart" type="area" height="260" :series="weightDistChart.series" :options="{ xaxis: { type: 'numeric', min: 0, max: 100, title: { text: '有效权重', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' }, formatter: (v: string) => { const n = parseFloat(v); if (n === 0) return '0%'; if (n === 100) return '100%'; return '' } }, tickAmount: 1 }, yaxis: { title: { text: '碎片数', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#6366f1'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 0 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false } } }" />
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
-      </div>
-      <!-- 增长趋势 -->
-      <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-[12px] font-semibold text-surface-600">知识增长趋势</h3>
-          <div class="flex items-center gap-1">
-            <button @click="setGrowthDays(1)" class="text-[10px] px-2 py-1 rounded transition-colors" :class="growthDays === 1 ? 'bg-brand-100 text-brand-700 font-medium' : 'text-surface-400 hover:bg-surface-100'">今天</button>
-            <button @click="setGrowthDays(7)" class="text-[10px] px-2 py-1 rounded transition-colors" :class="growthDays === 7 ? 'bg-brand-100 text-brand-700 font-medium' : 'text-surface-400 hover:bg-surface-100'">近7天</button>
-            <button @click="setGrowthDays(30)" class="text-[10px] px-2 py-1 rounded transition-colors" :class="growthDays === 30 ? 'bg-brand-100 text-brand-700 font-medium' : 'text-surface-400 hover:bg-surface-100'">近30天</button>
-            <button @click="setGrowthDays(365)" class="text-[10px] px-2 py-1 rounded transition-colors" :class="growthDays === 365 ? 'bg-brand-100 text-brand-700 font-medium' : 'text-surface-400 hover:bg-surface-100'">近一年</button>
-          </div>
+        <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
+          <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识增长趋势</h3>
+          <VueApexCharts v-if="growthChart" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '新增碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false, mouseWheel: { enabled: false } } } }" />
+          <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
-        <VueApexCharts v-if="growthChart" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '新增碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false } } }" />
-        <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
       </div>
       <!-- 操作按钮 -->
       <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
         <h3 class="text-[12px] font-semibold text-surface-600 mb-3">系统操作</h3>
         <div class="flex flex-wrap gap-2">
-          <button @click="loadStats(); aiSyncRetryFailed(); cleanupRetryFailed()" class="px-3 py-1 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 transition flex items-center gap-1">
-            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>刷新
-          </button>
           <button @click="handleClearKnowledge" class="px-3 py-1 text-[11px] rounded-lg border border-amber-300 text-amber-600 hover:bg-amber-50 transition">重置知识管线</button>
           <button @click="handleClearAll" class="px-3 py-1 text-[11px] rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重置全部数据</button>
           <span class="w-px h-6 bg-surface-200 self-center" />
           <button @click="handleOrphanCleanup" class="px-3 py-1 text-[11px] rounded-lg border border-purple-300 text-purple-600 hover:bg-purple-50 transition">清理孤儿数据</button>
-          <button @click="handleFullResync" class="px-3 py-1 text-[11px] rounded-lg border border-orange-300 text-orange-600 hover:bg-orange-50 transition">重新物化全部</button>
-          <router-link to="/inspector" class="px-3 py-1 text-[11px] rounded-lg border border-surface-300 text-surface-500 hover:bg-surface-50 transition flex items-center gap-1">
-            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-            索引检查
-          </router-link>
         </div>
       </div>
-      <!-- 管道调试 -->
+      <!-- 清理队列调试 -->
       <div v-if="debugData" class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-        <h3 class="text-[12px] font-semibold text-surface-600 mb-3">管道调试</h3>
-        <div class="grid grid-cols-5 gap-2 mb-2">
-          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-emerald-600">{{ debugData.stats.sync_ok }}</div><div class="text-[9px] text-surface-400">已嵌入</div></div>
-          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-blue-600">{{ debugData.stats.sync_pending }}</div><div class="text-[9px] text-surface-400">待处理</div></div>
-          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-red-500">{{ debugData.stats.sync_fail }}</div><div class="text-[9px] text-surface-400">失败</div></div>
+        <h3 class="text-[12px] font-semibold text-surface-600 mb-3">清理队列状态</h3>
+        <div class="grid grid-cols-2 gap-2 mb-2">
           <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-amber-600">{{ debugData.stats.cleanup_pending }}</div><div class="text-[9px] text-surface-400">待清理</div></div>
           <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-slate-500">{{ debugData.stats.cleanup_done }}</div><div class="text-[9px] text-surface-400">已清理</div></div>
         </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <h4 class="text-[10px] text-surface-400 mb-1">ai_sync_queue (最近 30 条)</h4>
-            <div class="max-h-[200px] overflow-auto text-[8px] rounded border border-surface-200">
-              <div v-for="r in debugData.sync_queue" :key="r.id" class="px-1.5 py-0.5 border-b border-surface-100 flex items-center gap-1"
-                :class="r.is_embedded===1?'text-emerald-600':r.is_embedded===-1?'text-red-500':'text-blue-600'">
-                <span class="font-mono">{{ r.id }}</span>
-                <span>{{ r.source_type }}/{{ r.source_id?.slice(0,8) }}...</span>
-                <span class="ml-auto" :title="r.last_error">{{ r.is_embedded===1?'✓':r.is_embedded===-1?'✗':'⏳' }}</span>
-              </div>
-            </div>
-          </div>
-          <div>
-            <h4 class="text-[10px] text-surface-400 mb-1">cleanup_queue (最近 30 条)</h4>
-            <div class="max-h-[200px] overflow-auto text-[8px] rounded border border-surface-200">
-              <div v-for="r in debugData.cleanup_queue" :key="r.id" class="px-1.5 py-0.5 border-b border-surface-100 flex items-center gap-1"
-                :class="r.status===1?'text-emerald-600':r.status===-1?'text-red-500':'text-amber-600'">
-                <span class="font-mono">{{ r.id }}</span>
-                <span>{{ r.source_type }}/{{ r.source_id?.slice(0,8) }}...</span>
-                <span class="ml-auto">{{ r.status===1?'✓':r.status===-1?'✗':'⏳' }}</span>
-              </div>
+        <div v-if="debugData.cleanup_queue?.length">
+          <h4 class="text-[10px] text-surface-400 mb-1">cleanup_queue (最近 30 条)</h4>
+          <div class="max-h-[200px] overflow-auto text-[8px] rounded border border-surface-200">
+            <div v-for="r in debugData.cleanup_queue" :key="r.id" class="px-1.5 py-0.5 border-b border-surface-100 flex items-center gap-1"
+              :class="r.status===1?'text-emerald-600':r.status===-1?'text-red-500':'text-amber-600'">
+              <span class="font-mono">{{ r.id }}</span>
+              <span>{{ r.source_type }}/{{ r.source_id?.slice(0,8) }}...</span>
+              <span class="ml-auto">{{ r.status===1?'✓':r.status===-1?'✗':'⏳' }}</span>
             </div>
           </div>
         </div>
-        <button @click="loadDebug" class="mt-2 px-2 py-1 text-[10px] rounded border border-surface-200 text-surface-500 hover:bg-surface-50">加载管道调试数据</button>
+        <button @click="loadDebug" class="mt-2 px-2 py-1 text-[10px] rounded border border-surface-200 text-surface-500 hover:bg-surface-50">加载调试数据</button>
       </div>
     </div>
   </div>

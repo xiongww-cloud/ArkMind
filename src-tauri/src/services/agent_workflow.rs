@@ -38,13 +38,16 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 当引用联想时，使用"我推测""这让我想到""通常情况下""可能意味着"。
 禁止把联想描述为已经发生过的事实、用户曾经说过的话，或当作历史记录。
 
+## 冲突裁决
+当回忆中的结论与知识检索中的最新文档发生冲突时，必须以知识检索中的事实为最高准绳。回忆代表历史讨论过程，不代表最新 ground truth。如果知识库中的数据与回忆矛盾，以知识库为准。
+
 ## 回答目标
 帮助用户解决问题，而不是复述记忆。
 知识库中的内容是记忆片段，不是答案本身。
 最终回答应围绕用户的问题组织，而不是围绕查到的内容组织。
 
 ## 工具
-- ext_tool_object: 在记忆中寻找对象。mode=search 用于定位（按相关性排序），mode=recall 用于回忆（按天分组+完整展示+关联计数）。recall 模式下超长会自动分页。
+- ext_tool_object: 按时间范围回忆知识库中的对象（时间线视图）。按天分组展示所有对象的新增/修改情况和关联对象。用于「最近有什么」「回忆一下」类时间线问题。不要用于搜索具体知识内容，那请用 ext_tool_search。
 - ext_tool_search: 从长期记忆中回忆相关知识片段，支持 time_range 时间范围过滤。用于回忆具体的知识内容。
 - ext_tool_traverse: 沿记忆关联网络漫游（next/prev/related/references）。用于查看某个记忆片段的前后文或关联实体。⚠️ chunk_id 必须是 search 返回结果中的「ChunkID」字段（如 47beae9a），绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。
 - ext_tool_manage_todo: 管理待办。action=create(创建，title必填，priority从用户原话提取填入此字段不要写进content，due_date从用户原话提取，repeat可选daily/weekly/monthly)，action=update(更新，用todo_id或title匹配)，action=delete(删除，用todo_id或title匹配)。
@@ -82,11 +85,11 @@ static API_CACHE: Lazy<RwLock<(String,String,String,Instant)>> = Lazy::new(|| Rw
 static AGENT_HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| reqwest::Client::builder().timeout(std::time::Duration::from_secs(API_TIMEOUT_SECS)).build().expect("agent http"));
 
 fn get_api_endpoint() -> (String, String, String) {
-    { let (url,key,model,at) = &*API_CACHE.read().unwrap(); if at.elapsed().as_secs()<30 && !url.is_empty() { return (url.clone(),key.clone(),model.clone()); } }
+    { let (url,key,model,at) = &*API_CACHE.read().unwrap_or_else(|e| e.into_inner()); if at.elapsed().as_secs()<30 && !url.is_empty() { return (url.clone(),key.clone(),model.clone()); } }
     let config = crate::services::chat_api::get_chat_config();
     let url = config.base_url.trim_end_matches('/').to_string();
     let (url, key, model) = (url, config.api_key, config.model);
-    let mut c = API_CACHE.write().unwrap(); *c = (url.clone(), key.clone(), model.clone(), Instant::now());
+    let mut c = API_CACHE.write().unwrap_or_else(|e| e.into_inner()); *c = (url.clone(), key.clone(), model.clone(), Instant::now());
     (url, key, model)
 }
 
@@ -185,7 +188,7 @@ impl SessionMemory {
                         .and_then(|s| s.splitn(2, ']').nth(1))
                         .map(|s| s.trim().trim_end_matches('.'))
                         .unwrap_or("");
-                    self.update(obj_type, sid, name);
+                    self.update(obj_type, parts[1], name);
                 }
             }
         } else {
@@ -347,6 +350,48 @@ impl SessionMemory {
             }
         }
 
+        // 5. Knowledge Progress（source 覆盖率统计）
+        if !self.visited_sources.is_empty() {
+            lines.push(String::new());
+            lines.push("## Knowledge Progress".to_string());
+            // 按 visited_chunks 中的 chunk_id 前缀匹配，统计每个 source 的已读/总数
+            for src_key in self.visited_sources.iter() {
+                let parts: Vec<&str> = src_key.splitn(2, '-').collect();
+                if parts.len() != 2 { continue; }
+                let (st, sid) = (parts[0], parts[1]);
+                // 查 source 名称
+                let name = crate::database::get(
+                    "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
+                    &[json!(st), json!(sid)],
+                ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                if name.is_empty() { continue; }
+                // 查该 source 的总 child chunk 数
+                let total: i64 = crate::database::get(
+                    "SELECT COUNT(*) as cnt FROM knowledge_chunks kc JOIN source_data sd ON sd.id=kc.source_data_id WHERE sd.source_type=?1 AND sd.source_id=?2 AND kc.chunk_type='child'",
+                    &[json!(st), json!(sid)],
+                ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+                if total == 0 { continue; }
+                // 统计已读 chunk（visited_chunks 包含该 source 的 chunk_id 前缀）
+                let visited_count: i64 = crate::database::all(
+                    "SELECT kc.chunk_id FROM knowledge_chunks kc JOIN source_data sd ON sd.id=kc.source_data_id WHERE sd.source_type=?1 AND sd.source_id=?2 AND kc.chunk_type='child'",
+                    &[json!(st), json!(sid)],
+                ).unwrap_or_default().iter().filter(|r| {
+                    let cid = r["chunk_id"].as_str().unwrap_or("");
+                    let short: String = cid.chars().take(8).collect();
+                    self.visited_chunks.contains(&short)
+                }).count() as i64;
+                let pct = (visited_count as f64 / total as f64 * 100.0) as i64;
+                let status = if visited_count >= total { "✔" } else { "…​" };
+                lines.push(format!("  {} {}：{}/{} 块 ({}%)", status, name, visited_count, total, pct));
+            }
+            // 显示已搜索关键词
+            if !self.search_keywords.is_empty() {
+                let all_kw: Vec<String> = self.search_keywords.iter().flat_map(|v| v.iter().cloned()).collect();
+                let unique_kw: Vec<String> = { let s: std::collections::HashSet<String> = all_kw.into_iter().collect(); s.into_iter().collect() };
+                lines.push(format!("  🔍 已搜索：{}", unique_kw.join("、")));
+            }
+        }
+
         // 5. Evidence Path（从 observations 推导探索轨迹）
         if !self.observations.is_empty() {
             lines.push(String::new());
@@ -419,15 +464,16 @@ fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collection
             }
         }
     }
-    if scope_ids.is_empty() { return None; }
+    if scope_ids.is_empty() { eprintln!("[Scope] scope_ids 为空，scope=None"); return None; }
     let s = resolve_scope_to_rowids(&scope_ids);
-    if s.is_empty() { None } else { Some(s) }
+    eprintln!("[Scope] scope_ids={:?}, resolved_rowids={}", scope_ids, s.len());
+    if s.is_empty() { eprintln!("[Scope] scope_rowids 解析为空，scope=None"); None } else { Some(s) }
 }
 
 fn build_tools_definitions() -> Value {
     json!([
         {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。支持时间范围过滤。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
-        {"type":"function","function":{"name":"ext_tool_object","description":"搜索和浏览记忆中的对象。mode=search用于定位（FTS+排序+TopK），mode=recall用于回忆（按天分组+完整展示+关联计数）。recall模式超长时自动分页。","parameters":{"type":"object","properties":{"query":{"type":"string","description":"对象名称关键词（search模式用）"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"mode":{"type":"string","enum":["search","recall"],"description":"search=检索定位，recall=时间线回忆，默认search"},"limit":{"type":"integer","description":"每页数量，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
+        {"type":"function","function":{"name":"ext_tool_object","description":"按时间范围回忆知识库中的对象。按天分组展示，显示新增/修改标记和关联对象。用于「最近有什么」「回忆一下」类时间线问题。超长时自动分页。","parameters":{"type":"object","properties":{"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE/TODO，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页天数，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。⚠️ chunk_id 是8位短ID（如 47beae9a），来自 search() 结果中的「ChunkID」字段。绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID（如 47beae9a），必须来自 search() 结果的 ChunkID 字段，不是 source_id"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。action=create(title必填,priority从用户原话提取,due_date从用户原话提取,repeat可选daily/weekly/monthly,project_id关联项目), action=update, action=delete","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待办标题"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_act","description":"执行项目操作。action: update_project_status=更新项目状态(project_id+new_status)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["update_project_status"]},"project_id":{"type":"string","description":"项目ID"},"new_status":{"type":"string","description":"新状态"}},"required":["action"]}}},
@@ -692,7 +738,7 @@ pub fn get_child_rowids_by_tag_names(tag_names: &[String]) -> Vec<i64> {
 /// 不依赖语义匹配，纯数据库外键级联。
 fn execute_horizontal_search(keywords: &[String]) -> String {
     if keywords.is_empty() { return String::new(); }
-    let like = format!("%{}%", keywords.join(" "));
+    let like = format!("%{}%", crate::database::escape_like(&keywords.join(" ")));
 
     let mut out = String::new();
     let mut seen = std::collections::HashSet::new();
@@ -737,15 +783,25 @@ fn resolve_scope_to_rowids(scope: &[String]) -> std::collections::HashSet<i64> {
     let mut all_rowids = std::collections::HashSet::new();
     for s in scope {
         let parts: Vec<&str> = s.splitn(2, '-').collect();
-        if parts.len() != 2 { continue; }
+        if parts.len() != 2 { eprintln!("[Scope] 无法解析 scope key: {}", s); continue; }
         let st = parts[0].to_uppercase();
         let sid = parts[1];
-        if let Ok(Some(row)) = database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(st), json!(sid)]) {
-            if let Some(sdid) = row["id"].as_i64() {
-                if let Ok(rows) = database::all("SELECT id FROM knowledge_chunks WHERE chunk_type='child' AND source_data_id=?1",&[json!(sdid)]) {
-                    for cr in &rows { if let Some(cid) = cr["id"].as_i64() { all_rowids.insert(cid); } }
+        // source_data.id 是 TEXT 类型（= source_id），不能用 as_i64()
+        match database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(st), json!(sid)]) {
+            Ok(Some(row)) => {
+                let sdid_str = row["id"].as_str().unwrap_or("");
+                if sdid_str.is_empty() { eprintln!("[Scope] ✗ {} source_data.id 为空", s); continue; }
+                match database::all("SELECT id FROM knowledge_chunks WHERE chunk_type='child' AND source_data_id=?1",&[json!(sdid_str)]) {
+                    Ok(rows) => {
+                        let count = rows.len();
+                        for cr in &rows { if let Some(cid) = cr["id"].as_i64() { all_rowids.insert(cid); } }
+                        eprintln!("[Scope] ✓ {} → source_data_id={}, child_chunks={}", s, sdid_str, count);
+                    }
+                    Err(e) => eprintln!("[Scope] ✗ {} 查询 child_chunks 失败: {}", s, e),
                 }
             }
+            Ok(None) => eprintln!("[Scope] ✗ {} 在 source_data 中未找到 (type={}, sid={})", s, st, sid),
+            Err(e) => eprintln!("[Scope] ✗ {} 查询 source_data 失败: {}", s, e),
         }
     }
     all_rowids
@@ -758,7 +814,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     let mut obj_head = String::new();
     let mut matched_sources: std::collections::HashSet<(String,String)> = std::collections::HashSet::new();
     if !keywords.is_empty() {
-        let like = format!("%{}%", keywords.join(" "));
+        let like = format!("%{}%", crate::database::escape_like(&keywords.join(" ")));
         if let Ok(rows) = database::all("SELECT id,name,status,customer FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
             for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PROJECT".into(), id.clone())); obj_head.push_str(&format!("[Object] Project: {} | Status: {} | Customer: {}\n",r["name"].as_str().unwrap_or(""),r["status"].as_str().unwrap_or(""),r["customer"].as_str().unwrap_or(""))); }
         }
@@ -773,6 +829,31 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
         }
     }
     if !obj_head.is_empty() { obj_head = format!("--- Related Objects ---\n{}--- Chunks ---\n", obj_head); }
+
+    // ★ MEMORY 直接搜索（不走 FTS5/Vector，直接查 source_data 关键词匹配）
+    let mut memory_candidates: Vec<(f64, String, String, String)> = Vec::new();
+    if let Ok(rows) = database::all(
+        "SELECT source_id, title, content FROM source_data WHERE source_type='MEMORY' ORDER BY updated_at DESC LIMIT 20",
+        &[],
+    ) {
+        for r in &rows {
+            let sid = r["source_id"].as_str().unwrap_or("");
+            let title = r["title"].as_str().unwrap_or("");
+            let content = r["content"].as_str().unwrap_or("");
+            if shown_memory_ids.contains(&format!("MEMORY-{}", sid)) { continue; }
+            let mut score = 0.0f64;
+            for kw in keywords {
+                let kw_lower = kw.to_lowercase();
+                if title.to_lowercase().contains(&kw_lower) { score += 0.015; }
+                if content.to_lowercase().contains(&kw_lower) { score += 0.01; }
+            }
+            if score > 0.0 {
+                memory_candidates.push((score, sid.to_string(), title.to_string(), content.to_string()));
+            }
+        }
+        memory_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let memory_candidates = memory_candidates; // 取前 10 条
 
     // ★ 始终走双路（FTS5 + Vector），不再因 scope 而跳过向量检索
     // ★ 始终走双路（FTS5 + Vector），不再因 scope 而跳过向量检索
@@ -798,6 +879,8 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     let fts_q = keywords.iter().map(|k| format!("\"{}\"", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
     let fts_rowids: Vec<(String,f64)> = database::fts5_search_chunks(&fts_q, fts_limit).unwrap_or_default().iter()
         .map(|fr| (fr.rowid.to_string(), fr.rank)).collect();
+    eprintln!("[Search] keywords={:?}, scope={}", keywords, scope_rowids.as_ref().map(|s| format!("Some({} rowids)", s.len())).unwrap_or_else(|| "None".to_string()));
+    eprintln!("[Search] FTS5 hits={}, Vector hits={}, RRF input", fts_rowids.len(), vec_rowids.len());
 
     let fuse = |rows: Vec<(String,f64)>| -> Vec<(String,f64)> {
         if tag_rowids.is_empty() { return rows; }
@@ -869,136 +952,123 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     }
 
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    // ★ 双路结果：非MEMORY top 3 + MEMORY top 2（跨轮次去重）
-    let non_memory: Vec<_> = candidates.iter().filter(|(_, _, st, _, _, _, _, _, _, _, _)| st != "MEMORY").take(3).collect();
-    let memory: Vec<_> = candidates.iter().filter(|(_, _, st, sid, _, _, _, _, _, _, _)| {
-        st == "MEMORY" && !shown_memory_ids.contains(&format!("MEMORY-{}", sid))
-    }).take(2).collect();
-    let selected: Vec<_> = non_memory.into_iter().chain(memory.into_iter()).collect();
-    let mut out = String::new();
-    for (idx, (score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)) in selected.iter().enumerate() {
-        let rrf_tag = &format!("{:.3}", score);
-        let boost_tag = if *is_obj_match { "🔥" } else { "" };
-        let mut meta = build_chunk_metadata(st, sid);
-        if *total_parents > 1 {
-            if !meta.is_empty(){meta.push('\n');}
-            meta.push_str(&format!("父块：{}/{}", chunk_index + 1, total_parents));
-        }
-        if !chunk_id.is_empty() {
-            let short: String = chunk_id.chars().take(8).collect();
-            if !meta.is_empty(){meta.push('\n');}
-            meta.push_str(&format!("ChunkID：{}", short));
-        }
-        if *is_scope_path {
-            meta.push_str("\n📍 该段落属于当前工作区");
-        } else {
-            meta.push_str("\n💡 该段落来自全库发现（不属于当前工作区）");
-        }
-        // ★ 添加 source_id 行，让 update_from_line 可以将其加入工作区
-        let source_label = match st.as_str() {
-            "FILE" => "FILE",
-            "PRODUCT" => "PRODUCT",
-            "PROJECT" => "PROJECT",
-            "NOTE" => "NOTE",
-            "TODO" => "TODO",
-            _ => st,
-        };
-        if let Ok(Some(title_row)) = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(source_label), json!(sid)]) {
-            let name = title_row["title"].as_str().filter(|t| !t.is_empty()).map(|s| s.to_string()).or_else(|| {
-                // FILE: custom_name 可能存储在 title 之外，尝试从 file_relations 获取
-                if source_label == "FILE" {
-                    database::get("SELECT custom_name FROM file_relations WHERE file_id=?1 AND custom_name != '' LIMIT 1",&[json!(sid)])
-                        .ok().flatten().and_then(|r| r["custom_name"].as_str().map(|s| s.to_string()))
-                } else { None }
-            });
-            if let Some(name) = name {
-                meta.push_str(&format!("\n[{}] {} | source_id: {}-{}", source_label, name, source_label, sid));
-            }
-        }
-        // ★ 时间标注
-        let created_at: String = database::get(
-            "SELECT created_at FROM knowledge_chunks WHERE id=?1", &[json!(cr)],
-        ).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
-        let time_info = relative_time(&created_at);
-        if !time_info.is_empty() {
-            if !meta.is_empty() { meta.push('\n'); }
-            meta.push_str(&time_info);
-        }
-        let preview: String = content.chars().take(1300).collect();
-        if meta.is_empty() { out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}", idx + 1, rrf_tag, boost_tag, preview)); }
-        else { out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}\n--------\n{}", idx + 1, rrf_tag, boost_tag, meta, preview)); }
+    eprintln!("[Search] RRF fusion={}, candidates={}, scope_in={}, discovery={}", fused.len(), candidates.len(),
+        candidates.iter().filter(|c| c.9).count(), candidates.iter().filter(|c| !c.9).count());
 
-        // ★ MEMORY 类型：自动附带引用来源的摘要，并将来源加入 found_sources（进入注意力范围）
-        if st == "MEMORY" {
-            if let Some(refs_start) = content.find("[查阅]") {
-                if let Some(refs_end) = content[refs_start..].find("\n") {
-                    let refs_line = &content[refs_start+4..refs_start+refs_end];
-                    let ref_ids: Vec<&str> = refs_line.split(|c| c == '、' || c == ',').map(|s| s.trim()).filter(|s| !s.is_empty() && *s != "无特定来源").collect();
-                    if !ref_ids.is_empty() {
-                        out.push_str("\n📎 引用来源：");
-                        for ref_id in &ref_ids {
-                            if let Some(dash_pos) = ref_id.find('-') {
-                                let ref_type = &ref_id[..dash_pos];
-                                let ref_sid = &ref_id[dash_pos+1..];
-                                // 将引用来源加入 found_sources，使其进入注意力范围
-                                found_sources.push(ref_id.to_string());
-                                if let Ok(Some(ref_row)) = database::get(
-                                    "SELECT title, substr(content,1,100) as preview FROM source_data WHERE source_type=?1 AND source_id=?2",
-                                    &[json!(ref_type), json!(ref_sid)],
-                                ) {
-                                    let ref_title = ref_row["title"].as_str().unwrap_or("");
-                                    let ref_preview = ref_row["preview"].as_str().unwrap_or("");
-                                    out.push_str(&format!("\n  [{}] {} — {}", ref_type, ref_title, ref_preview));
+    // ★ 双路结果：非MEMORY top 3（分两区输出）
+    let non_memory: Vec<_> = candidates.iter().filter(|(_, _, st, _, _, _, _, _, _, _, _)| st != "MEMORY").take(3).collect();
+
+    // ── 回忆区：MEMORY 结果（直接从 source_data 搜索，不走 FTS5）──
+    let mut recall_out = String::new();
+    if !memory_candidates.is_empty() {
+        recall_out.push_str("## 📝 回忆（之前处理过类似问题）");
+        for (idx, (score, sid, title, content)) in memory_candidates.iter().take(10).enumerate() {
+            let preview: String = content.chars().take(500).collect();
+            recall_out.push_str(&format!("\n\n[记忆{}] score={:.3} | {}\nsource_id: MEMORY-{}\n{}", idx + 1, score, title, sid, preview));
+            found_sources.push(format!("MEMORY-{}", sid));
+        }
+        recall_out.push_str("\n\n");
+    }
+
+    // ── 知识检索区：非 MEMORY 结果 ──
+    let mut search_out = String::new();
+    if !non_memory.is_empty() {
+        search_out.push_str("## 📄 知识检索");
+        for (idx, (score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)) in non_memory.iter().enumerate() {
+            let rrf_tag = &format!("{:.3}", score);
+            let boost_tag = if *is_obj_match { "🔥" } else { "" };
+            let mut meta = build_chunk_metadata(st, sid);
+            if *total_parents > 1 {
+                if !meta.is_empty(){meta.push('\n');}
+                meta.push_str(&format!("父块：{}/{}", chunk_index + 1, total_parents));
+            }
+            if !chunk_id.is_empty() {
+                let short: String = chunk_id.chars().take(8).collect();
+                if !meta.is_empty(){meta.push('\n');}
+                meta.push_str(&format!("ChunkID：{}", short));
+            }
+            if *is_scope_path {
+                meta.push_str("\n📍 该段落属于当前工作区");
+            } else {
+                meta.push_str("\n💡 该段落来自全库发现（不属于当前工作区）");
+            }
+            let source_label = match st.as_str() {
+                "FILE" => "FILE",
+                "PRODUCT" => "PRODUCT",
+                "PROJECT" => "PROJECT",
+                "NOTE" => "NOTE",
+                "TODO" => "TODO",
+                _ => st,
+            };
+            if let Ok(Some(title_row)) = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(source_label), json!(sid)]) {
+                let name = title_row["title"].as_str().filter(|t| !t.is_empty()).map(|s| s.to_string()).or_else(|| {
+                    if source_label == "FILE" {
+                        database::get("SELECT custom_name FROM file_relations WHERE file_id=?1 AND custom_name != '' LIMIT 1",&[json!(sid)])
+                            .ok().flatten().and_then(|r| r["custom_name"].as_str().map(|s| s.to_string()))
+                    } else { None }
+                });
+                if let Some(name) = name {
+                    meta.push_str(&format!("\n[{}] {} | source_id: {}-{}", source_label, name, source_label, sid));
+                }
+            }
+            let created_at: String = database::get(
+                "SELECT created_at FROM knowledge_chunks WHERE id=?1", &[json!(cr)],
+            ).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
+            let time_info = relative_time(&created_at);
+            if !time_info.is_empty() {
+                if !meta.is_empty() { meta.push('\n'); }
+                meta.push_str(&time_info);
+            }
+            let preview: String = content.chars().take(1300).collect();
+            if meta.is_empty() { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}", idx + 1, rrf_tag, boost_tag, preview)); }
+            else { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}\n--------\n{}", idx + 1, rrf_tag, boost_tag, meta, preview)); }
+
+            found_sources.push(format!("{}-{}", st, sid));
+
+            // ★ 关联对象自动进入 workspace
+            match st.as_str() {
+                "FILE" => {
+                    for rel_type in &["project", "product", "todo", "note"] {
+                        if let Ok(rows) = database::all(
+                            "SELECT entity_id FROM file_relations WHERE file_id=?1 AND entity_type=?2 AND entity_id!=''",
+                            &[json!(sid.as_str()), json!(rel_type)],
+                        ) {
+                            for r in &rows {
+                                if let Some(eid) = r["entity_id"].as_str().filter(|s| !s.is_empty()) {
+                                    let dedup = format!("{}-{}", rel_type.to_uppercase(), eid);
+                                    if !found_sources.iter().any(|s| s == &dedup) { found_sources.push(dedup); }
                                 }
                             }
                         }
                     }
                 }
-            }
-        }
-
-        found_sources.push(format!("{}-{}", st, sid));
-
-        // ★ 关联对象自动进入 workspace
-        match st.as_str() {
-            "FILE" => {
-                for rel_type in &["project", "product", "todo", "note"] {
+                "PROJECT" | "PRODUCT" | "NOTE" | "TODO" => {
                     if let Ok(rows) = database::all(
-                        "SELECT entity_id FROM file_relations WHERE file_id=?1 AND entity_type=?2 AND entity_id!=''",
-                        &[json!(sid.as_str()), json!(rel_type)],
+                        "SELECT DISTINCT file_id FROM file_relations WHERE entity_id=?1 AND file_id IS NOT NULL AND file_id!=''",
+                        &[json!(sid.as_str())],
                     ) {
                         for r in &rows {
-                            if let Some(eid) = r["entity_id"].as_str().filter(|s| !s.is_empty()) {
-                                let dedup = format!("{}-{}", rel_type.to_uppercase(), eid);
+                            if let Some(fid) = r["file_id"].as_str().filter(|s| !s.is_empty()) {
+                                let dedup = format!("FILE-{}", fid);
                                 if !found_sources.iter().any(|s| s == &dedup) { found_sources.push(dedup); }
                             }
                         }
                     }
                 }
+                _ => {}
             }
-            "PROJECT" | "PRODUCT" | "NOTE" | "TODO" => {
-                if let Ok(rows) = database::all(
-                    "SELECT DISTINCT file_id FROM file_relations WHERE entity_id=?1 AND file_id IS NOT NULL AND file_id!=''",
-                    &[json!(sid.as_str())],
-                ) {
-                    for r in &rows {
-                        if let Some(fid) = r["file_id"].as_str().filter(|s| !s.is_empty()) {
-                            let dedup = format!("FILE-{}", fid);
-                            if !found_sources.iter().any(|s| s == &dedup) { found_sources.push(dedup); }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
 
-        // ★ 父块被采纳 → 激活其下所有子块
-        if !chunk_id.is_empty() {
-            if let Ok(child_rows) = database::all("SELECT id FROM knowledge_chunks WHERE chunk_type='child' AND parent_id=?1",&[json!(chunk_id)]) {
-                for cr in &child_rows { if let Some(cid) = cr["id"].as_i64() { crate::services::synapse::activate_child_chunk(cid); } }
+            // 父块被采纳 → 激活其下所有子块
+            if !chunk_id.is_empty() {
+                if let Ok(child_rows) = database::all("SELECT id FROM knowledge_chunks WHERE chunk_type='child' AND parent_id=?1",&[json!(chunk_id)]) {
+                    for cr in &child_rows { if let Some(cid) = cr["id"].as_i64() { crate::services::synapse::activate_child_chunk(cid); } }
+                }
             }
         }
     }
+
+    // 合并回忆区 + 知识检索区
+    let out = format!("{}{}", recall_out, search_out);
     let horizontal = execute_horizontal_search(keywords);
     if out.trim().is_empty() {
         if obj_head.is_empty() {
@@ -1273,7 +1343,7 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
             database::get("SELECT id,title FROM todos WHERE id=?1", &[json!(tid.trim())])
                 .ok().flatten().map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["title"].as_str().unwrap_or("").to_string()))
         } else if !t.trim().is_empty() {
-            let like = format!("%{}%", t.trim());
+            let like = format!("%{}%", crate::database::escape_like(t.trim()));
             database::get("SELECT id,title FROM todos WHERE title LIKE ?1 ORDER BY created_at DESC LIMIT 1", &[json!(&like)])
                 .ok().flatten().map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["title"].as_str().unwrap_or("").to_string()))
         } else { None }
@@ -1297,7 +1367,7 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
                             clean_pid.to_string()
                         } else {
                             // 按名称查找项目
-                            let found = database::get("SELECT id FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1", &[json!(format!("%{}%", clean_pid))])
+                            let found = database::get("SELECT id FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1", &[json!(format!("%{}%", crate::database::escape_like(clean_pid)))])
                                 .ok().flatten().and_then(|r| r["id"].as_str().map(String::from)).unwrap_or_default();
                             eprintln!("[待办] 按名称查找: '{}' → found='{}'", clean_pid, found);
                             found
@@ -1400,7 +1470,7 @@ fn ext_tool_manage_memory(action: &str, title: &str, content: &str, memory_id: &
                     _ => format!("未找到记忆: {}", sid),
                 }
             } else if !title.trim().is_empty() {
-                let like = format!("%{}%", title.trim());
+                let like = format!("%{}%", crate::database::escape_like(title.trim()));
                 let found = database::get("SELECT source_id, title FROM source_data WHERE source_type='MEMORY' AND title LIKE ?1 ORDER BY created_at DESC LIMIT 1", &[json!(&like)]).ok().flatten();
                 match found {
                     Some(row) => {
@@ -1899,7 +1969,7 @@ fn execute_object_get(query: &str) -> String {
 
     // ★ LIKE 查询 source_data 表（补充 FTS5 未命中的数据）
     {
-        let like = format!("%{}%", q.split_whitespace().next().unwrap_or(q));
+        let like = format!("%{}%", crate::database::escape_like(q.split_whitespace().next().unwrap_or(q)));
         if let Ok(rows) = database::all(
             "SELECT source_type, source_id, title FROM source_data WHERE title LIKE ?1 OR content LIKE ?1 LIMIT 20",
             &[json!(&like)],
@@ -1917,7 +1987,7 @@ fn execute_object_get(query: &str) -> String {
     // ★ LIKE 查询 file_relations.custom_name
     let words: Vec<&str> = q.split_whitespace().collect();
     for word in words.iter().take(3) {
-        let like = format!("%{}%", word);
+        let like = format!("%{}%", crate::database::escape_like(word));
         if let Ok(rows) = database::all(
             "SELECT DISTINCT file_id, custom_name FROM file_relations WHERE custom_name LIKE ?1 AND custom_name != '' LIMIT 10",
             &[json!(&like)],
@@ -1936,7 +2006,7 @@ fn execute_object_get(query: &str) -> String {
     // ★ 标签/实体兜底检索：FTS5 和 LIKE 都未命中时，通过标签名匹配发现对象
     if ranked.is_empty() {
         for word in q.split_whitespace().take(3) {
-            let like = format!("%{}%", word);
+            let like = format!("%{}%", crate::database::escape_like(word));
             if let Ok(rows) = database::all(
                 "SELECT tm.entity_type, tm.entity_id FROM tag_mappings tm JOIN tags t ON t.tag_id=tm.tag_id WHERE t.name LIKE ?1 LIMIT 10",
                 &[json!(&like)],
@@ -2022,7 +2092,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     let max_iters = max_iterations.unwrap_or(8).clamp(2, 20);
     if query.is_empty() { return Ok(json!({"success":true,"answer":"请输入问题。","iterations":0})); }
     crate::services::chat_api::invalidate_chat_config_cache();
-    { let mut c = API_CACHE.write().unwrap(); c.3 = Instant::now() - std::time::Duration::from_secs(60); }
+    { let mut c = API_CACHE.write().unwrap_or_else(|e| e.into_inner()); c.3 = Instant::now() - std::time::Duration::from_secs(60); }
     let (_, api_key, _model) = get_api_endpoint();
     if api_key.is_empty() { return Ok(json!({"success":true,"answer":"请先在系统设置中配置 Chat API 密钥。"})); }
 
@@ -2091,6 +2161,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
     let mut tool_log: Vec<Value> = Vec::new();
     let (mut iters, mut pt, mut ct) = (0i32, 0i64, 0i64);
+    let mut prev_pt: i64 = 0;
     let mut budget = 100i32;
     let mut search_cost = 10i32;
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -2140,14 +2211,19 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             .replace("{{today}}", &chrono::Local::now().format("%Y年%m月%d日").to_string())
             .replace("{{user_policies}}", &user_policies)
             .replace("{{session_scratchpad}}", &scratchpad);
-        let budget_info = format!("\n\n## 🧠 思维预算\n- 剩余: {} | 本轮成本: {}\n- 预算有限，不要全部搜索轮次都用完。证据足够就立刻回答。", budget, search_cost);
+        let budget_info = if iters == 1 {
+            format!("\n\n## 🧠 思维预算\n- 剩余预算: {}\n- 证据足够就立刻回答，不要浪费预算。", budget)
+        } else {
+            let round_pt = pt - prev_pt;
+            format!("\n\n## 🧠 思维预算\n- 剩余预算: {} | 上下文: {} tokens（本轮 +{}）| 已生成: {} tokens\n- 上下文越大响应越慢且越贵。证据足够就立刻回答，不要浪费预算。", budget, pt, round_pt, ct)
+        };
         let new_sys = format!("{}{}", new_sys, budget_info);
         if let Some(ref mut content) = messages[0].content {
             *content = new_sys;
         }
 
         let ar = call_llm_with_tools(&messages, &tools, &app_handle).await?;
-        if let Some(u) = ar.get("usage") { pt += u["prompt_tokens"].as_i64().unwrap_or(0); ct += u["completion_tokens"].as_i64().unwrap_or(0); }
+        if let Some(u) = ar.get("usage") { prev_pt = pt; pt += u["prompt_tokens"].as_i64().unwrap_or(0); ct += u["completion_tokens"].as_i64().unwrap_or(0); }
         let choice = ar["choices"].as_array().and_then(|a|a.first()).ok_or("no choices")?;
         let msg = &choice["message"];
         let ac = msg["content"].as_str().unwrap_or("");
@@ -2305,7 +2381,7 @@ fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limi
     }
     // LIKE fallback：同时搜索 title 和 content
     if matched.is_empty() {
-        let like = format!("%{}%", q);
+        let like = format!("%{}%", crate::database::escape_like(&q));
         if let Ok(rows) = database::all(
             "SELECT source_type, source_id, title, substr(content,1,100) as preview, updated_at FROM source_data WHERE (title LIKE ?1 OR content LIKE ?1) AND (source_type=?2 OR ?2='') ORDER BY updated_at DESC",
             &[json!(&like), json!(obj_type)],
@@ -2479,7 +2555,7 @@ fn recall_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: usi
     out
 }
 
-fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, String)>, limit: usize, offset: usize, mode: &str) -> String {
+fn execute_object_get(_query: &str, obj_type: &str, time_range: Option<(String, String)>, limit: usize, offset: usize, mode: &str) -> String {
     let limit = if limit == 0 { 50 } else { limit.min(100) };
     let (start, end) = match time_range {
         Some((s, e)) => (s, e),
@@ -2487,10 +2563,8 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
     };
     if mode == "recall" {
         recall_mode(obj_type, &start, &end, limit, offset)
-    } else if query.trim().is_empty() {
-        timeline_mode(obj_type, &start, &end, limit, offset)
     } else {
-        keyword_object_mode(query, obj_type, &start, &end, limit, offset)
+        timeline_mode(obj_type, &start, &end, limit, offset)
     }
 }
 
@@ -2634,12 +2708,12 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     }
                     for handle in handles {
                         if let Ok(result) = handle.await {
-                            results_mutex.lock().unwrap().push(result);
+                            results_mutex.lock().unwrap_or_else(|e| e.into_inner()).push(result);
                         }
                     }
                 }
                 let async_results: Vec<(usize, String, Vec<SessionEffect>)> = {
-                    let guard = results_mutex.lock().unwrap();
+                    let guard = results_mutex.lock().unwrap_or_else(|e| e.into_inner());
                     guard.clone()
                 };
 

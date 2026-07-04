@@ -23,8 +23,9 @@ struct EmbedCache {
 }
 
 pub fn get_embedding_config() -> EmbeddingConfig {
-    { let cache = CONFIG_CACHE.read().unwrap(); if cache.fetched_at.elapsed().as_secs() < 30 { return cache.config.clone(); } }
+    { let cache = CONFIG_CACHE.read().unwrap_or_else(|e| e.into_inner()); if cache.fetched_at.elapsed().as_secs() < 30 { return cache.config.clone(); } }
     let mut config = EmbeddingConfig::default();
+    let mut db_ok = false;
 
     // ★ 优先从 system_config.ai_config.embedding 读取（新版设置页面路径）
     if let Ok(Some(row)) = crate::database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", &[]) {
@@ -36,6 +37,7 @@ pub fn get_embedding_config() -> EmbeddingConfig {
                     if let Some(u) = e.get("baseUrl").and_then(|v|v.as_str()) { config.base_url = u.to_string(); }
                     if let Some(k) = e.get("apiKey").and_then(|v|v.as_str()) { config.api_key = k.to_string(); }
                     if let Some(m) = e.get("modelName").and_then(|v|v.as_str()) { config.model = m.to_string(); }
+                    db_ok = true;
                 }
             }
         }
@@ -44,10 +46,16 @@ pub fn get_embedding_config() -> EmbeddingConfig {
     // ★ 回退：从 system_config.kb_config 读取（旧路径）
     if config.api_key.is_empty() {
         let row = crate::database::get("SELECT kb_config FROM system_config WHERE tenant_id='local-user'", &[]).ok().flatten();
-        if let Some(r) = row { if let Some(s) = r["kb_config"].as_str() { if let Ok(v) = serde_json::from_str::<Value>(s) { if let Some(u) = v.get("embeddingApiUrl").and_then(|v|v.as_str()) { config.base_url = u.to_string(); } if let Some(k) = v.get("embeddingApiKey").and_then(|v|v.as_str()) { config.api_key = k.to_string(); } if let Some(m) = v.get("embeddingModelName").and_then(|v|v.as_str()) { config.model = m.to_string(); } } } }
+        if let Some(r) = row { if let Some(s) = r["kb_config"].as_str() { if let Ok(v) = serde_json::from_str::<Value>(s) { if let Some(u) = v.get("embeddingApiUrl").and_then(|v|v.as_str()) { config.base_url = u.to_string(); } if let Some(k) = v.get("embeddingApiKey").and_then(|v|v.as_str()) { config.api_key = k.to_string(); } if let Some(m) = v.get("embeddingModelName").and_then(|v|v.as_str()) { config.model = m.to_string(); } db_ok = true; } } }
     }
 
-    let mut cache = CONFIG_CACHE.write().unwrap(); cache.config = config.clone(); cache.fetched_at = Instant::now();
+    // ★ DB 读取失败时保留上次有效配置，不回退到 OpenAI 默认值
+    if !db_ok {
+        let cache = CONFIG_CACHE.read().unwrap_or_else(|e| e.into_inner());
+        if !cache.config.api_key.is_empty() { return cache.config.clone(); }
+    }
+
+    let mut cache = CONFIG_CACHE.write().unwrap_or_else(|e| e.into_inner()); cache.config = config.clone(); cache.fetched_at = Instant::now();
     config
 }
 
@@ -83,7 +91,14 @@ pub async fn embed_texts_with_caller(texts: &[String], caller: &str) -> Result<V
     if texts.is_empty() { return Ok(Vec::new()); }
     let config = get_embedding_config();
     let base = config.base_url.trim_end_matches('/');
-    let url = if base.ends_with("/v1") { format!("{}/embeddings", base) } else { format!("{}/v1/embeddings", base) };
+    // 智能拼接：如果 URL 已经包含 /v1/ 或 /embeddings，直接使用；否则根据情况拼接
+    let url = if base.contains("/v1/") || base.ends_with("/embeddings") { 
+        base.to_string()
+    } else if base.ends_with("/v1") { 
+        format!("{}/embeddings", base) 
+    } else { 
+        format!("{}/v1/embeddings", base) 
+    };
     eprintln!("[嵌入] POST {} 模型={} 数量={} 调用方={}", url, config.model, texts.len(), caller);
     let mut req = SHARED_CLIENT.post(&url).json(&json!({"model": config.model, "input": texts}));
     if !config.api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", config.api_key)); }

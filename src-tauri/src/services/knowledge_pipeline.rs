@@ -25,6 +25,9 @@ pub fn start() {
     // ── Step 1: 清理旧版触发器 ──
     cleanup_legacy_triggers();
 
+    // ── Step 1.5: 清理 FTS5 孤儿条目 ──
+    crate::services::knowledge_lifecycle::cleanup_orphaned_fts5();
+
     // ── Step 2: 初始化同步时间戳 ──
     init_sync_timestamp();
 
@@ -59,20 +62,28 @@ pub fn reset_sync_time() {
         "DELETE FROM system_settings WHERE key='last_sync_time'",
         &[],
     ).ok();
-    *LAST_SYNC_TIME.lock().unwrap() = "1970-01-01 00:00:00".to_string();
+    *LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner()) = "1970-01-01 00:00:00".to_string();
     println!("[知识管线] 已重置同步时间戳，将重新物化所有对象");
 }
 
 // ─── Startup helpers ──────────────────────────────────────────────
 
 fn cleanup_legacy_triggers() {
-    let _ = crate::database::run(
-        "DROP TRIGGER IF EXISTS ai_sync_products_insert;
-         DROP TRIGGER IF EXISTS ai_sync_products_update;
-         DROP TRIGGER IF EXISTS sd_reset_sync_on_update;
-         DROP TRIGGER IF EXISTS sd_reset_sync_on_insert;",
-        &[],
-    );
+    // 查询所有触发器名称，删除 sd_ 前缀的旧触发器（保留 sd_fts_* 和 sd_chunks_*）
+    if let Ok(rows) = crate::database::all("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sd_%'", &[]) {
+        let to_drop: Vec<String> = rows.iter()
+            .filter_map(|r| r["name"].as_str())
+            .filter(|n| !n.starts_with("sd_fts_") && !n.starts_with("sd_chunks_"))
+            .map(|n| n.to_string())
+            .collect();
+        for name in &to_drop {
+            let _ = crate::database::run(&format!("DROP TRIGGER IF EXISTS {}", name), &[]);
+            println!("[知识管线] 删除旧触发器: {}", name);
+        }
+        if !to_drop.is_empty() {
+            println!("[知识管线] 共删除 {} 个旧触发器", to_drop.len());
+        }
+    }
 }
 
 fn init_sync_timestamp() {
@@ -82,7 +93,7 @@ fn init_sync_timestamp() {
         &[],
     ).ok().flatten().and_then(|r| r["value"].as_str().map(String::from));
     
-    let mut last_sync = LAST_SYNC_TIME.lock().unwrap();
+    let mut last_sync = LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner());
     *last_sync = saved.unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
     println!("[知识管线] 初始同步时间戳: {}", *last_sync);
 }
@@ -118,11 +129,14 @@ async fn sync_loop() {
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
 
-        let last_sync = LAST_SYNC_TIME.lock().unwrap().clone();
+        let last_sync = LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let changed = crate::services::knowledge_lifecycle::get_changed_since(&last_sync, 100);
         
         if !changed.is_empty() {
             println!("[知识管线] 发现 {} 个变更对象（since {}）", changed.len(), last_sync);
+            for (source_type, source_id, _, updated_at) in &changed {
+                println!("[知识管线]   - {}/{} updated={}", source_type, source_id, updated_at);
+            }
             let mut max_updated = last_sync.clone();
             
             for (source_type, source_id, content, updated_at) in &changed {
@@ -140,7 +154,7 @@ async fn sync_loop() {
             }
             
             // 更新同步时间戳
-            *LAST_SYNC_TIME.lock().unwrap() = max_updated.clone();
+            *LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner()) = max_updated.clone();
             save_sync_timestamp(&max_updated);
         }
         

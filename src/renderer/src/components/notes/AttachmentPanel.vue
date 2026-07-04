@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
-import TagPanel from '@/components/common/TagPanel.vue'
 
 const props = defineProps<{
   files?: any[]
@@ -188,10 +187,6 @@ function fileNameFor(file: any) {
               <button @click.stop="emit('delete', file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除附件"><AppIcon name="trash" size="13"/></button>
             </div>
           </div>
-        </div>
-        <!-- 标签 -->
-        <div class="shrink-0 px-3 py-2 border-t border-gray-100">
-          <TagPanel entity-type="notes" :entity-id="noteId" />
         </div>
       </div>
     </div>

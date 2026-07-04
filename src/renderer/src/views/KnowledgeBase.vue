@@ -2,8 +2,8 @@
 import { ref, computed, onMounted, onActivated, onUnmounted, nextTick, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
-import ToolCallCard from '@/components/chat/ToolCallCard.vue'
 import { toast } from '@/composables/useToast'
+import { dangerConfirm } from '@/composables/useConfirm'
 import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbDeleteSession } from '@/api/db-client'
 import { sanitizeHtml, sanitizeHtmlSync } from '@/utils/sanitize'
 import { listen } from '@tauri-apps/api/event'
@@ -21,18 +21,16 @@ async function renderMarkdown(text: string): Promise<string> {
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 // ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage { role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean }
+interface ChatMessage { id?: string; role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean; timestamp?: number }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
-const rendered = ref<Record<number,string>>({})
-async function renderMessageContent(idx: number) {
-  const msgs = currentSession.value?.messages; if (!msgs || !msgs[idx]) return ''
-  if (rendered.value[idx] !== undefined) return rendered.value[idx]
-  const text = msgs[idx].content || ''; if (!text) return ''
+const rendered = ref<Record<string,string>>({})
+async function renderMessageContent(msgId: string, text: string) {
+  if (!text) { rendered.value[msgId] = ''; return }
   const safeText = text.replace(/~/g, '～')
-  rendered.value[idx] = await renderMarkdown(safeText)
+  rendered.value[msgId] = await renderMarkdown(safeText)
 }
-function renderedContent(idx: number): string { return rendered.value[idx] || '' }
+function renderedContent(msgId: string): string { return rendered.value[msgId] || '' }
 
 // ─── Typewriter ─────────────────────────────────────────────────
 const activeTypewriters = new Set<ChatMessage>()
@@ -40,8 +38,9 @@ const typewriterTimers = new Map<ChatMessage, ReturnType<typeof setInterval>>()
 function startTypewriter(msg: ChatMessage, fullText: string, speed = 8) {
   stopTypewriter(msg)
   if (!fullText) { msg.typewriterText = ''; msg.typewriterDone = true; return }
-  const idx = currentSession.value?.messages.indexOf(msg) ?? -1
-  if (idx >= 0) renderMarkdown(fullText.replace(/~/g, '～')).then(html => { rendered.value[idx] = html })
+  const msgId = msg.id || ''
+  // 预渲染完整文本
+  renderMessageContent(msgId, fullText)
   const TYPEWRITER_CHUNK_SIZE = 5
   let pos = 0
   msg.typewriterText = fullText.slice(0, pos)
@@ -88,17 +87,34 @@ onMounted(async () => {
   if (!sessions.value.length) { newSession() }
   nextTick(() => scrollToBottomIfNear())
 })
-// ★ 每次切换回来时确保到底
-onActivated(() => { nextTick(() => scrollToBottomIfNear()) })
+// ★ 每次切换回来时重新加载会话（保持与全局对话框同步）
+onActivated(async () => {
+  try {
+    const r = await kbLoadSessions()
+    if (r?.sessions && Array.isArray(r.sessions)) {
+      sessions.value = r.sessions.map((s: any) => ({
+        ...s,
+        name: s.title || '新对话',
+        updatedAt: s.updated_at || s.updatedAt,
+        createdAt: s.created_at || s.createdAt,
+        messages: (s.messages || []).map((m: any) => {
+          const { isThinking, typewriterText, typewriterDone, ...rest } = m
+          return rest
+        })
+      })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
+    }
+  } catch {}
+  nextTick(() => scrollToBottomIfNear())
+})
 async function selectSession(id: string) {
   currentSessionId.value = id; rendered.value = {}
   stopAllTypewriters()
   // Trigger markdown rendering for all AI messages — await all
   const session = sessions.value.find(s => s.id === id)
   if (session) {
-    await Promise.all(session.messages.map((m, i) => {
+    await Promise.all(session.messages.map((m) => {
       if (m.role === 'assistant' && m.content && !m.isThinking) {
-        return renderMessageContent(i)
+        return renderMessageContent(m.id || '', m.content)
       }
       return Promise.resolve()
     }))
@@ -124,17 +140,25 @@ function saveToStorage() {
   }
 }
 async function loadFromStorage() {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt })).sort((a: any, b: any) => new Date(b.updatedAt || a.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return rest }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
   if (!sessions.value.length) { newSession(); return }
   currentSessionId.value = sessions.value[0].id
   // 初始化内容快照
   const s = currentSession.value
-  if (s) lastSavedContent = JSON.stringify(s.messages)
+  if (s) {
+    for (const m of s.messages) {
+      if (m.role === 'assistant') {
+        m.isThinking = false
+        m.typewriterDone = true
+      }
+    }
+    lastSavedContent = JSON.stringify(s.messages)
+  }
   // Render markdown for loaded AI messages — await all renders
   const msgs = sessions.value[0].messages
-  await Promise.all(msgs.map((m, i) => {
+  await Promise.all(msgs.map((m) => {
     if (m.role === 'assistant' && m.content) {
-      return renderMessageContent(i)
+      return renderMessageContent(m.id || '', m.content)
     }
     return Promise.resolve()
   }))
@@ -150,16 +174,15 @@ const showWorkspaceIdx = ref<number | null>(null)
 const feedScrollRef = ref<HTMLElement|null>(null)
 const isRefining = ref(false)
 const sidebarOpen = ref(true)
-const confirmDeleteId = ref<string|null>(null)
 
-function confirmDeleteSession(id: string) { confirmDeleteId.value = id }
-function executeDelete() {
-  const id = confirmDeleteId.value; if (!id) return
+async function confirmDeleteSession(id: string) {
+  const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？此操作不可撤销。', confirmText: '删除' })
+  if (!ok) return
   kbDeleteSession(id).catch(() => {})
   sessions.value = sessions.value.filter(s => s.id !== id)
   if (currentSessionId.value === id) currentSessionId.value = sessions.value[0]?.id ?? null
-  confirmDeleteId.value = null
   sessionDirty.value = true; saveToStorage()
+  toast({ message: '会话已删除', type: 'success' })
 }
 
 let initialScrollDone = false
@@ -188,11 +211,13 @@ const suggestions = ['分析一下这个项目的关键信息', '请帮我写一
 
 // ─── Send message ───────────────────────────────────────────────
 
+const MAX_INPUT_LENGTH = 5000
 async function handleSendMessage() {
   const q = inputMessage.value.trim()
   if (!q || isChatting.value) return
+  if (q.length > MAX_INPUT_LENGTH) { toast({ message: `输入内容过长（${q.length}/${MAX_INPUT_LENGTH}），请精简后重试`, type: 'error' }); return }
   const session = currentSession.value; if (!session) return
-  session.messages.push({ role: 'user', content: q })
+  session.messages.push({ id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() })
   if (session.name === '新对话') { session.name = q.slice(0, 30) }
   sessionDirty.value = true; inputMessage.value = ''; saveToStorage(); scrollToBottomIfNear()
   isChatting.value = true
@@ -201,11 +226,31 @@ async function handleSendMessage() {
   const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
     thinkingProgress.value = ev.payload.msg; scrollToBottomIfNear()
   })
-  const aiMsg: ChatMessage = { role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [] }
-  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
+  const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [], timestamp: Date.now() }
+  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1
+  // ★ 冷启动障眼法：立即显示拟人化短句
+  const thinkingPhrases = ['让我想想啊……', '嗯……我回忆一下。', '别急，我翻一下脑子里的记录。', '稍等，我查查看……', '嗯，我想想……']
+  aiMsg.content = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)]
+  sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
   let unlistenStream: (() => void) | null = null
   let unlistenThought: (() => void) | null = null
+  let unlistenStatus: (() => void) | null = null
   try {
+    // ★ 监听 status 事件，动态演变拟人化文案
+    const toolHints: Record<string, string> = {
+      ext_tool_search: '我正在检索相关资料',
+      ext_tool_object: '我在翻看记忆中的对象',
+      ext_tool_traverse: '我在继续往后翻看',
+      ext_tool_batch_search: '我在同时查几个方向',
+    }
+    unlistenStatus = await listen<{stage:string; tool?:string; target?:string}>('agent:status', (ev) => {
+      const { stage, tool } = ev.payload
+      if (stage === 'tool_start' && tool) {
+        const hint = toolHints[tool] || `正在调用 ${tool}`
+        session.messages[aiIdx].content = hint
+        scrollToBottomIfNear()
+      }
+    })
     // ★ 流式监听：实时显示 LLM thought + 最终答案
     const streamedContent = ref('')
     unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
@@ -235,19 +280,21 @@ async function handleSendMessage() {
           const callId = 'call_' + Math.random().toString(36).slice(2, 8)
           rawCalls.push({ id: callId, type: 'function', function: { name: t.tool, arguments: typeof t.args === 'string' ? t.args : JSON.stringify(t.args) } })
           const TOOL_RESULT_MAX_LENGTH = 30000
-          toolResults.push({ id: callId, name: t.tool, content: typeof t.result === 'string' ? t.result.substring(0, TOOL_RESULT_MAX_LENGTH) : '' })
+          const rawResult = typeof t.result === 'string' ? t.result : ''
+          const truncated = rawResult.length > TOOL_RESULT_MAX_LENGTH
+          toolResults.push({ id: callId, name: t.tool, content: truncated ? rawResult.substring(0, TOOL_RESULT_MAX_LENGTH) + '\n\n[结果已截断，原始长度: ' + rawResult.length + ' 字符]' : rawResult })
         }
       }
       msg.rawToolCalls = rawCalls; msg.toolResults = toolResults; msg.contextDocs = result.context_docs || result.sources || [];
       msg.workspace = result.workspace || '';
-      renderMessageContent(aiIdx)
+      renderMessageContent(msg.id || '', msg.content)
     } else { msg.error = result.answer || result.error || '失败' }
   } catch (e: any) {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
   } finally {
     isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-    try { ;unlistenStream(); unlistenThought(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
+    try { unlistenStream(); unlistenThought(); unlistenProgress(); unlistenStatus?.() } catch (e) { console.error('[KB] unlisten failed:', e) }
   }
 }
 
@@ -298,19 +345,18 @@ async function refreshAnswer(idx: number) {
   finally { isRefining.value = false }
 }
 
-const notebookPickerOpen = ref(false); const notebookSearch = ref(''); const savingMsgIdx = ref<number|null>(null); const notebooks = ref<{id:string;name:string}[]>([])
+const notebookPickerOpen = ref(false); const notebookSearch = ref(''); const savingMsgId = ref<string|null>(null); const notebooks = ref<{id:string;name:string}[]>([])
 const filteredNotebooks = computed(() => { const q = notebookSearch.value.trim().toLowerCase(); if (!q) return notebooks.value; return notebooks.value.filter(n => n.name.toLowerCase().includes(q)) })
 async function saveToNotebook(nbId: string) {
-  const msgIdx = savingMsgIdx.value; const html = renderedContent(msgIdx ?? -1)
-  if (msgIdx == null || !html) return
+  const msgId = savingMsgId.value; const html = msgId ? renderedContent(msgId) : ''
+  if (!msgId || !html) return
   try { await notesV2Create({ title: 'AI 问答记录', content: html, isDaily: false, notebookId: nbId }); toast({ message: '已保存到笔记', type: 'success' }) }
   catch (e: any) { toast({ message: e.message || '保存失败', type: 'error' }) }
-  finally { notebookPickerOpen.value = false; savingMsgIdx.value = null }
+  finally { notebookPickerOpen.value = false; savingMsgId.value = null }
 }
-async function openNotebookPicker(idx: number) { savingMsgIdx.value = idx; notebookSearch.value = ''; try { const r: any = await fetchNotebooks(); notebooks.value = r?.notebooks || [] } catch { notebooks.value = [] }; notebookPickerOpen.value = true }
+async function openNotebookPicker(msgId: string) { savingMsgId.value = msgId; notebookSearch.value = ''; try { const r: any = await fetchNotebooks(); notebooks.value = r?.notebooks || [] } catch { notebooks.value = [] }; notebookPickerOpen.value = true }
 
 // ─── Init ───────────────────────────────────────────────────────
-onMounted(loadFromStorage)
 onUnmounted(() => {
   saveToStorage()
   stopAllTypewriters()
@@ -354,7 +400,7 @@ onUnmounted(() => {
           <h2 class="text-[17px] font-semibold text-[#1d1d1f] mb-2">售前 AI 知识工作台</h2>
           <p class="text-[13px] text-[#86868b] max-w-md mb-8 leading-relaxed">输入售前疑问或技术参数需求，AI 将结合知识库生成专业的应答建议。</p>
           <div class="grid grid-cols-2 gap-3 max-w-lg w-full">
-            <div v-for="(s, si) in suggestions" :key="si" @click="inputMessage = s; handleSendMessage()"
+            <div v-for="(s, si) in suggestions" :key="si" @click="inputMessage = s"
               class="bg-white border border-[#e5e5ea] rounded-2xl px-4 py-3.5 text-left cursor-pointer hover:border-[#2563eb]/30 hover:shadow-sm transition-all duration-200">
               <div class="text-[11px] text-[#2563eb] font-medium mb-1">建议问题 {{ si + 1 }}</div>
               <div class="text-[12px] text-[#3a3a3c] leading-relaxed">{{ s }}</div>
@@ -363,36 +409,31 @@ onUnmounted(() => {
         </div>
 
         <!-- Messages -->
-        <div v-for="(msg, idx) in currentSession.messages" :key="idx" class="flex gap-3 items-start animate-fade-in" :class="msg.role === 'user' ? 'flex-row-reverse' : ''">
+        <div v-for="(msg, idx) in currentSession.messages" :key="msg.id || idx" class="flex gap-3 items-start animate-fade-in" :class="msg.role === 'user' ? 'flex-row-reverse' : ''">
           <div v-if="msg.role === 'user'" class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>
           <div v-else class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
           <div class="min-w-0" :class="msg.role === 'user' ? 'max-w-[65%]' : 'max-w-[75%]'">
-            <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1" :class="msg.role === 'user' ? 'text-right' : ''">{{ new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</div>
-            <div v-if="msg.isThinking && (!msg.blocks || msg.blocks.length === 0)">
-              <div class="bg-white border border-[#e5e5ea] rounded-2xl px-3 py-2 shadow-sm rounded-tl-[4px]">
-                <div class="flex items-center gap-2">
-                  <span class="text-[12px] text-[#3a3a3c] transition-colors duration-500">{{ thinkingProgress || '思考中' }}</span>
-                  <div class="flex gap-1">
-                    <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:0ms"/>
-                    <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:150ms"/>
-                    <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:300ms"/>
-                  </div>
+            <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1" :class="msg.role === 'user' ? 'text-right' : ''">{{ msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '' }}</div>
+            <div v-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
+            <div v-else-if="msg.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-2">
+              <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
+            </div>
+            <div v-if="msg.isThinking && (!msg.blocks || msg.blocks.length === 0)" class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm">
+              <div class="flex items-center gap-2">
+                <div class="flex gap-1">
+                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:0ms"/>
+                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:150ms"/>
+                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:300ms"/>
                 </div>
+                <span class="text-[12px] text-[#3a3a3c] transition-colors duration-500">{{ thinkingProgress || msg.content || '思考中' }}</span>
               </div>
             </div>
             <div v-if="msg.isThinking && msg.blocks && msg.blocks.length > 0" class="space-y-1.5 mb-2">
               <div v-for="(block, bi) in msg.blocks" :key="bi" class="text-[12px] text-surface-600 bg-surface-50 px-3 py-1.5 rounded-lg border-l-2 border-surface-200 italic">{{ block.content }}</div>
             </div>
-            <div v-else-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
-            <div v-else-if="msg.content" :class="msg.role === 'user' ? 'bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-2' : 'bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm'">
-              <template v-if="msg.role === 'user'">
-                <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
-              </template>
-              <template v-else>
-                <div v-if="isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">
-                  {{ typewriterText(msg) }}<span class="inline-block w-[2px] h-[1em] bg-[#2563eb] ml-0.5 align-middle animate-pulse">▌</span>
-                </div>
-                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: renderedContent(idx) ? 1 : 0, transform: renderedContent(idx) ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(idx)"></div>
+            <div v-if="!msg.isThinking && msg.content && msg.role !== 'user'" :class="'bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm'">
+                <div v-if="isTypewriting(msg)" class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '')"></div>
+                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: renderedContent(msg.id || '') ? 1 : 0, transform: renderedContent(msg.id || '') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '')"></div>
                 <div class="flex items-center gap-1 mt-3 pt-3 border-t border-[#e5e5ea]">
                   <button @click="copyAnswer(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3.5 h-3.5" /></button>
                   <button @click="copyFullTrace(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制完整对话">
@@ -401,10 +442,9 @@ onUnmounted(() => {
                   <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-7 h-7 flex items-center justify-center rounded-lg transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" title="查看 Workspace">
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 17V7m0 10a2 2 0 01-2-2V9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2m-6 0h6"/></svg>
                   </button>
-                  <button @click="openNotebookPicker(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="保存到笔记"><AppIcon name="file-plus" class="w-3.5 h-3.5" /></button>
+                  <button @click="openNotebookPicker(msg.id || '')" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="保存到笔记"><AppIcon name="file-plus" class="w-3.5 h-3.5" /></button>
                 </div>
                 <div v-if="showWorkspaceIdx === idx && msg.workspace" class="mt-2 p-3 bg-[#f8f9fa] border border-[#e5e5ea] rounded-xl text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-[#3a3a3c] max-h-[300px] overflow-y-auto">{{ msg.workspace }}</div>
-              </template>
             </div>
           </div>
         </div>
@@ -416,7 +456,7 @@ onUnmounted(() => {
       <div class="max-w-3xl mx-auto">
         <p class="text-[10px] text-surface-300 text-left mb-1.5 pl-1">↵ 发送 · Shift+↵ 换行</p>
         <div class="flex items-center gap-2 bg-white rounded-2xl border border-surface-200 px-4 py-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.02)] transition-all duration-200 focus-within:border-brand-300 focus-within:shadow-[0_0_0_3px_rgba(37,99,235,0.1),0_4px_12px_rgba(0,0,0,0.08)]">
-          <textarea v-model="inputMessage" rows="1" placeholder="向 AI 提问..." class="flex-1 border-none resize-none outline-none text-[13px] text-surface-800 bg-transparent leading-relaxed placeholder:text-surface-400 max-h-[120px]" @keydown.enter.exact.prevent="handleSendMessage" @input="(e: any) => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px' }" />
+          <textarea v-model="inputMessage" rows="1" maxlength="5000" placeholder="向 AI 提问..." class="flex-1 border-none resize-none outline-none text-[13px] text-surface-800 bg-transparent leading-relaxed placeholder:text-surface-400 max-h-[120px]" @keydown.enter.exact.prevent="handleSendMessage" @input="(e: any) => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px' }" />
           <button @click="handleSendMessage" :disabled="!inputMessage.trim() || isChatting" class="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200" :class="inputMessage.trim() && !isChatting ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'" title="发送">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
           </button>
@@ -427,22 +467,6 @@ onUnmounted(() => {
 </div>
 
 <!-- Modals -->
-<Teleport to="body">
-  <Transition name="modal-fade">
-    <div v-if="confirmDeleteId" class="fixed inset-0 z-[90] flex items-center justify-center" @click.self="confirmDeleteId = null">
-      <div class="absolute inset-0 bg-black/20" />
-      <div class="relative bg-white rounded-xl shadow-lg border border-surface-200 w-full max-w-sm mx-4 p-6 z-10">
-        <h3 class="text-[13px] font-semibold text-surface-800 mb-2">删除会话</h3>
-        <p class="text-[13px] text-surface-500 leading-relaxed mb-5">确定要删除该会话吗？此操作不可撤销。</p>
-        <div class="flex items-center justify-end gap-2">
-          <button @click="confirmDeleteId = null" class="flex items-center gap-1.5 py-1 px-2 rounded text-[12px] text-surface-400 bg-transparent border-none hover:text-surface-600 hover:bg-surface-50 transition-colors">取消</button>
-          <button @click="executeDelete" class="flex items-center gap-1.5 py-1 px-3 rounded text-[12px] text-white bg-[#2563eb] hover:bg-[#1d4ed8] transition-colors">删除</button>
-        </div>
-      </div>
-    </div>
-  </Transition>
-</Teleport>
-
 <Teleport to="body">
   <Transition name="modal-fade">
     <div v-if="notebookPickerOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" @click.self="notebookPickerOpen = false">
@@ -464,27 +488,6 @@ onUnmounted(() => {
   </Transition>
 </Teleport>
 
-  <!-- Notebook Picker Modal -->
-  <Teleport to="body">
-    <Transition name="modal-fade">
-      <div v-if="notebookPickerOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" @click.self="notebookPickerOpen = false">
-        <div class="bg-white rounded-2xl w-[360px] max-h-[70vh] overflow-hidden shadow-xl flex flex-col border border-[#e5e5ea]">
-          <div class="flex items-center justify-between px-5 py-4 border-b border-[#e5e5ea]">
-            <h3 class="text-[13px] font-semibold text-[#1d1d1f]">保存到笔记本</h3>
-            <button @click="notebookPickerOpen = false" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#86868b] hover:text-[#2563eb]">✕</button>
-          </div>
-          <div class="px-4 py-2"><input v-model="notebookSearch" class="w-full border border-[#e5e5ea] rounded-lg px-3 py-2 text-[12px] outline-none focus:border-[#2563eb]/40" placeholder="搜索笔记本..." /></div>
-          <div class="flex-1 overflow-y-auto px-4 py-2 max-h-[300px] space-y-1">
-            <button v-for="nb in filteredNotebooks" :key="nb.id" @click="saveToNotebook(nb.id)" class="w-full flex items-center gap-2 px-3 py-2.5 text-[12px] text-left rounded-xl transition-colors text-[#3a3a3c] hover:bg-[#f0f0f5]">
-              <svg class="w-4 h-4 text-[#86868b] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-              <span class="truncate">{{ nb.name }}</span>
-            </button>
-            <div v-if="filteredNotebooks.length === 0" class="text-[12px] text-[#86868b] text-center py-6">无匹配笔记本</div>
-          </div>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
 </template>
 
 <style scoped>

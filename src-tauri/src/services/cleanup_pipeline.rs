@@ -51,7 +51,7 @@ pub fn process_cleanup_task() -> bool {
     println!("[清理管线] 处理: {}/{} (任务#{})", source_type, source_id, task_id);
 
     // 1. 通过 source_type + source_id 清理 knowledge_chunks
-    let chunks_deleted = match crate::database::run(
+    let _chunks_deleted = match crate::database::run(
         "DELETE FROM knowledge_chunks WHERE source_type=?1 AND source_id=?2",
         &[json!(source_type), json!(source_id)],
     ) {

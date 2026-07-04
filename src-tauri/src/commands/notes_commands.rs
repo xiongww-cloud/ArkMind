@@ -37,7 +37,7 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
         conn.execute("BEGIN",[])?;
         let r = conn.execute("INSERT INTO notes(note_id,title,content,is_daily,notebook_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", rusqlite::params![note_id,title,content,if is_daily{1i64}else{0i64},notebook_id.as_ref().map(|v|v.as_str().unwrap_or("")),ts,ts]);
         if let Err(e) = r { let _ = conn.execute("ROLLBACK",[]); return Err(e); }
-        for pid in &project_ids { conn.execute("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?1,?2)", rusqlite::params![note_id,pid]).ok(); }
+        for pid in &project_ids { conn.execute("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?1,?2)", rusqlite::params![note_id,pid]).ok(); crate::services::business_relations::upsert("NOTE", &note_id, "PROJECT", pid, "authored_by", "{}"); }
         for tid in &tag_ids { conn.execute("INSERT OR IGNORE INTO tag_mappings(entity_type,entity_id,tag_id) VALUES('notes',?1,?2)", rusqlite::params![note_id,tid]).ok(); }
         conn.execute("COMMIT",[]).map(|_|())?;
         Ok(())
@@ -57,7 +57,16 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
     if let Some(v) = data["isDaily"].as_bool().or_else(||data["isDaily"].as_i64().map(|n|n!=0)) { fields.push("is_daily=?".into()); values.push(json!(if v{1}else{0})); }
     if let Some(v) = data["notebookId"].as_str() { fields.push("notebook_id=?".into()); values.push(json!(v)); }
     if !fields.is_empty() { fields.push("updated_at=?".into()); values.push(json!(ts)); values.push(json!(note_id)); let sql = format!("UPDATE notes SET {} WHERE note_id=?", fields.join(",")); database::run(&sql, &values).map_err(|e|e.to_string())?; }
-    if let Some(pids) = data["projectIds"].as_array() { database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(note_id)]).ok(); for p in pids { database::run("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?,?)",&[json!(note_id),p.clone()]).ok(); } }
+    if let Some(pids) = data["projectIds"].as_array() {
+        database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(note_id)]).ok();
+        crate::services::business_relations::delete_by_source("NOTE", &note_id);
+        for p in pids {
+            if let Some(pid) = p.as_str() {
+                database::run("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?,?)",&[json!(note_id),p.clone()]).ok();
+                crate::services::business_relations::upsert("NOTE", &note_id, "PROJECT", pid, "authored_by", "{}");
+            }
+        }
+    }
     if let Some(tids) = data["tagIds"].as_array() { database::run("DELETE FROM tag_mappings WHERE entity_type='notes' AND entity_id=?",&[json!(note_id)]).ok(); for t in tids { database::run("INSERT OR IGNORE INTO tag_mappings(entity_type,entity_id,tag_id) VALUES('notes',?,?)",&[json!(note_id),t.clone()]).ok(); } }
     database::save().map_err(|e|e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
@@ -68,6 +77,7 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
 pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     database::run("UPDATE notes SET deleted_at=datetime('now', 'localtime'), notebook_id=NULL WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
     database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(&note_id)]).ok();
+    crate::services::business_relations::delete_by_source("NOTE", &note_id);
     database::run("DELETE FROM tag_mappings WHERE entity_type='notes' AND entity_id=?",&[json!(&note_id)]).ok();
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
     database::save().map_err(|e|e.to_string())?;
@@ -100,9 +110,9 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
 // Tag management
 #[tauri::command] pub async fn notes_list_tags() -> Result<Value, String> { let tags = database::all("SELECT * FROM tags ORDER BY name ASC",&[]).map_err(|e|e.to_string())?; Ok(json!({"success":true,"tags":tags})) }
 #[tauri::command] pub async fn notes_create_tag(data: Value) -> Result<Value, String> { let name = data["name"].as_str().ok_or("missing name")?; let color = data["color"].as_str().unwrap_or("#6366f1"); let tag_type = data["type"].as_str().unwrap_or("general"); let id = uuid::Uuid::new_v4().to_string(); database::run("INSERT INTO tags(tag_id,name,color,type) VALUES(?,?,?,?)",&[json!(id),json!(name),json!(color),json!(tag_type)]).map_err(|e|e.to_string())?; Ok(json!({"success":true,"tag":{"tag_id":id,"name":name,"color":color,"type":tag_type}})) }
-#[tauri::command] pub async fn notes_search_tags(query: String) -> Result<Value, String> { let tags = database::all("SELECT * FROM tags WHERE name LIKE ? ORDER BY name ASC",&[json!(format!("%{}%",query))]).map_err(|e|e.to_string())?; Ok(json!({"success":true,"tags":tags})) }
+#[tauri::command] pub async fn notes_search_tags(query: String) -> Result<Value, String> { let tags = database::all("SELECT * FROM tags WHERE name LIKE ? ORDER BY name ASC",&[json!(format!("%{}%",crate::database::escape_like(&query)))]).map_err(|e|e.to_string())?; Ok(json!({"success":true,"tags":tags})) }
 #[tauri::command] pub async fn notes_list_tags_by_type(tag_type: String) -> Result<Value, String> { let tags = database::all("SELECT * FROM tags WHERE type=? ORDER BY name ASC",&[json!(tag_type)]).map_err(|e|e.to_string())?; Ok(json!({"success":true,"tags":tags})) }
-#[tauri::command] pub async fn notes_generate_ai_tags(note_id: String) -> Result<Value, String> { crate::services::ai_tag::trigger_tagging("notes",&note_id); Ok(json!({"success":true})) }
+#[tauri::command] pub async fn notes_generate_ai_tags(_note_id: String) -> Result<Value, String> { Ok(json!({"success":true})) }
 #[tauri::command] pub async fn notes_rebuild_fts() -> Result<Value, String> { Ok(json!({"success":true})) }
 #[tauri::command] pub async fn notes_upgrade_fts_triggers() -> Result<Value, String> { Ok(json!({"success":true})) }
 #[tauri::command] pub async fn notes_get_inherited_tags(note_id: String) -> Result<Value, String> { let tags = database::all("SELECT DISTINCT t.* FROM tags t INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id INNER JOIN note_project_mapping npm ON npm.note_id=tm.entity_id AND tm.entity_type='notes' WHERE npm.project_id IN (SELECT project_id FROM note_project_mapping WHERE note_id=?) AND npm.note_id!=?", &[json!(&note_id),json!(&note_id)]).unwrap_or_default(); Ok(json!({"success":true,"tags":tags})) }
@@ -117,19 +127,3 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
 #[tauri::command] pub async fn notebook_create(data: Value) -> Result<Value, String> { let id = data["id"].as_str().map(|s|s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()); let name = data["name"].as_str().unwrap_or("新笔记本"); let color = data["color"].as_str().unwrap_or("#64748b"); let parent_id = data["parentId"].as_str().map(|s|json!(s)); database::run("INSERT INTO notebooks(id,name,color,parent_id) VALUES(?,?,?,?)",&[json!(id),json!(name),json!(color),parent_id.clone().unwrap_or(json!(serde_json::Value::Null))]).map_err(|e|e.to_string())?; database::save().map_err(|e|e.to_string())?; Ok(json!({"success":true,"notebook":{"id":id,"name":name,"color":color,"parentId":parent_id}})) }
 #[tauri::command] pub async fn notebook_update(data: Value) -> Result<Value, String> { let id = data["id"].as_str().ok_or("missing id")?; if let Some(n) = data["name"].as_str() { database::run("UPDATE notebooks SET name=? WHERE id=?",&[json!(n),json!(id)]).ok(); } if let Some(c) = data["color"].as_str() { database::run("UPDATE notebooks SET color=? WHERE id=?",&[json!(c),json!(id)]).ok(); } if let Some(p) = data["parentId"].as_str() { database::run("UPDATE notebooks SET parent_id=? WHERE id=?",&[json!(p),json!(id)]).ok(); } else if data.get("parentId").map(|v|v.is_null()).unwrap_or(false) { database::run("UPDATE notebooks SET parent_id=NULL WHERE id=?",&[json!(id)]).ok(); } if let Some(s) = data["sortOrder"].as_i64() { database::run("UPDATE notebooks SET sort_order=? WHERE id=?",&[json!(s),json!(id)]).ok(); } database::save().map_err(|e|e.to_string())?; Ok(json!({"success":true})) }
 #[tauri::command] pub async fn notebook_delete(notebook_id: String) -> Result<Value, String> { database::run("UPDATE notes SET deleted_at=datetime('now', 'localtime'), notebook_id=NULL WHERE notebook_id=?",&[json!(&notebook_id)]).map_err(|e|e.to_string())?; database::run("DELETE FROM notebooks WHERE id=?",&[json!(&notebook_id)]).map_err(|e|e.to_string())?; database::save().map_err(|e|e.to_string())?; Ok(json!({"success":true})) }
-// Tag management (global)
-#[tauri::command] pub async fn tag_force_resync() -> Result<Value, String> {
-    database::run("DELETE FROM ai_tag_queue",&[]).ok();
-    database::run("INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'notes',note_id FROM notes",&[]).ok();
-    database::run("INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'files',id FROM file_assets",&[]).ok();
-    database::run("INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'products',id FROM products",&[]).ok();
-    database::run("INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'projects',id FROM projects",&[]).ok();
-    let count: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM ai_tag_queue",[],|r|r.get(0))).unwrap_or(0);
-    Ok(json!({"success":true,"queueCount":count}))
-}
-#[tauri::command] pub async fn tag_tag_single(data: Value) -> Result<Value, String> {
-    let source_table = data["sourceTable"].as_str().unwrap_or("notes");
-    let source_id = data["sourceId"].as_str().ok_or("missing sourceId")?;
-    crate::services::ai_tag::force_retag(source_table, source_id);
-    Ok(json!({"success":true}))
-}

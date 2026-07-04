@@ -5,61 +5,8 @@ use std::io::{Read, BufReader};
 use std::fs::File;
 
 /// Unified knowledge base cleanup for any source type.
-/// Flow: collect chunk_ids → delete source_data (triggers knowledge_chunks + FTS5) → clean vector_cache + LanceDB
 pub fn cleanup_kb(source_type: &str, source_id: &str) {
-    // 使用 source_type + source_id 清理，不依赖 source_data.id
-    let chunk_ids: Vec<i64> = database::all(
-        "SELECT id FROM knowledge_chunks WHERE source_type=?1 AND source_id=?2",
-        &[json!(source_type), json!(source_id)],
-    ).unwrap_or_default().iter().filter_map(|r| r["id"].as_i64()).collect();
-
-    for cid in &chunk_ids {
-        let _ = database::run("INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES('delete', ?)", &[json!(cid)]);
-    }
-    // ★ 先禁用触发器，避免 DELETE knowledge_chunks 时 kk_chunks_fts_delete 重复删 FTS5
-    database::run("DROP TRIGGER IF EXISTS sd_chunks_delete", &[]).ok();
-    database::run("DROP TRIGGER IF EXISTS sd_fts_delete", &[]).ok();
-    database::run("DROP TRIGGER IF EXISTS sd_fts_update", &[]).ok();
-    database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_delete", &[]).ok();
-    database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_insert", &[]).ok();
-    database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_update", &[]).ok();
-
-    if !chunk_ids.is_empty() {
-        let ph2: Vec<String> = chunk_ids.iter().map(|_| "?".to_string()).collect();
-        let params2: Vec<serde_json::Value> = chunk_ids.iter().map(|id| json!(id)).collect();
-        match database::run(&format!("DELETE FROM knowledge_chunks WHERE id IN ({})", ph2.join(",")), &params2) {
-            Ok(r) => eprintln!("[KB清理] 已删除 knowledge_chunks: {} 行", r.changes),
-            Err(e) => eprintln!("[KB清理] knowledge_chunks 删除失败: {:#?}", e),
-        }
-    }
-    match database::run("DELETE FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(source_type), json!(source_id)]) {
-        Ok(r) => eprintln!("[KB清理] 已删除 source_data {}/{} ({}行)", source_type, source_id, r.changes),
-        Err(e) => eprintln!("[KB清理] 删除 source_data 失败 {}/{}: {:#?}", source_type, source_id, e),
-    }
-    database::run("CREATE TRIGGER IF NOT EXISTS sd_chunks_delete AFTER DELETE ON source_data BEGIN DELETE FROM knowledge_chunks WHERE source_type = old.source_type AND source_id = old.source_id; END", &[]).ok();
-    database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_delete AFTER DELETE ON source_data BEGIN INSERT INTO global_search_fts(global_search_fts, rowid, source_type, source_id, title, content) VALUES ('delete', old.rowid, old.source_type, old.source_id, old.title, old.content); END", &[]).ok();
-    database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_update AFTER UPDATE ON source_data BEGIN INSERT INTO global_search_fts(global_search_fts, rowid, source_type, source_id, title, content) VALUES ('delete', old.rowid, old.source_type, old.source_id, old.title, old.content); INSERT INTO global_search_fts(rowid, source_type, source_id, title, content) VALUES (new.rowid, new.source_type, new.source_id, new.title, new.content); END", &[]).ok();
-    database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks WHEN old.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES ('delete', old.rowid); END", &[]).ok();
-    database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks WHEN new.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content); END", &[]).ok();
-    database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks WHEN old.chunk_type='child' OR new.chunk_type='child' BEGIN DELETE FROM kk_chunks_fts WHERE rowid = old.rowid; INSERT INTO kk_chunks_fts(rowid, doc_title, content) SELECT new.rowid, new.doc_title, new.content WHERE new.chunk_type='child'; END", &[]).ok();
-    let _ = database::with_db(|c| { c.pragma_update(None, "foreign_keys", "ON").ok(); Ok(()) });
-
-    if !chunk_ids.is_empty() {
-        let placeholders: Vec<String> = chunk_ids.iter().map(|_| "?".to_string()).collect();
-        let params: Vec<serde_json::Value> = chunk_ids.iter().map(|id| json!(id)).collect();
-        match database::run(&format!("DELETE FROM vector_cache WHERE chunk_id IN ({})", placeholders.join(",")), &params) {
-            Ok(r) => eprintln!("[KB清理] 已清理 vector_cache: {} 行", r.changes),
-            Err(e) => eprintln!("[KB清理] vector_cache 清理失败: {:#?}", e),
-        }
-        if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
-            if let Some(ref c) = *g {
-                match c.delete_chunks_by_rowids(&chunk_ids) {
-                    Ok(_) => eprintln!("[KB清理] 已清理 LanceDB"),
-                    Err(e) => eprintln!("[KB清理] LanceDB 清理失败: {:#?}", e),
-                }
-            }
-        }
-    }
+    crate::services::knowledge_lifecycle::delete_object(source_type, source_id);
 }
 
 use std::sync::Mutex;
@@ -81,17 +28,17 @@ fn compute_file_hash(path: &str) -> Result<(String, u64), String> {
 }
 
 fn storage_base() -> String {
-    { let guard = STORAGE_BASE.lock().unwrap(); if let Some(ref s) = *guard { return s.clone(); } }
+    { let guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()); if let Some(ref s) = *guard { return s.clone(); } }
     let default = std::env::current_exe()
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .parent().unwrap_or(std::path::Path::new("."))
         .join("files");
     std::fs::create_dir_all(&default).ok();
     let s = default.to_string_lossy().to_string();
-    let mut guard = STORAGE_BASE.lock().unwrap(); *guard = Some(s.clone()); s
+    let mut guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()); *guard = Some(s.clone()); s
 }
 
-pub fn invalidate_storage_base() { *STORAGE_BASE.lock().unwrap() = None; }
+pub fn invalidate_storage_base() { *STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()) = None; }
 
 pub fn flat_disk_path(hash: &str) -> String { format!("{}\\{}", storage_base().trim_end_matches(&['\\','/'][..]), hash) }
 
@@ -129,6 +76,8 @@ fn add_relation(file_id: &str, entity_type: &str, entity_id: &str, custom_name: 
         "INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator,folder_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         &[json!(uuid::Uuid::new_v4().to_string()), json!(file_id), json!(entity_type), json!(entity_id), json!(custom_name), json!(creator), json!(folder_id)]
     ).ok();
+    let meta = serde_json::json!({"custom_name": custom_name, "creator": creator});
+    crate::services::business_relations::upsert("FILE", file_id, &entity_type.to_uppercase(), entity_id, "has_file", &meta.to_string());
 }
 
 fn add_relation_with_desc(file_id: &str, entity_type: &str, entity_id: &str, custom_name: &str, creator: &str, description: &str) {
@@ -136,6 +85,8 @@ fn add_relation_with_desc(file_id: &str, entity_type: &str, entity_id: &str, cus
         "INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator,description) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         &[json!(uuid::Uuid::new_v4().to_string()), json!(file_id), json!(entity_type), json!(entity_id), json!(custom_name), json!(creator), json!(description)]
     ).ok();
+    let meta = serde_json::json!({"custom_name": custom_name, "creator": creator, "description": description});
+    crate::services::business_relations::upsert("FILE", file_id, &entity_type.to_uppercase(), entity_id, "has_file", &meta.to_string());
 }
 
 pub fn get_physical_path(file_id: &str) -> Option<String> {
@@ -242,6 +193,9 @@ pub(crate) async fn upload_file_core(
         }
     }
 
+    // 通知知识库：解析 → 清洗 → 写入 source_data → 触发同步
+    crate::services::knowledge_lifecycle::notify_file_upload(&file_id);
+
     Ok((file_id.clone(), file_id))
 }
 
@@ -249,6 +203,22 @@ pub(crate) async fn upload_file_core(
 pub async fn file_upload(data: Value) -> Result<Value, String> {
     let file_path = data["filePath"].as_str().unwrap_or("");
     if file_path.is_empty() { return Ok(json!({"success":false,"error":"缺少 filePath"})); }
+
+    // 路径安全验证：禁止相对路径穿越
+    let path = std::path::Path::new(file_path);
+    if path.is_relative() {
+        return Ok(json!({"success":false,"error":"不支持相对路径"}));
+    }
+    // 检查路径规范化后是否仍包含 ..
+    if let Ok(canonical) = path.canonicalize() {
+        let components: Vec<_> = canonical.components().collect();
+        for comp in &components {
+            if let std::path::Component::ParentDir = comp {
+                return Ok(json!({"success":false,"error":"路径包含非法穿越"}));
+            }
+        }
+    }
+
     let entity_type = data["entityType"].as_str().unwrap_or("library");
     let entity_ids: Vec<&str> = if let Some(arr) = data["entityIds"].as_array() {
         arr.iter().filter_map(|v| v.as_str()).collect()
@@ -303,7 +273,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn file_list_global(query: Option<String>) -> Result<Vec<Value>, String> {
     if let Some(q) = query.filter(|q| !q.is_empty()) {
-        let like = format!("%{}%", q);
+        let like = format!("%{}%", crate::database::escape_like(&q));
         database::all(
             "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 OR fa.file_ext LIKE ?1) ORDER BY fr.created_at DESC LIMIT 50",
             &[json!(like)]
@@ -347,10 +317,17 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 /// 简化删除：按 file_relations.id 删除关联，无剩余引用时清理 file_assets
 #[tauri::command] pub async fn file_delete(file_id: String) -> Result<Value, String> {
     // file_id is file_relations.id
+    // 0. Look up entity info BEFORE deleting (for business_relations cleanup)
+    let rel_info: Option<(String, String, String)> = database::get(
+        "SELECT file_id, entity_type, entity_id FROM file_relations WHERE id=?", &[json!(&file_id)]
+    ).ok().flatten().map(|r| (
+        r["file_id"].as_str().unwrap_or("").to_string(),
+        r["entity_type"].as_str().unwrap_or("").to_string(),
+        r["entity_id"].as_str().unwrap_or("").to_string(),
+    ));
+
     // 1. Look up the asset ID
-    let asset_id: Option<String> = database::get(
-        "SELECT file_id FROM file_relations WHERE id=?", &[json!(&file_id)]
-    ).ok().flatten().and_then(|r| r["file_id"].as_str().map(|s| s.to_string()));
+    let asset_id: Option<String> = rel_info.as_ref().map(|(fid, _, _)| fid.clone());
 
     // 2. Delete the relation
     database::run("DELETE FROM file_relations WHERE id=?", &[json!(&file_id)]).ok();
@@ -366,6 +343,12 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
             database::run("DELETE FROM file_assets WHERE id=?", &[json!(aid)]).ok();
         }
     }
+
+    // 4. Sync business_relations
+    if let Some((_, et, eid)) = &rel_info {
+        crate::services::business_relations::delete("FILE", &asset_id.unwrap_or_default(), &et.to_uppercase(), eid, "has_file");
+    }
+
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::File, &file_id, crate::services::object_changed::Action::Deleted);
     Ok(json!({"success":true}))
 }
@@ -400,7 +383,9 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 
 #[tauri::command] pub async fn file_move_to_folder(file_id: String, folder_id: Option<String>) -> Result<Value, String> {
     if file_id.is_empty() { return Ok(json!({"success":false,"error":"参数缺失"})); }
-    database::run("INSERT OR REPLACE INTO library_file_locations(file_id, folder_id) VALUES(?1,?2)", &[json!(&file_id), json!(folder_id)]).ok();
+    // file_id may be fr.id (file_relations PK) — resolve to fa.id (file_assets PK)
+    let asset_id = resolve_file_asset_id(&file_id).unwrap_or_else(|| file_id.clone());
+    database::run("INSERT OR REPLACE INTO library_file_locations(file_id, folder_id) VALUES(?1,?2)", &[json!(&asset_id), json!(folder_id)]).ok();
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn file_folder_create(name: String, parent_id: Option<String>, project_id: Option<String>) -> Result<Value, String> {
@@ -455,10 +440,25 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
     })?;
     let hash = row["content_hash"].as_str().filter(|h| !h.is_empty())?;
     let src = flat_disk_path(hash);
-    if !std::path::Path::new(&src).exists() { return None; }
-    let ext = row["file_ext"].as_str().unwrap_or("").to_string();
-    let name = row["custom_name"].as_str().unwrap_or("").to_string();
-    Some((src, name, ext))
+    if std::path::Path::new(&src).exists() {
+        let ext = row["file_ext"].as_str().unwrap_or("").to_string();
+        let name = row["custom_name"].as_str().unwrap_or("").to_string();
+        return Some((src, name, ext));
+    }
+    // Fallback: search for the file by hash in known storage locations
+    let exe_parent = std::env::current_exe().ok()
+        .and_then(|p| p.parent().map(|pp| pp.to_path_buf()));
+    if let Some(parent) = exe_parent {
+        for subdir in &["files", "target/debug/files", "target/release/files"] {
+            let candidate = parent.join(subdir).join(hash);
+            if candidate.exists() {
+                let ext = row["file_ext"].as_str().unwrap_or("").to_string();
+                let name = row["custom_name"].as_str().unwrap_or("").to_string();
+                return Some((candidate.to_string_lossy().to_string(), name, ext));
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command] pub async fn file_preview(file_id: String) -> Result<Value, String> {
@@ -500,6 +500,20 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
 }
 
 #[tauri::command] pub async fn file_export_to_path(file_path: String, save_path: String) -> Result<Value, String> {
+    // 路径安全验证：禁止相对路径穿越
+    let src = std::path::Path::new(&file_path);
+    let dst = std::path::Path::new(&save_path);
+    if src.is_relative() || dst.is_relative() {
+        return Ok(json!({"success":false,"error":"不支持相对路径"}));
+    }
+    // 检查路径规范化后是否仍包含 ..
+    if let (Ok(canonical_src), Ok(canonical_dst)) = (src.canonicalize(), dst.canonicalize()) {
+        for comp in canonical_src.components().chain(canonical_dst.components()) {
+            if let std::path::Component::ParentDir = comp {
+                return Ok(json!({"success":false,"error":"路径包含非法穿越"}));
+            }
+        }
+    }
     std::fs::copy(&file_path, &save_path).map_err(|e| format!("拷贝失败: {}", e))?;
     Ok(json!({"success":true}))
 }
@@ -542,35 +556,56 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
     let file_id = data["fileId"].as_str().unwrap_or("");
     let folder_id: Option<String> = data.get("toFolderId").and_then(|v| v.as_str().map(|s| s.to_string()));
     if file_id.is_empty() { return Ok(json!({"success":false})); }
-    database::run("INSERT OR REPLACE INTO library_file_locations(file_id, folder_id) VALUES(?1,?2)", &[json!(&file_id), json!(folder_id)]).ok();
+    let asset_id = resolve_file_asset_id(file_id).unwrap_or_else(|| file_id.to_string());
+    database::run("INSERT OR REPLACE INTO library_file_locations(file_id, folder_id) VALUES(?1,?2)", &[json!(&asset_id), json!(folder_id)]).ok();
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn file_cleanup_if_orphan(_file_id: String) -> Result<Value, String> { Ok(json!({"success":true})) }
 #[tauri::command] pub async fn file_open_product(file_id: String) -> Result<Value, String> { file_preview(file_id).await }
 #[tauri::command] pub async fn file_download_product(data: Value) -> Result<Value, String> { file_download(data).await }
-#[tauri::command] pub async fn file_unlink_from_product(file_id: String, product_id: String) -> Result<Value, String> {
-    database::run("DELETE FROM file_relations WHERE entity_type='product' AND entity_id=? AND id=?", &[json!(&product_id), json!(&file_id)]).ok();
-    Ok(json!({"success":true}))
+#[tauri::command] pub async fn file_unlink_from_product(file_id: String, _product_id: String) -> Result<Value, String> {
+    file_delete(file_id).await
 }
+// ─── Resolve fr.id (file_relations PK) to fr.file_id (file_assets FK) ───
+fn resolve_file_asset_id(relation_id: &str) -> Option<String> {
+    database::get("SELECT file_id FROM file_relations WHERE id=?", &[json!(relation_id)])
+        .ok().flatten()
+        .and_then(|r| r["file_id"].as_str().map(|s| s.to_string()))
+}
+
 #[tauri::command] pub async fn file_get_product_associations(file_id: String) -> Result<Value, String> {
-    let ids = database::all("SELECT entity_id FROM file_relations WHERE entity_type='product' AND file_id=?",&[json!(&file_id)]).unwrap_or_default();
+    // file_id may be file_relations.id (fr.id) or file_assets.id; resolve to file_assets.id
+    let asset_id = resolve_file_asset_id(&file_id).unwrap_or_else(|| file_id.clone());
+    let ids = database::all("SELECT entity_id FROM file_relations WHERE entity_type='product' AND file_id=?",&[json!(&asset_id)]).unwrap_or_default();
     Ok(json!({"success":true,"products":ids}))
 }
 #[tauri::command] pub async fn file_update_product_associations(file_id: String, data: Value) -> Result<Value, String> {
-    database::run("DELETE FROM file_relations WHERE entity_type='product' AND file_id=?",&[json!(&file_id)]).ok();
+    // Resolve to file_assets.id
+    let asset_id = resolve_file_asset_id(&file_id).unwrap_or_else(|| file_id.clone());
+
+    // Preserve custom_name and description from existing records before deleting
+    let old_info: Option<(String, String)> = database::get(
+        "SELECT custom_name, description FROM file_relations WHERE entity_type='product' AND file_id=? LIMIT 1",
+        &[json!(&asset_id)],
+    ).ok().flatten().map(|r| {
+        (r["custom_name"].as_str().unwrap_or("").to_string(), r["description"].as_str().unwrap_or("").to_string())
+    });
+    let (custom_name, description) = old_info.unwrap_or_default();
+
+    database::run("DELETE FROM file_relations WHERE entity_type='product' AND file_id=?",&[json!(&asset_id)]).ok();
     let has_new = data["productIds"].as_array().map(|a| !a.is_empty()).unwrap_or(false);
     if has_new {
         if let Some(ids) = data["productIds"].as_array() {
-            for pid in ids { if let Some(p) = pid.as_str() { add_relation(&file_id, "product", p, "", "", None); } }
+            for pid in ids { if let Some(p) = pid.as_str() { add_relation_with_desc(&asset_id, "product", p, &custom_name, "", &description); } }
         }
     } else {
-        let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?",&[json!(&file_id)])
+        let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?",&[json!(&asset_id)])
             .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
         if remaining == 0 {
-            crate::services::knowledge_lifecycle::notify_deleted("FILE", &file_id);
-            if let Some(p) = get_physical_path(&file_id) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
-            database::run("DELETE FROM library_file_locations WHERE file_id=?",&[json!(&file_id)]).ok();
-            database::run("DELETE FROM file_assets WHERE id=?",&[json!(&file_id)]).ok();
+            crate::services::knowledge_lifecycle::notify_deleted("FILE", &asset_id);
+            if let Some(p) = get_physical_path(&asset_id) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
+            database::run("DELETE FROM library_file_locations WHERE file_id=?",&[json!(&asset_id)]).ok();
+            database::run("DELETE FROM file_assets WHERE id=?",&[json!(&asset_id)]).ok();
         }
     }
     Ok(json!({"success":true}))

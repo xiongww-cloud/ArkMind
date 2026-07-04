@@ -7,10 +7,7 @@ async function getDOMPurify() {
   return _dompurify
 }
 
-const PURIFY_CONFIG = {
-  ADD_TAGS: ['input'],
-  ADD_ATTR: ['checked', 'disabled', 'type'],
-}
+const PURIFY_CONFIG = {}
 
 export async function sanitizeHtml(html: string): Promise<string> {
   if (!html) return ''

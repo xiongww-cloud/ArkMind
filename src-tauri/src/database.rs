@@ -1,4 +1,4 @@
-//! SQLite database — rusqlite powered, WAL mode, FTS5 full-text search
+﻿//! SQLite database — rusqlite powered, WAL mode, FTS5 full-text search
 //!
 //! 35+ tables: core business + AI pipeline + knowledge base + FTS5 virtual tables
 
@@ -146,8 +146,43 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     init_kb_fts_triggers(&conn)?;
     seed_kb_fts(&conn);
 
+    // ★ KB FTS5 内容同步触发器（确保 knowledge_chunks 变更实时同步到 kk_chunks_fts）
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks
+         WHEN new.chunk_type = 'child'
+         BEGIN
+             INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content);
+         END;
+         CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks
+         WHEN old.chunk_type = 'child'
+         BEGIN
+             INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES ('delete', old.rowid);
+         END;
+         CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks
+         WHEN old.chunk_type = 'child' OR new.chunk_type = 'child'
+         BEGIN
+             DELETE FROM kk_chunks_fts WHERE rowid = old.rowid;
+             INSERT INTO kk_chunks_fts(rowid, doc_title, content)
+               SELECT new.rowid, new.doc_title, new.content
+               WHERE new.chunk_type = 'child';
+         END;"
+    )?;
+    eprintln!("[数据库] kk_chunks_fts 触发器已创建");
+    // ★ 回填已有数据到 kk_chunks_fts（触发器不覆盖已有行）
+    let seeded: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM kk_chunks_fts", [], |r| r.get(0)
+    ).unwrap_or(0);
+    if seeded == 0 {
+        let n = conn.execute(
+            "INSERT OR IGNORE INTO kk_chunks_fts(rowid, doc_title, content) SELECT rowid, doc_title, content FROM knowledge_chunks WHERE chunk_type = 'child'",
+            [],
+        ).unwrap_or(0);
+        eprintln!("[数据库] kk_chunks_fts 回填: {} 行", n);
+    } else {
+        eprintln!("[数据库] kk_chunks_fts 已有数据 ({} 行)，跳过回填", seeded);
+    }
+
     // ★ FTS5 自动镜像（已移除写入触发器，改为业务命令调用 notify_changed）
-    // init_struct_source_data_triggers(&conn)?;
 
     // ★ 迁移 source_data.id 为 TEXT（使用 source_id）
     migrate_source_data_to_text_id(&conn)?;
@@ -193,8 +228,15 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
 pub fn with_db<F, T>(f: F) -> SqliteResult<T>
 where F: FnOnce(&Connection) -> SqliteResult<T> {
     let db = DB.lock().unwrap_or_else(|e| e.into_inner());
-    let conn = db.as_ref().expect("Database not initialized");
+    let conn = db.as_ref().ok_or_else(|| rusqlite::Error::InvalidPath("Database not initialized".into()))?;
     f(conn)
+}
+
+/// 转义 LIKE 查询中的通配符（% 和 _）
+pub fn escape_like(input: &str) -> String {
+    input.replace('\\', "\\\\")
+         .replace('%', "\\%")
+         .replace('_', "\\_")
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -331,6 +373,19 @@ fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS channel_contacts (id TEXT PRIMARY KEY, channel_id TEXT, name TEXT, phone TEXT, email TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS vendor_partners (id TEXT PRIMARY KEY, project_id TEXT, name TEXT, phone TEXT, company TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS vendor_contacts (id TEXT PRIMARY KEY, vendor_id TEXT, name TEXT, phone TEXT, email TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
+        -- ★ Project ↔ Channel/Vendor mapping (many-to-many)
+        CREATE TABLE IF NOT EXISTS project_channel_mapping (
+            project_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+            selected_contact_id TEXT DEFAULT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (project_id, channel_id)
+        );
+        CREATE TABLE IF NOT EXISTS project_vendor_mapping (
+            project_id TEXT NOT NULL, vendor_id TEXT NOT NULL,
+            selected_contact_id TEXT DEFAULT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (project_id, vendor_id)
+        );
         -- ★ Project ↔ Product mapping
         CREATE TABLE IF NOT EXISTS project_product_mapping (
             project_id TEXT NOT NULL, product_id TEXT NOT NULL, product_name TEXT DEFAULT '',
@@ -495,650 +550,6 @@ pub(crate) fn save() -> rusqlite::Result<()> {
 }
 
 // FTS5 triggers init — external content on source_data
-/// 无条件创建结构化数据的 source_data 同步触发器（不论 Premium 许可）
-/// PRODUCT / PROJECT / TODO 等结构化对象的 CRUD 需要实时同步到 source_data
-fn init_struct_source_data_triggers(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    // ── source_data triggers: notes ──
-    let _ = conn.execute_batch(
-        "DROP TRIGGER IF EXISTS sd_notes_insert;
-         DROP TRIGGER IF EXISTS sd_notes_update;
-         DROP TRIGGER IF EXISTS sd_notes_delete;
-         CREATE TRIGGER sd_notes_insert AFTER INSERT ON notes BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           VALUES('NOTE',new.note_id,new.title,
-             'title: '||new.title||
-             CASE WHEN COALESCE(new.content,'')!='' THEN CHAR(10)||'content: '||new.content ELSE '' END||
-             CASE WHEN COALESCE(new.notebook_id,'')!=''
-               THEN CHAR(10)||'notebook: '||COALESCE((SELECT name FROM notebooks WHERE id=new.notebook_id), new.notebook_id)
-               ELSE '' END||
-             CHAR(10)||'created: '||COALESCE(new.created_at, datetime('now','localtime'))||
-             CHAR(10)||'updated: '||COALESCE(new.updated_at, datetime('now','localtime'))||
-             CASE WHEN (SELECT COUNT(*) FROM note_project_mapping npm JOIN projects p ON p.id=npm.project_id WHERE npm.note_id=new.note_id)>0
-               THEN CHAR(10)||'projects: '||(SELECT GROUP_CONCAT(p.name, ', ') FROM note_project_mapping npm JOIN projects p ON p.id=npm.project_id WHERE npm.note_id=new.note_id)
-             ELSE '' END,
-             datetime('now', 'localtime'))
-           ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title,content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         CREATE TRIGGER sd_notes_update AFTER UPDATE ON notes BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           VALUES('NOTE',new.note_id,new.title,
-             'title: '||new.title||
-             CASE WHEN COALESCE(new.content,'')!='' THEN CHAR(10)||'content: '||new.content ELSE '' END||
-             CASE WHEN COALESCE(new.notebook_id,'')!=''
-               THEN CHAR(10)||'notebook: '||COALESCE((SELECT name FROM notebooks WHERE id=new.notebook_id), new.notebook_id)
-               ELSE '' END||
-             CHAR(10)||'created: '||COALESCE(new.created_at, datetime('now','localtime'))||
-             CHAR(10)||'updated: '||COALESCE(new.updated_at, datetime('now','localtime'))||
-             CASE WHEN (SELECT COUNT(*) FROM note_project_mapping npm JOIN projects p ON p.id=npm.project_id WHERE npm.note_id=new.note_id)>0
-               THEN CHAR(10)||'projects: '||(SELECT GROUP_CONCAT(p.name, ', ') FROM note_project_mapping npm JOIN projects p ON p.id=npm.project_id WHERE npm.note_id=new.note_id)
-             ELSE '' END,
-             datetime('now', 'localtime'))
-           ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title,content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- sd_notes_delete: handled by Rust knowledge_delete()"
-    );
-    // ── source_data triggers: products ──
-    let _ = conn.execute_batch(
-        "DROP TRIGGER IF EXISTS sd_products_insert;
-         DROP TRIGGER IF EXISTS sd_products_update;
-         DROP TRIGGER IF EXISTS sd_products_delete;
-         CREATE TRIGGER sd_products_insert AFTER INSERT ON products BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           VALUES('PRODUCT',new.id,new.name,
-             'name: '||new.name||
-             CASE WHEN COALESCE(new.description,'')!='' THEN CHAR(10)||'description: '||new.description ELSE '' END||
-             CASE WHEN COALESCE(new.series_name,'')!='' THEN CHAR(10)||'series_name: '||new.series_name ELSE '' END||
-             CASE WHEN new.price>0 THEN CHAR(10)||'price: '||printf('%.2f',new.price) ELSE '' END||
-             CASE WHEN COALESCE(new.standard_specs,'')!='' THEN CHAR(10)||'standard_specs: '||new.standard_specs ELSE '' END||
-             CASE WHEN COALESCE(new.full_specs,'')!='' THEN CHAR(10)||'full_specs: '||new.full_specs ELSE '' END||
-             CASE WHEN new.series_id IS NOT NULL AND new.series_id!=''
-               THEN CHAR(10)||'path: '||IFNULL(
-                 (WITH RECURSIVE sp AS (SELECT name,parent_id,0 AS d FROM product_series WHERE id=new.series_id
-                   UNION ALL SELECT ps.name,ps.parent_id,sp.d+1 FROM product_series ps JOIN sp ON ps.id=sp.parent_id)
-                  SELECT GROUP_CONCAT(name,' / ' ORDER BY d DESC) FROM sp),'')
-               ELSE '' END,
-             datetime('now', 'localtime'))
-           ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title,content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         CREATE TRIGGER sd_products_update AFTER UPDATE ON products BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           VALUES('PRODUCT',new.id,new.name,
-             'name: '||new.name||
-             CASE WHEN COALESCE(new.description,'')!='' THEN CHAR(10)||'description: '||new.description ELSE '' END||
-             CASE WHEN COALESCE(new.series_name,'')!='' THEN CHAR(10)||'series_name: '||new.series_name ELSE '' END||
-             CASE WHEN new.price>0 THEN CHAR(10)||'price: '||printf('%.2f',new.price) ELSE '' END||
-             CASE WHEN COALESCE(new.standard_specs,'')!='' THEN CHAR(10)||'standard_specs: '||new.standard_specs ELSE '' END||
-             CASE WHEN COALESCE(new.full_specs,'')!='' THEN CHAR(10)||'full_specs: '||new.full_specs ELSE '' END||
-             CASE WHEN new.series_id IS NOT NULL AND new.series_id!=''
-               THEN CHAR(10)||'path: '||IFNULL(
-                 (WITH RECURSIVE sp AS (SELECT name,parent_id,0 AS d FROM product_series WHERE id=new.series_id
-                   UNION ALL SELECT ps.name,ps.parent_id,sp.d+1 FROM product_series ps JOIN sp ON ps.id=sp.parent_id)
-                  SELECT GROUP_CONCAT(name,' / ' ORDER BY d DESC) FROM sp),'')
-               ELSE '' END,
-             datetime('now', 'localtime'))
-           ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title,content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- sd_products_delete: handled by Rust knowledge_delete()"
-    );
-    // ── source_data triggers: projects（键值对格式）──
-    let _ = conn.execute_batch(
-        "DROP TRIGGER IF EXISTS sd_projects_insert;
-         DROP TRIGGER IF EXISTS sd_projects_update;
-         DROP TRIGGER IF EXISTS sd_projects_delete;
-         CREATE TRIGGER sd_projects_insert AFTER INSERT ON projects BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           VALUES('PROJECT',new.id,new.name,
-             'name: '||new.name||
-             CASE WHEN COALESCE(new.status,'')!='' THEN CHAR(10)||'status: '||new.status ELSE '' END||
-             CASE WHEN COALESCE(new.owner,'')!='' THEN CHAR(10)||'owner: '||new.owner ELSE '' END||
-             CASE WHEN COALESCE(new.customer,'')!='' THEN CHAR(10)||'customer: '||new.customer ELSE '' END||
-             CASE WHEN new.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',new.budget) ELSE '' END||
-             CASE WHEN COALESCE(new.description,'')!='' THEN CHAR(10)||'description: '||new.description ELSE '' END||
-             CASE WHEN COALESCE(new.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||new.bid_time ELSE '' END||
-             CASE WHEN COALESCE(new.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||new.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(new.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||new.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=new.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=new.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=new.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=new.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime'))
-           ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title,content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         CREATE TRIGGER sd_projects_update AFTER UPDATE ON projects BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           VALUES('PROJECT',new.id,new.name,
-             'name: '||new.name||
-             CASE WHEN COALESCE(new.status,'')!='' THEN CHAR(10)||'status: '||new.status ELSE '' END||
-             CASE WHEN COALESCE(new.owner,'')!='' THEN CHAR(10)||'owner: '||new.owner ELSE '' END||
-             CASE WHEN COALESCE(new.customer,'')!='' THEN CHAR(10)||'customer: '||new.customer ELSE '' END||
-             CASE WHEN new.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',new.budget) ELSE '' END||
-             CASE WHEN COALESCE(new.description,'')!='' THEN CHAR(10)||'description: '||new.description ELSE '' END||
-             CASE WHEN COALESCE(new.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||new.bid_time ELSE '' END||
-             CASE WHEN COALESCE(new.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||new.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(new.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||new.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=new.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=new.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=new.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=new.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime'))
-           ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title,content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- sd_projects_delete: handled by Rust knowledge_delete()
-         -- solution_items 变更时同步更新对应项目的 source_data（含方案产品 + 动态）
-         DROP TRIGGER IF EXISTS sd_project_solution_insert;
-         CREATE TRIGGER sd_project_solution_insert AFTER INSERT ON solution_items
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si2.product_name)
-               FROM solution_items si2
-               JOIN solution_versions sv2 ON sv2.id=si2.solution_version_id AND sv2.status='final'
-               JOIN solutions s2 ON s2.id=sv2.solution_id WHERE s2.project_id=p.id AND COALESCE(si2.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ')
-               FROM project_dynamics pd
-               WHERE pd.project_id=p.id
-               ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=(SELECT s.project_id FROM solutions s JOIN solution_versions sv ON sv.solution_id=s.id WHERE sv.id=new.solution_version_id)
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- solution_items UPDATE → 刷新关联项目的 source_data
-         DROP TRIGGER IF EXISTS sd_project_solution_update;
-         CREATE TRIGGER sd_project_solution_update AFTER UPDATE ON solution_items
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name)
-               FROM solution_items si
-               JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final'
-               JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ')
-               FROM project_dynamics pd
-               WHERE pd.project_id=p.id
-               ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=(SELECT s.project_id FROM solutions s JOIN solution_versions sv ON sv.solution_id=s.id WHERE sv.id=old.solution_version_id)
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- solution_items DELETE → 刷新关联项目的 source_data
-         DROP TRIGGER IF EXISTS sd_project_solution_delete;
-         CREATE TRIGGER sd_project_solution_delete AFTER DELETE ON solution_items
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name)
-               FROM solution_items si
-               JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final'
-               JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ')
-               FROM project_dynamics pd
-               WHERE pd.project_id=p.id
-               ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=(SELECT s.project_id FROM solutions s JOIN solution_versions sv ON sv.solution_id=s.id WHERE sv.id=old.solution_version_id)
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;"
-    );
-    // ── source_data triggers: todos ──
-    let _ = conn.execute_batch(
-        "DROP TRIGGER IF EXISTS sd_todos_insert;
-         DROP TRIGGER IF EXISTS sd_todos_update;
-         DROP TRIGGER IF EXISTS sd_todos_delete;
-         CREATE TRIGGER sd_todos_insert AFTER INSERT ON todos BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           VALUES('TODO',new.id,new.title,
-             'title: '||new.title||
-             CASE WHEN new.done=1 THEN CHAR(10)||'done: yes' ELSE '' END||
-             CASE WHEN COALESCE(new.priority,'')!='' THEN CHAR(10)||'priority: '||new.priority ELSE '' END||
-             CASE WHEN COALESCE(new.due_date,'')!='' THEN CHAR(10)||'due_date: '||new.due_date ELSE '' END||
-             CASE WHEN COALESCE(new.repeat,'')!='' THEN CHAR(10)||'repeat: '||new.repeat ELSE '' END||
-             CASE WHEN COALESCE(new.content,'')!='' THEN CHAR(10)||'content: '||new.content ELSE '' END,
-             datetime('now', 'localtime'))
-           ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title,content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         CREATE TRIGGER sd_todos_update AFTER UPDATE ON todos BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           VALUES('TODO',new.id,new.title,
-             'title: '||new.title||
-             CASE WHEN new.done=1 THEN CHAR(10)||'done: yes' ELSE '' END||
-             CASE WHEN COALESCE(new.priority,'')!='' THEN CHAR(10)||'priority: '||new.priority ELSE '' END||
-             CASE WHEN COALESCE(new.due_date,'')!='' THEN CHAR(10)||'due_date: '||new.due_date ELSE '' END||
-             CASE WHEN COALESCE(new.repeat,'')!='' THEN CHAR(10)||'repeat: '||new.repeat ELSE '' END||
-             CASE WHEN COALESCE(new.content,'')!='' THEN CHAR(10)||'content: '||new.content ELSE '' END,
-             datetime('now', 'localtime'))
-           ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title,content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- sd_todos_delete: handled by Rust knowledge_delete()"
-    );
-    // ── source_data triggers: INSERT/UPDATE by ingestion worker only ──
-    // DELETE is handled explicitly in file_delete / notes_permanent_delete
-    // (the old sd_files_delete trigger was removed — it deleted source_data
-    //  prematurely when file_assets was shared by multiple file_versions)
-    let _ = conn.execute_batch(
-        "DROP TRIGGER IF EXISTS sd_files_delete;
-         DROP TRIGGER IF EXISTS sd_dynamics_delete;
-         DROP TRIGGER IF EXISTS sd_project_dynamics_insert;
-         -- project_dynamics 新增时，刷新对应 PROJECT 的 source_data，追加 dynamics: 行
-         CREATE TRIGGER sd_project_dynamics_insert AFTER INSERT ON project_dynamics
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name)
-               FROM solution_items si
-               JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final'
-               JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ')
-               FROM project_dynamics pd
-               WHERE pd.project_id=p.id
-               ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=new.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- project_dynamics UPDATE → 刷新关联项目的 source_data
-         DROP TRIGGER IF EXISTS sd_project_dynamics_update;
-         CREATE TRIGGER sd_project_dynamics_update AFTER UPDATE ON project_dynamics
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=new.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- project_dynamics DELETE → 刷新关联项目的 source_data
-         DROP TRIGGER IF EXISTS sd_project_dynamics_delete;
-         CREATE TRIGGER sd_project_dynamics_delete AFTER DELETE ON project_dynamics
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=old.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;"
-    );
-    let _ = conn.execute_batch(
-        "DROP TRIGGER IF EXISTS sd_channel_partners_insert;
-         DROP TRIGGER IF EXISTS sd_channel_partners_update;
-         DROP TRIGGER IF EXISTS sd_channel_partners_delete;
-         DROP TRIGGER IF EXISTS sd_vendor_partners_insert;
-         DROP TRIGGER IF EXISTS sd_vendor_partners_update;
-         DROP TRIGGER IF EXISTS sd_vendor_partners_delete;
-         -- channel_partners INSERT → 刷新关联项目的 source_data
-         CREATE TRIGGER sd_channel_partners_insert AFTER INSERT ON channel_partners
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=new.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- channel_partners UPDATE → 刷新关联项目的 source_data
-         CREATE TRIGGER sd_channel_partners_update AFTER UPDATE ON channel_partners
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=new.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- channel_partners DELETE → 刷新关联项目的 source_data
-         CREATE TRIGGER sd_channel_partners_delete AFTER DELETE ON channel_partners
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=old.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- vendor_partners INSERT → 刷新关联项目的 source_data
-         CREATE TRIGGER sd_vendor_partners_insert AFTER INSERT ON vendor_partners
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=new.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- vendor_partners UPDATE → 刷新关联项目的 source_data
-         CREATE TRIGGER sd_vendor_partners_update AFTER UPDATE ON vendor_partners
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=new.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;
-         -- vendor_partners DELETE → 刷新关联项目的 source_data
-         CREATE TRIGGER sd_vendor_partners_delete AFTER DELETE ON vendor_partners
-         BEGIN
-           INSERT INTO source_data(source_type,source_id,title,content,updated_at)
-           SELECT 'PROJECT',p.id,p.name,
-             'name: '||p.name||
-             CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-             CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-             CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-             CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-             CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-             CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-             CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-             CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-             CHAR(10)||'solution_products: '||
-             COALESCE((SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!=''), '')||
-             CHAR(10)||'dynamics: '||
-             COALESCE((SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at), '')||
-             CHAR(10)||'channel_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!=''), '')||
-             CHAR(10)||'vendor_partners: '||
-             COALESCE((SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!=''), ''),
-             datetime('now', 'localtime')
-           FROM projects p
-           WHERE p.id=old.project_id
-           ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-         END;"
-    );
-
-    // ── kk_chunks_fts: external content-sync triggers ──
-    init_kb_fts_triggers(conn)?;
-
-    // Seed source_data from existing data
-    let before: i64 = conn.query_row("SELECT COUNT(*) FROM source_data", [], |r| r.get(0)).unwrap_or(0);
-    let _ = conn.execute_batch(
-        "INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'NOTE',n.note_id,n.title,
-           'title: '||n.title||
-           CASE WHEN COALESCE(n.content,'')!='' THEN CHAR(10)||'content: '||n.content ELSE '' END||
-           CASE WHEN COALESCE(n.notebook_id,'')!=''
-             THEN CHAR(10)||'notebook: '||COALESCE((SELECT name FROM notebooks WHERE id=n.notebook_id), n.notebook_id)
-             ELSE '' END||
-           CHAR(10)||'created: '||COALESCE(n.created_at, datetime('now','localtime'))||
-           CHAR(10)||'updated: '||COALESCE(n.updated_at, datetime('now','localtime'))||
-           CASE WHEN (SELECT COUNT(*) FROM note_project_mapping npm JOIN projects p ON p.id=npm.project_id WHERE npm.note_id=n.note_id)>0
-             THEN CHAR(10)||'projects: '||(SELECT GROUP_CONCAT(p.name, ', ') FROM note_project_mapping npm JOIN projects p ON p.id=npm.project_id WHERE npm.note_id=n.note_id)
-           ELSE '' END
-         FROM notes n WHERE n.deleted_at IS NULL;
-         INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'PRODUCT',p.id,p.name,
-           'name: '||p.name||
-           CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-           CASE WHEN COALESCE(p.series_name,'')!='' THEN CHAR(10)||'series_name: '||p.series_name ELSE '' END||
-           CASE WHEN p.price>0 THEN CHAR(10)||'price: '||printf('%.2f',p.price) ELSE '' END||
-           CASE WHEN COALESCE(p.standard_specs,'')!='' THEN CHAR(10)||'standard_specs: '||p.standard_specs ELSE '' END||
-           CASE WHEN COALESCE(p.full_specs,'')!='' THEN CHAR(10)||'full_specs: '||p.full_specs ELSE '' END||
-           CASE WHEN p.series_id IS NOT NULL AND p.series_id!='' THEN CHAR(10)||'path: '||IFNULL(
-             (WITH RECURSIVE sp AS (SELECT name,parent_id,0 AS d FROM product_series WHERE id=p.series_id
-               UNION ALL SELECT ps.name,ps.parent_id,sp.d+1 FROM product_series ps JOIN sp ON ps.id=sp.parent_id)
-              SELECT GROUP_CONCAT(name,' / ' ORDER BY d DESC) FROM sp),'')
-           ELSE '' END
-         FROM products p;
-         INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'PROJECT',p.id,p.name,
-           'name: '||p.name||
-           CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END||
-           CASE WHEN COALESCE(p.owner,'')!='' THEN CHAR(10)||'owner: '||p.owner ELSE '' END||
-           CASE WHEN COALESCE(p.customer,'')!='' THEN CHAR(10)||'customer: '||p.customer ELSE '' END||
-           CASE WHEN p.budget>0 THEN CHAR(10)||'budget: '||printf('%.2f',p.budget) ELSE '' END||
-           CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END||
-           CASE WHEN COALESCE(p.bid_time,'')!='' THEN CHAR(10)||'bid_time: '||p.bid_time ELSE '' END||
-           CASE WHEN COALESCE(p.customer_contact,'')!='' THEN CHAR(10)||'customer_contact: '||p.customer_contact ELSE '' END||
-           CASE WHEN COALESCE(p.customer_phone,'')!='' THEN CHAR(10)||'customer_phone: '||p.customer_phone ELSE '' END||
-           CASE WHEN (SELECT COUNT(*) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!='')>0
-             THEN CHAR(10)||'solution_products: '||(SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=p.id AND COALESCE(si.product_name,'')!='')
-           ELSE '' END||
-           CASE WHEN (SELECT COUNT(*) FROM project_dynamics pd WHERE pd.project_id=p.id)>0
-             THEN CHAR(10)||'dynamics: '||(SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=p.id ORDER BY pd.created_at)
-           ELSE '' END||
-           CASE WHEN (SELECT COUNT(*) FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!='')>0
-             THEN CHAR(10)||'channel_partners: '||(SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=p.id AND COALESCE(cp.name,'')!='')
-           ELSE '' END||
-           CASE WHEN (SELECT COUNT(*) FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!='')>0
-             THEN CHAR(10)||'vendor_partners: '||(SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=p.id AND COALESCE(vp.name,'')!='')
-           ELSE '' END
-         FROM projects p;
-         INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'TODO',t.id,t.title,
-           'title: '||t.title||
-           CASE WHEN t.done=1 THEN CHAR(10)||'done: yes' ELSE '' END||
-           CASE WHEN COALESCE(t.priority,'')!='' THEN CHAR(10)||'priority: '||t.priority ELSE '' END||
-           CASE WHEN COALESCE(t.due_date,'')!='' THEN CHAR(10)||'due_date: '||t.due_date ELSE '' END||
-           CASE WHEN COALESCE(t.repeat,'')!='' THEN CHAR(10)||'repeat: '||t.repeat ELSE '' END||
-           CASE WHEN COALESCE(t.content,'')!='' THEN CHAR(10)||'content: '||t.content ELSE '' END
-         FROM todos t;"
-    );
-    let after: i64 = conn.query_row("SELECT COUNT(*) FROM source_data", [], |r| r.get(0)).unwrap_or(0);
-    if after > before {
-        println!("[数据库] source_data 播种: {} 行 (笔记+产品+项目+待办)", after - before);
-    }
-
-    // ★ 刷新已有 PROJECT 记录，补全所有字段（单独执行以便错误报告）
-    let refresh_sql = "UPDATE source_data SET content=
-      'name: '||COALESCE((SELECT name FROM projects WHERE id=source_data.source_id),'')||
-      CASE WHEN COALESCE((SELECT status FROM projects WHERE id=source_data.source_id),'')!='' THEN CHAR(10)||'status: '||(SELECT status FROM projects WHERE id=source_data.source_id) ELSE '' END||
-      CASE WHEN COALESCE((SELECT owner FROM projects WHERE id=source_data.source_id),'')!='' THEN CHAR(10)||'owner: '||(SELECT owner FROM projects WHERE id=source_data.source_id) ELSE '' END||
-      CASE WHEN COALESCE((SELECT customer FROM projects WHERE id=source_data.source_id),'')!='' THEN CHAR(10)||'customer: '||(SELECT customer FROM projects WHERE id=source_data.source_id) ELSE '' END||
-      CASE WHEN (SELECT COALESCE(budget,0) FROM projects WHERE id=source_data.source_id)>0 THEN CHAR(10)||'budget: '||printf('%.2f',(SELECT budget FROM projects WHERE id=source_data.source_id)) ELSE '' END||
-      CASE WHEN COALESCE((SELECT description FROM projects WHERE id=source_data.source_id),'')!='' THEN CHAR(10)||'description: '||(SELECT description FROM projects WHERE id=source_data.source_id) ELSE '' END||
-      CASE WHEN COALESCE((SELECT bid_time FROM projects WHERE id=source_data.source_id),'')!='' THEN CHAR(10)||'bid_time: '||(SELECT bid_time FROM projects WHERE id=source_data.source_id) ELSE '' END||
-      CASE WHEN COALESCE((SELECT customer_contact FROM projects WHERE id=source_data.source_id),'')!='' THEN CHAR(10)||'customer_contact: '||(SELECT customer_contact FROM projects WHERE id=source_data.source_id) ELSE '' END||
-      CASE WHEN COALESCE((SELECT customer_phone FROM projects WHERE id=source_data.source_id),'')!='' THEN CHAR(10)||'customer_phone: '||(SELECT customer_phone FROM projects WHERE id=source_data.source_id) ELSE '' END||
-      CASE WHEN (SELECT COUNT(*) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=source_data.source_id AND COALESCE(si.product_name,'')!='')>0 THEN CHAR(10)||'solution_products: '||(SELECT GROUP_CONCAT(DISTINCT si.product_name) FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=source_data.source_id AND COALESCE(si.product_name,'')!='') ELSE '' END||
-      CASE WHEN (SELECT COUNT(*) FROM project_dynamics pd WHERE pd.project_id=source_data.source_id)>0
-        THEN CHAR(10)||'dynamics: '||(SELECT GROUP_CONCAT(pd.type||': '||pd.content||' ('||pd.created_at||')', ' | ') FROM project_dynamics pd WHERE pd.project_id=source_data.source_id ORDER BY pd.created_at)
-      ELSE '' END||
-      CASE WHEN (SELECT COUNT(*) FROM channel_partners cp WHERE cp.project_id=source_data.source_id AND COALESCE(cp.name,'')!='')>0
-        THEN CHAR(10)||'channel_partners: '||(SELECT GROUP_CONCAT(COALESCE(cp.company, cp.name)||'（'||cp.name||COALESCE('-'||cp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(cc.name||COALESCE('-'||cc.phone,'')||COALESCE('('||cc.remark||')',''), '; ') FROM channel_contacts cc WHERE cc.channel_id=cp.id AND COALESCE(cc.name,'')!='')||']', ''), ', ') FROM channel_partners cp WHERE cp.project_id=source_data.source_id AND COALESCE(cp.name,'')!='')
-      ELSE '' END||
-      CASE WHEN (SELECT COUNT(*) FROM vendor_partners vp WHERE vp.project_id=source_data.source_id AND COALESCE(vp.name,'')!='')>0
-        THEN CHAR(10)||'vendor_partners: '||(SELECT GROUP_CONCAT(COALESCE(vp.company, vp.name)||'（'||vp.name||COALESCE('-'||vp.phone,'')||'）'||COALESCE(' ['||(SELECT GROUP_CONCAT(vc.name||COALESCE('-'||vc.phone,'')||COALESCE('('||vc.remark||')',''), '; ') FROM vendor_contacts vc WHERE vc.vendor_id=vp.id AND COALESCE(vc.name,'')!='')||']', ''), ', ') FROM vendor_partners vp WHERE vp.project_id=source_data.source_id AND COALESCE(vp.name,'')!='')
-      ELSE '' END,
-      updated_at=datetime('now','localtime')
-    WHERE source_type='PROJECT'";
-    match conn.execute_batch(refresh_sql) {
-        Ok(_) => {
-            let updated = conn.changes();
-            if updated > 0 {
-                println!("[数据库] 刷新 PROJECT source_data: {} 行", updated);
-            }
-        }
-        Err(e) => eprintln!("[数据库] 刷新 PROJECT source_data 失败: {}", e),
-    }
-
-    // ★★★ FTS5 自动镜像: source_data → global_search_fts ★★★
-    // 延迟到 migrate_source_data_to_text_id 之后创建，避免触发器引用被重命名的表
-    // init_source_data_fts_triggers(conn)?;
-
-    // 全量重建 FTS5 索引（幂等操作，确保存量数据完整索引）
-    rebuild_global_search_fts(conn);
-
-    seed_kb_fts(conn);
-    Ok(())
-}
-
 /// ★ 初始化 source_data → global_search_fts 的 3 个自动镜像触发器。
 ///
 /// 触发时机与覆盖范围：
@@ -1570,10 +981,26 @@ fn run_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS chat_sessions (id TEXT PRIMARY KEY, title TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime')))",
         "CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
         "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id)",
+        "ALTER TABLE chat_messages ADD COLUMN metadata TEXT DEFAULT NULL",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
     }
+
+    // ★ 迁移渠道/厂商数据到映射表（从 direct project_id 到 many-to-many mapping）
+    let _ = conn.execute_batch("
+        INSERT OR IGNORE INTO project_channel_mapping (project_id, channel_id)
+        SELECT project_id, id FROM channel_partners WHERE project_id IS NOT NULL AND project_id != '';
+        INSERT OR IGNORE INTO project_vendor_mapping (project_id, vendor_id)
+        SELECT project_id, id FROM vendor_partners WHERE project_id IS NOT NULL AND project_id != '';
+    ");
+
+    // ★ 添加 selected_contact_id 列（如果不存在）
+    let _ = conn.execute_batch("
+        ALTER TABLE project_channel_mapping ADD COLUMN selected_contact_id TEXT DEFAULT NULL;
+        ALTER TABLE project_vendor_mapping ADD COLUMN selected_contact_id TEXT DEFAULT NULL;
+    ");
+
     // ★ 迁移 library_file_locations.object_id → file_id
     let has_old_col: bool = conn.query_row(
         "SELECT COUNT(*) FROM pragma_table_info('library_file_locations') WHERE name='object_id'",
@@ -1856,7 +1283,6 @@ pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) {
     } else {
         // source_data 写入成功后触发同步入队和打标
         crate::services::ai_sync::trigger_sync("files", file_id);
-        crate::services::ai_tag::enqueue_tag_task("files", file_id);
     }
 }
 

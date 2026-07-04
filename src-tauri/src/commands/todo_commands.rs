@@ -1,4 +1,4 @@
-use crate::database;
+﻿use crate::database;
 use chrono::Datelike;
 use serde_json::{json, Value};
 
@@ -228,7 +228,7 @@ pub async fn todos_toggle(id: String) -> Result<Value, String> {
                  LEFT JOIN projects p ON p.id = tpm.project_id WHERE t.id=?",
                 &[json!(&id)],
             ).map_err(|e| e.to_string())?.unwrap_or(json!({}));
-            return Ok(json!({ "success": true, "todo": todo }));
+            return Ok(json!({ "success": true, "todo": todo, "repeat_advanced": true }));
         }
     }
 

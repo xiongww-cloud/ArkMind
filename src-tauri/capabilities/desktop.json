@@ -12,7 +12,6 @@
     "core:window:allow-is-maximized",
     "core:window:allow-is-minimized",
     "core:window:allow-set-fullscreen",
-    "core:webview:allow-internal-toggle-devtools",
     "dialog:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten"

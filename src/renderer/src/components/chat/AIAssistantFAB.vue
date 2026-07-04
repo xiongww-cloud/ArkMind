@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
-import { kbAgentChat } from '@/api/db-client'
+import { kbAgentChat, kbSaveSessions, kbLoadSessions, kbDeleteSession } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
+import { dangerConfirm } from '@/composables/useConfirm'
+import { toast } from '@/composables/useToast'
+import AppIcon from '@/components/common/AppIcon.vue'
 
 async function renderMd(text: string): Promise<string> {
   if (!text) return ''
@@ -18,15 +21,146 @@ async function renderMd(text: string): Promise<string> {
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 
+// ─── Types ──────────────────────────────────────────────────
+interface ChatMessage { id: string; role: string; content: string; error?: string; thinking?: boolean; typewriterText?: string; typewriterDone?: boolean; timestamp?: number }
+interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string; updatedAt: string }
+
 // ─── State ──────────────────────────────────────────────────
 const open = ref(false)
 const inputText = ref('')
 const isChatting = ref(false)
 const thinkingProgress = ref('')
-const messages = ref<{ role: string; content: string; error?: string; thinking?: boolean; typewriterText?: string; typewriterDone?: boolean }[]>([])
 const chatListRef = ref<HTMLElement | null>(null)
-const rendered = ref<Record<number, string>>({})
-const activeTypewriters = new Set<number>()
+const rendered = ref<Record<string, string>>({})
+const activeTypewriters = new Set<string>()
+const typewriterTimers = new Map<string, ReturnType<typeof setInterval>>()
+
+// ─── Session Management ─────────────────────────────────────
+const sessions = ref<ChatSession[]>([])
+const currentSessionId = ref<string | null>(null)
+const showSessionDropdown = ref(false)
+const sessionNameEdit = ref('')
+const editingSessionId = ref<string | null>(null)
+const sessionDirty = ref(false)
+let lastSavedContent = ''
+
+const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
+
+// 代理 messages 到当前会话
+const messages = computed<ChatMessage[]>({
+  get: () => currentSession.value?.messages || [],
+  set: (val) => { if (currentSession.value) currentSession.value.messages = val }
+})
+
+function newSession() {
+  stopAllTypewriters()
+  rendered.value = {}
+  const id = crypto.randomUUID()
+  const now = new Date().toLocaleString('sv-SE')
+  sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: now, updatedAt: now })
+  currentSessionId.value = id
+  saveToStorage()
+}
+
+async function switchSession(id: string) {
+  if (currentSessionId.value === id) return
+  stopAllTypewriters()
+  rendered.value = {}
+  currentSessionId.value = id
+  // 渲染当前会话的 AI 消息
+  const session = currentSession.value
+  if (session) {
+    await Promise.all(session.messages.map((m) => {
+      if (m.role === 'assistant' && m.content && !m.thinking) {
+        return renderMd(m.content.replace(/~/g, '～')).then(html => { rendered.value[m.id] = html })
+      }
+      return Promise.resolve()
+    }))
+  }
+  scrollChat()
+}
+
+async function deleteSession(id: string) {
+  if (sessions.value.length <= 1) return
+  const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？此操作不可撤销。', confirmText: '删除' })
+  if (!ok) return
+  kbDeleteSession(id).catch(() => {})
+  sessions.value = sessions.value.filter(s => s.id !== id)
+  if (currentSessionId.value === id) {
+    currentSessionId.value = sessions.value[0]?.id ?? null
+  }
+  sessionDirty.value = true
+  saveToStorage()
+  toast({ message: '会话已删除', type: 'success' })
+}
+
+function startRenameSession(id: string) {
+  const s = sessions.value.find(x => x.id === id)
+  if (s) { editingSessionId.value = id; sessionNameEdit.value = s.name }
+}
+
+function saveRenameSession(id: string) {
+  const s = sessions.value.find(x => x.id === id)
+  if (s && sessionNameEdit.value.trim()) {
+    s.name = sessionNameEdit.value.trim()
+    sessionDirty.value = true
+    saveToStorage()
+  }
+  editingSessionId.value = null
+}
+
+function saveToStorage() {
+  const s = currentSession.value
+  if (s && s.messages.length > 0 && sessionDirty.value) {
+    const currentContent = JSON.stringify(s.messages)
+    if (currentContent === lastSavedContent) {
+      sessionDirty.value = false
+      return
+    }
+    s.updatedAt = new Date().toLocaleString('sv-SE')
+    sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
+    sessionDirty.value = false
+    lastSavedContent = currentContent
+    kbSaveSessions([s]).catch((e) => console.error('[FAB] 保存会话失败:', e))
+  }
+}
+
+async function loadFromStorage() {
+  try {
+    const r = await kbLoadSessions()
+    if (r?.sessions && Array.isArray(r.sessions)) {
+      sessions.value = r.sessions.map((s: any) => ({
+        ...s,
+        name: s.title || '新对话',
+        updatedAt: s.updated_at || s.updatedAt,
+        createdAt: s.created_at || s.createdAt,
+        messages: (s.messages || []).map((m: any) => {
+          const { isThinking, typewriterText, typewriterDone, ...rest } = m
+          return rest
+        })
+      })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
+    }
+  } catch { sessions.value = [] }
+  if (!sessions.value.length) { newSession(); return }
+  currentSessionId.value = sessions.value[0].id
+  // 初始化
+  const s = currentSession.value
+  if (s) {
+    for (const m of s.messages) {
+      if (m.role === 'assistant') { m.thinking = false; m.typewriterDone = true }
+    }
+    lastSavedContent = JSON.stringify(s.messages)
+  }
+  // 渲染 AI 消息
+  const msgs = sessions.value[0].messages
+  await Promise.all(msgs.map((m) => {
+    if (m.role === 'assistant' && m.content) {
+      return renderMd(m.content.replace(/~/g, '～')).then(html => { rendered.value[m.id] = html })
+    }
+    return Promise.resolve()
+  }))
+  scrollChat()
+}
 
 // ─── Drag ────────────────────────────────────────────────────
 const fabY = ref(0)
@@ -61,50 +195,100 @@ const suggestions = ['分析一下当前项目整体进展', '最近有什么值
 function scrollChat() { nextTick(() => { if (chatListRef.value) chatListRef.value.scrollTop = chatListRef.value.scrollHeight }) }
 function fmtTime() { return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }
 
-function startTypewriter(idx: number, text: string) {
-  const msg = messages.value[idx]
+function stopTypewriter(msgId: string) {
+  const timer = typewriterTimers.get(msgId)
+  if (timer) { clearInterval(timer); typewriterTimers.delete(msgId) }
+  activeTypewriters.delete(msgId)
+}
+function stopAllTypewriters() {
+  for (const msgId of activeTypewriters) {
+    const timer = typewriterTimers.get(msgId)
+    if (timer) clearInterval(timer)
+    const msg = messages.value.find(m => m.id === msgId)
+    if (msg) { msg.typewriterDone = true }
+  }
+  activeTypewriters.clear()
+  typewriterTimers.clear()
+}
+
+function startTypewriter(msgId: string, text: string) {
+  stopTypewriter(msgId)
+  const msg = messages.value.find(m => m.id === msgId)
   if (!msg) return
   if (!text) { msg.typewriterText = ''; msg.typewriterDone = true; return }
   const full = text.replace(/~/g, '～')
-  renderMd(full).then(h => { rendered.value[idx] = h })
+  // 预渲染完整文本
+  renderMd(full).then(h => { rendered.value[msgId] = h })
   let pos = 0
   msg.typewriterText = ''
   msg.typewriterDone = false
-  activeTypewriters.add(idx)
+  activeTypewriters.add(msgId)
   const timer = setInterval(() => {
     pos += 4
     if (pos >= full.length) {
       clearInterval(timer)
-      activeTypewriters.delete(idx)
+      typewriterTimers.delete(msgId)
+      activeTypewriters.delete(msgId)
       msg.typewriterText = full
       msg.typewriterDone = true
       return
     }
     msg.typewriterText = full.slice(0, pos)
   }, 8)
+  typewriterTimers.set(msgId, timer)
 }
 
 // ─── Send ───────────────────────────────────────────────────
 async function send() {
   const q = inputText.value.trim()
   if (!q || isChatting.value) return
+  stopAllTypewriters()
+  rendered.value = {}
   inputText.value = ''
-  messages.value.push({ role: 'user', content: q })
-  const aiMsg = { role: 'assistant', content: '', thinking: true }
+  
+  // 如果是第一条消息，用用户提问作为会话名称
+  if (currentSession.value && currentSession.value.messages.length === 0 && currentSession.value.name === '新对话') {
+    currentSession.value.name = q.slice(0, 30)
+  }
+  
+  messages.value.push({ id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() })
+  const aiMsg = { id: crypto.randomUUID(), role: 'assistant', content: '', thinking: true }
   messages.value.push(aiMsg)
-  const aiIdx = messages.value.length - 1
+  sessionDirty.value = true
   scrollChat()
   isChatting.value = true
   thinkingProgress.value = ''
 
+  // ★ 冷启动障眼法：立即显示拟人化短句
+  const thinkingPhrases = ['让我想想啊……', '嗯……我回忆一下。', '别急，我翻一下脑子里的记录。', '稍等，我查查看……', '嗯，我想想……']
+  const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)]
+  aiMsg.content = randomPhrase
+  scrollChat()
+
   const unlistenProgress = await listen<{ msg: string }>('agent:progress', (ev) => { thinkingProgress.value = ev.payload.msg })
   let unlistenStream: (() => void) | null = null
   let unlistenThought: (() => void) | null = null
+  let unlistenStatus: (() => void) | null = null
   try {
+    // ★ 监听 status 事件，动态演变拟人化文案
+    const toolHints: Record<string, string> = {
+      ext_tool_search: '我正在检索相关资料',
+      ext_tool_object: '我在翻看记忆中的对象',
+      ext_tool_traverse: '我在继续往后翻看',
+      ext_tool_batch_search: '我在同时查几个方向',
+    }
+    unlistenStatus = await listen<{ stage: string; tool?: string; target?: string }>('agent:status', (ev) => {
+      const { stage, tool } = ev.payload
+      if (stage === 'tool_start' && tool) {
+        const hint = toolHints[tool] || `正在调用 ${tool}`
+        aiMsg.content = hint
+        scrollChat()
+      }
+    })
     const streamed = ref('')
     unlistenStream = await listen<{ token: string }>('agent:token', (ev) => {
       streamed.value += ev.payload.token
-      messages.value[aiIdx].content = streamed.value
+      aiMsg.content = streamed.value
       scrollChat()
     })
     unlistenThought = await listen<{ text: string }>('agent:thought', (ev) => {
@@ -118,30 +302,72 @@ async function send() {
       else if (m.role === 'assistant') history.push({ role: 'assistant', content: m.content || '' })
     }
     const result: any = await kbAgentChat({ query: q, history })
-    const msg = messages.value[aiIdx]; msg.thinking = false; thinkingProgress.value = ''
+    aiMsg.thinking = false; thinkingProgress.value = ''
     if (result.success) {
-      msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-      if (streamed.value) msg.content = streamed.value.replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+      // 过滤 XML 工具调用标签和 refs 标签
+      let content = (result.answer || '')
+        .replace(/<｜｜DSML｜｜[\s\S]*?<\/｜｜DSML｜｜tool_calls>/g, '')
+        .replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, '')
+        .replace(/<refs>[\s\S]*<\/refs>/g, '')
+        .trim()
+      aiMsg.content = content
+      if (streamed.value) {
+        content = streamed.value
+          .replace(/<｜｜DSML｜｜[\s\S]*?<\/｜｜DSML｜｜tool_calls>/g, '')
+          .replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, '')
+          .replace(/<refs>[\s\S]*<\/refs>/g, '')
+          .trim()
+        aiMsg.content = content
+      }
     } else {
-      msg.content = result.answer || result.error || '失败'
+      aiMsg.content = result.answer || result.error || '失败'
     }
-    startTypewriter(aiIdx, msg.content)
+    startTypewriter(aiMsg.id, aiMsg.content)
   } catch (e: any) {
-    messages.value[aiIdx].thinking = false
-    messages.value[aiIdx].error = typeof e === 'string' ? e : (e.message || 'AI 服务异常')
+    aiMsg.thinking = false
+    aiMsg.error = typeof e === 'string' ? e : (e.message || 'AI 服务异常')
   } finally {
     isChatting.value = false; scrollChat()
-    try { unlistenStream?.(); unlistenThought?.(); unlistenProgress() } catch {}
+    sessionDirty.value = true; saveToStorage()
+    try { unlistenStream?.(); unlistenThought?.(); unlistenStatus?.(); unlistenProgress() } catch {}
   }
 }
 
 function toggle() {
   if (dragMoved.value) return
   open.value = !open.value
-  if (open.value) nextTick(() => { scrollChat() })
+  if (open.value) {
+    // 打开时重新加载会话，保持与知识库页面同步
+    loadFromStorage()
+    nextTick(() => { scrollChat() })
+  }
 }
 
-onMounted(() => { initFabY() })
+// ─── Lifecycle ──────────────────────────────────────────────
+function handleClickOutside(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (!target.closest('.fab-panel')) {
+    showSessionDropdown.value = false
+  }
+}
+
+onMounted(async () => {
+  initFabY()
+  await loadFromStorage()
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  saveToStorage()
+  stopAllTypewriters()
+  document.removeEventListener('click', handleClickOutside)
+})
+
+// 监听会话切换，清空渲染缓存
+watch(currentSessionId, () => {
+  rendered.value = {}
+  stopAllTypewriters()
+})
 </script>
 
 <template>
@@ -176,8 +402,51 @@ onMounted(() => { initFabY() })
 
       <!-- Title Bar -->
       <div class="flex items-center gap-1.5 px-3 py-1.5 border-b border-white/20 bg-white/20 backdrop-blur">
-        <svg class="w-3.5 h-3.5 text-[#2563eb]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
-        <span class="text-[11px] font-medium text-[#3a3a3c]">AI 助手</span>
+        <svg class="w-3.5 h-3.5 text-[#2563eb] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+        
+        <!-- Session Selector -->
+        <div class="relative flex-1 min-w-0">
+          <button @click="showSessionDropdown = !showSessionDropdown"
+            @blur="setTimeout(() => showSessionDropdown = false, 150)"
+            class="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-white/30 transition-colors max-w-full w-full">
+            <span class="text-[11px] font-medium text-[#3a3a3c] truncate">{{ currentSession?.name || '新对话' }}</span>
+            <svg class="w-3 h-3 text-[#86868b] flex-shrink-0 transition-transform" :class="showSessionDropdown ? 'rotate-180' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
+          </button>
+          
+          <!-- Dropdown -->
+          <div v-if="showSessionDropdown" class="absolute top-full left-0 mt-1 w-72 bg-white rounded-xl shadow-lg border border-[#e5e5ea] z-50 overflow-hidden" @click.stop>
+            <div class="px-3 py-2 border-b border-[#e5e5ea]">
+              <button @click="newSession(); showSessionDropdown = false" class="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-lg text-[12px] text-[#2563eb] hover:bg-blue-50 transition-colors">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 4v16m8-8H4"/></svg>
+                新建对话
+              </button>
+            </div>
+            <div class="overflow-y-auto max-h-[300px] py-1">
+              <div v-for="s in sessions" :key="s.id"
+                class="group flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[#f8f9fa] transition-colors"
+                :class="s.id === currentSessionId ? 'bg-[#2563eb]/5' : ''"
+                @click="switchSession(s.id); showSessionDropdown = false">
+                <svg class="w-3.5 h-3.5 flex-shrink-0" :class="s.id === currentSessionId ? 'text-[#2563eb]' : 'text-[#86868b]'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                <template v-if="editingSessionId === s.id">
+                  <input v-model="sessionNameEdit" @keyup.enter="saveRenameSession(s.id)" @keyup.escape="editingSessionId = null" @blur="saveRenameSession(s.id)"
+                    class="flex-1 min-w-0 bg-white border border-[#2563eb] rounded px-1.5 py-0.5 text-[12px] outline-none" @click.stop autofocus />
+                </template>
+                <template v-else>
+                  <div class="flex-1 min-w-0">
+                    <div class="truncate text-[12px]" :class="s.id === currentSessionId ? 'font-medium text-[#1d1d1f]' : 'text-[#3a3a3c]'">{{ s.name }}</div>
+                    <div v-if="s.messages.length" class="text-[10px] text-[#86868b] truncate mt-0.5">{{ (() => { const m = [...s.messages].reverse().find((m: any) => !m.thinking); return m?.content?.slice(0, 40) || '...' })() }}</div>
+                  </div>
+                  <button @click.stop="startRenameSession(s.id)" class="w-5 h-5 flex items-center justify-center rounded text-[#86868b] hover:text-[#2563eb] hover:bg-[#2563eb]/5 opacity-0 group-hover:opacity-100 transition-all" title="重命名">
+                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                  </button>
+                  <button v-if="sessions.length > 1" @click.stop="deleteSession(s.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" title="删除">
+                    <AppIcon name="trash" size="12"/>
+                  </button>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Messages -->
@@ -194,19 +463,19 @@ onMounted(() => { initFabY() })
           <div class="grid grid-cols-1 gap-1.5 w-full max-w-[300px]">
             <div v-for="(s, i) in suggestions" :key="i" @click="inputText = s; send()"
               class="bg-white border border-[#e5e5ea] rounded-xl px-3 py-2 text-left cursor-pointer hover:border-[#2563eb]/30 hover:shadow-sm transition-all duration-200">
-              <div class="text-[9px] text-[#2563eb] font-medium mb-0.5">建议 {{ i + 1 }}</div>
-              <div class="text-[11px] text-[#3a3a3c] leading-relaxed">{{ s }}</div>
+              <div class="text-[10px] text-[#2563eb] font-medium mb-0.5">建议 {{ i + 1 }}</div>
+              <div class="text-[12px] text-[#3a3a3c] leading-relaxed">{{ s }}</div>
             </div>
           </div>
         </div>
 
         <!-- Messages -->
-        <div v-for="(m, i) in messages" :key="i" class="flex gap-2 items-start animate-fade-in mb-2.5"
+        <div v-for="m in messages" :key="m.id" class="flex gap-2 items-start animate-fade-in mb-2.5"
           :class="m.role === 'user' ? 'flex-row-reverse' : ''">
-          <div v-if="m.role === 'user'" class="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>
-          <div v-else class="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
+          <div v-if="m.role === 'user'" class="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>
+          <div v-else class="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
           <div class="min-w-0" :class="m.role === 'user' ? 'max-w-[70%]' : 'max-w-[80%]'">
-            <div class="text-[9px] text-[#c7c7cc] mb-0.5 px-0.5" :class="m.role === 'user' ? 'text-right' : ''">{{ fmtTime() }}</div>
+            <div class="text-[10px] text-[#c7c7cc] mb-0.5 px-0.5" :class="m.role === 'user' ? 'text-right' : ''">{{ fmtTime() }}</div>
             <!-- Thinking -->
             <div v-if="m.thinking" class="bg-white border border-[#e5e5ea] rounded-2xl px-3 py-1.5 shadow-sm rounded-tl-[4px]">
               <div class="flex items-center gap-1.5">
@@ -215,20 +484,19 @@ onMounted(() => { initFabY() })
                   <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:150ms"/>
                   <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:300ms"/>
                 </div>
-                <span v-if="thinkingProgress" class="text-[10px] text-[#86868b] truncate max-w-[260px]">{{ thinkingProgress }}</span>
-                <span v-else class="text-[10px] text-[#86868b]">思考中</span>
+                <span class="text-[11px] text-[#86868b] transition-colors duration-300">{{ m.content || thinkingProgress || '思考中' }}</span>
               </div>
             </div>
             <!-- User -->
             <div v-else-if="m.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-1.5">
-              <pre class="text-[11px] leading-relaxed whitespace-pre-wrap font-sans">{{ m.content }}</pre>
+              <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ m.content }}</pre>
             </div>
             <!-- AI -->
             <div v-else class="fab-bubble-ai">
-              <div v-if="m.error" class="text-[10px] text-red-500">{{ m.error }}</div>
-              <div v-else-if="m.typewriterText !== undefined && !m.typewriterDone" class="text-[10px] text-[#3a3a3c] whitespace-pre-wrap leading-relaxed">{{ m.typewriterText }}<span class="cursor-blink">▌</span></div>
-              <div v-else-if="rendered[i]" class="fab-md" v-html="rendered[i]" />
-              <div v-else class="text-[10px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">{{ m.content }}</div>
+              <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
+              <div v-else-if="m.typewriterText !== undefined && !m.typewriterDone" class="fab-md" v-html="rendered[m.id] || ''"></div>
+              <div v-else-if="rendered[m.id]" class="fab-md" v-html="rendered[m.id]" />
+              <div v-else class="text-[11px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">{{ m.content }}</div>
             </div>
           </div>
         </div>
@@ -411,7 +679,7 @@ onMounted(() => { initFabY() })
   background: white;
 }
 
-.fab-input { flex: 1; border: none; resize: none; outline: none; font-size: 11px; color: #3a3a3c; background: transparent; line-height: 1.5; max-height: 56px; font-family: inherit; }
+.fab-input { flex: 1; border: none; resize: none; outline: none; font-size: 12px; color: #3a3a3c; background: transparent; line-height: 1.5; max-height: 56px; font-family: inherit; }
 .fab-input::placeholder { color: #94a3b8; }
 
 .fab-send { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: none; cursor: pointer; background: linear-gradient(135deg, #e2e8f0, #f1f5f9); color: #94a3b8; transition: all 0.2s; }
@@ -428,22 +696,24 @@ onMounted(() => { initFabY() })
 }
 
 /* ═══ Markdown ═══ */
-.fab-md :deep(p) { margin: 0.25em 0; font-size: 10px; color: #3a3a3c; line-height: 1.65; }
+.fab-md :deep(p) { margin: 0.25em 0; font-size: 11px; color: #3a3a3c; line-height: 1.65; }
 .fab-md :deep(h1), .fab-md :deep(h2), .fab-md :deep(h3), .fab-md :deep(h4) { color: #1d1d1f; margin: 0.4em 0 0.15em; font-weight: 600; }
-.fab-md :deep(h1) { font-size: 0.75rem; } .fab-md :deep(h2) { font-size: 0.7rem; } .fab-md :deep(h3) { font-size: 0.65rem; } .fab-md :deep(h4) { font-size: 0.63rem; }
+.fab-md :deep(h1) { font-size: 0.85rem; } .fab-md :deep(h2) { font-size: 0.8rem; } .fab-md :deep(h3) { font-size: 0.75rem; } .fab-md :deep(h4) { font-size: 0.7rem; }
 .fab-md :deep(ul), .fab-md :deep(ol) { padding-left: 1.2em; margin: 0.15em 0; }
-.fab-md :deep(li) { font-size: 10px; color: #3a3a3c; margin: 0.05em 0; }
+.fab-md :deep(li) { font-size: 11px; color: #3a3a3c; margin: 0.05em 0; }
 .fab-md :deep(strong) { color: #1d1d1f; font-weight: 600; }
-.fab-md :deep(code) { background: rgba(0,0,0,0.04); color: #e11d48; padding: 0px 3px; border-radius: 3px; font-size: 0.85em; }
-.fab-md :deep(pre) { background: #1d1d1f; color: #f5f5f7; padding: 6px 10px; border-radius: 6px; overflow-x: auto; margin: 0.3em 0; font-size: 9px; }
+.fab-md :deep(code) { background: rgba(0,0,0,0.04); color: #e11d48; padding: 0px 3px; border-radius: 3px; font-size: 0.9em; }
+.fab-md :deep(pre) { background: #1d1d1f; color: #f5f5f7; padding: 6px 10px; border-radius: 6px; overflow-x: auto; margin: 0.3em 0; font-size: 10px; }
 .fab-md :deep(pre code) { background: none; color: inherit; padding: 0; }
 .fab-md :deep(blockquote) { border-left: 2px solid #2563eb; padding: 2px 8px; margin: 0.2em 0; color: #6e6e73; background: rgba(37,99,235,0.03); border-radius: 0 4px 4px 0; }
 .fab-md :deep(a) { color: #2563eb; }
-.fab-md :deep(table) { width: 100%; border-collapse: collapse; margin: 0.3em 0; font-size: 9px; }
+.fab-md :deep(table) { width: 100%; border-collapse: collapse; margin: 0.3em 0; font-size: 10px; }
 .fab-md :deep(th) { background: #f5f5f7; color: #1d1d1f; font-weight: 600; padding: 4px 6px; text-align: left; border-bottom: 1px solid rgba(0,0,0,0.06); }
 .fab-md :deep(td) { padding: 4px 6px; color: #3a3a3c; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .cursor-blink { animation: blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity: 0; } }
+@keyframes bounce-dot { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+.animate-bounce { animation: bounce-dot 1.2s infinite ease-in-out; }
 
 /* ═══ Animation ═══ */
 @keyframes fade-in { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }

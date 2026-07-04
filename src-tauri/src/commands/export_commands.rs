@@ -1,3 +1,4 @@
+use crate::database;
 use serde_json::{json, Value};
 use std::io::Write;
 
@@ -179,9 +180,229 @@ pub async fn export_data(domains: Vec<String>, save_path: String) -> Result<Valu
     Ok(json!({"success": true}))
 }
 
-#[tauri::command] pub async fn import_data(_data: Value) -> Result<Value, String> { Ok(json!({"success":true})) }
-#[tauri::command] pub async fn db_export_raw() -> Result<Value, String> { Ok(json!({"success":true})) }
-#[tauri::command] pub async fn products_export() -> Result<Value, String> { Ok(json!({"success":true})) }
-#[tauri::command] pub async fn products_export_file() -> Result<Value, String> { Ok(json!({"success":true})) }
-#[tauri::command] pub async fn products_import(_data: Value) -> Result<Value, String> { Ok(json!({"success":true})) }
-#[tauri::command] pub async fn products_import_file(_file_path: String) -> Result<Value, String> { Ok(json!({"success":true})) }
+/// 从 .ark ZIP 文件导入业务数据
+#[tauri::command]
+pub async fn import_data(file_path: String) -> Result<Value, String> {
+    let file = std::fs::File::open(&file_path).map_err(|e| format!("打开文件失败: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("解析 ZIP 失败: {}", e))?;
+
+    // 解压到临时目录
+    let tmp = std::env::temp_dir().join(format!("ark_import_{}", uuid::Uuid::new_v4()));
+    archive.extract(&tmp).map_err(|e| format!("解压失败: {}", e))?;
+
+    // 读取 manifest
+    let manifest_path = tmp.join("manifest.json");
+    let manifest_str = std::fs::read_to_string(&manifest_path).map_err(|e| format!("读取 manifest 失败: {}", e))?;
+    let manifest: Value = serde_json::from_str(&manifest_str).map_err(|e| format!("解析 manifest 失败: {}", e))?;
+    let domains = manifest["domains"].as_array().ok_or("manifest 缺少 domains 字段")?;
+
+    let mut imported: Vec<String> = Vec::new();
+    for domain in domains {
+        let domain_name = domain.as_str().unwrap_or("");
+        let domain_file = tmp.join(format!("{}.json", domain_name));
+        if !domain_file.exists() { continue; }
+        let data_str = std::fs::read_to_string(&domain_file).map_err(|e| e.to_string())?;
+        let data: Value = serde_json::from_str(&data_str).map_err(|e| e.to_string())?;
+
+        match domain_name {
+            "projects" => import_projects(&data, &tmp)?,
+            "products" => import_products(&data, &tmp)?,
+            "notes" => import_notes(&data, &tmp)?,
+            "todos" => import_todos(&data, &tmp)?,
+            "files" => import_files(&data, &tmp)?,
+            _ => {}
+        }
+        imported.push(domain_name.to_string());
+    }
+
+    // 清理临时目录
+    std::fs::remove_dir_all(&tmp).ok();
+
+    Ok(json!({"success": true, "imported": imported}))
+}
+
+fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
+    // 项目
+    if let Some(projects) = data["projects"].as_array() {
+        for p in projects {
+            let id = p["id"].as_str().unwrap_or("");
+            if id.is_empty() { continue; }
+            database::run("INSERT OR REPLACE INTO projects(id,name,description,status,owner,budget,customer,bid_time,customer_contact,customer_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", &[
+                json!(id), json!(p["name"]), json!(p["description"]), json!(p["status"]),
+                json!(p["owner"]), json!(p["budget"]), json!(p["customer"]),
+                json!(p["bid_time"]), json!(p["customer_contact"]), json!(p["customer_phone"]),
+                json!(p["created_at"]), json!(p["updated_at"]),
+            ]).ok();
+        }
+    }
+    // 方案
+    if let Some(sols) = data["solutions"].as_array() {
+        for s in sols { database::run("INSERT OR REPLACE INTO solutions(id,project_id,name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)", &[json!(s["id"]),json!(s["project_id"]),json!(s["name"]),json!(s["created_at"]),json!(s["updated_at"])]).ok(); }
+    }
+    // 方案版本
+    if let Some(vers) = data["solution_versions"].as_array() {
+        for v in vers { database::run("INSERT OR REPLACE INTO solution_versions(id,solution_id,version,tags,content,creator,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", &[json!(v["id"]),json!(v["solution_id"]),json!(v["version"]),json!(v["tags"]),json!(v["content"]),json!(v["creator"]),json!(v["status"]),json!(v["created_at"]),json!(v["updated_at"])]).ok(); }
+    }
+    // 方案设备清单
+    if let Some(items) = data["solution_items"].as_array() {
+        for i in items { database::run("INSERT OR REPLACE INTO solution_items(id,solution_version_id,product_id,product_name,quantity,unit_price,description,device_name,row_type,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", &[json!(i["id"]),json!(i["solution_version_id"]),json!(i["product_id"]),json!(i["product_name"]),json!(i["quantity"]),json!(i["unit_price"]),json!(i["description"]),json!(i["device_name"]),json!(i["row_type"]),json!(i["sort_order"]),json!(i["created_at"]),json!(i["updated_at"])]).ok(); }
+    }
+    // 动态
+    if let Some(dyns) = data["project_dynamics"].as_array() {
+        for d in dyns { database::run("INSERT OR REPLACE INTO project_dynamics(id,project_id,type,content,operator,created_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(d["id"]),json!(d["project_id"]),json!(d["type"]),json!(d["content"]),json!(d["operator"]),json!(d["created_at"])]).ok(); }
+    }
+    // 渠道
+    if let Some(chs) = data["channel_partners"].as_array() {
+        for c in chs { database::run("INSERT OR REPLACE INTO channel_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(c["id"]),json!(c["project_id"]),json!(c["name"]),json!(c["phone"]),json!(c["company"]),json!(c["remark"]),json!(c["created_at"])]).ok(); }
+    }
+    if let Some(ccs) = data["channel_contacts"].as_array() {
+        for c in ccs { database::run("INSERT OR REPLACE INTO channel_contacts(id,channel_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(c["id"]),json!(c["channel_id"]),json!(c["name"]),json!(c["phone"]),json!(c["email"]),json!(c["remark"]),json!(c["created_at"])]).ok(); }
+    }
+    // 供应商
+    if let Some(vds) = data["vendor_partners"].as_array() {
+        for v in vds { database::run("INSERT OR REPLACE INTO vendor_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(v["id"]),json!(v["project_id"]),json!(v["name"]),json!(v["phone"]),json!(v["company"]),json!(v["remark"]),json!(v["created_at"])]).ok(); }
+    }
+    if let Some(vcs) = data["vendor_contacts"].as_array() {
+        for v in vcs { database::run("INSERT OR REPLACE INTO vendor_contacts(id,vendor_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(v["id"]),json!(v["vendor_id"]),json!(v["name"]),json!(v["phone"]),json!(v["email"]),json!(v["remark"]),json!(v["created_at"])]).ok(); }
+    }
+    Ok(())
+}
+
+fn import_products(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
+    if let Some(products) = data["products"].as_array() {
+        for p in products {
+            let id = p["id"].as_str().unwrap_or("");
+            if id.is_empty() { continue; }
+            database::run("INSERT OR REPLACE INTO products(id,name,series_id,model,description,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", &[
+                json!(id), json!(p["name"]), json!(p["series_id"]), json!(p["model"]),
+                json!(p["description"]), json!(p["status"]), json!(p["created_at"]), json!(p["updated_at"]),
+            ]).ok();
+        }
+    }
+    if let Some(series) = data["product_series"].as_array() {
+        for s in series { database::run("INSERT OR REPLACE INTO product_series(id,name,created_at,updated_at) VALUES(?1,?2,?3,?4)", &[json!(s["id"]),json!(s["name"]),json!(s["created_at"]),json!(s["updated_at"])]).ok(); }
+    }
+    // 复制物料文件
+    let files_dir = tmp.join("product_files");
+    if files_dir.exists() {
+        for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
+            if let Ok(entry) = entry {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if let Some(dot) = fname.rfind('.') {
+                    let fid = &fname[..dot];
+                    if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(fid)]).ok().flatten() {
+                        if let Some(hash) = fa["content_hash"].as_str() {
+                            let dst = crate::commands::file_commands::flat_disk_path(hash);
+                            if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
+                            std::fs::copy(entry.path(), &dst).ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn import_notes(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
+    if let Some(notebooks) = data["notebooks"].as_array() {
+        for n in notebooks { database::run("INSERT OR REPLACE INTO notebooks(id,name,color,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(n["id"]),json!(n["name"]),json!(n["color"]),json!(n["sort_order"]),json!(n["created_at"]),json!(n["updated_at"])]).ok(); }
+    }
+    if let Some(notes) = data["notes"].as_array() {
+        for n in notes { database::run("INSERT OR REPLACE INTO notes(note_id,title,content,is_daily,notebook_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(n["note_id"]),json!(n["title"]),json!(n["content"]),json!(n["is_daily"]),json!(n["notebook_id"]),json!(n["created_at"]),json!(n["updated_at"])]).ok(); }
+    }
+    // 复制笔记附件
+    let files_dir = tmp.join("note_files");
+    if files_dir.exists() {
+        for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
+            if let Ok(entry) = entry {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if let Some(dot) = fname.rfind('.') {
+                    let fid = &fname[..dot];
+                    if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(fid)]).ok().flatten() {
+                        if let Some(hash) = fa["content_hash"].as_str() {
+                            let dst = crate::commands::file_commands::flat_disk_path(hash);
+                            if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
+                            std::fs::copy(entry.path(), &dst).ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn import_todos(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
+    if let Some(todos) = data["todos"].as_array() {
+        for t in todos {
+            let id = t["id"].as_str().unwrap_or("");
+            if id.is_empty() { continue; }
+            database::run("INSERT OR REPLACE INTO todos(id,title,content,done,priority,due_date,repeat,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", &[
+                json!(id), json!(t["title"]), json!(t["content"]), json!(t["done"]),
+                json!(t["priority"]), json!(t["due_date"]), json!(t["repeat"]),
+                json!(t["created_at"]), json!(t["updated_at"]),
+            ]).ok();
+        }
+    }
+    // 复制待办附件
+    let files_dir = tmp.join("todo_files");
+    if files_dir.exists() {
+        for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
+            if let Ok(entry) = entry {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if let Some(dot) = fname.rfind('.') {
+                    let fid = &fname[..dot];
+                    if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(fid)]).ok().flatten() {
+                        if let Some(hash) = fa["content_hash"].as_str() {
+                            let dst = crate::commands::file_commands::flat_disk_path(hash);
+                            if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
+                            std::fs::copy(entry.path(), &dst).ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn import_files(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
+    if let Some(assets) = data["file_assets"].as_array() {
+        for a in assets {
+            let id = a["id"].as_str().unwrap_or("");
+            if id.is_empty() { continue; }
+            database::run("INSERT OR REPLACE INTO file_assets(id,file_ext,file_size,content_hash,original_name,parse_status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", &[
+                json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
+                json!(a["original_name"]), json!(a["parse_status"]), json!(a["created_at"]), json!(a["updated_at"]),
+            ]).ok();
+        }
+    }
+    if let Some(rels) = data["file_relations"].as_array() {
+        for r in rels { database::run("INSERT OR REPLACE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
+    }
+    if let Some(folders) = data["library_folders"].as_array() {
+        for f in folders { database::run("INSERT OR REPLACE INTO library_folders(id,name,parent_id,project_id,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(f["id"]),json!(f["name"]),json!(f["parent_id"]),json!(f["project_id"]),json!(f["sort_order"]),json!(f["created_at"]),json!(f["updated_at"])]).ok(); }
+    }
+    // 复制资料库文件
+    let files_dir = tmp.join("library_files");
+    if files_dir.exists() {
+        for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
+            if let Ok(entry) = entry {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if let Some(dot) = fname.rfind('.') {
+                    let fid = &fname[..dot];
+                    if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(fid)]).ok().flatten() {
+                        if let Some(hash) = fa["content_hash"].as_str() {
+                            let dst = crate::commands::file_commands::flat_disk_path(hash);
+                            if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
+                            std::fs::copy(entry.path(), &dst).ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+

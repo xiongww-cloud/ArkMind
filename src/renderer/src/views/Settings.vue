@@ -130,6 +130,31 @@ async function handleExportData() {
   }
 }
 
+// ─── 全局导入 ──────────────────────────────────────────────────────
+const isImporting = ref(false)
+async function handleImportData() {
+  isImporting.value = true
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const filePath = await open({
+      filters: [{ name: 'ArkMind 数据包', extensions: ['ark'] }],
+      multiple: false,
+    })
+    if (!filePath) { isImporting.value = false; return }
+    const { importData } = await import('@/api/db-client')
+    const result = await importData(filePath as string)
+    if (result.success) {
+      toast.success(`数据已导入：${(result.imported || []).join('、')}`)
+    } else {
+      alert({ title: '导入失败', message: result.error || '未知错误' })
+    }
+  } catch (e) {
+    alert({ title: '导入失败', message: (e && e.message) || '未知错误' })
+  } finally {
+    isImporting.value = false
+  }
+}
+
 // ─── AI Config ───────────────────────────────────────────────────────────
 // Multi-provider support: each provider has { id, name, apiKey, baseUrl, modelName }
 const aiProviders = ref([])
@@ -393,10 +418,7 @@ async function confirmVisionForm() {
     if (visionProviders.value.length === 1) { visionActiveId.value = visionProviders.value[0].id }
   }
   try {
-    const current = await fetchAiConfig()
     await updateAiConfig({
-      ...(current.providers ? { providers: current.providers, activeProviderId: current.activeProviderId } : {}),
-      ...(current.embedding?.apiKey ? { embedding: current.embedding } : {}),
       visionProviders: visionProviders.value,
       activeVisionId: visionActiveId.value,
     })
@@ -417,10 +439,7 @@ async function removeVision(provider: any) {
   visionProviders.value = visionProviders.value.filter((p: any) => p.id !== provider.id)
   if (visionActiveId.value === provider.id) { visionActiveId.value = visionProviders.value[0]?.id || null }
   if (visionPendingId.value === provider.id) { visionPendingId.value = visionActiveId.value }
-  const current = await fetchAiConfig()
   await updateAiConfig({
-    ...(current.providers ? { providers: current.providers, activeProviderId: current.activeProviderId } : {}),
-    ...(current.embedding?.apiKey ? { embedding: current.embedding } : {}),
     visionProviders: visionProviders.value,
     activeVisionId: visionActiveId.value,
   }).catch(() => {})
@@ -432,10 +451,7 @@ async function saveVisionDefault() {
   visionSaving.value = true
   visionTestResult.value = ''
   try {
-    const current = await fetchAiConfig()
     await updateAiConfig({
-      ...(current.providers ? { providers: current.providers, activeProviderId: current.activeProviderId } : {}),
-      ...(current.embedding?.apiKey ? { embedding: current.embedding } : {}),
       visionProviders: visionProviders.value,
       activeVisionId: visionPendingId.value,
     })
@@ -536,8 +552,6 @@ async function saveVecConfig() {
     }
 
     await updateAiConfig({
-      ...(current.providers ? { providers: current.providers, activeProviderId: current.activeProviderId } : {}),
-      ...(current.visionProviders ? { visionProviders: current.visionProviders, activeVisionId: current.activeVisionId } : {}),
       embedding: {
         baseUrl: vecForm.value.baseUrl.trim() || 'https://api.openai.com/v1',
         apiKey: vecForm.value.apiKey.trim(),
@@ -564,11 +578,7 @@ async function deleteVecConfig() {
   const ok = await dangerConfirm({ title: '删除向量化模型', message: '确定删除向量化模型配置？', confirmText: '删除' })
   if (!ok) return
   try {
-    const current: any = await fetchAiConfig()
-    await updateAiConfig({
-      ...(current.providers ? { providers: current.providers, activeProviderId: current.activeProviderId } : {}),
-      ...(current.visionProviders ? { visionProviders: current.visionProviders, activeVisionId: current.activeVisionId } : {}),
-    })
+    await updateAiConfig({ embedding: null })
     vecSavedData.value = null
     vecForm.value = { baseUrl: 'https://api.openai.com/v1', apiKey: '', modelName: 'text-embedding-3-small' }
     showVecModal.value = false
@@ -807,10 +817,17 @@ onMounted(async () => {
         <!-- Export -->
         <div class="flex items-center justify-between">
           <div>
-            <p class="text-[12px] font-medium text-surface-700">导出全部数据</p>
+            <p class="text-[12px] font-medium text-surface-700">导出数据</p>
             <p class="text-[10px] text-surface-400">选择性备份业务域数据到本地</p>
           </div>
-          <button class="btn-primary text-[11px]" :disabled="isExporting" @click="showDomainSelector = true">{{ isExporting ? '导出中...' : '导出全部数据' }}</button>
+          <button class="btn-primary text-[11px]" :disabled="isExporting" @click="showDomainSelector = true">{{ isExporting ? '导出中...' : '导出数据' }}</button>
+        </div>
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-[12px] font-medium text-surface-700">导入数据</p>
+            <p class="text-[10px] text-surface-400">从 .ark 文件恢复业务数据</p>
+          </div>
+          <button class="btn-primary text-[11px]" :disabled="isImporting" @click="handleImportData">{{ isImporting ? '导入中...' : '导入数据' }}</button>
         </div>
         <!-- Domain Selector Modal -->
         <Teleport to="body"><Transition name="modal-fade"><div v-if="showDomainSelector" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="showDomainSelector=false">

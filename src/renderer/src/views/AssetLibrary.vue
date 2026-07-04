@@ -4,7 +4,6 @@ import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import AppIcon from '@/components/common/AppIcon.vue'
-import TagPanel from '@/components/common/TagPanel.vue'
 import {
   fetchFileTree, listGlobalFiles,
   exportFile, deleteFileFromDomain, previewFile, updateFileMeta,
@@ -14,7 +13,7 @@ import {
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 
 interface Folder { id: string; name: string; node_type: string; allow_children: boolean; file_count: number; parent_id?: string|null; _depth?: number; _hasChildren?: boolean }
-interface AssetFile { id: string; file_ext?: string; file_size: number; parse_status?: string; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_folder_id?: string|null }
+interface AssetFile { id: string; file_ext?: string; file_size: number; parse_status?: string; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_folder?: string|null }
 
 const UNCATEGORIZED = '未分类' as const
 
@@ -124,9 +123,9 @@ const filteredFiles = computed(() => {
   let result = allFiles.value
   if (selectedFolderId.value) {
     if (selectedFolderId.value === '__uncategorized__') {
-      result = result.filter(f => !(f as any).lib_folder_id)
+      result = result.filter(f => !(f as any).lib_folder)
     } else {
-      result = result.filter(f => (f as any).lib_folder_id === selectedFolderId.value)
+      result = result.filter(f => (f as any).lib_folder === selectedFolderId.value)
     }
   }
   const q = folderSearch.value.toLowerCase().trim()
@@ -444,9 +443,6 @@ async function handleDelete(id: string) {
           </template>
           <template v-else>
             <span class="text-[12px] text-surface-800 truncate block hover:text-blue-600 transition-colors" :title="fileDisplayName(f)" @click="!dragJustFinished && handlePreview(f.id)">{{ fileDisplayName(f) }}</span>
-            <div class="mt-0.5">
-              <TagPanel entity-type="files" :entity-id="f.file_id || f.id" />
-            </div>
           </template>
         </div>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatSize(f.file_size) }}</span>

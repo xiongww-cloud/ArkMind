@@ -28,18 +28,14 @@ use tauri::Emitter;
 #[tauri::command] pub async fn kb_import_file(data: Value) -> Result<Value, String> {
     let path = data["filePath"].as_str().unwrap_or("").to_string();
     let name = data["fileName"].as_str().unwrap_or("未命名文件").to_string();
-    let ext = data["fileExt"].as_str().unwrap_or("").to_string();
+    let _ext = data["fileExt"].as_str().unwrap_or("").to_string();
     let project_id = data["projectId"].as_str().map(|s| s.to_string());
     if path.is_empty() || !std::path::Path::new(&path).exists() { return Ok(json!({"success":false,"error":"文件不存在"})); }
-    let parsed = crate::services::file_parser::parse_file_with_hint(&path, &ext);
-    if !parsed.success || parsed.text.is_empty() { return Ok(json!({"success":false,"error":"文件无法解析,请确认文件格式"})); }
+    // upload_file_core 内部已调用 notify_file_upload，文件进入推送管线处理
     let (file_id, object_id) = crate::commands::file_commands::upload_file_core(&path, "library", &[], &name, "", "KB导入", None).await.map_err(|e| e.to_string())?;
-    crate::database::file_sync_to_source_data(&file_id, &parsed.text);
-    crate::database::run("UPDATE file_assets SET parse_status='COMPLETED' WHERE id=?", &[serde_json::json!(&file_id)]).ok();
     if let Some(pid) = project_id.filter(|p| !p.is_empty()) {
         let _ = crate::database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id) VALUES(?1,?2,'project',?3)", &[serde_json::json!(uuid::Uuid::new_v4().to_string()), serde_json::json!(&object_id), serde_json::json!(&pid)]);
     }
-    
     Ok(json!({"success":true,"fileId":file_id,"chunkCount":0}))
 }
 #[tauri::command] pub async fn kb_save_note(data: Value) -> Result<Value, String> {
@@ -92,7 +88,7 @@ use tauri::Emitter;
     let rows = if q.is_empty() {
         database::all("SELECT kc.rowid,kc.parent_id,kc.content,kc.chunk_index,kc.created_at FROM knowledge_chunks kc WHERE kc.chunk_type='child' ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?",&[json!(offset)]).unwrap_or_default()
     } else {
-        database::all("SELECT kc.rowid,kc.parent_id,kc.content,kc.chunk_index,kc.created_at FROM knowledge_chunks kc WHERE kc.chunk_type='child' AND kc.content LIKE ?1 ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?2",&[json!(format!("%{}%",q)), json!(offset)]).unwrap_or_default()
+        database::all("SELECT kc.rowid,kc.parent_id,kc.content,kc.chunk_index,kc.created_at FROM knowledge_chunks kc WHERE kc.chunk_type='child' AND kc.content LIKE ?1 ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?2",&[json!(format!("%{}%",crate::database::escape_like(&q))), json!(offset)]).unwrap_or_default()
     };
     let total: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='child'",[],|r|r.get(0))).unwrap_or(0);
     Ok(json!({"success":true,"rows":rows,"total":total,"page":p}))
@@ -102,7 +98,7 @@ use tauri::Emitter;
     let rows = if q.is_empty() {
         database::all("SELECT kc.rowid,kc.content,kc.doc_title,kc.chunk_index,kc.source_data_id,kc.created_at,sd.source_type FROM knowledge_chunks kc LEFT JOIN source_data sd ON sd.id=kc.source_data_id WHERE kc.chunk_type='parent' ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?",&[json!(offset)]).unwrap_or_default()
     } else {
-        database::all("SELECT kc.rowid,kc.content,kc.doc_title,kc.chunk_index,kc.source_data_id,kc.created_at,sd.source_type FROM knowledge_chunks kc LEFT JOIN source_data sd ON sd.id=kc.source_data_id WHERE kc.chunk_type='parent' AND kc.content LIKE ?1 ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?2",&[json!(format!("%{}%",q)), json!(offset)]).unwrap_or_default()
+        database::all("SELECT kc.rowid,kc.content,kc.doc_title,kc.chunk_index,kc.source_data_id,kc.created_at,sd.source_type FROM knowledge_chunks kc LEFT JOIN source_data sd ON sd.id=kc.source_data_id WHERE kc.chunk_type='parent' AND kc.content LIKE ?1 ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?2",&[json!(format!("%{}%",crate::database::escape_like(&q))), json!(offset)]).unwrap_or_default()
     };
     let total: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='parent'",[],|r|r.get(0))).unwrap_or(0);
     Ok(json!({"success":true,"rows":rows,"total":total,"page":p}))
@@ -212,15 +208,22 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
             &[json!(id), json!(_title), json!(updated_at)]).map_err(|e| e.to_string())?;
         let msgs_raw = s["messages"].as_array().cloned().or_else(|| s["messages"].as_str().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()));
         if let Some(ref msgs) = msgs_raw {
-            database::run("DELETE FROM chat_messages WHERE session_id=?", &[json!(id)]).ok();
-            for m in msgs {
-                let role = m["role"].as_str().unwrap_or("");
-                let content = m["content"].as_str().unwrap_or("");
-                if role != "user" && role != "assistant" { continue; }
-                if content.trim().is_empty() { continue; }
-                database::run("INSERT INTO chat_messages(session_id,role,content) VALUES(?1,?2,?3)",
-                    &[json!(id), json!(role), json!(content)]).ok();
-            }
+            // Use transaction to ensure atomicity: DELETE + INSERT as a single operation
+            database::with_db(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                tx.execute("DELETE FROM chat_messages WHERE session_id=?", rusqlite::params![id])?;
+                for m in msgs {
+                    let role = m["role"].as_str().unwrap_or("");
+                    let content = m["content"].as_str().unwrap_or("");
+                    if role != "user" && role != "assistant" { continue; }
+                    if content.trim().is_empty() { continue; }
+                    let metadata = serde_json::to_string(m).ok();
+                    tx.execute("INSERT INTO chat_messages(session_id,role,content,metadata) VALUES(?1,?2,?3,?4)",
+                        rusqlite::params![id, role, content, metadata])?;
+                }
+                tx.commit()?;
+                Ok(())
+            }).map_err(|e| e.to_string())?;
             // 对话记录由后端 agent_chat_workflow 以 MEMORY 类型（认知过程格式）自动创建
             // 前端不再创建 CHAT source_data，只保存 chat_messages 表（显示用）
         }
@@ -230,7 +233,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
 #[tauri::command] pub async fn kb_load_sessions() -> Result<Value, String> {
     let mut rows = database::all(
         "SELECT s.id, s.title, s.created_at, s.updated_at, \
-         (SELECT json_group_array(json_object('role',m.role,'content',m.content)) \
+         (SELECT json_group_array(json_object('role',m.role,'content',m.content,'metadata',m.metadata)) \
           FROM chat_messages m WHERE m.session_id=s.id ORDER BY m.id) as messages \
          FROM chat_sessions s ORDER BY s.updated_at DESC LIMIT 100",
         &[],
@@ -238,8 +241,19 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
     for row in &mut rows {
         if let Some(s) = row["messages"].as_str() {
             if let Ok(arr) = serde_json::from_str::<Value>(s) {
+                // Restore full message from metadata (toolCalls, workspace, etc.)
+                let restored: Vec<Value> = arr.as_array().map(|msgs| {
+                    msgs.iter().map(|m| {
+                        if let Some(meta_str) = m.get("metadata").and_then(|v| v.as_str()) {
+                            if let Ok(full_msg) = serde_json::from_str::<Value>(meta_str) {
+                                return full_msg;
+                            }
+                        }
+                        json!({"role": m["role"], "content": m["content"]})
+                    }).collect()
+                }).unwrap_or_default();
                 let m = row.as_object_mut().unwrap();
-                m.insert("messages".to_string(), arr);
+                m.insert("messages".to_string(), Value::Array(restored));
             }
         }
     }
@@ -262,7 +276,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
 pub async fn kb_memory_objects(query: String) -> Result<Value, String> {
     let q = query.trim().to_string();
     if q.is_empty() { return Ok(json!({"success":true,"objects":[]})); }
-    let like = format!("%{}%", q);
+    let like = format!("%{}%", crate::database::escape_like(&q));
     // FTS5 try first, fallback to LIKE
     let fts_q = q.split_whitespace().map(|k| format!("\"{}\"", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
     let mut objects: Vec<Value> = Vec::new();
@@ -352,7 +366,7 @@ pub async fn kb_memory_objects(query: String) -> Result<Value, String> {
 pub async fn search_business(query: String) -> Result<Value, String> {
     let q = query.trim().to_string();
     if q.is_empty() { return Ok(json!({"success":true,"objects":[]})); }
-    let like = format!("%{}%", q);
+    let like = format!("%{}%", crate::database::escape_like(&q));
     let mut objects: Vec<Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     // projects
@@ -416,8 +430,9 @@ pub async fn search_source_data(query: String) -> Result<Value, String> {
     let fts_q = q.split_whitespace().map(|k| format!("\"{}\"", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
     let mut objects: Vec<Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    // 排除 MEMORY 类型，只返回 type + id，业务层自行查询名称
     if let Ok(rows) = database::all(
-        "SELECT source_type, source_id, title FROM source_data_fts WHERE source_data_fts MATCH ?1 LIMIT 30",
+        "SELECT source_type, source_id FROM global_search_fts WHERE global_search_fts MATCH ?1 AND source_type != 'MEMORY' ORDER BY bm25(global_search_fts, 1.0, 1.0) LIMIT 30",
         &[json!(&fts_q)],
     ) {
         for r in &rows {
@@ -430,6 +445,39 @@ pub async fn search_source_data(query: String) -> Result<Value, String> {
         }
     }
     Ok(json!({"success":true,"objects":objects}))
+}
+
+/// 根据 type+id 批量查询业务表名称
+#[tauri::command]
+pub async fn lookup_object_names(ids: Vec<Value>) -> Result<Value, String> {
+    // ids: [{"source_type":"PROJECT","source_id":"xxx"}, ...]
+    let mut result: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for item in &ids {
+        let st = item["source_type"].as_str().unwrap_or("");
+        let sid = item["source_id"].as_str().unwrap_or("");
+        if st.is_empty() || sid.is_empty() { continue; }
+        let key = format!("{}-{}", st, sid);
+        let name = match st {
+            "PROJECT" => database::get("SELECT name FROM projects WHERE id=?1", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default(),
+            "PRODUCT" => database::get("SELECT name FROM products WHERE id=?1", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default(),
+            "NOTE" => database::get("SELECT title FROM notes WHERE note_id=?1 AND deleted_at IS NULL", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default(),
+            "FILE" => database::get("SELECT custom_name FROM file_relations WHERE file_id=?1 AND custom_name != '' LIMIT 1", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["custom_name"].as_str().map(String::from))
+                .or_else(|| database::get("SELECT original_name FROM file_assets WHERE id=?1", &[json!(sid)])
+                    .ok().flatten().and_then(|r| r["original_name"].as_str().map(String::from)))
+                .unwrap_or_default(),
+            "TODO" => database::get("SELECT title FROM todos WHERE id=?1", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default(),
+            _ => String::new(),
+        };
+        if !name.is_empty() {
+            result.insert(key, name);
+        }
+    }
+    Ok(json!({"names": result}))
 }
 
 /// 获取所有关联了项目的笔记 ID 集合
@@ -612,35 +660,31 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
          FROM source_data GROUP BY source_type ORDER BY cnt DESC", &[],
     ).unwrap_or_default();
 
-    // 5. Pipeline status
-    let sync_embedded: i64 = database::with_db(|c| c.query_row(
-        "SELECT COUNT(*) FROM ai_sync_queue WHERE is_embedded=1", [], |r| r.get(0)
-    )).unwrap_or(0);
-    let sync_pending: i64 = database::with_db(|c| c.query_row(
-        "SELECT COUNT(*) FROM ai_sync_queue WHERE is_embedded=0", [], |r| r.get(0)
-    )).unwrap_or(0);
-    let sync_failed: i64 = database::with_db(|c| c.query_row(
-        "SELECT COUNT(*) FROM ai_sync_queue WHERE retry_count >= 3", [], |r| r.get(0)
-    )).unwrap_or(0);
-    let tag_done: i64 = database::with_db(|c| c.query_row(
-        "SELECT COUNT(*) FROM ai_tag_queue WHERE status=1", [], |r| r.get(0)
-    )).unwrap_or(0);
-    let tag_pending: i64 = database::with_db(|c| c.query_row(
-        "SELECT COUNT(*) FROM ai_tag_queue WHERE status=0", [], |r| r.get(0)
-    )).unwrap_or(0);
-
-    // 6. Tag count
+    // 5. Tag count
     let tag_count: i64 = database::with_db(|c| c.query_row(
         "SELECT COUNT(*) FROM tags WHERE type != 'ai_shadow'", [], |r| r.get(0)
     )).unwrap_or(0);
+
+    // 6. Activity heatmap (last 30 days: updates + accesses per day)
+    let activity_heatmap = database::all(
+        "SELECT date, SUM(cnt) as cnt FROM ( \
+            SELECT date(updated_at) as date, COUNT(*) as cnt FROM source_data \
+            WHERE updated_at >= date('now', '-30 days', 'localtime') \
+            GROUP BY date(updated_at) \
+            UNION ALL \
+            SELECT date(last_access_at) as date, COUNT(*) as cnt FROM knowledge_chunks \
+            WHERE last_access_at >= date('now', '-30 days', 'localtime') \
+            GROUP BY date(last_access_at) \
+        ) GROUP BY date ORDER BY date", &[],
+    ).unwrap_or_default();
 
     Ok(json!({
         "success": true,
         "by_type": by_type,
         "weight_dist": weight_dist,
         "daily_growth": daily_growth,
+        "activity_heatmap": activity_heatmap,
         "object_counts": { "total": object_total, "by_type": object_by_type },
-        "pipeline": { "embedded": sync_embedded, "pending": sync_pending, "failed": sync_failed, "tagged": tag_done, "untagged": tag_pending },
         "health": {
             "total": child_total,
             "hot_count": hot_count,
@@ -652,16 +696,6 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
         }
     }))
 }
-
-#[tauri::command]
-pub async fn tag_get_state() -> Result<Value, String> {
-    let total: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM ai_tag_queue",[],|r|r.get(0))).unwrap_or(0);
-    let pending: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM ai_tag_queue WHERE status=0",[],|r|r.get(0))).unwrap_or(0);
-    let done: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM ai_tag_queue WHERE status=1",[],|r|r.get(0))).unwrap_or(0);
-    let failed: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM ai_tag_queue WHERE status=-1",[],|r|r.get(0))).unwrap_or(0);
-    Ok(json!({"total":total,"pending":pending,"done":done,"failed":failed}))
-}
-#[tauri::command] pub async fn tag_list_registered() -> Result<Value, String> { Ok(json!({"types":["notes","files","products","projects"]})) }
 
 #[tauri::command] pub async fn tag_list(category: Option<String>) -> Result<Vec<Value>, String> {
     if let Some(cat) = category.filter(|s| !s.is_empty()) {
@@ -765,7 +799,7 @@ pub async fn tag_stats() -> Result<Value, String> {
 #[tauri::command]
 pub async fn ext_tool_get_project_context(query_name: String) -> Result<String, String> {
     if query_name.trim().is_empty() { return Ok("请提供项目名称".into()); }
-    let projects = database::all("SELECT id,name,customer,customer_contact,status,owner,budget,bid_time,description,created_at,updated_at FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1",&[json!(format!("%{}%",query_name.trim()))]).unwrap_or_default();
+    let projects = database::all("SELECT id,name,customer,customer_contact,status,owner,budget,bid_time,description,created_at,updated_at FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1",&[json!(format!("%{}%",crate::database::escape_like(query_name.trim())))]).unwrap_or_default();
     let proj = match projects.first() { Some(p) => p, None => return Ok(format!("未找到匹配「{}」的项目", query_name)) };
     let project_id = proj["id"].as_str().unwrap_or("");
     let mut tags: Vec<String> = database::all("SELECT DISTINCT t.name FROM tags t INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id WHERE tm.entity_type='projects' AND tm.entity_id=?1",&[json!(project_id)]).unwrap_or_default().into_iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
@@ -831,20 +865,15 @@ pub async fn entity_remove_tag(entity_type: String, entity_id: String, tag_id: S
     Ok(json!({"success":true}))
 }
 
-/// 调试：返回 ai_sync_queue 和 cleanup_queue 的原始数据
+/// 调试：返回 cleanup_queue 的原始数据
 #[tauri::command]
 pub async fn kb_pipeline_debug() -> Result<Value, String> {
-    let sync = database::all("SELECT * FROM ai_sync_queue ORDER BY id DESC LIMIT 30", &[]).map_err(|e| e.to_string())?;
     let cleanup = database::all("SELECT * FROM cleanup_queue ORDER BY id DESC LIMIT 30", &[]).map_err(|e| e.to_string())?;
-    let sync_ok = database::get("SELECT COUNT(*) as cnt FROM ai_sync_queue WHERE is_embedded=1", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-    let sync_pending = database::get("SELECT COUNT(*) as cnt FROM ai_sync_queue WHERE is_embedded<=0", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-    let sync_fail = database::get("SELECT COUNT(*) as cnt FROM ai_sync_queue WHERE is_embedded=-1", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     let cleanup_pending = database::get("SELECT COUNT(*) as cnt FROM cleanup_queue WHERE status=0", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     let cleanup_done = database::get("SELECT COUNT(*) as cnt FROM cleanup_queue WHERE status=1", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     Ok(json!({
         "success":true,
-        "stats": {"sync_ok":sync_ok,"sync_pending":sync_pending,"sync_fail":sync_fail,"cleanup_pending":cleanup_pending,"cleanup_done":cleanup_done},
-        "sync_queue": sync,
+        "stats": {"cleanup_pending":cleanup_pending,"cleanup_done":cleanup_done},
         "cleanup_queue": cleanup
     }))
 }

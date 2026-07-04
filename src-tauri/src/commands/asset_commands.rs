@@ -14,12 +14,12 @@ use serde_json::{json, Value}; use crate::database;
 #[tauri::command] pub async fn assets_list() -> Result<Value, String> { let assets = database::all("SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, sd.content as parsed_text, fa.created_at, fa.updated_at, fr.custom_name as lib_gn, fr.custom_name as lib_cn, fa.id as latest_version_id, fa.file_size as latest_version_size FROM file_assets fa LEFT JOIN source_data sd ON sd.source_type='FILE' AND sd.source_id=fa.id LEFT JOIN file_relations fr ON fr.file_id = fa.id AND fr.entity_type='library' ORDER BY fa.updated_at DESC",&[]).map_err(|e| e.to_string())?; Ok(json!({"success":true,"assets":assets})) }
 #[tauri::command] pub async fn asset_sync_status() -> Result<Value, String> {
     let running = crate::services::knowledge_pipeline::is_running();
-    let pending: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM ai_sync_queue WHERE is_embedded=0",[],|r|r.get(0))).unwrap_or(0);
-    let done: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM ai_sync_queue WHERE is_embedded=1",[],|r|r.get(0))).unwrap_or(0);
+    let pending: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE status='pending'",[],|r|r.get(0))).unwrap_or(0);
+    let done: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE status='done'",[],|r|r.get(0))).unwrap_or(0);
     Ok(json!({"running":running,"pending":pending,"done":done}))
 }
 #[tauri::command] pub async fn asset_sync_trigger(file_id: String) -> Result<Value, String> {
-    database::run("INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id) VALUES('files',?)",&[json!(file_id)]).ok();
+    crate::services::knowledge_lifecycle::notify_changed("FILE", &file_id);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn asset_diagnose() -> Result<Value, String> {

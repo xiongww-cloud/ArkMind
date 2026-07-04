@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { useSelectionStore } from '@/stores/selection'
 import { useNavigation } from '@/composables/useNavigation'
-import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Delete, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData } from '@/api/db-client'
+import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Delete, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData, lookupObjectNames } from '@/api/db-client'
 import { toast } from '@/composables/useToast'
 
 defineProps({})
@@ -81,12 +81,26 @@ function onSearchInput() {
         seen.add(key)
         merged.push(obj)
       }
-      // source_data 结果补充（去重）
+      // source_data 结果补充（去重，需要查名称）
+      const lookupIds: Array<{source_type:string;source_id:string}> = []
       for (const obj of (sourceData?.objects || [])) {
         const key = `${obj.source_type}-${obj.source_id}`
         if (seen.has(key)) continue
         seen.add(key)
-        merged.push({ ...obj, title: '' })
+        merged.push(obj)
+        lookupIds.push({ source_type: obj.source_type, source_id: obj.source_id })
+      }
+      // 批量查询业务表名称
+      if (lookupIds.length > 0) {
+        try {
+          const { names } = await lookupObjectNames(lookupIds)
+          for (const obj of merged) {
+            if (!obj.title) {
+              const key = `${obj.source_type}-${obj.source_id}`
+              obj.title = names?.[key] || ''
+            }
+          }
+        } catch {}
       }
       searchResults.value = merged.slice(0, 30)
     } catch { searchResults.value = [] }

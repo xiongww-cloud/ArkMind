@@ -675,6 +675,8 @@ fn sync_project_products(solution_id: &str) -> Result<(), String> {
          WHERE sv.solution_id=? AND si.product_id IS NOT NULL AND si.product_id != ''",
         &[json!(solution_id)]
     ).unwrap_or_default();
+    // Clean old business_relations for this project
+    crate::services::business_relations::delete("PROJECT", &project_id, "PRODUCT", "", "belongs_to");
     for p in &products {
         let product_id = match p["product_id"].as_str() { Some(pid) => pid, None => continue };
         let product_name = p["product_name"].as_str().unwrap_or("");
@@ -682,6 +684,8 @@ fn sync_project_products(solution_id: &str) -> Result<(), String> {
             "INSERT OR IGNORE INTO project_product_mapping(project_id,product_id,product_name) VALUES(?1,?2,?3)",
             &[json!(&project_id), json!(product_id), json!(product_name)]
         ).ok();
+        let meta = serde_json::json!({"product_name": product_name});
+        crate::services::business_relations::upsert("PROJECT", &project_id, "PRODUCT", product_id, "belongs_to", &meta.to_string());
     }
     Ok(())
 }

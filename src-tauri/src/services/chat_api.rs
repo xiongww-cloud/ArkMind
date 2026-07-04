@@ -13,7 +13,7 @@ static CONFIG_CACHE: Lazy<RwLock<(ChatConfig, Instant)>> = Lazy::new(|| RwLock::
 static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build().expect("chat client"));
 
 pub fn get_chat_config() -> ChatConfig {
-    { let (cfg, at) = &*CONFIG_CACHE.read().unwrap(); if at.elapsed().as_secs() < 30 { return cfg.clone(); } }
+    { let (cfg, at) = &*CONFIG_CACHE.read().unwrap_or_else(|e| e.into_inner()); if at.elapsed().as_secs() < 30 { return cfg.clone(); } }
     let mut config = ChatConfig::default();
 
     // ★ 优先从 system_config.ai_config 读取（新版设置页面）
@@ -61,7 +61,13 @@ pub fn get_chat_config() -> ChatConfig {
         }
     }
 
-    let mut c = CONFIG_CACHE.write().unwrap(); *c = (config.clone(), Instant::now()); config
+    // ★ DB 读取失败时保留上次有效配置，不回退到 OpenAI 默认值
+    if config.api_key.is_empty() {
+        let (ref old, _) = *CONFIG_CACHE.read().unwrap_or_else(|e| e.into_inner());
+        if !old.api_key.is_empty() { return old.clone(); }
+    }
+
+    let mut c = CONFIG_CACHE.write().unwrap_or_else(|e| e.into_inner()); *c = (config.clone(), Instant::now()); config
 }
 
 pub fn invalidate_chat_config_cache() { if let Ok(mut c) = CONFIG_CACHE.write() { c.1 = Instant::now() - std::time::Duration::from_secs(60); } }
