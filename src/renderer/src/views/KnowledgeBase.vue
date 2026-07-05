@@ -206,9 +206,6 @@ const recalledContext = computed(() => {
   return []
 })
 
-// ─── Suggestion prompts ─────────────────────────────────────────
-const suggestions = ['分析一下这个项目的关键信息', '请帮我写一份投标应答', '搜索关于S12700E的参数信息', '最近项目有什么进展']
-
 // ─── Send message ───────────────────────────────────────────────
 
 const MAX_INPUT_LENGTH = 5000
@@ -397,15 +394,8 @@ onUnmounted(() => {
           <div class="w-20 h-20 mb-6 rounded-3xl bg-gradient-to-br from-[#2563eb]/10 to-[#93c5fd]/10 flex items-center justify-center ring-1 ring-[#2563eb]/10">
             <svg class="w-10 h-10 text-[#2563eb]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
           </div>
-          <h2 class="text-[17px] font-semibold text-[#1d1d1f] mb-2">售前 AI 知识工作台</h2>
-          <p class="text-[13px] text-[#86868b] max-w-md mb-8 leading-relaxed">输入售前疑问或技术参数需求，AI 将结合知识库生成专业的应答建议。</p>
-          <div class="grid grid-cols-2 gap-3 max-w-lg w-full">
-            <div v-for="(s, si) in suggestions" :key="si" @click="inputMessage = s"
-              class="bg-white border border-[#e5e5ea] rounded-2xl px-4 py-3.5 text-left cursor-pointer hover:border-[#2563eb]/30 hover:shadow-sm transition-all duration-200">
-              <div class="text-[11px] text-[#2563eb] font-medium mb-1">建议问题 {{ si + 1 }}</div>
-              <div class="text-[12px] text-[#3a3a3c] leading-relaxed">{{ s }}</div>
-            </div>
-          </div>
+          <h2 class="text-[17px] font-semibold text-[#1d1d1f] mb-2">AI 知识助手</h2>
+          <p class="text-[13px] text-[#86868b] max-w-md leading-relaxed">基于知识与记忆系统的AI智能助手，帮你检索、理解和推断项目、产品、文档等信息。</p>
         </div>
 
         <!-- Messages -->

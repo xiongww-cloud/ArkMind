@@ -43,8 +43,8 @@ async function handleOrphanCleanup() { try { await cleanupOrphanData(); toast({ 
 
 const debugData = ref<any>(null)
 async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch (e) { console.error('[KG] loadDebug failed:', e) } }
-function typeLabel(st: string): string { const m: Record<string,string> = { FILE:'文件',NOTE:'笔记',PRODUCT:'产品',PROJECT:'项目',TODO:'待办',MEMORY:'记忆',POLICY:'策略' }; return m[st] || st || '通用' }
-function typeColor(st: string): string { const m: Record<string,string> = { FILE:'#60a5fa',NOTE:'#fbbf24',PRODUCT:'#a78bfa',PROJECT:'#34d399',TODO:'#94a3b8' }; return m[st] || '#94a3b8' }
+function typeLabel(st: string): string { const m: Record<string,string> = { FILE:'文件',NOTE:'笔记',PRODUCT:'产品',PROJECT:'项目',TODO:'待办',MEMORY:'记忆',POLICY:'策略',CHANNEL:'渠道',VENDOR:'供应商',CONTACT:'联系人',CUSTOMER:'客户' }; return m[st] || st || '通用' }
+function typeColor(st: string): string { const m: Record<string,string> = { FILE:'#60a5fa',NOTE:'#fbbf24',PRODUCT:'#a78bfa',PROJECT:'#34d399',TODO:'#94a3b8',MEMORY:'#f59e0b',POLICY:'#ec4899',CHANNEL:'#06b6d4',VENDOR:'#8b5cf6',CONTACT:'#14b8a6',CUSTOMER:'#f43f5e' }; return m[st] || '#94a3b8' }
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   loadStats()

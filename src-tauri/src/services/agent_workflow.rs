@@ -51,10 +51,11 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_search: 从长期记忆中回忆相关知识片段，支持 time_range 时间范围过滤。用于搜索具体的文档内容、笔记内容，如「XX文档说了什么」「关于XX的技术细节」。
 - ext_tool_traverse: 沿记忆关联网络漫游（next/prev/related/references）。用于查看某个记忆片段的前后文或关联实体。⚠️ chunk_id 必须是 search 返回结果中的「ChunkID」字段（如 47beae9a），绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。
 - ext_tool_manage_todo: 管理待办。action=create(创建，title必填，priority从用户原话提取填入此字段不要写进content，due_date从用户原话提取，repeat可选daily/weekly/monthly)，action=update(更新，用todo_id或title匹配)，action=delete(删除，用todo_id或title匹配)。
-- ext_tool_manage_memory: 管理记忆。action=create(创建，title=知识点，content=原始陈述，replace_ids=旧记忆source_id逗号分隔，自动删除旧的)，action=delete(删除，用memory_id精确匹配或title模糊匹配)。整理流程：搜索→获取旧记忆source_id→create汇总+replace_ids→旧记忆自动清理。只有用户明确告诉你的信息才创建记忆。
-- ext_tool_record_learning: 记录认知经历。在回答过程中主动调用，记录你认为值得记住的知识点或发现。不消耗预算。参数：question(用户问题)、provider(查阅的文档名)、answer(结论要点)。
+- ext_tool_manage_project: 管理项目。action=create(创建，name必填)，action=update(更新字段，project_id必填)，action=delete(删除及关联数据)。
+- ext_tool_manage_partner: 管理合作伙伴（渠道/厂商/客户）。action=create(创建，type+name必填)，action=update(更新)，action=delete(删除)，action=link_project(关联到项目)，action=unlink_project(取消关联)。
+- ext_tool_manage_contact: 管理联系人（通讯录）。action=create(创建，name必填)，action=update(更新)，action=delete(删除)，action=link_project(关联到项目)，action=unlink_project(取消关联)，action=list(查看通讯录)。
+- ext_tool_memory: 管理记忆。action=create(创建，记住重要的结论或发现)，action=delete(删除)，action=search(搜索记忆，无关键词时列出所有，支持时间范围过滤)。记忆会自动出现在搜索结果的回忆区中。
 - ext_tool_manage_policy: 管理用户规则（宪法）。有id+content=更新，有id+无content=删除，无id+有content=新增。
-- ext_tool_manage_project: 管理项目。action=create(创建项目，name必填，可选customer/owner/budget/description/status等)，action=update(更新项目，project_id必填)，action=delete(删除项目及所有关联数据)，action=add_channel(添加渠道，project_id+name必填)，action=add_vendor(添加供应商，project_id+name必填)，action=add_contact(添加联系人，parent_id+parent_type(channel/vendor)+name必填)。
 
 ## 工具选择策略（必须遵守）
 - 用户询问「某实体有几个XX」「某实体是什么」「查找某实体信息」→ 优先使用 ext_tool_search 搜索对象
@@ -62,6 +63,24 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - 用户询问「昨天发生了什么」「最近有什么」→ 使用 ext_tool_object 按时间范围查看
 - 不确定时：先用 ext_tool_search 搜索对象，再用 ext_tool_search 补充内容
 - ⚠️ 重要：每次工具调用后，立即评估返回结果是否已足够回答用户问题。如果已足够，必须直接输出最终答案，禁止再进行额外搜索。只有当返回结果明显不足或不相关时，才进行下一轮搜索。
+
+## 认知决策流程（必须遵守）
+当用户询问已有对象的信息时：
+
+1. 检查 Working Memory：scratchpad 中是否已有足够信息？
+   - 有 → 直接回答
+   - 没有 → 进入步骤 2
+
+2. Recall（回忆）：
+   - 单个对象：ext_tool_object(id="TYPE-xxx")
+   - 多个对象：ext_tool_object(ids=["TYPE-xxx", "TYPE-yyy"])
+   - 评估信息是否足够回答
+
+3. Search（搜索）：仅在 Recall 无法满足需求时使用
+
+⚠️ 注意事项：
+- 用户询问多个对象时，一次传入所有 ID，不要逐个调用
+- 用户说"这些"、"那个"时，优先使用 Working Memory 中的信息
 
 ## 用户策略（必须严格遵守）
 {{user_policies}}
@@ -121,6 +140,7 @@ struct Focus {
     entities: Vec<String>,
     intent: String,
     open_questions: Vec<String>,
+    focus_objects: Vec<String>,  // 当前焦点对象 ID（由 Goal 决定，不是 score）
 }
 
 #[derive(Debug, Clone)]
@@ -145,7 +165,7 @@ impl SessionMemory {
             visited_chunks: std::collections::HashSet::new(),
             visited_sources: std::collections::HashSet::new(),
             shown_memory_ids: std::collections::HashSet::new(),
-            focus: Focus { entities: Vec::new(), intent: String::new(), open_questions: Vec::new() },
+            focus: Focus { entities: Vec::new(), intent: String::new(), open_questions: Vec::new(), focus_objects: Vec::new() },
             observations: Vec::new(),
             hypotheses: Vec::new(),
             current_goal: String::new(),
@@ -275,11 +295,79 @@ impl SessionMemory {
         let mut lines: Vec<String> = Vec::new();
         lines.push("## 当前会话工作记忆".to_string());
 
-        // 0. Execution Log（从工具调用历史生成，同类调用自动合并，避免正向强化贪心遍历）
+        // 1. Goal（当前目标）
+        if !self.current_goal.is_empty() {
+            lines.push(String::new());
+            lines.push("## Goal（当前目标）".to_string());
+            lines.push(self.current_goal.clone());
+        }
+
+        // 2. Attention（注意力排序，按 score 降序）
+        if !self.active_objects.is_empty() {
+            lines.push(String::new());
+            lines.push("## Attention（注意力排序）".to_string());
+            let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().collect();
+            sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            for (_i, o) in sorted.iter().take(10).enumerate() {
+                let label = match o.obj_type.as_str() {
+                    "product" => format!("PRODUCT: {}", o.name),
+                    "project" => format!("PROJECT: {}", o.name),
+                    "file" => format!("FILE: {}", o.name),
+                    "note" => format!("NOTE: {}", o.name),
+                    t => format!("{}: {}", t, o.name),
+                };
+                lines.push(format!("  ① {}  score: {:.2}", label, o.score));
+            }
+        }
+
+        // 3. Focus（当前焦点，由 Goal 决定）
+        if !self.focus.focus_objects.is_empty() {
+            lines.push(String::new());
+            lines.push("## Focus（当前焦点，由 Goal 决定）".to_string());
+            for fid in self.focus.focus_objects.iter() {
+                // 从 active_objects 中查找名称
+                let name = self.active_objects.iter()
+                    .find(|o| o.obj_id == *fid || format!("{}-{}", o.obj_type.to_uppercase(), o.obj_id) == *fid)
+                    .map(|o| format!("{}: {}", o.obj_type.to_uppercase(), o.name))
+                    .unwrap_or_else(|| fid.clone());
+                lines.push(format!("  → {}", name));
+            }
+        }
+
+        // 4. Working Memory（推理状态，不是数据库字段）
+        let has_wm = !self.observations.is_empty() || !self.hypotheses.is_empty() || !self.focus.open_questions.is_empty();
+        if has_wm {
+            lines.push(String::new());
+            lines.push("## Working Memory（推理状态）".to_string());
+            // 已确认的事实（来自 observations）
+            if !self.observations.is_empty() {
+                lines.push("已确认：".to_string());
+                for obs in self.observations.iter().take(5) {
+                    let preview: String = obs.chars().take(150).collect();
+                    lines.push(format!("  - {}", preview));
+                }
+            }
+            // 假设（来自 hypotheses）
+            if !self.hypotheses.is_empty() {
+                lines.push("假设：".to_string());
+                for h in self.hypotheses.iter().take(3) {
+                    let preview: String = h.chars().take(100).collect();
+                    lines.push(format!("  - {}", preview));
+                }
+            }
+            // 未解决的问题
+            if !self.focus.open_questions.is_empty() {
+                lines.push("仍待确认：".to_string());
+                for q in self.focus.open_questions.iter() {
+                    lines.push(format!("  □ {}", q));
+                }
+            }
+        }
+
+        // 5. Execution Log（从工具调用历史生成）
         if !self.tool_history.is_empty() {
             lines.push(String::new());
             lines.push("## Execution Log".to_string());
-            // 合并连续相同类型的工具调用，加速日志摘要
             let mut groups: Vec<(String, usize)> = Vec::new();
             for step in self.tool_history.iter() {
                 let group_key = step.split(&['(', ' '][..]).next().unwrap_or(step).to_string();
@@ -300,85 +388,24 @@ impl SessionMemory {
             }
         }
 
-        // 1. Current Goal
-        if !self.current_goal.is_empty() {
-            lines.push(String::new());
-            lines.push("## Current Goal".to_string());
-            lines.push(self.current_goal.clone());
-        }
-
-        // 2. Active Objects（带焦点标记 + Top3 标签）
-        if !self.active_objects.is_empty() {
-            lines.push(String::new());
-            lines.push("## Active Objects".to_string());
-            let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().collect();
-            sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-            for (i, o) in sorted.iter().take(10).enumerate() {
-                let label = match o.obj_type.as_str() {
-                    "product" => format!("PRODUCT: {}", o.name),
-                    "project" => format!("PROJECT: {}", o.name),
-                    "file" => format!("FILE: {}", o.name),
-                    "note" => format!("NOTE: {}", o.name),
-                    t => format!("{}: {}", t, o.name),
-                };
-                if i == 0 {
-                    lines.push(format!("  [{}] 🌟 当前焦点", label));
-                } else {
-                    lines.push(format!("  [{}] 💤", label));
-                }
-            }
-        }
-
-        // 3. Open Questions
-        if !self.focus.open_questions.is_empty() {
-            lines.push(String::new());
-            lines.push("## Unknown".to_string());
-            for q in self.focus.open_questions.iter() {
-                lines.push(format!("  □ {}", q));
-            }
-        }
-
-        // 4. Collected Evidence（按来源分组的 observations）
-        if !self.observations.is_empty() {
-            lines.push(String::new());
-            lines.push("## Collected Evidence".to_string());
-            for obs in self.observations.iter().take(5) {
-                let preview: String = obs.chars().take(120).collect();
-                lines.push(format!("  ✓ {}", preview));
-            }
-            if !self.visited_chunks.is_empty() || !self.visited_sources.is_empty() {
-                let parts: Vec<String> = std::iter::once(())
-                    .filter_map(|_| if !self.visited_chunks.is_empty() { Some(format!("浏览 {} 个段落", self.visited_chunks.len())) } else { None })
-                    .chain(std::iter::once(()).filter_map(|_| if !self.visited_sources.is_empty() { Some(format!("来源 {} 个", self.visited_sources.len())) } else { None }))
-                    .collect();
-                if !parts.is_empty() {
-                    lines.push(format!("  📎 {}", parts.join(" · ")));
-                }
-            }
-        }
-
-        // 5. Knowledge Progress（source 覆盖率统计）
+        // 6. Knowledge Progress（source 覆盖率统计）
         if !self.visited_sources.is_empty() {
             lines.push(String::new());
             lines.push("## Knowledge Progress".to_string());
-            // 按 visited_chunks 中的 chunk_id 前缀匹配，统计每个 source 的已读/总数
             for src_key in self.visited_sources.iter() {
                 let parts: Vec<&str> = src_key.splitn(2, '-').collect();
                 if parts.len() != 2 { continue; }
                 let (st, sid) = (parts[0], parts[1]);
-                // 查 source 名称
                 let name = crate::database::get(
                     "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
                     &[json!(st), json!(sid)],
                 ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
                 if name.is_empty() { continue; }
-                // 查该 source 的总 child chunk 数
                 let total: i64 = crate::database::get(
                     "SELECT COUNT(*) as cnt FROM knowledge_chunks kc JOIN source_data sd ON sd.id=kc.source_data_id WHERE sd.source_type=?1 AND sd.source_id=?2 AND kc.chunk_type='child'",
                     &[json!(st), json!(sid)],
                 ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
                 if total == 0 { continue; }
-                // 统计已读 chunk（visited_chunks 包含该 source 的 chunk_id 前缀）
                 let visited_count: i64 = crate::database::all(
                     "SELECT kc.chunk_id FROM knowledge_chunks kc JOIN source_data sd ON sd.id=kc.source_data_id WHERE sd.source_type=?1 AND sd.source_id=?2 AND kc.chunk_type='child'",
                     &[json!(st), json!(sid)],
@@ -396,16 +423,6 @@ impl SessionMemory {
                 let all_kw: Vec<String> = self.search_keywords.iter().flat_map(|v| v.iter().cloned()).collect();
                 let unique_kw: Vec<String> = { let s: std::collections::HashSet<String> = all_kw.into_iter().collect(); s.into_iter().collect() };
                 lines.push(format!("  🔍 已搜索：{}", unique_kw.join("、")));
-            }
-        }
-
-        // 5. Evidence Path（从 observations 推导探索轨迹）
-        if !self.observations.is_empty() {
-            lines.push(String::new());
-            lines.push("## Evidence Path".to_string());
-            for obs in self.observations.iter().take(3).rev() {
-                let preview: String = obs.chars().take(80).collect();
-                lines.push(format!("  → {}", preview));
             }
         }
 
@@ -438,7 +455,8 @@ impl SessionMemory {
             SessionEffect::UpdateObject { obj_type, obj_id, name } => self.update(obj_type, obj_id, name),
             SessionEffect::UpdateObjectScore { obj_type, obj_id, score_delta } => {
                 if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == *obj_type && o.obj_id == *obj_id) {
-                    existing.score = existing.score * 0.5 + score_delta;
+                    // Residual: 旧分衰减 + 新分叠加
+                    existing.score = existing.score * 0.95 + score_delta;
                 }
             }
             SessionEffect::MarkChunkVisited(cid) => self.mark_chunk_visited(cid),
@@ -480,15 +498,13 @@ fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collection
 fn build_tools_definitions() -> Value {
     json!([
         {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。支持时间范围过滤。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
-        {"type":"function","function":{"name":"ext_tool_object","description":"搜索知识库中的对象（项目、产品、渠道、厂商、联系人等）。支持按关键词过滤对象名称，也支持按时间范围查看。用于查找特定实体信息。","parameters":{"type":"object","properties":{"query":{"type":"string","description":"关键词过滤（如产品名/项目名/联系人名），留空则按时间范围展示全部对象"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE/TODO/CHANNEL/VENDOR/CONTACT，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页天数，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
+        {"type":"function","function":{"name":"ext_tool_object","description":"搜索知识库中的对象。四种模式：1.按单个ID精确获取（传id参数）2.按多个ID批量获取（传ids数组）3.按关键词搜索（传query参数）4.按时间范围浏览（传start_time/end_time）。当用户询问已知对象的详情时，优先用id/ids模式回忆。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"单个对象ID（如PROJECT-abc123），用于精确获取单个对象的完整信息"},"ids":{"type":"array","items":{"type":"string"},"description":"批量对象ID列表（如[\"PROJECT-xxx\",\"PROJECT-yyy\"]），最多30个，用于批量获取多个对象的完整信息"},"query":{"type":"string","description":"关键词过滤（如产品名/项目名/联系人名），留空则按时间范围展示全部对象"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE/TODO/CHANNEL/VENDOR/CONTACT，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页天数，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。⚠️ chunk_id 是8位短ID（如 47beae9a），来自 search() 结果中的「ChunkID」字段。绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID（如 47beae9a），必须来自 search() 结果的 ChunkID 字段，不是 source_id"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。action=create(title必填,priority从用户原话提取,due_date从用户原话提取,repeat可选daily/weekly/monthly,project_id关联项目), action=update, action=delete","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待办标题"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_act","description":"执行项目操作。action: update_project_status=更新项目状态(project_id+new_status)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["update_project_status"]},"project_id":{"type":"string","description":"项目ID"},"new_status":{"type":"string","description":"新状态"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_memory","description":"管理记忆。action=create(创建，title=知识点，content=原始陈述，replace_ids=旧记忆source_id逗号分隔，自动删除旧的)，action=delete(删除，用memory_id或title匹配)。整理流程：搜索→获取旧记忆source_id→create汇总+replace_ids→旧记忆自动清理。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete"]},"title":{"type":"string","description":"知识标题或记忆标题"},"content":{"type":"string","description":"记忆内容(create用)"},"memory_id":{"type":"string","description":"记忆source_id(delete精确匹配)"},"replace_ids":{"type":"string","description":"逗号分隔的旧记忆source_id(create时自动删除)"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_batch_search","description":"批量并发检索多个独立指标。仅当用户在单轮中询问≥3个独立指标时使用。每个指标返回2个最相关结果。简单问题和单指标请用 ext_tool_search。","parameters":{"type":"object","properties":{"queries":{"type":"array","items":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~3 个核心关键词"}},"required":["keywords"]},"description":"3~10 个独立子查询"}},"required":["queries"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户的规则/策略（宪法）。有id+content=更新规则，有id+无content=删除规则，无id+有content=新增规则。当用户表达「以后...」「记住...」「不要...」「总是...」「删掉...」等规则性指令时使用。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"策略source_id（更新或删除时必填）"},"content":{"type":"string","description":"规则内容（新增或更新时必填）"}},"required":[]}}},
-        {"type":"function","function":{"name":"ext_tool_record_learning","description":"记录认知经历。在回答过程中主动调用，记录你认为值得记住的知识点或发现。不消耗预算。","parameters":{"type":"object","properties":{"question":{"type":"string","description":"用户的问题或主题"},"provider":{"type":"string","description":"查阅的文档或来源"},"answer":{"type":"string","description":"结论要点"}},"required":["question","provider","answer"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建项目), update(更新项目字段), delete(删除项目及关联数据), add_channel(添加渠道伙伴), add_vendor(添加供应商), add_contact(添加联系人), update_channel(更新渠道), update_vendor(更新供应商), delete_channel(删除渠道), delete_vendor(删除供应商), delete_contact(删除联系人)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","add_channel","add_vendor","add_contact","update_channel","update_vendor","delete_channel","delete_vendor","delete_contact"]},"project_id":{"type":"string","description":"项目ID(update/delete/add_channel/add_vendor用)"},"name":{"type":"string","description":"项目名称(create)或渠道/供应商/联系人名称"},"customer":{"type":"string","description":"客户名称"},"customer_contact":{"type":"string","description":"客户联系人"},"customer_phone":{"type":"string","description":"客户联系电话"},"owner":{"type":"string","description":"项目负责人"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/Won/Lost/Archived"},"channel_id":{"type":"string","description":"渠道ID(update_channel/delete_channel用)"},"vendor_id":{"type":"string","description":"供应商ID(update_vendor/delete_vendor用)"},"contact_id":{"type":"string","description":"联系人ID(delete_contact用)"},"parent_id":{"type":"string","description":"父级ID(add_contact时为channel_id或vendor_id)"},"parent_type":{"type":"string","description":"父级类型: channel/vendor(add_contact/delete_contact用)"},"phone":{"type":"string","description":"联系电话"},"company":{"type":"string","description":"公司名称"},"email":{"type":"string","description":"邮箱"},"remark":{"type":"string","description":"备注"}},"required":["action"]}}}
+        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建), update(更新字段), delete(删除及关联数据)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"project_id":{"type":"string","description":"项目ID(update/delete用)"},"name":{"type":"string","description":"项目名称(create用)"},"customer":{"type":"string","description":"客户名称"},"customer_contact":{"type":"string","description":"客户联系人"},"customer_phone":{"type":"string","description":"客户联系电话"},"owner":{"type":"string","description":"项目负责人"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_partner","description":"管理合作伙伴（渠道/厂商/客户）。action: create(创建), update(更新), delete(删除), link_project(关联到项目), unlink_project(取消关联)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"partner_id":{"type":"string","description":"合作伙伴ID(update/delete/link_project/unlink_project用)"},"type":{"type":"string","description":"类型: CHANNEL/VENDOR/CUSTOMER(create用)"},"name":{"type":"string","description":"名称(create/update用)"},"phone":{"type":"string","description":"电话"},"address":{"type":"string","description":"地址"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"},"contact_id":{"type":"string","description":"默认联系人ID(link_project用)"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人（通讯录）。action: create(创建), update(更新), delete(删除), link_project(关联到项目), unlink_project(取消关联), list(查看通讯录)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project","list"]},"contact_id":{"type":"string","description":"联系人ID(update/delete/link_project/unlink_project用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"},"type":{"type":"string","description":"类型过滤: CHANNEL/VENDOR/CUSTOMER(list用)"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_memory","description":"管理记忆。action=create(创建，记住重要的结论或发现)，action=delete(删除)，action=search(搜索记忆，无关键词时列出所有，支持时间范围过滤)。记忆会自动出现在搜索结果的回忆区中。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete","search"],"description":"create=创建记忆，delete=删除记忆，search=搜索记忆"},"title":{"type":"string","description":"创建时的简短标题，用于检索"},"content":{"type":"string","description":"创建时的记忆内容，按时间→问题→动作→结论的思路组织"},"memory_id":{"type":"string","description":"删除时用，精确匹配source_id"},"replace_ids":{"type":"string","description":"创建时逗号分隔的旧记忆source_id，自动删除旧记忆"},"query":{"type":"string","description":"搜索关键词（留空则列出所有记忆）"},"start_time":{"type":"string","description":"开始时间，如 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，如 2026-07-05 或 今天"}},"required":["action"]}}},
     ])
 }
 
@@ -838,15 +854,16 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     if !obj_head.is_empty() { obj_head = format!("--- Related Objects ---\n{}--- Chunks ---\n", obj_head); }
 
     // ★ MEMORY 直接搜索（不走 FTS5/Vector，直接查 source_data 关键词匹配）
-    let mut memory_candidates: Vec<(f64, String, String, String)> = Vec::new();
+    let mut memory_candidates: Vec<(f64, String, String, String, String)> = Vec::new();
     if let Ok(rows) = database::all(
-        "SELECT source_id, title, content FROM source_data WHERE source_type='MEMORY' ORDER BY updated_at DESC LIMIT 20",
+        "SELECT source_id, title, content, created_at FROM source_data WHERE source_type='MEMORY' ORDER BY updated_at DESC LIMIT 20",
         &[],
     ) {
         for r in &rows {
             let sid = r["source_id"].as_str().unwrap_or("");
             let title = r["title"].as_str().unwrap_or("");
             let content = r["content"].as_str().unwrap_or("");
+            let created_at = r["created_at"].as_str().unwrap_or("");
             if shown_memory_ids.contains(&format!("MEMORY-{}", sid)) { continue; }
             let mut score = 0.0f64;
             for kw in keywords {
@@ -855,7 +872,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
                 if content.to_lowercase().contains(&kw_lower) { score += 0.01; }
             }
             if score > 0.0 {
-                memory_candidates.push((score, sid.to_string(), title.to_string(), content.to_string()));
+                memory_candidates.push((score, sid.to_string(), title.to_string(), content.to_string(), created_at.to_string()));
             }
         }
         memory_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -969,9 +986,10 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     let mut recall_out = String::new();
     if !memory_candidates.is_empty() {
         recall_out.push_str("## 📝 回忆（之前处理过类似问题）");
-        for (idx, (score, sid, title, content)) in memory_candidates.iter().take(10).enumerate() {
+        for (idx, (score, sid, title, content, created_at)) in memory_candidates.iter().take(10).enumerate() {
             let preview: String = content.chars().take(500).collect();
-            recall_out.push_str(&format!("\n\n[记忆{}] score={:.3} | {}\nsource_id: MEMORY-{}\n{}", idx + 1, score, title, sid, preview));
+            let rel_time = relative_time(created_at);
+            recall_out.push_str(&format!("\n\n[记忆{}] score={:.3} | {} | {}\nsource_id: MEMORY-{}\n{}", idx + 1, score, title, rel_time, sid, preview));
             found_sources.push(format!("MEMORY-{}", sid));
         }
         recall_out.push_str("\n\n");
@@ -1334,6 +1352,47 @@ async fn execute_batch_search(queries: &[Vec<String>], scope_rowids: Option<std:
     out
 }
 
+/// 批量 Recall：并发获取多个对象的完整信息
+async fn execute_batch_recall(ids: &[String]) -> String {
+    if ids.is_empty() { return "请提供至少一个对象 ID。".to_string(); }
+    let limit = ids.len().min(30);
+    let ids = &ids[..limit];
+    
+    // 并发获取每个对象的完整信息
+    let mut handles = Vec::new();
+    for id in ids.iter() {
+        let id = id.clone();
+        handles.push(tokio::spawn(async move {
+            (id.clone(), fetch_parent_chunks(&id, &[]))
+        }));
+    }
+    
+    // 收集结果
+    let mut results: Vec<(String, String)> = Vec::new();
+    for h in handles {
+        if let Ok((id, result)) = h.await {
+            results.push((id, result));
+        }
+    }
+    
+    // 格式化输出
+    let mut out = String::from("## 批量 Recall 结果\n\n");
+    for (i, (id, result)) in results.iter().enumerate() {
+        out.push_str(&format!("### {} ({}/{})\n", id, i + 1, results.len()));
+        out.push_str(result);
+        out.push_str("\n\n");
+    }
+    
+    // 截断保护
+    let total_len = out.len();
+    if total_len > 50000 {
+        let truncated: String = out.chars().take(50000).collect();
+        out = format!("{}…\n\n⚠️ 输出已截断（共{}字），建议分批查询", truncated, total_len);
+    }
+    
+    out
+}
+
 fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str, due_date: &str, repeat: &str, project_id: &str, done: bool, todo_id: &str) -> String {
     let normalize_pri = |p: &str| -> Option<String> {
         if p.trim().is_empty() { return None; }
@@ -1433,7 +1492,7 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
     }
 }
 
-fn ext_tool_manage_memory(action: &str, title: &str, content: &str, memory_id: &str, replace_ids: &str) -> String {
+fn ext_tool_memory(action: &str, title: &str, content: &str, memory_id: &str, replace_ids: &str, query: &str, start_time: &str, end_time: &str) -> String {
     match action {
         "create" => {
             let title = title.trim();
@@ -1470,7 +1529,7 @@ fn ext_tool_manage_memory(action: &str, title: &str, content: &str, memory_id: &
         }
         "delete" => {
             if !memory_id.trim().is_empty() {
-                let sid = memory_id.trim();
+                let sid = memory_id.trim().strip_prefix("MEMORY-").unwrap_or(memory_id.trim()).to_string();
                 match database::run("DELETE FROM source_data WHERE source_type='MEMORY' AND source_id=?1", &[json!(sid)]) {
                     Ok(r) if r.changes > 0 => format!("已删除记忆: {}", sid),
                     Err(e) => format!("删除失败: {}", e),
@@ -1495,7 +1554,61 @@ fn ext_tool_manage_memory(action: &str, title: &str, content: &str, memory_id: &
                 "删除需要提供 memory_id 或 title。".into()
             }
         }
-        _ => format!("未知操作「{}」。支持：create, delete。", action),
+        "search" => {
+            let q = query.trim();
+            let start = start_time.trim();
+            let end = end_time.trim();
+            
+            let mut sql = String::from(
+                "SELECT source_id, title, content, created_at FROM source_data WHERE source_type='MEMORY'"
+            );
+            let mut params: Vec<serde_json::Value> = Vec::new();
+            let mut param_idx = 1;
+            
+            // 关键词过滤
+            if !q.is_empty() {
+                let like = format!("%{}%", crate::database::escape_like(q));
+                sql.push_str(&format!(" AND (title LIKE ?{} OR content LIKE ?{})", param_idx, param_idx));
+                params.push(json!(like));
+                param_idx += 1;
+            }
+            
+            // 时间范围过滤
+            if !start.is_empty() {
+                sql.push_str(&format!(" AND date(created_at) >= ?{}", param_idx));
+                params.push(json!(start));
+                param_idx += 1;
+            }
+            if !end.is_empty() {
+                sql.push_str(&format!(" AND date(created_at) <= ?{}", param_idx));
+                params.push(json!(end));
+            }
+            
+            sql.push_str(" ORDER BY created_at DESC LIMIT 50");
+            
+            match database::all(&sql, &params) {
+                Ok(rows) => {
+                    if rows.is_empty() {
+                        return if q.is_empty() { "暂无记忆。".to_string() }
+                               else { format!("未找到匹配「{}」的记忆。", q) };
+                    }
+                    let mut out = format!("## 记忆列表（共 {} 条）\n\n", rows.len());
+                    for (i, r) in rows.iter().enumerate() {
+                        let sid = r["source_id"].as_str().unwrap_or("");
+                        let title = r["title"].as_str().unwrap_or("");
+                        let content = r["content"].as_str().unwrap_or("");
+                        let created = r["created_at"].as_str().unwrap_or("");
+                        let preview: String = content.chars().take(200).collect();
+                        let rel_time = relative_time(created);
+                        out.push_str(&format!("[{}] {} | {}\nsource_id: MEMORY-{}\n{}\n\n",
+                            i + 1, title, rel_time, sid, preview));
+                    }
+                    out
+                }
+                Err(e) => format!("搜索记忆失败: {}", e),
+            }
+        }
+        _ => format!("未知操作「{}」。支持：create, delete, search。", action),
     }
 }
 
@@ -1914,16 +2027,6 @@ fn check_proactive_reminders() -> String {
     }
 }
 
-fn execute_act(action: &str, project_id: &str, new_status: &str) -> String {
-    match action {
-        "update_project_status" => {
-            if project_id.trim().is_empty()||new_status.trim().is_empty() { return "更新项目状态需要 project_id 和 new_status。".into(); }
-            match database::run("UPDATE projects SET status=?1, updated_at=datetime('now','localtime') WHERE id=?2",&[json!(new_status.trim()),json!(project_id.trim())]) { Ok(r) if r.changes>0 => { let did = uuid::Uuid::new_v4().to_string(); database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,'AI Agent')",&[json!(&did),json!(project_id),json!(format!("项目状态更新为：{}",new_status.trim()))]).ok(); format!("已更新项目 {} 状态为「{}」",project_id,new_status.trim()) } Err(e) => format!("更新项目失败: {}",e), _ => format!("项目 {} 未找到或无变更。",project_id) }
-        }
-        _ => format!("未知操作「{}」。支持：update_project_status。", action),
-    }
-}
-
 fn resolve_time(s: &str) -> String {
     let s = s.trim();
     if s.is_empty() { return String::new(); }
@@ -1937,17 +2040,79 @@ fn resolve_time(s: &str) -> String {
     s.to_string()
 }
 
-fn fetch_parent_chunks(source_id_str: &str) -> String {
+fn fetch_parent_chunks(source_id_str: &str, fields: &[String]) -> String {
     let (ot, oi) = if let Some(dash) = source_id_str.find('-') { source_id_str.split_at(dash) } else { return "".to_string() };
     let oi = &oi[1..];
-    let sdid = database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(oi)]).ok().flatten().and_then(|r| r["id"].as_i64()).unwrap_or(0);
-    if sdid == 0 { return format!("未找到对象: {source_id_str}"); }
+    eprintln!("[fetch_parent_chunks] 查询: source_type={}, source_id={}", ot, oi);
+    let sdid = database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(oi)]).ok().flatten().and_then(|r| r["id"].as_str().map(String::from)).unwrap_or_default();
+    eprintln!("[fetch_parent_chunks] sdid={}", sdid);
+    if sdid.is_empty() { return format!("未找到对象: {source_id_str}"); }
     let chunks: Vec<String> = database::all("SELECT chunk_id, content, chunk_index FROM knowledge_chunks WHERE source_data_id=?1 AND parent_id IS NULL ORDER BY chunk_index LIMIT 3", &[json!(sdid)]).unwrap_or_default().iter().map(|r| {
         let content = r["content"].as_str().unwrap_or("");
         let chunk_id = r["chunk_id"].as_str().unwrap_or("");
-        format!("[OBJECT-{} 父块{:?}] ChunkID: {}\n{}\n", ot, r["chunk_index"].as_i64().unwrap_or(0)+1, &chunk_id[..chunk_id.len().min(8)], &content[..content.len().min(1800)])
+        // 安全截断：使用 char_indices 确保不在 UTF-8 字符中间截断
+        let content_truncated = if content.len() > 1800 {
+            let mut end = 0;
+            for (i, _) in content.char_indices() {
+                if i > 1800 { break; }
+                end = i;
+            }
+            &content[..end]
+        } else {
+            content
+        };
+        format!("[OBJECT-{} 父块{:?}] ChunkID: {}\n{}\n", ot, r["chunk_index"].as_i64().unwrap_or(0)+1, &chunk_id[..chunk_id.len().min(8)], content_truncated)
     }).collect();
-    if chunks.is_empty() { format!("对象 {source_id_str} 无可用内容。") } else { chunks.join("\n") }
+    if chunks.is_empty() { return format!("对象 {source_id_str} 无可用内容。"); }
+    let mut full_content = chunks.join("\n");
+
+    // 拼接关联对象元数据（从 business_relations 查询）
+    let meta = build_chunk_metadata(ot, oi);
+    if !meta.is_empty() {
+        full_content.push_str(&format!("\n\n{}", meta));
+    }
+
+    // 如果没有指定 fields，返回完整内容
+    if fields.is_empty() { return full_content; }
+
+    // 按 fields 过滤，提取关键行
+    let mut result: Vec<String> = Vec::new();
+    result.push(format!("[OBJECT-{} Recall by fields: {:?}]", ot, fields));
+    for field in fields {
+        let field_lower = field.to_lowercase();
+        // 在内容中查找包含该字段关键词的行
+        let matching_lines: Vec<&str> = full_content.lines().filter(|line| {
+            let line_lower = line.to_lowercase();
+            match field_lower.as_str() {
+                "customer" => line_lower.contains("客户") || line_lower.contains("customer"),
+                "vendor" => line_lower.contains("厂商") || line_lower.contains("供应商") || line_lower.contains("vendor"),
+                "channel" => line_lower.contains("渠道") || line_lower.contains("channel"),
+                "contact" => line_lower.contains("联系人") || line_lower.contains("contact"),
+                "dynamics" => line_lower.contains("dynamics") || line_lower.contains("操作记录") || line_lower.contains("动态"),
+                "budget" => line_lower.contains("预算") || line_lower.contains("budget") || line_lower.contains("金额"),
+                "status" => line_lower.contains("状态") || line_lower.contains("status"),
+                "description" => line_lower.contains("描述") || line_lower.contains("description"),
+                "bid_time" => line_lower.contains("投标") || line_lower.contains("bid"),
+                "products" => line_lower.contains("产品") || line_lower.contains("product"),
+                "files" => line_lower.contains("文件") || line_lower.contains("file"),
+                "notes" => line_lower.contains("笔记") || line_lower.contains("note"),
+                "todos" => line_lower.contains("待办") || line_lower.contains("todo"),
+                _ => line_lower.contains(&field_lower),
+            }
+        }).collect();
+        if !matching_lines.is_empty() {
+            result.push(format!("## {}:", field));
+            for line in matching_lines.iter().take(5) {
+                result.push(line.to_string());
+            }
+        }
+    }
+    if result.len() <= 1 {
+        // 没有找到匹配的字段，返回完整内容
+        full_content
+    } else {
+        result.join("\n")
+    }
 }
 
 fn relative_time(created_at: &str) -> String {
@@ -2106,20 +2271,6 @@ fn extract_citations(text: &str) -> Vec<String> {
     vec![]
 }
 
-fn ext_tool_record_learning(question: &str, provider: &str, answer: &str) -> String {
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-    let id = uuid::Uuid::new_v4().to_string();
-    let content = format!(
-        "[时间] {}\n[用户问] {}\n[查阅] {}\n[结论] {}",
-        now, question, provider, answer
-    );
-    let _ = database::run(
-        "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'MEMORY',?1,?2,?3,datetime('now','localtime'))",
-        &[json!(&id), json!(question), json!(&content)],
-    );
-    format!("已记录认知经历: {}", question)
-}
-
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>) -> Result<Value, String> {
@@ -2231,11 +2382,17 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     loop {
         eprintln!("[LLM检索] 预算: {}/{} cost={}", budget, 100i32, search_cost);
         if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking"})); }
-        // ★ 每轮注意力衰减
+        // ★ 每轮注意力衰减（Residual 方式：new_score = old_score * 0.95 + gain）
+        // gain 在 SessionEffect::UpdateObjectScore 中通过 EMA 完成
+        // 这里只做衰减，不做加分
         let prev_count = session.active_objects.len();
-        for o in &mut session.active_objects { o.score *= 0.5; }
-        // 移除从未被搜索命中的对象（score=0 说明从未被检索命中）
-        session.active_objects.retain(|o| o.score > 0.0 || o.access_order >= session.access_counter.saturating_sub(1));
+        for o in &mut session.active_objects {
+            o.score *= 0.95;
+        }
+        // 淘汰：score < 0.1 且 最近 10 轮未访问
+        session.active_objects.retain(|o| {
+            o.score >= 0.1 || o.access_order >= session.access_counter.saturating_sub(10)
+        });
         let removed = prev_count - session.active_objects.len();
         if removed > 0 { eprintln!("[注意力] 衰减后移除 {} 个未命中对象，剩余 {}", removed, session.active_objects.len()); }
         iters += 1;
@@ -2310,7 +2467,7 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: u
     ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     
     let rows = database::all(
-        "SELECT source_type, source_id, title, substr(content,1,100) as preview, updated_at FROM source_data
+        "SELECT source_type, source_id, title, content as preview, updated_at FROM source_data
          WHERE (source_type=?1 OR ?1='')
            AND date(updated_at) >= ?2 AND date(updated_at) <= ?3
          ORDER BY updated_at DESC LIMIT ?4 OFFSET ?5",
@@ -2331,7 +2488,26 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: u
         let st = r["source_type"].as_str().unwrap_or("");
         let sid = r["source_id"].as_str().unwrap_or("");
         let name = r["title"].as_str().unwrap_or("");
-        let preview = r["preview"].as_str().unwrap_or("");
+        let preview_full = r["preview"].as_str().unwrap_or("");
+        let preview = {
+            let char_count = preview_full.chars().count();
+            if char_count <= 200 {
+                preview_full.to_string()
+            } else {
+                let mut last_newline = 0;
+                let mut char_idx = 0;
+                for ch in preview_full.chars() {
+                    if ch == '\n' && char_idx <= 200 {
+                        last_newline = char_idx;
+                    }
+                    char_idx += 1;
+                    if char_idx > 250 { break; }
+                }
+                let cut_at = if last_newline > 100 { last_newline } else { 200 };
+                let truncated: String = preview_full.chars().take(cut_at).collect();
+                format!("{}…(已截断，共{}字)", truncated.trim_end(), char_count)
+            }
+        };
         let ts = r["updated_at"].as_str().unwrap_or("");
         let seed = format!("{}-{}", st, sid);
         let current_neighbors = expand(&seed);
@@ -2418,7 +2594,7 @@ fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limi
     if matched.is_empty() {
         let like = format!("%{}%", crate::database::escape_like(&q));
         if let Ok(rows) = database::all(
-            "SELECT source_type, source_id, title, substr(content,1,100) as preview, updated_at FROM source_data WHERE (title LIKE ?1 OR content LIKE ?1) AND (source_type=?2 OR ?2='') ORDER BY updated_at DESC",
+            "SELECT source_type, source_id, title, content as preview, updated_at FROM source_data WHERE (title LIKE ?1 OR content LIKE ?1) AND (source_type=?2 OR ?2='') ORDER BY updated_at DESC",
             &[json!(&like), json!(obj_type)],
         ) {
             for r in &rows {
@@ -2439,7 +2615,27 @@ fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limi
         let st = r["st"].as_str().unwrap_or("");
         let sid = r["sid"].as_str().unwrap_or("");
         let name = r["name"].as_str().unwrap_or("");
-        let preview = r["preview"].as_str().unwrap_or("").chars().take(100).collect::<String>();
+        let preview_full = r["preview"].as_str().unwrap_or("");
+        let preview = {
+            let char_count = preview_full.chars().count();
+            if char_count <= 200 {
+                preview_full.to_string()
+            } else {
+                // 动态截断：优先在换行符处截断，保持信息完整
+                let mut last_newline = 0;
+                let mut char_idx = 0;
+                for ch in preview_full.chars() {
+                    if ch == '\n' && char_idx <= 200 {
+                        last_newline = char_idx;
+                    }
+                    char_idx += 1;
+                    if char_idx > 250 { break; } // 超过 250 字符停止扫描
+                }
+                let cut_at = if last_newline > 100 { last_newline } else { 200 };
+                let truncated: String = preview_full.chars().take(cut_at).collect();
+                format!("{}…(已截断，共{}字)", truncated.trim_end(), char_count)
+            }
+        };
         let ts = r["ts"].as_str().unwrap_or("");
         let rel = relative_time(ts);
         // TODO 类型：额外显示优先级、截止日期、完成状态、todo_id
@@ -2461,7 +2657,21 @@ fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limi
                 out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
             }
         } else {
-            out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}", st, name, st, sid, rel, preview));
+            out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
+        }
+        // 显示关联对象（从 object_links 获取）
+        let seed = format!("{}-{}", st, sid);
+        let neighbors = crate::services::synapse::expand_object_links(&[seed], 10);
+        if !neighbors.is_empty() {
+            let mut links_by_type: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+            for (nid, _) in &neighbors {
+                if let Some(dash) = nid.find('-') {
+                    let nt = &nid[..dash]; let ni = &nid[dash+1..];
+                    links_by_type.entry(nt.to_string()).or_default().push(ni[..ni.len().min(8)].to_string());
+                }
+            }
+            let link_str: Vec<String> = links_by_type.iter().map(|(t, ids)| format!("{}: {}", t, ids.join(", "))).collect();
+            if !link_str.is_empty() { out.push_str(&format!("  🔗 {}\n", link_str.join(" | "))); }
         }
     }
     if end_pos < total {
@@ -2762,14 +2972,24 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     let a: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
                     let (result, effects) = match name.as_str() {
                         "ext_tool_object" => {
-                            let res = if a.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).is_some() {
-                                fetch_parent_chunks(a["id"].as_str().unwrap_or(""))
+                            let res = if let Some(ids_arr) = a["ids"].as_array().filter(|arr| !arr.is_empty()) {
+                                // 批量模式：传入 ids 数组
+                                let ids: Vec<String> = ids_arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                                execute_batch_recall(&ids).await
+                            } else if a.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).is_some() {
+                                // 单个模式：传入单个 id
+                                fetch_parent_chunks(a["id"].as_str().unwrap_or(""), &[])
                             } else {
                                 let q = a["query"].as_str().unwrap_or("");
                                 let t = a["type"].as_str().unwrap_or("");
                                 let s = a["start_time"].as_str().map(resolve_time);
                                 let e = a["end_time"].as_str().map(resolve_time);
-                                let tr = s.and_then(|s| e.map(|e| (s, e)));
+                                let tr = match (s, e) {
+                                    (Some(s), Some(e)) => Some((s, e)),
+                                    (Some(s), None) => Some((s, "2099-12-31".to_string())),
+                                    (None, Some(e)) => Some(("2000-01-01".to_string(), e)),
+                                    (None, None) => None,
+                                };
                                 let limit = a["limit"].as_u64().unwrap_or(50) as usize;
                                 let offset = a["offset"].as_u64().unwrap_or(0) as usize;
                                 let mode = a["mode"].as_str().unwrap_or("search");
@@ -2817,29 +3037,16 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             );
                             (res, vec![])
                         }
-                        "ext_tool_manage_memory" => {
-                            let res = ext_tool_manage_memory(
+                        "ext_tool_memory" => {
+                            let res = ext_tool_memory(
                                 a["action"].as_str().unwrap_or(""),
                                 a["title"].as_str().unwrap_or(""),
                                 a["content"].as_str().unwrap_or(""),
                                 a["memory_id"].as_str().unwrap_or(""),
                                 a["replace_ids"].as_str().unwrap_or(""),
-                            );
-                            (res, vec![])
-                        }
-                        "ext_tool_record_learning" => {
-                            let res = ext_tool_record_learning(
-                                a["question"].as_str().unwrap_or(""),
-                                a["provider"].as_str().unwrap_or(""),
-                                a["answer"].as_str().unwrap_or(""),
-                            );
-                            (res, vec![])
-                        }
-                        "ext_tool_act" => {
-                            let res = execute_act(
-                                a["action"].as_str().unwrap_or(""),
-                                a["project_id"].as_str().unwrap_or(""),
-                                a["new_status"].as_str().unwrap_or(""),
+                                a["query"].as_str().unwrap_or(""),
+                                a["start_time"].as_str().unwrap_or(""),
+                                a["end_time"].as_str().unwrap_or(""),
                             );
                             (res, vec![])
                         }
@@ -2866,28 +3073,261 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             (res, vec![])
                         }
                         "ext_tool_manage_project" => {
-                            let res = ext_tool_manage_project(
-                                a["action"].as_str().unwrap_or(""),
-                                a["project_id"].as_str().unwrap_or(""),
-                                a["name"].as_str().unwrap_or(""),
-                                a["customer"].as_str().unwrap_or(""),
-                                a["customer_contact"].as_str().unwrap_or(""),
-                                a["customer_phone"].as_str().unwrap_or(""),
-                                a["owner"].as_str().unwrap_or(""),
-                                a["budget"].as_f64().unwrap_or(0.0),
-                                a["description"].as_str().unwrap_or(""),
-                                a["bid_time"].as_str().unwrap_or(""),
-                                a["status"].as_str().unwrap_or(""),
-                                a["channel_id"].as_str().unwrap_or(""),
-                                a["vendor_id"].as_str().unwrap_or(""),
-                                a["contact_id"].as_str().unwrap_or(""),
-                                a["parent_id"].as_str().unwrap_or(""),
-                                a["parent_type"].as_str().unwrap_or(""),
-                                a["phone"].as_str().unwrap_or(""),
-                                a["company"].as_str().unwrap_or(""),
-                                a["email"].as_str().unwrap_or(""),
-                                a["remark"].as_str().unwrap_or(""),
-                            );
+                            let action = a["action"].as_str().unwrap_or("");
+                            let res = match action {
+                                "create" => {
+                                    let name = a["name"].as_str().unwrap_or("");
+                                    if name.is_empty() { "创建项目需要提供 name。".to_string() }
+                                    else {
+                                        let id = uuid::Uuid::new_v4().to_string();
+                                        let customer = a["customer"].as_str().unwrap_or("");
+                                        let owner = a["owner"].as_str().unwrap_or("");
+                                        let budget = a["budget"].as_f64().unwrap_or(0.0);
+                                        let description = a["description"].as_str().unwrap_or("");
+                                        let status = a["status"].as_str().unwrap_or("Lead");
+                                        let bid_time = a["bid_time"].as_str().unwrap_or("");
+                                        let customer_contact = a["customer_contact"].as_str().unwrap_or("");
+                                        let customer_phone = a["customer_phone"].as_str().unwrap_or("");
+                                        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                                        match database::run(
+                                            "INSERT INTO projects(id,name,customer,owner,budget,description,status,bid_time,customer_contact,customer_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
+                                            &[json!(id),json!(name),json!(customer),json!(owner),json!(budget),json!(description),json!(status),json!(bid_time),json!(customer_contact),json!(customer_phone),json!(ts)]
+                                        ) {
+                                            Ok(_) => format!("已创建项目「{}」(ID: {})", name, id),
+                                            Err(e) => format!("创建项目失败: {}", e),
+                                        }
+                                    }
+                                }
+                                "update" => {
+                                    let project_id = a["project_id"].as_str().unwrap_or("");
+                                    if project_id.is_empty() { "更新项目需要提供 project_id。".to_string() }
+                                    else {
+                                        let mut sets = Vec::new();
+                                        let mut vals: Vec<serde_json::Value> = Vec::new();
+                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["customer"].as_str().filter(|s| !s.is_empty()) { sets.push("customer=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["owner"].as_str().filter(|s| !s.is_empty()) { sets.push("owner=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["description"].as_str().filter(|s| !s.is_empty()) { sets.push("description=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["status"].as_str().filter(|s| !s.is_empty()) { sets.push("status=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["bid_time"].as_str().filter(|s| !s.is_empty()) { sets.push("bid_time=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["customer_contact"].as_str().filter(|s| !s.is_empty()) { sets.push("customer_contact=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["customer_phone"].as_str().filter(|s| !s.is_empty()) { sets.push("customer_phone=?"); vals.push(json!(v)); }
+                                        if a.get("budget").and_then(|v| v.as_f64()).filter(|v| *v > 0.0).is_some() { sets.push("budget=?"); vals.push(json!(a["budget"])); }
+                                        if sets.is_empty() { "未提供任何更新字段。".to_string() }
+                                        else {
+                                            sets.push("updated_at=datetime('now','localtime')");
+                                            vals.push(json!(project_id));
+                                            let sql = format!("UPDATE projects SET {} WHERE id=?", sets.join(","));
+                                            match database::run(&sql, &vals) {
+                                                Ok(r) if r.changes > 0 => format!("已更新项目 {}", project_id),
+                                                _ => format!("项目 {} 未找到或无变更", project_id),
+                                            }
+                                        }
+                                    }
+                                }
+                                "delete" => {
+                                    let project_id = a["project_id"].as_str().unwrap_or("");
+                                    if project_id.is_empty() { "删除项目需要提供 project_id。".to_string() }
+                                    else {
+                                        let _ = database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(project_id)]);
+                                        let _ = database::run("DELETE FROM note_project_mapping WHERE project_id=?", &[json!(project_id)]);
+                                        let _ = database::run("DELETE FROM todo_project_mapping WHERE project_id=?", &[json!(project_id)]);
+                                        let _ = database::run("DELETE FROM tag_mappings WHERE entity_type='project' AND entity_id=?", &[json!(project_id)]);
+                                        let _ = database::run("DELETE FROM business_relations WHERE (source_type='PROJECT' AND source_id=?) OR (target_type='PROJECT' AND target_id=?)", &[json!(project_id), json!(project_id)]);
+                                        match database::run("DELETE FROM projects WHERE id=?", &[json!(project_id)]) {
+                                            Ok(r) if r.changes > 0 => format!("已删除项目 {} 及其所有关联数据", project_id),
+                                            _ => format!("项目 {} 未找到", project_id),
+                                        }
+                                    }
+                                }
+                                _ => format!("未知操作「{}」。支持：create, update, delete。", action),
+                            };
+                            (res, vec![])
+                        }
+                        "ext_tool_manage_partner" => {
+                            let action = a["action"].as_str().unwrap_or("");
+                            let res = match action {
+                                "create" => {
+                                    let ptype = a["type"].as_str().unwrap_or("");
+                                    let name = a["name"].as_str().unwrap_or("");
+                                    if ptype.is_empty() || name.is_empty() { "创建合作伙伴需要提供 type 和 name。".to_string() }
+                                    else {
+                                        let id = uuid::Uuid::new_v4().to_string();
+                                        let phone = a["phone"].as_str().unwrap_or("");
+                                        let address = a["address"].as_str().unwrap_or("");
+                                        let remark = a["remark"].as_str().unwrap_or("");
+                                        match database::run(
+                                            "INSERT INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'),datetime('now','localtime'))",
+                                            &[json!(id),json!(ptype.to_uppercase()),json!(name),json!(phone),json!(address),json!(remark)]
+                                        ) {
+                                            Ok(_) => format!("已创建{}「{}」(ID: {})", ptype, name, id),
+                                            Err(e) => format!("创建失败: {}", e),
+                                        }
+                                    }
+                                }
+                                "update" => {
+                                    let partner_id = a["partner_id"].as_str().unwrap_or("");
+                                    if partner_id.is_empty() { "更新需要提供 partner_id。".to_string() }
+                                    else {
+                                        let mut sets = Vec::new();
+                                        let mut vals: Vec<serde_json::Value> = Vec::new();
+                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["phone"].as_str().filter(|s| !s.is_empty()) { sets.push("phone=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["address"].as_str().filter(|s| !s.is_empty()) { sets.push("address=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["remark"].as_str().filter(|s| !s.is_empty()) { sets.push("remark=?"); vals.push(json!(v)); }
+                                        if sets.is_empty() { "未提供任何更新字段。".to_string() }
+                                        else {
+                                            sets.push("updated_at=datetime('now','localtime')");
+                                            vals.push(json!(partner_id));
+                                            let sql = format!("UPDATE partners SET {} WHERE id=?", sets.join(","));
+                                            match database::run(&sql, &vals) {
+                                                Ok(r) if r.changes > 0 => format!("已更新合作伙伴 {}", partner_id),
+                                                _ => format!("合作伙伴 {} 未找到或无变更", partner_id),
+                                            }
+                                        }
+                                    }
+                                }
+                                "delete" => {
+                                    let partner_id = a["partner_id"].as_str().unwrap_or("");
+                                    if partner_id.is_empty() { "删除需要提供 partner_id。".to_string() }
+                                    else {
+                                        let _ = database::run("DELETE FROM partner_contact_mapping WHERE partner_id=?", &[json!(partner_id)]);
+                                        let _ = database::run("DELETE FROM business_relations WHERE (source_id=? AND source_type IN ('CHANNEL','VENDOR','CUSTOMER')) OR (target_id=? AND target_type IN ('CHANNEL','VENDOR','CUSTOMER'))", &[json!(partner_id), json!(partner_id)]);
+                                        match database::run("DELETE FROM partners WHERE id=?", &[json!(partner_id)]) {
+                                            Ok(r) if r.changes > 0 => format!("已删除合作伙伴 {}", partner_id),
+                                            _ => format!("合作伙伴 {} 未找到", partner_id),
+                                        }
+                                    }
+                                }
+                                "link_project" => {
+                                    let partner_id = a["partner_id"].as_str().unwrap_or("");
+                                    let project_id = a["project_id"].as_str().unwrap_or("");
+                                    if partner_id.is_empty() || project_id.is_empty() { "关联需要提供 partner_id 和 project_id。".to_string() }
+                                    else {
+                                        let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
+                                        let meta = serde_json::json!({"selected_contact_id": a["contact_id"].as_str().unwrap_or(""), "remark": a["remark"].as_str().unwrap_or("")});
+                                        crate::services::business_relations::upsert(&ptype.to_uppercase(), partner_id, "PROJECT", project_id, "belongs_to", &meta.to_string());
+                                        format!("已将{}关联到项目", ptype)
+                                    }
+                                }
+                                "unlink_project" => {
+                                    let partner_id = a["partner_id"].as_str().unwrap_or("");
+                                    let project_id = a["project_id"].as_str().unwrap_or("");
+                                    if partner_id.is_empty() || project_id.is_empty() { "取消关联需要提供 partner_id 和 project_id。".to_string() }
+                                    else {
+                                        let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
+                                        crate::services::business_relations::delete(&ptype.to_uppercase(), partner_id, "PROJECT", project_id, "belongs_to");
+                                        format!("已取消{}与项目的关联", ptype)
+                                    }
+                                }
+                                _ => format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project。", action),
+                            };
+                            (res, vec![])
+                        }
+                        "ext_tool_manage_contact" => {
+                            let action = a["action"].as_str().unwrap_or("");
+                            let res = match action {
+                                "create" => {
+                                    let name = a["name"].as_str().unwrap_or("");
+                                    if name.is_empty() { "创建联系人需要提供 name。".to_string() }
+                                    else {
+                                        let id = uuid::Uuid::new_v4().to_string();
+                                        let phone = a["phone"].as_str().unwrap_or("");
+                                        let email = a["email"].as_str().unwrap_or("");
+                                        let position = a["position"].as_str().unwrap_or("");
+                                        let remark = a["remark"].as_str().unwrap_or("");
+                                        match database::run(
+                                            "INSERT INTO partner_contacts(id,name,phone,email,position,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'),datetime('now','localtime'))",
+                                            &[json!(id),json!(name),json!(phone),json!(email),json!(position),json!(remark)]
+                                        ) {
+                                            Ok(_) => format!("已创建联系人「{}」(ID: {})", name, id),
+                                            Err(e) => format!("创建失败: {}", e),
+                                        }
+                                    }
+                                }
+                                "update" => {
+                                    let contact_id = a["contact_id"].as_str().unwrap_or("");
+                                    if contact_id.is_empty() { "更新需要提供 contact_id。".to_string() }
+                                    else {
+                                        let mut sets = Vec::new();
+                                        let mut vals: Vec<serde_json::Value> = Vec::new();
+                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["phone"].as_str().filter(|s| !s.is_empty()) { sets.push("phone=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["email"].as_str().filter(|s| !s.is_empty()) { sets.push("email=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["position"].as_str().filter(|s| !s.is_empty()) { sets.push("position=?"); vals.push(json!(v)); }
+                                        if let Some(v) = a["remark"].as_str().filter(|s| !s.is_empty()) { sets.push("remark=?"); vals.push(json!(v)); }
+                                        if sets.is_empty() { "未提供任何更新字段。".to_string() }
+                                        else {
+                                            sets.push("updated_at=datetime('now','localtime')");
+                                            vals.push(json!(contact_id));
+                                            let sql = format!("UPDATE partner_contacts SET {} WHERE id=?", sets.join(","));
+                                            match database::run(&sql, &vals) {
+                                                Ok(r) if r.changes > 0 => format!("已更新联系人 {}", contact_id),
+                                                _ => format!("联系人 {} 未找到或无变更", contact_id),
+                                            }
+                                        }
+                                    }
+                                }
+                                "delete" => {
+                                    let contact_id = a["contact_id"].as_str().unwrap_or("");
+                                    if contact_id.is_empty() { "删除需要提供 contact_id。".to_string() }
+                                    else {
+                                        let _ = database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?", &[json!(contact_id)]);
+                                        let _ = database::run("DELETE FROM business_relations WHERE source_type='CONTACT' AND source_id=?", &[json!(contact_id)]);
+                                        match database::run("DELETE FROM partner_contacts WHERE id=?", &[json!(contact_id)]) {
+                                            Ok(r) if r.changes > 0 => format!("已删除联系人 {}", contact_id),
+                                            _ => format!("联系人 {} 未找到", contact_id),
+                                        }
+                                    }
+                                }
+                                "link_project" => {
+                                    let contact_id = a["contact_id"].as_str().unwrap_or("");
+                                    let project_id = a["project_id"].as_str().unwrap_or("");
+                                    if contact_id.is_empty() || project_id.is_empty() { "关联需要提供 contact_id 和 project_id。".to_string() }
+                                    else {
+                                        crate::services::business_relations::upsert("CONTACT", contact_id, "PROJECT", project_id, "belongs_to", "{}");
+                                        "已将联系人关联到项目".to_string()
+                                    }
+                                }
+                                "unlink_project" => {
+                                    let contact_id = a["contact_id"].as_str().unwrap_or("");
+                                    let project_id = a["project_id"].as_str().unwrap_or("");
+                                    if contact_id.is_empty() || project_id.is_empty() { "取消关联需要提供 contact_id 和 project_id。".to_string() }
+                                    else {
+                                        crate::services::business_relations::delete("CONTACT", contact_id, "PROJECT", project_id, "belongs_to");
+                                        "已取消联系人与项目的关联".to_string()
+                                    }
+                                }
+                                "list" => {
+                                    let type_filter = a["type"].as_str().unwrap_or("");
+                                    let sql = if type_filter.is_empty() {
+                                        "SELECT pc.id, pc.name, pc.phone, pc.email, pc.position, pc.remark, pcm.partner_id, p.type as partner_type, p.name as partner_name FROM partner_contacts pc LEFT JOIN partner_contact_mapping pcm ON pc.id=pcm.contact_id LEFT JOIN partners p ON pcm.partner_id=p.id ORDER BY pc.name"
+                                    } else {
+                                        "SELECT pc.id, pc.name, pc.phone, pc.email, pc.position, pc.remark, pcm.partner_id, p.type as partner_type, p.name as partner_name FROM partner_contacts pc LEFT JOIN partner_contact_mapping pcm ON pc.id=pcm.contact_id LEFT JOIN partners p ON pcm.partner_id=p.id WHERE p.type=?1 ORDER BY pc.name"
+                                    };
+                                    let params = if type_filter.is_empty() { vec![] } else { vec![json!(type_filter.to_uppercase())] };
+                                    match database::all(sql, &params) {
+                                        Ok(rows) => {
+                                            if rows.is_empty() { "通讯录为空。".to_string() }
+                                            else {
+                                                let mut out = format!("## 通讯录（共 {} 条）\n\n", rows.len());
+                                                for r in &rows {
+                                                    let name = r["name"].as_str().unwrap_or("");
+                                                    let phone = r["phone"].as_str().unwrap_or("");
+                                                    let email = r["email"].as_str().unwrap_or("");
+                                                    let position = r["position"].as_str().unwrap_or("");
+                                                    let partner_name = r["partner_name"].as_str().unwrap_or("");
+                                                    let partner_type = r["partner_type"].as_str().unwrap_or("");
+                                                    out.push_str(&format!("• {} | {} | {} | {} | 关联: {}({})\n", name, phone, email, position, partner_type, partner_name));
+                                                }
+                                                out
+                                            }
+                                        }
+                                        Err(e) => format!("查询通讯录失败: {}", e),
+                                    }
+                                }
+                                _ => format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project, list。", action),
+                            };
                             (res, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
@@ -2949,10 +3389,6 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                         } else if step_desc == "ext_tool_traverse" {
                             if let Some(cid) = args.get("chunk_id").and_then(|v| v.as_str()) {
                                 step_desc = format!("traverse({}…)", &cid[..cid.len().min(8)]);
-                            }
-                        } else if step_desc == "ext_tool_act" {
-                            if let Some(a) = args.get("action").and_then(|v| v.as_str()) {
-                                step_desc = format!("act({})", a);
                             }
                         }
                     }
