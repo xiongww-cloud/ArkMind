@@ -20,6 +20,14 @@ const selectionStore = useSelectionStore()
 const { navigateTo } = useNavigation()
 
 // ═══════════════════════════════════════════════════════════════════
+// Platform detection
+// ═══════════════════════════════════════════════════════════════════
+const isMac = typeof navigator !== 'undefined' && (
+  navigator.platform.toUpperCase().indexOf('MAC') >= 0 ||
+  navigator.userAgent.toUpperCase().indexOf('MAC') >= 0
+)
+
+// ═══════════════════════════════════════════════════════════════════
 // Window controls
 // ═══════════════════════════════════════════════════════════════════
 async function minimizeWindow() { await invoke('plugin:window|minimize') }
@@ -469,8 +477,8 @@ onUnmounted(() => {
       <span>闪记</span>
     </button>
 
-    <!-- Window controls -->
-    <div class="titlebar-controls">
+    <!-- Window controls (macOS 使用原生红绿灯，隐藏自定义按钮) -->
+    <div v-if="!isMac" class="titlebar-controls">
       <button class="titlebar-btn titlebar-btn--win" @click="minimizeWindow" title="最小化">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 12h16"/></svg>
       </button>

@@ -97,6 +97,9 @@ pub fn run() {
             // Initialize business_relations table
             services::business_relations::init();
 
+            // ★ 启动时清理过期许可证
+            license::cleanup_expired_licenses();
+
             // Window maximize event
             {
                 let handle = app.handle().clone();
@@ -110,6 +113,26 @@ pub fn run() {
                             }
                         }
                     });
+                }
+            }
+
+            // ★ macOS: 启用原生红绿灯按钮
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(win) = app.get_webview_window("main") {
+                    unsafe {
+                        use objc::runtime::{Object, Sel};
+                        use objc::msg_send;
+                        // 获取 NSWindow
+                        let ns_window: *mut Object = win.ns_window().unwrap() as *mut Object;
+                        // NSWindowStyleMask: titled | closable | miniaturizable | resizable
+                        let style_mask: i32 = 1 | 2 | 4 | 8;
+                        let _: () = msg_send![ns_window, setStyleMask: style_mask];
+                        // 设置红绿灯位置（左边距 12pt，上边距 12pt）
+                        let _: () = msg_send![ns_window, setTitlebarAppearsTransparent: true];
+                        let _: () = msg_send![ns_window, setTrafficLightPosition_: (12.0f64, 12.0f64)];
+                    }
+                    eprintln!("[窗口] macOS: 已启用原生红绿灯按钮");
                 }
             }
             migrate_fix_is_daily_corruption();

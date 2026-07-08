@@ -40,14 +40,22 @@ fn storage_base() -> String {
 
 pub fn invalidate_storage_base() { *STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()) = None; }
 
-pub fn flat_disk_path(hash: &str) -> String { format!("{}\\{}", storage_base().trim_end_matches(&['\\','/'][..]), hash) }
+pub fn flat_disk_path(hash: &str) -> String {
+    std::path::Path::new(storage_base().trim_end_matches(&['\\','/'][..]))
+        .join(hash)
+        .to_string_lossy()
+        .to_string()
+}
 
 fn temp_dir() -> String {
     let base = storage_base();
     let parent = std::path::Path::new(&base).parent()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| base.clone());
-    format!("{}\\temp", parent.trim_end_matches(&['\\','/'][..]))
+    std::path::Path::new(parent.trim_end_matches(&['\\','/'][..]))
+        .join("temp")
+        .to_string_lossy()
+        .to_string()
 }
 
 pub fn cleanup_preview_links() {

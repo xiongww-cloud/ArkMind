@@ -49,6 +49,9 @@ enum Commands {
         /// Expiry date (YYYY-MM-DD), default: 2099-12-31
         #[arg(short, long, default_value = "2099-12-31")]
         expires: String,
+        /// Product type: basic, advanced, enhanced (default: advanced)
+        #[arg(short, long, default_value = "advanced")]
+        product: String,
         /// Output private key file (default: private.key)
         #[arg(long, default_value = "private.key")]
         key: String,
@@ -99,7 +102,7 @@ fn main() {
             println!("   Rust code snippet:");
             println!("   const PUBLIC_KEY_B64: &str = \"{}\";", vk_b64);
         }
-        Commands::Sign { machine, expires, key } => {
+        Commands::Sign { machine, expires, product, key } => {
             // Read private key
             let pk_b64 = std::fs::read_to_string(&key).expect("failed to read private key file");
             let pk_b64 = pk_b64.trim();
@@ -113,7 +116,7 @@ fn main() {
             let issued = chrono::Local::now().format("%Y-%m-%d").to_string();
             let machine_hash = gen_machine_hash(&machine);
             let payload = LicensePayload {
-                product: "activated".into(),
+                product: product.clone(),
                 machine_code: machine_hash.clone(),
                 expires_at: expires,
                 issued_at: issued,

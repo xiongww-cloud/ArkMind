@@ -434,7 +434,7 @@ async function confirmVisionForm() {
 }
 
 async function removeVision(provider: any) {
-  const ok = await dangerConfirm({ title: '删除模型', message: `确定删除视觉模型「${provider.modelName}」？`, confirmText: '删除' })
+  const ok = await dangerConfirm({ title: '删除模型', message: `确定删除 OCR 模型「${provider.modelName}」？`, confirmText: '删除' })
   if (!ok) return
   visionProviders.value = visionProviders.value.filter((p: any) => p.id !== provider.id)
   if (visionActiveId.value === provider.id) { visionActiveId.value = visionProviders.value[0]?.id || null }
@@ -575,7 +575,7 @@ async function saveVecConfig() {
 }
 
 async function deleteVecConfig() {
-  const ok = await dangerConfirm({ title: '删除向量化模型', message: '确定删除向量化模型配置？', confirmText: '删除' })
+  const ok = await dangerConfirm({ title: '删除向量模型', message: '确定删除向量模型配置？', confirmText: '删除' })
   if (!ok) return
   try {
     await updateAiConfig({ embedding: null })
@@ -736,7 +736,7 @@ onMounted(async () => {
           @click="aiTab = tab"
           class="px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px"
           :class="aiTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-400 hover:text-surface-600'">
-          {{ {llm:'LLM 对话',vision:'视觉模型',vector:'向量化'}[tab] }}
+          {{ {llm:'对话模型',vision:'OCR 模型',vector:'向量模型'}[tab] }}
         </button>
       </div>
 
@@ -951,7 +951,7 @@ onMounted(async () => {
     <Transition name="modal-fade">
       <div v-if="showVisionModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeVisionModal">
         <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] p-6">
-          <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingVision ? '编辑视觉模型' : '添加视觉模型' }}</h3>
+          <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingVision ? '编辑 OCR 模型' : '添加 OCR 模型' }}</h3>
           <div class="flex flex-wrap gap-1.5 mb-3">
             <button v-for="preset in VISION_PRESETS" :key="preset.modelName" @click="applyVisionPreset(preset)" class="px-2 py-1 text-[10px] rounded-lg border border-surface-200 text-surface-500 hover:bg-brand-50 hover:border-brand-300 transition-colors">{{ preset.name }}</button>
           </div>
@@ -998,7 +998,7 @@ onMounted(async () => {
     <Transition name="modal-fade">
       <div v-if="showVecModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeVecModal">
         <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] p-6">
-          <h3 class="text-[14px] font-semibold text-surface-800 mb-4">向量化模型配置</h3>
+          <h3 class="text-[14px] font-semibold text-surface-800 mb-4">向量模型配置</h3>
           <div class="space-y-3">
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>

@@ -85,6 +85,9 @@ function newSession() {
 onMounted(async () => {
   try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
   if (!sessions.value.length) { newSession() }
+  else if (!currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
+  // 渲染当前会话的消息
+  if (currentSessionId.value) { await selectSession(currentSessionId.value) }
   nextTick(() => scrollToBottomIfNear())
 })
 // ★ 每次切换回来时重新加载会话（保持与全局对话框同步）
@@ -103,6 +106,7 @@ onActivated(async () => {
         })
       })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
     }
+    if (sessions.value.length && !currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
   } catch {}
   nextTick(() => scrollToBottomIfNear())
 })

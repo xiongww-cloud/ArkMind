@@ -82,6 +82,17 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - 用户询问多个对象时，一次传入所有 ID，不要逐个调用
 - 用户说"这些"、"那个"时，优先使用 Working Memory 中的信息
 
+## 何时停止检索
+
+当你满足以下任一条件时，立即停止检索，直接生成回答：
+
+1. Working Memory 中已有足够信息回答用户问题
+2. Completeness 指标 ≥ 80%
+3. 已连续 3 轮没有获取到新信息
+4. 预算剩余 < 20%
+
+⚠️ 禁止：在信息充足时继续搜索。搜索是为了获取缺失信息，不是为了"搜全"。
+
 ## 用户策略（必须严格遵守）
 {{user_policies}}
 
@@ -156,6 +167,7 @@ struct SessionMemory {
     access_counter: usize,
     search_keywords: Vec<Vec<String>>,
     tool_history: Vec<String>,  // 工具调用历史（用于生成检索计划）
+    completeness: f64,  // 信息充分度 (0.0 ~ 1.0)
 }
 
 impl SessionMemory {
@@ -172,6 +184,7 @@ impl SessionMemory {
             access_counter: 0,
             search_keywords: Vec::new(),
             tool_history: Vec::new(),
+            completeness: 0.0,
         }
     }
 
@@ -271,6 +284,37 @@ impl SessionMemory {
         }
     }
 
+    /// 从用户目标中提取需要的信息类型
+    fn extract_required_types(goal: &str) -> Vec<String> {
+        let mut types = Vec::new();
+        let g = goal.to_lowercase();
+        if g.contains("客户") || g.contains("customer") { types.push("CUSTOMER".to_string()); }
+        if g.contains("渠道") || g.contains("channel") { types.push("CHANNEL".to_string()); }
+        if g.contains("厂商") || g.contains("供应商") || g.contains("vendor") { types.push("VENDOR".to_string()); }
+        if g.contains("联系人") || g.contains("contact") { types.push("CONTACT".to_string()); }
+        if g.contains("产品") || g.contains("product") { types.push("PRODUCT".to_string()); }
+        if g.contains("文件") || g.contains("file") { types.push("FILE".to_string()); }
+        if g.contains("笔记") || g.contains("note") { types.push("NOTE".to_string()); }
+        if g.contains("待办") || g.contains("todo") { types.push("TODO".to_string()); }
+        if types.is_empty() { types.push("PROJECT".to_string()); }
+        types
+    }
+
+    /// 计算信息充分度 (0.0 ~ 1.0)
+    fn compute_completeness(&self) -> f64 {
+        if self.current_goal.is_empty() { return 0.0; }
+        let required_types = Self::extract_required_types(&self.current_goal);
+        let covered_types: std::collections::HashSet<&str> = self.active_objects.iter()
+            .map(|o| o.obj_type.as_str()).collect();
+        let type_coverage = required_types.iter()
+            .filter(|t| covered_types.contains(t.as_str()))
+            .count() as f64 / required_types.len().max(1) as f64;
+        let observation_score = if self.observations.is_empty() { 0.0 } else {
+            (self.observations.len() as f64).min(5.0) / 5.0
+        };
+        (type_coverage * 0.6 + observation_score * 0.4).clamp(0.0, 1.0)
+    }
+
     /// 生成注入 Prompt 的工作记忆文本，受 Token 预算约束
     fn generate_scratchpad(&mut self) -> String {
         // ★ P1: 下一轮扩散 — 每轮开始时从 object_links 注入关联对象
@@ -364,7 +408,32 @@ impl SessionMemory {
             }
         }
 
-        // 5. Execution Log（从工具调用历史生成）
+        // 5. Completeness（信息充分度）
+        if !self.current_goal.is_empty() {
+            self.completeness = self.compute_completeness();
+            let required_types = Self::extract_required_types(&self.current_goal);
+            let covered_types: std::collections::HashSet<&str> = self.active_objects.iter()
+                .map(|o| o.obj_type.as_str()).collect();
+            let covered_str: Vec<String> = required_types.iter()
+                .filter(|t| covered_types.contains(t.as_str()))
+                .map(|t| format!("{} ✓", t))
+                .collect();
+            let uncovered_str: Vec<String> = required_types.iter()
+                .filter(|t| !covered_types.contains(t.as_str()))
+                .map(|t| format!("{} ✗", t))
+                .collect();
+            let status = if self.completeness >= 0.8 { "✅ 充足" } 
+                else if self.completeness >= 0.5 { "⚠️ 部分" } 
+                else { "❌ 不足" };
+            lines.push(String::new());
+            lines.push("## Completeness（信息充分度）".to_string());
+            lines.push(format!("目标：{}", self.current_goal));
+            if !covered_str.is_empty() { lines.push(format!("已覆盖：{}", covered_str.join(", "))); }
+            if !uncovered_str.is_empty() { lines.push(format!("未覆盖：{}", uncovered_str.join(", "))); }
+            lines.push(format!("充分度：{:.0}% {}", self.completeness * 100.0, status));
+        }
+
+        // 6. Execution Log（从工具调用历史生成）
         if !self.tool_history.is_empty() {
             lines.push(String::new());
             lines.push("## Execution Log".to_string());
@@ -2351,6 +2420,9 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     let mut budget = 100i32;
     let mut search_cost = 10i32;
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // ★ 振荡检测：防止 FOCUS ↔ EXPAND 无限循环
+    let mut oscillation_count: usize = 0;
+    let mut last_search_count: usize = 0;
     
     // 加载用户策略（policy）— 从 source_data 读取
     let user_policies = {
@@ -2449,6 +2521,21 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
                     let ws = session.generate_scratchpad();
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                }
+                // ★ 振荡检测：如果本轮搜索次数与上轮相同，可能在振荡
+                let current_search_count = session.search_keywords.len();
+                if current_search_count == last_search_count && current_search_count > 0 {
+                    oscillation_count += 1;
+                } else {
+                    oscillation_count = 0;
+                }
+                last_search_count = current_search_count;
+                if oscillation_count >= 3 {
+                    eprintln!("[Agent] 检测到状态振荡 ({} 轮无新搜索)，强制终止", oscillation_count);
+                    messages.push(ChatMessage{role:MessageRole::User,content:Some("已检测到重复检索，信息可能已足够，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
+                    let ws = session.generate_scratchpad();
+                    return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"oscillation_break":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
                 if iters >= max_iters {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});

@@ -12,14 +12,32 @@ pub fn license_status() -> Result<Value, String> {
 
     match row {
         Some(r) => {
-            let is_active = r["status"].as_str() == Some("active");
+            let mut status = r["status"].as_str().unwrap_or("inactive").to_string();
             let product = r["product"].as_str().unwrap_or("");
+            let expires_at = r["expires_at"].as_str().unwrap_or("");
+
+            // ★ 如果 status='active' 但 expires_at 已过期，强制返回 'expired'
+            if status == "active" && !expires_at.is_empty() && expires_at != "2099-12-31" {
+                if let Ok(expiry) = chrono::NaiveDate::parse_from_str(expires_at, "%Y-%m-%d") {
+                    let today = chrono::Local::now().date_naive();
+                    if expiry < today {
+                        status = "expired".to_string();
+                        // 同步更新数据库状态
+                        let _ = database::run(
+                            "UPDATE license SET status='inactive' WHERE status='active' AND expires_at<?1",
+                            &[json!(expires_at)],
+                        );
+                    }
+                }
+            }
+
+            let is_active = status == "active";
             Ok(json!({
                 "activated": is_active,
-                "status": r["status"].as_str().unwrap_or("inactive"),
+                "status": status,
                 "product": product,
                 "activatedAt": r["activated_at"].as_str().unwrap_or(""),
-                "expiresAt": r["expires_at"].as_str().unwrap_or(""),
+                "expiresAt": expires_at,
                 "machineCode": r["machine_code"].as_str().unwrap_or(""),
             }))
         }

@@ -828,12 +828,32 @@ fn init_ai_queue_triggers(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 pub fn check_license_premium() -> bool {
     match with_db(|conn| {
-        conn.query_row(
-            "SELECT product FROM license WHERE status='active' ORDER BY id DESC LIMIT 1",
+        let row = conn.query_row(
+            "SELECT product, expires_at FROM license WHERE status='active' ORDER BY id DESC LIMIT 1",
             [],
-            |r| r.get::<_, String>(0),
-        )
-        .map(|p| p == "advanced" || p == "enhanced")
+            |r| Ok((r.get::<_, String>(0).unwrap_or_default(), r.get::<_, String>(1).unwrap_or_default())),
+        );
+        match row {
+            Ok((product, expires_at)) => {
+                if product != "advanced" && product != "enhanced" {
+                    return Ok(false);
+                }
+                if !expires_at.is_empty() && expires_at != "2099-12-31" {
+                    if let Ok(expiry) = chrono::NaiveDate::parse_from_str(&expires_at, "%Y-%m-%d") {
+                        let today = chrono::Local::now().date_naive();
+                        if expiry < today {
+                            let _ = conn.execute(
+                                "UPDATE license SET status='inactive' WHERE status='active' AND expires_at<?1",
+                                rusqlite::params![expires_at],
+                            );
+                            return Ok(false);
+                        }
+                    }
+                }
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
     }) {
         Ok(v) => v,
         Err(e) => {
