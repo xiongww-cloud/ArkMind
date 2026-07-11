@@ -299,6 +299,26 @@ async function handleSendMessage() {
   }
 }
 
+async function stopAgent() {
+  try {
+    const { agentCancel } = await import('@/api/db-client')
+    await agentCancel()
+    isChatting.value = false
+    // 更新最后一条 AI 消息
+    const session = currentSession.value
+    if (session) {
+      const lastMsg = session.messages[session.messages.length - 1]
+      if (lastMsg && lastMsg.role === 'assistant' && lastMsg.isThinking) {
+        lastMsg.isThinking = false
+        if (!lastMsg.content) lastMsg.content = '已停止执行。'
+      }
+    }
+    scrollToBottomIfNear()
+  } catch (e) {
+    console.error('[KB] 停止失败:', e)
+  }
+}
+
 // ─── Actions ────────────────────────────────────────────────────
 async function copyAnswer(idx: number) {
   const m = currentSession.value?.messages[idx]
@@ -451,7 +471,10 @@ onUnmounted(() => {
         <p class="text-[10px] text-surface-300 text-left mb-1.5 pl-1">↵ 发送 · Shift+↵ 换行</p>
         <div class="flex items-center gap-2 bg-white rounded-2xl border border-surface-200 px-4 py-2.5 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.02)] transition-all duration-200 focus-within:border-brand-300 focus-within:shadow-[0_0_0_3px_rgba(37,99,235,0.1),0_4px_12px_rgba(0,0,0,0.08)]">
           <textarea v-model="inputMessage" rows="1" maxlength="5000" placeholder="向 AI 提问..." class="flex-1 border-none resize-none outline-none text-[13px] text-surface-800 bg-transparent leading-relaxed placeholder:text-surface-400 max-h-[120px]" @keydown.enter.exact.prevent="handleSendMessage" @input="(e: any) => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px' }" />
-          <button @click="handleSendMessage" :disabled="!inputMessage.trim() || isChatting" class="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200" :class="inputMessage.trim() && !isChatting ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'" title="发送">
+          <button v-if="isChatting" @click="stopAgent" class="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 bg-red-500 hover:bg-red-600 text-white transition-all duration-200" title="停止">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+          <button v-else @click="handleSendMessage" :disabled="!inputMessage.trim()" class="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200" :class="inputMessage.trim() ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'" title="发送">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
           </button>
         </div>

@@ -1,6 +1,6 @@
 [package]
 name = "arkmind"
-version = "10.0.1"
+version = "12.1.0"
 description = "Arkmind 鏂硅垷鏅哄簱"
 authors = ["Arkmind Team"]
 edition = "2021"
@@ -8,7 +8,7 @@ rust-version = "1.77"
 
 [lib]
 name = "arkmind_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+crate-type = ["lib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

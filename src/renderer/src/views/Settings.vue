@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
+import { useUploadProgress } from '@/composables/useUploadProgress'
 import {
   fetchSettings, updateSettings, browseFolder,
   updateAiConfig, fetchAiConfig,
@@ -12,6 +13,7 @@ import {
 // ─── Vite define: 替换为 Cargo.toml 中的版本号
 const appVersion = __APP_VERSION__
 const aiTab = ref('llm')
+const uploadProgress = useUploadProgress()
 
 // ─── License ──────────────────────────────────────────────────────────────
 const licenseActivated = ref(false)
@@ -29,14 +31,16 @@ const licenseUpdating = ref(false)
 
 async function loadLicense() {
   try {
-    const { fetchLicenseStatus } = await import('@/api/db-client')
+    const { fetchLicenseStatus, getMachineCode } = await import('@/api/db-client')
     const status = await fetchLicenseStatus()
     licenseActivated.value = status.activated
     licenseStatus.value = status.status || ''
     licenseProduct.value = status.product || ''
     licenseExpiresAt.value = status.expiresAt || ''
     licenseActivatedAt.value = status.activatedAt || ''
-    licenseMachineCode.value = status.machineCode || ''
+    // ★ 从 machine_code 命令获取原始 UUID（而非 license 表中的 HASH）
+    const rawMachineCode = await getMachineCode()
+    licenseMachineCode.value = rawMachineCode
   } catch (e) {
     console.warn('Failed to load license status:', e)
   }
@@ -71,7 +75,8 @@ async function activateLicenseKey() {
     licenseProduct.value = result.product || ''
     licenseSuccess.value = '激活成功'
     licenseKey.value = ''
-    setTimeout(() => { licenseSuccess.value = '' }, 3000)
+    // ★ 激活成功后自动关闭弹窗
+    setTimeout(() => { licenseSuccess.value = ''; licenseUpdating.value = false }, 1500)
   } catch (e) {
     licenseError.value = e.response?.data?.error || e.message || '激活失败'
   } finally {
@@ -115,14 +120,29 @@ async function handleExportData() {
     if (!savePath) { isExporting.value = false; return }
     const domains = selectedDomains.value.filter((d: any) => d.selected).map((d: any) => d.key)
     if (domains.length === 0) { alert({ title: '提示', message: '请至少选择一个业务域' }); isExporting.value = false; return }
+    
+    // ★ 关闭选择弹窗
+    showDomainSelector.value = false
+    
+    // ★ 复用上传进度弹窗显示导出进度
+    const task = uploadProgress.start('导出数据中...')
+    
+    // ★ 监听进度事件
+    const { listen } = await import('@tauri-apps/api/event')
+    const unlisten = await listen('export:progress', (event: any) => {
+      const { current, total, domain, stage } = event.payload
+      if (domain) {
+        task.name = `导出中... ${domain} (${current}/${total})`
+      }
+      if (stage === 'done') {
+        uploadProgress.done(task)
+        toast.success(`数据已导出至：${savePath}`)
+        unlisten()
+      }
+    })
+    
     const { exportAllData } = await import('@/api/db-client')
-    const result = await exportAllData(domains, savePath)
-    if (result.success) {
-      showDomainSelector.value = false
-      toast.success(`数据已导出至：${savePath}`)
-    } else {
-      alert({ title: '导出失败', message: result.error || '未知错误' })
-    }
+    await exportAllData(domains, savePath)
   } catch (e) {
     alert({ title: '导出失败', message: (e && e.message) || '未知错误' })
   } finally {
@@ -338,22 +358,7 @@ const visionActiveId = ref<string | null>(null)
 const visionPendingId = ref<string | null>(null)
 const showVisionModal = ref(false)
 const editingVision = ref<any>(null)
-const visionForm = ref({ apiKey: '', baseUrl: 'https://api.openai.com/v1', modelName: '', apiFormat: 'openai', prompt: '' })
-
-// ─── Vision model presets ──────────────────────────
-const VISION_PRESETS = [
-  { name: 'GPT-4o', baseUrl: 'https://api.openai.com/v1/chat/completions', modelName: 'gpt-4o', apiFormat: 'openai', prompt: '# document: <image> Convert the document to markdown. Preserve all tables, lists, and code blocks.' },
-  { name: 'Qwen-VL-OCR (阿里云)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation', modelName: 'qwen-vl-ocr', apiFormat: 'dashscope', prompt: '请仅输出图像中的文本内容，保留表格、列表、代码块等格式。' },
-  { name: 'Qwen3-VL-Flash (阿里云)', baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation', modelName: 'qwen3-vl-flash', apiFormat: 'dashscope', prompt: '输出 Markdown 格式。标题用 #，段落用纯文本，表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。' },
-  { name: 'DeepSeek-OCR (SiliconFlow)', baseUrl: 'https://api.siliconflow.cn/v1/chat/completions', modelName: 'deepseek-ai/DeepSeek-OCR', apiFormat: 'openai', prompt: '# document: <image> Convert the document to markdown. Preserve all tables, lists, and code blocks.' },
-  { name: 'DeepSeek-VL2 (SiliconFlow)', baseUrl: 'https://api.siliconflow.cn/v1/chat/completions', modelName: 'deepseek-ai/deepseek-vl2', apiFormat: 'openai', prompt: '# document: <image> Convert the document to markdown. Preserve all tables, lists, and code blocks.' },
-]
-function applyVisionPreset(preset: any) {
-  visionForm.value.baseUrl = preset.baseUrl
-  visionForm.value.modelName = preset.modelName
-  visionForm.value.apiFormat = preset.apiFormat
-  visionForm.value.prompt = preset.prompt
-}
+const visionForm = ref({ apiKey: '', baseUrl: 'https://api.openai.com/v1', modelName: '', apiFormat: 'openai', prompt: '输出 Markdown 格式。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。' })
 const visionFormSaving = ref(false)
 const visionFormError = ref('')
 const visionSaving = ref(false)
@@ -952,9 +957,6 @@ onMounted(async () => {
       <div v-if="showVisionModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeVisionModal">
         <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingVision ? '编辑 OCR 模型' : '添加 OCR 模型' }}</h3>
-          <div class="flex flex-wrap gap-1.5 mb-3">
-            <button v-for="preset in VISION_PRESETS" :key="preset.modelName" @click="applyVisionPreset(preset)" class="px-2 py-1 text-[10px] rounded-lg border border-surface-200 text-surface-500 hover:bg-brand-50 hover:border-brand-300 transition-colors">{{ preset.name }}</button>
-          </div>
           <div class="space-y-3">
             <div class="grid grid-cols-2 gap-2">
               <div>
@@ -973,10 +975,6 @@ onMounted(async () => {
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">模型名称</label>
               <input v-model="visionForm.modelName" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" />
-            </div>
-            <div>
-              <label class="block text-[10px] font-medium text-surface-400 mb-1">Prompt</label>
-              <textarea v-model="visionForm.prompt" rows="2" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 resize-none"></textarea>
             </div>
             <p v-if="visionFormError" class="text-[10px] text-red-500">{{ visionFormError }}</p>
           </div>

@@ -5,12 +5,21 @@ use crate::services::search_assets;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 use tauri::Emitter;
 use futures::StreamExt;
 
 const API_TIMEOUT_SECS: u64 = 30;
+
+// ★ Agent 停止信号
+static AGENT_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// 取消当前 Agent 循环
+pub fn cancel_agent() {
+    AGENT_CANCEL.store(true, Ordering::Release);
+}
 const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 
 ## 当前日期
@@ -570,9 +579,9 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_object","description":"搜索知识库中的对象。四种模式：1.按单个ID精确获取（传id参数）2.按多个ID批量获取（传ids数组）3.按关键词搜索（传query参数）4.按时间范围浏览（传start_time/end_time）。当用户询问已知对象的详情时，优先用id/ids模式回忆。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"单个对象ID（如PROJECT-abc123），用于精确获取单个对象的完整信息"},"ids":{"type":"array","items":{"type":"string"},"description":"批量对象ID列表（如[\"PROJECT-xxx\",\"PROJECT-yyy\"]），最多30个，用于批量获取多个对象的完整信息"},"query":{"type":"string","description":"关键词过滤（如产品名/项目名/联系人名），留空则按时间范围展示全部对象"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE/TODO/CHANNEL/VENDOR/CONTACT，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页天数，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。⚠️ chunk_id 是8位短ID（如 47beae9a），来自 search() 结果中的「ChunkID」字段。绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID（如 47beae9a），必须来自 search() 结果的 ChunkID 字段，不是 source_id"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。action=create(title必填,priority从用户原话提取,due_date从用户原话提取,repeat可选daily/weekly/monthly,project_id关联项目), action=update, action=delete","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待办标题"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建), update(更新字段), delete(删除及关联数据)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"project_id":{"type":"string","description":"项目ID(update/delete用)"},"name":{"type":"string","description":"项目名称(create用)"},"customer":{"type":"string","description":"客户名称"},"customer_contact":{"type":"string","description":"客户联系人"},"customer_phone":{"type":"string","description":"客户联系电话"},"owner":{"type":"string","description":"项目负责人"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_partner","description":"管理合作伙伴（渠道/厂商/客户）。action: create(创建), update(更新), delete(删除), link_project(关联到项目), unlink_project(取消关联)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"partner_id":{"type":"string","description":"合作伙伴ID(update/delete/link_project/unlink_project用)"},"type":{"type":"string","description":"类型: CHANNEL/VENDOR/CUSTOMER(create用)"},"name":{"type":"string","description":"名称(create/update用)"},"phone":{"type":"string","description":"电话"},"address":{"type":"string","description":"地址"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"},"contact_id":{"type":"string","description":"默认联系人ID(link_project用)"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人（通讯录）。action: create(创建), update(更新), delete(删除), link_project(关联到项目), unlink_project(取消关联), list(查看通讯录)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project","list"]},"contact_id":{"type":"string","description":"联系人ID(update/delete/link_project/unlink_project用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"},"type":{"type":"string","description":"类型过滤: CHANNEL/VENDOR/CUSTOMER(list用)"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建), update(更新字段), delete(删除及关联数据)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"project_id":{"type":"string","description":"项目ID(update/delete用)"},"name":{"type":"string","description":"项目名称(create用)"},"customer":{"type":"string","description":"客户名称"},"customer_contact":{"type":"string","description":"客户联系人"},"customer_phone":{"type":"string","description":"客户联系电话"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_partner","description":"管理合作伙伴（渠道/厂商/客户）。action: create(创建), update(更新), delete(删除), link_project(关联到项目), unlink_project(取消关联)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"partner_id":{"type":"string","description":"合作伙伴ID(update/delete/link_project/unlink_project用)"},"type":{"type":"string","description":"类型: CHANNEL/VENDOR/CUSTOMER(create用)"},"name":{"type":"string","description":"名称(create/update用)"},"phone":{"type":"string","description":"电话"},"address":{"type":"string","description":"地址"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人（通讯录）。action: create(创建), update(更新), delete(删除), list(查看通讯录)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list"]},"contact_id":{"type":"string","description":"联系人ID(update/delete用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"parent_id":{"type":"string","description":"关联的合作伙伴ID（渠道/厂商/客户），可选"},"project_id":{"type":"string","description":"关联的项目ID，可选"},"type":{"type":"string","description":"类型过滤: CHANNEL/VENDOR/CUSTOMER(list用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_memory","description":"管理记忆。action=create(创建，记住重要的结论或发现)，action=delete(删除)，action=search(搜索记忆，无关键词时列出所有，支持时间范围过滤)。记忆会自动出现在搜索结果的回忆区中。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete","search"],"description":"create=创建记忆，delete=删除记忆，search=搜索记忆"},"title":{"type":"string","description":"创建时的简短标题，用于检索"},"content":{"type":"string","description":"创建时的记忆内容，按时间→问题→动作→结论的思路组织"},"memory_id":{"type":"string","description":"删除时用，精确匹配source_id"},"replace_ids":{"type":"string","description":"创建时逗号分隔的旧记忆source_id，自动删除旧记忆"},"query":{"type":"string","description":"搜索关键词（留空则列出所有记忆）"},"start_time":{"type":"string","description":"开始时间，如 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，如 2026-07-05 或 今天"}},"required":["action"]}}},
     ])
 }
@@ -2362,7 +2371,10 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         match role {
             "assistant" => {
                 let content = h["content"].as_str().map(|s| s.to_string());
-                let tcs: Option<Vec<ToolCall>> = h["tool_calls"].as_array().map(|arr| arr.iter().filter_map(|tc| {
+                // ★ 过滤空数组，避免 LLM API 报错
+                let tcs: Option<Vec<ToolCall>> = h["tool_calls"].as_array()
+                    .filter(|arr| !arr.is_empty())
+                    .map(|arr| arr.iter().filter_map(|tc| {
                     let id = tc["id"].as_str()?;
                     let name = tc["function"]["name"].as_str()?;
                     let args_str = tc["function"]["arguments"].as_str().unwrap_or("");
@@ -2452,6 +2464,14 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     messages[0].content = Some(empty_sys);
 
     loop {
+        // ★ 检查停止信号
+        if AGENT_CANCEL.load(Ordering::Acquire) {
+            AGENT_CANCEL.store(false, Ordering::Release);
+            eprintln!("[Agent] 收到停止信号，中断执行");
+            let ws = session.generate_scratchpad();
+            return Ok(json!({"success":true,"answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+        }
+        
         eprintln!("[LLM检索] 预算: {}/{} cost={}", budget, 100i32, search_cost);
         if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking"})); }
         // ★ 每轮注意力衰减（Residual 方式：new_score = old_score * 0.95 + gain）
@@ -2499,6 +2519,11 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             if let Some(parsed) = parse_xml_tool_calls(ac) {
                 eprintln!("[LLM检索] 从 content 解析到 XML 工具调用: {:?}", parsed);
                 tcs = Some(parsed);
+            } else {
+                // 记录未解析的情况，便于调试
+                if ac.contains("tool_calls") || ac.contains("invoke") {
+                    eprintln!("[LLM检索] 检测到疑似 XML 工具调用但解析失败，content前200字: {}", &ac[..ac.len().min(200)]);
+                }
             }
         }
 
@@ -3168,7 +3193,6 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     else {
                                         let id = uuid::Uuid::new_v4().to_string();
                                         let customer = a["customer"].as_str().unwrap_or("");
-                                        let owner = a["owner"].as_str().unwrap_or("");
                                         let budget = a["budget"].as_f64().unwrap_or(0.0);
                                         let description = a["description"].as_str().unwrap_or("");
                                         let status = a["status"].as_str().unwrap_or("Lead");
@@ -3177,23 +3201,29 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         let customer_phone = a["customer_phone"].as_str().unwrap_or("");
                                         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                                         match database::run(
-                                            "INSERT INTO projects(id,name,customer,owner,budget,description,status,bid_time,customer_contact,customer_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
-                                            &[json!(id),json!(name),json!(customer),json!(owner),json!(budget),json!(description),json!(status),json!(bid_time),json!(customer_contact),json!(customer_phone),json!(ts)]
+                                            "INSERT INTO projects(id,name,customer,budget,description,status,bid_time,customer_contact,customer_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)",
+                                            &[json!(id),json!(name),json!(customer),json!(budget),json!(description),json!(status),json!(bid_time),json!(customer_contact),json!(customer_phone),json!(ts)]
                                         ) {
-                                            Ok(_) => format!("已创建项目「{}」(ID: {})", name, id),
+                                            Ok(_) => {
+                                                // ★ 同步到 source_data（知识库索引）
+                                                crate::services::source_doc_sync::sync_entity("PROJECT", &id);
+                                                // ★ 触发知识管线
+                                                crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
+                                                format!("已创建项目「{}」(ID: {})", name, id)
+                                            },
                                             Err(e) => format!("创建项目失败: {}", e),
                                         }
                                     }
                                 }
                                 "update" => {
-                                    let project_id = a["project_id"].as_str().unwrap_or("");
+                                    let raw_id = a["project_id"].as_str().unwrap_or("");
+                                    let project_id = raw_id.strip_prefix("PROJECT-").unwrap_or(raw_id);
                                     if project_id.is_empty() { "更新项目需要提供 project_id。".to_string() }
                                     else {
                                         let mut sets = Vec::new();
                                         let mut vals: Vec<serde_json::Value> = Vec::new();
                                         if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
                                         if let Some(v) = a["customer"].as_str().filter(|s| !s.is_empty()) { sets.push("customer=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["owner"].as_str().filter(|s| !s.is_empty()) { sets.push("owner=?"); vals.push(json!(v)); }
                                         if let Some(v) = a["description"].as_str().filter(|s| !s.is_empty()) { sets.push("description=?"); vals.push(json!(v)); }
                                         if let Some(v) = a["status"].as_str().filter(|s| !s.is_empty()) { sets.push("status=?"); vals.push(json!(v)); }
                                         if let Some(v) = a["bid_time"].as_str().filter(|s| !s.is_empty()) { sets.push("bid_time=?"); vals.push(json!(v)); }
@@ -3213,17 +3243,29 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     }
                                 }
                                 "delete" => {
-                                    let project_id = a["project_id"].as_str().unwrap_or("");
+                                    let raw_id = a["project_id"].as_str().unwrap_or("");
+                                    let project_id = raw_id.strip_prefix("PROJECT-").unwrap_or(raw_id);
                                     if project_id.is_empty() { "删除项目需要提供 project_id。".to_string() }
                                     else {
+                                        // ★ 清理 source_data（即使 projects 表中没有，也要清理孤儿记录）
+                                        crate::services::source_doc_sync::delete_entity_source_doc("PROJECT", project_id);
+                                        // ★ 触发知识管线清理
+                                        crate::services::knowledge_lifecycle::notify_deleted("PROJECT", project_id);
+                                        
+                                        // 清理业务表
                                         let _ = database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(project_id)]);
                                         let _ = database::run("DELETE FROM note_project_mapping WHERE project_id=?", &[json!(project_id)]);
                                         let _ = database::run("DELETE FROM todo_project_mapping WHERE project_id=?", &[json!(project_id)]);
                                         let _ = database::run("DELETE FROM tag_mappings WHERE entity_type='project' AND entity_id=?", &[json!(project_id)]);
                                         let _ = database::run("DELETE FROM business_relations WHERE (source_type='PROJECT' AND source_id=?) OR (target_type='PROJECT' AND target_id=?)", &[json!(project_id), json!(project_id)]);
+                                        // 删除 solutions 和关联表
+                                        let _ = database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?))", &[json!(project_id)]);
+                                        let _ = database::run("DELETE FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?)", &[json!(project_id)]);
+                                        let _ = database::run("DELETE FROM solutions WHERE project_id=?", &[json!(project_id)]);
+                                        
                                         match database::run("DELETE FROM projects WHERE id=?", &[json!(project_id)]) {
                                             Ok(r) if r.changes > 0 => format!("已删除项目 {} 及其所有关联数据", project_id),
-                                            _ => format!("项目 {} 未找到", project_id),
+                                            _ => format!("已清理项目 {} 的索引记录（projects表中无此记录）", project_id),
                                         }
                                     }
                                 }
@@ -3247,7 +3289,13 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             "INSERT INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'),datetime('now','localtime'))",
                                             &[json!(id),json!(ptype.to_uppercase()),json!(name),json!(phone),json!(address),json!(remark)]
                                         ) {
-                                            Ok(_) => format!("已创建{}「{}」(ID: {})", ptype, name, id),
+                                            Ok(_) => {
+                                                // 同步到 source_data
+                                                crate::services::source_doc_sync::sync_entity(&ptype.to_uppercase(), &id);
+                                                // 触发知识管线
+                                                crate::services::knowledge_lifecycle::notify_changed(&ptype.to_uppercase(), &id);
+                                                format!("已创建{}「{}」(ID: {})", ptype, name, id)
+                                            },
                                             Err(e) => format!("创建失败: {}", e),
                                         }
                                     }
@@ -3278,10 +3326,18 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let partner_id = a["partner_id"].as_str().unwrap_or("");
                                     if partner_id.is_empty() { "删除需要提供 partner_id。".to_string() }
                                     else {
+                                        let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
                                         let _ = database::run("DELETE FROM partner_contact_mapping WHERE partner_id=?", &[json!(partner_id)]);
                                         let _ = database::run("DELETE FROM business_relations WHERE (source_id=? AND source_type IN ('CHANNEL','VENDOR','CUSTOMER')) OR (target_id=? AND target_type IN ('CHANNEL','VENDOR','CUSTOMER'))", &[json!(partner_id), json!(partner_id)]);
                                         match database::run("DELETE FROM partners WHERE id=?", &[json!(partner_id)]) {
-                                            Ok(r) if r.changes > 0 => format!("已删除合作伙伴 {}", partner_id),
+                                            Ok(r) if r.changes > 0 => {
+                                                // 同步到 source_data
+                                                if !ptype.is_empty() {
+                                                    crate::services::source_doc_sync::sync_entity(&ptype.to_uppercase(), partner_id);
+                                                    crate::services::knowledge_lifecycle::notify_changed(&ptype.to_uppercase(), partner_id);
+                                                }
+                                                format!("已删除合作伙伴 {}", partner_id)
+                                            },
                                             _ => format!("合作伙伴 {} 未找到", partner_id),
                                         }
                                     }
@@ -3292,9 +3348,22 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if partner_id.is_empty() || project_id.is_empty() { "关联需要提供 partner_id 和 project_id。".to_string() }
                                     else {
                                         let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
-                                        let meta = serde_json::json!({"selected_contact_id": a["contact_id"].as_str().unwrap_or(""), "remark": a["remark"].as_str().unwrap_or("")});
-                                        crate::services::business_relations::upsert(&ptype.to_uppercase(), partner_id, "PROJECT", project_id, "belongs_to", &meta.to_string());
-                                        format!("已将{}关联到项目", ptype)
+                                        if ptype.is_empty() {
+                                            format!("未找到合作伙伴: {}", partner_id)
+                                        } else {
+                                            let meta = serde_json::json!({"selected_contact_id": a["contact_id"].as_str().unwrap_or(""), "remark": a["remark"].as_str().unwrap_or("")});
+                                            crate::services::business_relations::upsert(&ptype.to_uppercase(), partner_id, "PROJECT", project_id, "belongs_to", &meta.to_string());
+                                            // 同步到 source_data
+                                            crate::services::source_doc_sync::sync_entity(&ptype.to_uppercase(), partner_id);
+                                            // 触发知识管线
+                                            crate::services::knowledge_lifecycle::notify_changed(&ptype.to_uppercase(), partner_id);
+                                            // 记录项目动态
+                                            let did = uuid::Uuid::new_v4().to_string();
+                                            let partner_name = database::get("SELECT name FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default();
+                                            database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,'AI Agent')",
+                                                &[json!(&did), json!(project_id), json!(format!("添加了{}「{}」", ptype, partner_name))]).ok();
+                                            format!("已将{}关联到项目", ptype)
+                                        }
                                     }
                                 }
                                 "unlink_project" => {
@@ -3303,8 +3372,20 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if partner_id.is_empty() || project_id.is_empty() { "取消关联需要提供 partner_id 和 project_id。".to_string() }
                                     else {
                                         let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
-                                        crate::services::business_relations::delete(&ptype.to_uppercase(), partner_id, "PROJECT", project_id, "belongs_to");
-                                        format!("已取消{}与项目的关联", ptype)
+                                        if ptype.is_empty() {
+                                            format!("未找到合作伙伴: {}", partner_id)
+                                        } else {
+                                            crate::services::business_relations::delete(&ptype.to_uppercase(), partner_id, "PROJECT", project_id, "belongs_to");
+                                            // 同步到 source_data
+                                            crate::services::source_doc_sync::sync_entity(&ptype.to_uppercase(), partner_id);
+                                            // 触发知识管线
+                                            crate::services::knowledge_lifecycle::notify_changed(&ptype.to_uppercase(), partner_id);
+                                            // 记录项目动态
+                                            let did = uuid::Uuid::new_v4().to_string();
+                                            database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,'AI Agent')",
+                                                &[json!(&did), json!(project_id), json!(format!("移除了{}", ptype))]).ok();
+                                            format!("已取消{}与项目的关联", ptype)
+                                        }
                                     }
                                 }
                                 _ => format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project。", action),
@@ -3323,11 +3404,32 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         let email = a["email"].as_str().unwrap_or("");
                                         let position = a["position"].as_str().unwrap_or("");
                                         let remark = a["remark"].as_str().unwrap_or("");
+                                        let parent_id = a["parent_id"].as_str().unwrap_or("");
+                                        let raw_proj_id = a["project_id"].as_str().unwrap_or("");
+                                        let project_id = raw_proj_id.strip_prefix("PROJECT-").unwrap_or(raw_proj_id);
                                         match database::run(
-                                            "INSERT INTO partner_contacts(id,name,phone,email,position,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'),datetime('now','localtime'))",
+                                            "INSERT INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'))",
                                             &[json!(id),json!(name),json!(phone),json!(email),json!(position),json!(remark)]
                                         ) {
-                                            Ok(_) => format!("已创建联系人「{}」(ID: {})", name, id),
+                                            Ok(_) => {
+                                                // ★ 自动关联到合作伙伴（如果有 parent_id）
+                                                if !parent_id.is_empty() {
+                                                    let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(parent_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
+                                                    if !ptype.is_empty() {
+                                                        database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)", &[json!(parent_id), json!(id)]).ok();
+                                                        crate::services::business_relations::upsert("CONTACT", &id, &ptype.to_uppercase(), parent_id, "employed_by", "{}");
+                                                    }
+                                                }
+                                                // ★ 自动关联到项目（如果有 project_id）
+                                                if !project_id.is_empty() {
+                                                    crate::services::business_relations::upsert("CONTACT", &id, "PROJECT", project_id, "belongs_to", "{}");
+                                                }
+                                                // 同步到 source_data
+                                                crate::services::source_doc_sync::sync_entity("CONTACT", &id);
+                                                // 触发知识管线
+                                                crate::services::knowledge_lifecycle::notify_changed("CONTACT", &id);
+                                                format!("已创建联系人「{}」(ID: {})", name, id)
+                                            },
                                             Err(e) => format!("创建失败: {}", e),
                                         }
                                     }

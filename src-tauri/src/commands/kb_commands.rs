@@ -25,6 +25,10 @@ use tauri::Emitter;
     if query.is_empty() { return Ok(json!({"success":true,"answer":"请输入问题"})); }
     crate::services::agent_workflow::agent_chat_workflow(query, None, vec![], Some(app_handle)).await
 }
+#[tauri::command] pub async fn agent_cancel() -> Result<Value, String> {
+    crate::services::agent_workflow::cancel_agent();
+    Ok(json!({"success": true}))
+}
 #[tauri::command] pub async fn kb_import_file(data: Value) -> Result<Value, String> {
     let path = data["filePath"].as_str().unwrap_or("").to_string();
     let name = data["fileName"].as_str().unwrap_or("未命名文件").to_string();

@@ -236,6 +236,7 @@ export async function kbDelete(docId: string): Promise<{success:boolean}> { retu
 export async function kbListDocuments(projectId?: string): Promise<{success:boolean;documents?:FileRow[]}> { return invoke('kb_list_documents', { projectId: projectId||null }) }
 export async function kbChat(data: Record<string, any>): Promise<{success:boolean;answer?:string;error?:string}> { return invoke('kb_chat', { data }) }
 export async function kbAgentChat(data: Record<string, any>): Promise<{success:boolean;answer?:string;tool_log?:Array<{tool:string;args:unknown;result:string}>;context_docs?:Array<{title:string;chunk_text:string}>;workspace?:string;error?:string}> { return invoke('kb_agent_chat', { data }) }
+export async function agentCancel(): Promise<{success:boolean}> { return invoke('agent_cancel') }
 export async function kbDiagnose(): Promise<KbDiagnoseResult> { return invoke('kb_diagnose') }
 export async function kbGetTableChunks(fileId: string): Promise<{success:boolean;chunks?:Array<{id:number;chunk_text:string;chunk_index:number}>}> { return invoke('kb_get_table_chunks', { fileId }) }
 export async function kbTestEmbedding(data: {url:string;key:string;model:string}): Promise<{success:boolean;message?:string;error?:string}> { return invoke('kb_test_embedding', { data }) }

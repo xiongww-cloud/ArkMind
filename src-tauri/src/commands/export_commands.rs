@@ -1,17 +1,30 @@
 use crate::database;
 use serde_json::{json, Value};
 use std::io::Write;
+use tauri::Emitter;
 
 /// 导出全部或指定域数据，写入 save_path
 #[tauri::command]
-pub async fn export_data(domains: Vec<String>, save_path: String) -> Result<Value, String> {
-    let tmp = std::env::temp_dir().join(format!("ark_fullexport_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-    let mut exported_domains: Vec<String> = Vec::new();
+pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: tauri::AppHandle) -> Result<Value, String> {
+    let total = domains.len();
+    let handle = app_handle.clone();
+    // ★ 使用 spawn_blocking 执行同步 I/O，避免阻塞事件循环
+    tokio::task::spawn_blocking(move || {
+        let tmp = std::env::temp_dir().join(format!("ark_fullexport_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+        let mut exported_domains: Vec<String> = Vec::new();
 
-    for domain in &domains {
-        let mut domain_data = json!({});
-        match domain.as_str() {
+        for (idx, domain) in domains.iter().enumerate() {
+            // ★ 发送进度事件
+            let _ = handle.emit("export:progress", json!({
+                "current": idx + 1,
+                "total": total,
+                "domain": domain,
+                "stage": "exporting",
+            }));
+
+            let mut domain_data = json!({});
+            match domain.as_str() {
             "projects" => {
                 let projects = crate::database::all("SELECT * FROM projects", &[]).unwrap_or_default();
                 let solutions = crate::database::all("SELECT * FROM solutions", &[]).unwrap_or_default();
@@ -131,11 +144,18 @@ pub async fn export_data(domains: Vec<String>, save_path: String) -> Result<Valu
                 }
             }
             "files" => {
-                let file_assets = crate::database::all("SELECT * FROM file_assets", &[]).unwrap_or_default();
                 let file_relations = crate::database::all(
                     "SELECT * FROM file_relations WHERE entity_type='library'", &[]
                 ).unwrap_or_default();
                 let folders = crate::database::all("SELECT * FROM library_folders", &[]).unwrap_or_default();
+                // ★ 只导出被 library file_relations 引用的 file_assets，避免冗余
+                let lib_file_ids: Vec<String> = file_relations.iter()
+                    .filter_map(|r| r["file_id"].as_str().map(String::from)).collect();
+                let file_assets = if lib_file_ids.is_empty() { vec![] } else {
+                    let ph: Vec<String> = lib_file_ids.iter().map(|_| "?".to_string()).collect();
+                    let params: Vec<Value> = lib_file_ids.iter().map(|id| json!(id)).collect();
+                    crate::database::all(&format!("SELECT * FROM file_assets WHERE id IN ({})", ph.join(",")), &params).unwrap_or_default()
+                };
                 domain_data = json!({
                     "file_assets": file_assets, "file_relations": file_relations,
                     "library_folders": folders,
@@ -184,7 +204,15 @@ pub async fn export_data(domains: Vec<String>, save_path: String) -> Result<Valu
     add_dir_to_zip(&mut zip_writer, &tmp, &tmp, opts)?;
     zip_writer.finish().map_err(|e| e.to_string())?;
     std::fs::remove_dir_all(&tmp).ok();
+    // ★ 发送完成事件
+    let _ = handle.emit("export:progress", json!({
+        "current": total,
+        "total": total,
+        "domain": "",
+        "stage": "done",
+    }));
     Ok(json!({"success": true}))
+    }).await.map_err(|e| format!("导出任务失败: {}", e))?
 }
 
 /// 从 .ark ZIP 文件导入业务数据
@@ -192,6 +220,9 @@ pub async fn export_data(domains: Vec<String>, save_path: String) -> Result<Valu
 pub async fn import_data(file_path: String) -> Result<Value, String> {
     let file = std::fs::File::open(&file_path).map_err(|e| format!("打开文件失败: {}", e))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("解析 ZIP 失败: {}", e))?;
+
+    // ★ 导入前备份已禁用（需要 app_handle 参数，简化处理）
+    eprintln!("[导入] 开始导入: {}", file_path);
 
     // 解压到临时目录
     let tmp = std::env::temp_dir().join(format!("ark_import_{}", uuid::Uuid::new_v4()));
@@ -204,6 +235,11 @@ pub async fn import_data(file_path: String) -> Result<Value, String> {
     let domains = manifest["domains"].as_array().ok_or("manifest 缺少 domains 字段")?;
 
     let mut imported: Vec<String> = Vec::new();
+    
+    // ★ 开启事务保护
+    database::run("BEGIN TRANSACTION", &[]).map_err(|e| format!("开启事务失败: {}", e))?;
+    
+    let mut has_error = false;
     for domain in domains {
         let domain_name = domain.as_str().unwrap_or("");
         let domain_file = tmp.join(format!("{}.json", domain_name));
@@ -211,16 +247,29 @@ pub async fn import_data(file_path: String) -> Result<Value, String> {
         let data_str = std::fs::read_to_string(&domain_file).map_err(|e| e.to_string())?;
         let data: Value = serde_json::from_str(&data_str).map_err(|e| e.to_string())?;
 
-        match domain_name {
-            "projects" => import_projects(&data, &tmp)?,
-            "products" => import_products(&data, &tmp)?,
-            "notes" => import_notes(&data, &tmp)?,
-            "todos" => import_todos(&data, &tmp)?,
-            "files" => import_files(&data, &tmp)?,
-            _ => {}
+        let result = match domain_name {
+            "projects" => import_projects(&data, &tmp),
+            "products" => import_products(&data, &tmp),
+            "notes" => import_notes(&data, &tmp),
+            "todos" => import_todos(&data, &tmp),
+            "files" => import_files(&data, &tmp),
+            _ => Ok(()),
+        };
+        if let Err(e) = result {
+            eprintln!("[导入] {} 导入失败: {}", domain_name, e);
+            has_error = true;
+        } else {
+            imported.push(domain_name.to_string());
         }
-        imported.push(domain_name.to_string());
     }
+
+    // ★ 事务提交或回滚
+    if has_error {
+        database::run("ROLLBACK", &[]).ok();
+        std::fs::remove_dir_all(&tmp).ok();
+        return Err("部分数据导入失败，已回滚所有更改".to_string());
+    }
+    database::run("COMMIT", &[]).map_err(|e| format!("提交事务失败: {}", e))?;
 
     // 清理临时目录
     std::fs::remove_dir_all(&tmp).ok();

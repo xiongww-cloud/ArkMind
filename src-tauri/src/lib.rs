@@ -231,7 +231,7 @@ pub fn run() {
             commands::storage_migrate, commands::storage_migrate_progress, commands::storage_default_path,
             // KB
             commands::kb_get_config, commands::kb_update_config, commands::kb_import_file, commands::kb_save_note,
-            commands::kb_search, commands::kb_delete, commands::kb_list_documents, commands::kb_chat, commands::kb_agent_chat, commands::kb_save_sessions, commands::kb_load_sessions, commands::kb_delete_session,
+            commands::kb_search, commands::kb_delete, commands::kb_list_documents, commands::kb_chat, commands::kb_agent_chat, commands::agent_cancel, commands::kb_save_sessions, commands::kb_load_sessions, commands::kb_delete_session,
             commands::kb_diagnose, commands::kb_search_debug, commands::kb_data_browse, commands::kb_browse_parents, commands::kb_browse_vectors, commands::kb_inspect_fts5,
             commands::kb_fts5_inspector, commands::kb_get_table_chunks, commands::execute_production_rag,
             commands::kb_test_embedding, commands::kb_test_chat,

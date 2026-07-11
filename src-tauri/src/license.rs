@@ -117,7 +117,7 @@ pub fn get_machine_code() -> String { get_hardware_id() }
 pub fn activate_license(key: &str) -> Result<(String, String), String> {
     let (product, expires_at) = verify_license_key_and_get_expiry(key)?;
     let machine = get_machine_hash();
-    let expires_value = if expires_at.is_empty() { serde_json::Value::Null } else { serde_json::json!(expires_at) };
+    let expires_value = if expires_at.is_empty() { serde_json::json!("2099-12-31") } else { serde_json::json!(expires_at) };
     crate::database::run("UPDATE license SET status='inactive' WHERE status='active'", &[]).ok();
     crate::database::run(
         "INSERT INTO license (key_hash,license_key,status,product,activated_at,expires_at,machine_code) \
@@ -161,7 +161,7 @@ fn verify_license_key_and_get_expiry(key: &str) -> Result<(String, String), Stri
             if exp < chrono::Local::now().date_naive() { return Err(format!("已过期：{}", payload.expires_at)); }
         }
     }
-    println!("[许可] ✓ 有效: 产品={}", payload.product);
+    println!("[许可] ✓ 有效: 产品={}, 有效期={}", payload.product, payload.expires_at);
     Ok((payload.product, payload.expires_at))
 }
 

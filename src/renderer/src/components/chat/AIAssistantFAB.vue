@@ -22,7 +22,7 @@ async function renderMd(text: string): Promise<string> {
 }
 
 // ─── Types ──────────────────────────────────────────────────
-interface ChatMessage { id: string; role: string; content: string; error?: string; thinking?: boolean; typewriterText?: string; typewriterDone?: boolean; timestamp?: number }
+interface ChatMessage { id: string; role: string; content: string; error?: string; thinking?: boolean; typewriterText?: string; typewriterDone?: boolean; timestamp?: number; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[] }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string; updatedAt: string }
 
 // ─── State ──────────────────────────────────────────────────
@@ -299,7 +299,14 @@ async function send() {
     for (const m of messages.value) {
       if (m === aiMsg) continue
       if (m.role === 'user') history.push({ role: 'user', content: m.content })
-      else if (m.role === 'assistant') history.push({ role: 'assistant', content: m.content || '' })
+      else if (m.role === 'assistant') {
+        // ★ 包含 tool_calls 以保持完整上下文
+        if ((m as any).toolCalls?.length) {
+          history.push({ role: 'assistant', content: m.content || '', tool_calls: (m as any).toolCalls })
+        } else {
+          history.push({ role: 'assistant', content: m.content || '' })
+        }
+      }
     }
     const result: any = await kbAgentChat({ query: q, history })
     aiMsg.thinking = false; thinkingProgress.value = ''
@@ -319,6 +326,20 @@ async function send() {
           .trim()
         aiMsg.content = content
       }
+      // ★ 提取工具调用和结果
+      if (result.tools && Array.isArray(result.tools)) {
+        const rawCalls: any[] = []
+        const toolResults: any[] = []
+        for (const t of result.tools) {
+          const callId = 'call_' + Math.random().toString(36).slice(2, 8)
+          rawCalls.push({ id: callId, type: 'function', function: { name: t.tool, arguments: typeof t.args === 'string' ? t.args : JSON.stringify(t.args) } })
+          const rawResult = typeof t.result === 'string' ? t.result : ''
+          const truncated = rawResult.length > 30000 ? rawResult.substring(0, 30000) + '\n\n[结果已截断]' : rawResult
+          toolResults.push({ id: callId, name: t.tool, content: truncated })
+        }
+        aiMsg.rawToolCalls = rawCalls
+        aiMsg.toolResults = toolResults
+      }
     } else {
       aiMsg.content = result.answer || result.error || '失败'
     }
@@ -330,6 +351,26 @@ async function send() {
     isChatting.value = false; scrollChat()
     sessionDirty.value = true; saveToStorage()
     try { unlistenStream?.(); unlistenThought?.(); unlistenStatus?.(); unlistenProgress() } catch {}
+  }
+}
+
+async function stopAgent() {
+  try {
+    const { agentCancel } = await import('@/api/db-client')
+    await agentCancel()
+    isChatting.value = false
+    // 更新最后一条 AI 消息
+    const session = currentSession.value
+    if (session) {
+      const lastMsg = session.messages[session.messages.length - 1]
+      if (lastMsg && lastMsg.role === 'assistant' && lastMsg.thinking) {
+        lastMsg.thinking = false
+        if (!lastMsg.content) lastMsg.content = '已停止执行。'
+      }
+    }
+    scrollChat()
+  } catch (e) {
+    console.error('[FAB] 停止失败:', e)
   }
 }
 
@@ -508,8 +549,12 @@ watch(currentSessionId, () => {
           <textarea v-model="inputText" rows="1" placeholder="向 AI 提问..." class="fab-input"
             @keydown.enter.exact.prevent="send"
             @input="(e: any) => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 56) + 'px' }" />
-          <button @click="send" :disabled="isChatting || !inputText.trim()"
-            class="fab-send" :class="{ 'fab-send--on': inputText.trim() && !isChatting }">
+          <button v-if="isChatting" @click="stopAgent"
+            class="w-7 h-7 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors flex-shrink-0" title="停止">
+            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+          <button v-else @click="send" :disabled="!inputText.trim()"
+            class="fab-send" :class="{ 'fab-send--on': inputText.trim() }">
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
           </button>
         </div>

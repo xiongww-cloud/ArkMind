@@ -247,7 +247,7 @@ async function loadNotes() {
   } catch { notes.value = [] }
 }
 async function loadAll() { await Promise.all([loadNotes(), loadNotebooks(), loadProjects()]) }
-async function loadNotebooks() { try { const r:any = await fetchNotebooks(); notebooks.value = (r?.notebooks||[]).map((n:any)=>({...n,parentId:n.parent_id||null,sortOrder:n.sort_order||0,id:n.id||n.notebook_id})); collapsedNotebooks.value = new Set(notebooks.value.map(n => n.id)) } catch { notebooks.value = [] } }
+async function loadNotebooks() { try { const r:any = await fetchNotebooks(); notebooks.value = (r?.notebooks||[]).map((n:any)=>({...n,parentId:n.parent_id||null,sortOrder:n.sort_order||0,id:n.id||n.notebook_id})); const newIds = new Set(notebooks.value.map(n => n.id)); collapsedNotebooks.value = new Set([...collapsedNotebooks.value].filter(id => newIds.has(id))) } catch { notebooks.value = [] } }
 async function loadProjects() { try { projects.value = await fetchProjects() } catch { projects.value = [] } }
 onMounted(async () => {
   await loadAll()
