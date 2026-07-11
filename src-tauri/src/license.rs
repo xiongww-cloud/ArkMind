@@ -64,40 +64,6 @@ fn get_public_key() -> Result<VerifyingKey, String> {
     VerifyingKey::from_bytes(&vk_arr).map_err(|e| format!("pk parse: {}", e))
 }
 
-pub fn check_license_premium() -> bool {
-    crate::database::with_db(|conn| {
-        let row = conn.query_row(
-            "SELECT product, expires_at FROM license WHERE status='active' ORDER BY id DESC LIMIT 1",
-            [],
-            |r| Ok((r.get::<_, String>(0).unwrap_or_default(), r.get::<_, String>(1).unwrap_or_default())),
-        );
-        match row {
-            Ok((product, expires_at)) => {
-                // 检查 product 类型
-                if product != "advanced" && product != "enhanced" {
-                    return Ok(false);
-                }
-                // 检查有效期
-                if !expires_at.is_empty() && expires_at != "2099-12-31" {
-                    if let Ok(expiry) = chrono::NaiveDate::parse_from_str(&expires_at, "%Y-%m-%d") {
-                        let today = chrono::Local::now().date_naive();
-                        if expiry < today {
-                            // 过期了，同步更新数据库状态
-                            let _ = conn.execute(
-                                "UPDATE license SET status='inactive' WHERE status='active' AND expires_at<?1",
-                                rusqlite::params![expires_at],
-                            );
-                            return Ok(false);
-                        }
-                    }
-                }
-                Ok(true)
-            }
-            Err(_) => Ok(false),
-        }
-    }).unwrap_or(false)
-}
-
 /// 应用启动时扫描并更新过期许可证状态
 pub fn cleanup_expired_licenses() {
     let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();

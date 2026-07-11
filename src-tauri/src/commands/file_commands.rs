@@ -569,7 +569,6 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
     database::run("INSERT OR REPLACE INTO library_file_locations(file_id, folder_id) VALUES(?1,?2)", &[json!(&asset_id), json!(folder_id)]).ok();
     Ok(json!({"success":true}))
 }
-#[tauri::command] pub async fn file_cleanup_if_orphan(_file_id: String) -> Result<Value, String> { Ok(json!({"success":true})) }
 #[tauri::command] pub async fn file_open_product(file_id: String) -> Result<Value, String> { file_preview(file_id).await }
 #[tauri::command] pub async fn file_download_product(data: Value) -> Result<Value, String> { file_download(data).await }
 #[tauri::command] pub async fn file_unlink_from_product(file_id: String, _product_id: String) -> Result<Value, String> {

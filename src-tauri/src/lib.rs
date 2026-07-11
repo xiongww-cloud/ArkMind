@@ -1,5 +1,4 @@
 //! Arkmind - Tauri v2 backend
-#![allow(dead_code)]
 
 mod commands;
 mod crypto;
@@ -181,7 +180,7 @@ pub fn run() {
             // Files
             commands::file_list, commands::file_upload, commands::file_delete,
             commands::file_open, commands::file_download, commands::file_get_path, commands::file_has_oss_files, commands::file_migrate_files,
-            commands::file_update_meta, commands::file_cleanup_if_orphan,
+            commands::file_update_meta,
             commands::file_get_tags, commands::file_add_tag_mapping, commands::file_remove_tag_mapping,
             commands::file_list_by_product, commands::file_open_product, commands::file_download_product,
             commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes,
@@ -197,8 +196,7 @@ pub fn run() {
             commands::notes_list_all, commands::notes_list_daily, commands::notes_list_by_project, commands::notes_list_orphan, commands::notes_list_trash, commands::notes_list_archive,
             commands::notes_create, commands::notes_update, commands::notes_delete, commands::notes_restore, commands::notes_permanent_delete,
             commands::notes_list_tags, commands::notes_create_tag, commands::notes_search_tags, commands::notes_list_tags_by_type,
-            commands::notes_generate_ai_tags, commands::notes_rebuild_fts, commands::notes_upgrade_fts_triggers,
-            commands::notes_get_inherited_tags, commands::notes_get_project_knowledge_graph, commands::notes_semantic_recall,
+            commands::notes_get_inherited_tags,
             commands::notes_list_tag_mappings, commands::notes_add_tag_mapping, commands::notes_remove_tag_mapping, commands::notes_count_by_notebook,
             // Notebooks
             commands::notebook_list, commands::notebook_create, commands::notebook_update, commands::notebook_delete,

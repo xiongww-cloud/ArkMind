@@ -76,7 +76,6 @@ export async function updateFileMeta(fileId: string, data: Record<string,any>): 
 export async function openFile(fileId: string): Promise<void> { return invoke('file_open', { versionId: fileId }) }
 export async function downloadFile(versionId: string, suggestedName?: string): Promise<{success:boolean;error?:string}> { const { save } = await import('@tauri-apps/plugin-dialog'); const name = suggestedName || 'download'; const p = await save({ defaultPath: name }); if(!p) return {success:false,error:'cancelled'}; return invoke('file_download', { data: { versionId, savePath: p } }) }
 export async function getDownloadUrl(versionId: string): Promise<string> { return invoke('file_get_path', { versionId }) }
-export async function fileRepairParsedText(): Promise<any> { return invoke('file_repair_parsed_text') }
 export async function fileAddTagMapping(fileId: string, tagName: string): Promise<void> { return invoke('file_add_tag_mapping', { fileId, tagName }) }
 export async function fileRemoveTagMapping(fileId: string, tagId: string): Promise<void> { return invoke('file_remove_tag_mapping', { fileId, tagId }) }
 
@@ -167,10 +166,6 @@ export async function fetchNotebooks(): Promise<FetchNotebooksResponse> { return
 export async function createNotebook(data: Record<string,any>): Promise<{notebook?:NotebookRow;id?:string}> { return invoke('notebook_create', { data }) }
 export async function updateNotebook(data: Record<string,any>): Promise<void> { return invoke('notebook_update', { data }) }
 export async function deleteNotebook(notebookId: string): Promise<void> { return invoke('notebook_delete', { notebookId }) }
-export const fetchNotebooksV1 = fetchNotebooks
-export async function createNotebookV1(data: {name:string;color?:string;id?:string}): Promise<any> { return invoke('notebook_create', { data }) }
-export async function updateNotebookV1(data: any): Promise<any> { return invoke('notebook_update', { data }) }
-export const deleteNotebookV1 = deleteNotebook
 
 // ─── Partners (Unified) ─────────────────────────────────────
 export async function fetchPartners(projectId: string, partnerType?: string): Promise<any[]> { return invoke('partner_list', { projectId, partnerType: partnerType || null }) }
@@ -248,8 +243,6 @@ export async function aiSyncTrigger(): Promise<{success:boolean}> { return invok
 export async function aiTestProvider(data: Record<string,any>): Promise<{success:boolean;message?:string;error?:string}> { return invoke('ai_test_provider', { data }) }
 export async function aiTestEmbedding(data: Record<string,any>): Promise<{success:boolean;message?:string;error?:string}> { return invoke('ai_test_embedding', { data }) }
 export async function aiSyncDiagnose(): Promise<any> { return invoke('ai_sync_diagnose') }
-export async function aiSyncReset(): Promise<{success:boolean}> { return invoke('ai_sync_reset') }
-export async function aiSyncDiagnoseFailedFiles(): Promise<any> { return invoke('ai_sync_diagnose_failed_files') }
 
 // ─── KB Debug & Agent Tools ─────────────────────────────────────
 export async function kbSearchDebug(query: string): Promise<any> { return invoke('kb_search_debug', { query }) }
@@ -328,20 +321,14 @@ export async function customerLinkProject(customerId: string, projectId: string)
 export async function customerUnlinkProject(customerId: string, projectId: string): Promise<any> { return invoke('customer_unlink_project', { customerId, projectId }) }
 export async function updateStorageConfig(data: any): Promise<any> { return invoke('storage_update_config', { data }) }
 export async function testOssConnection(): Promise<any> { return invoke('oss_test_connection') }
-export async function startMigration(data: any): Promise<any> { return invoke('storage_migrate', { data }) }
 export async function getDefaultStoragePath(): Promise<string> { return invoke('storage_default_path') }
-export async function getMigrationProgress(): Promise<any> { return invoke('storage_migrate_progress') }
-export async function hasOssFiles(): Promise<any> { return invoke('file_has_oss_files') }
 export async function migrateFiles(oldPath: string, newPath: string): Promise<any> { return invoke('file_migrate_files', { oldPath, newPath }) }
 
 export async function fetchMigrationProgress(): Promise<any> { return invoke('storage_migrate_progress') }
-export async function uploadAvatar(formData: any): Promise<any> { return { success: true } }
-export async function startStorageMigration(data: any): Promise<any> { return invoke('storage_migrate', { data }) }
 
 // ─── Export ────────────────────────────────────────────────────
 export async function exportAllData(domains: string[], savePath: string): Promise<{success:boolean;error?:string}> { return invoke('export_data', { domains, savePath }) }
 export async function importData(filePath: string): Promise<any> { return invoke('import_data', { filePath }) }
-export async function dbExportRaw(): Promise<any> { return invoke('db_export_raw') }
 export async function productsExport(): Promise<any> { return invoke('products_export') }
 export async function productsImport(data: any): Promise<any> { return invoke('products_import', { data }) }
 export async function productsExportFile(): Promise<any> { return invoke('products_export_file') }

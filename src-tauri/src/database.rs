@@ -115,16 +115,11 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     // Drop old unique constraint (was based on file_id/asset_id, now using id/relation_id)
     let _ = conn.execute_batch("DROP INDEX IF EXISTS idx_file_rel_unique;");
 
-    repair_empty_file_ext(&conn);
     migrate_files_to_file_assets(&conn);
-
-    // ★ 将旧映射表数据迁入 file_relations（若无 object_id 则直接使用 file_id）
-    migrate_to_file_relations(&conn);
     // ★ 旧版 file_objects/file_versions → 填充 file_relations.file_id，然后清理
     migrate_file_relations_add_file_id(&conn);
     dedupe_file_assets_hash(&conn);
     migrate_folder_to_library_locations(&conn);
-    fix_assets_fts_schema(&conn);
 
     // ★ 迁移 user_policies → source_data (POLICY)
     migrate_user_policies_to_source_data(&conn);
@@ -863,9 +858,6 @@ pub fn check_license_premium() -> bool {
     }
 }
 
-// Placeholder repair functions
-fn repair_file_product_mapping_fk(_conn: &rusqlite::Connection) {}
-fn repair_empty_file_ext(_conn: &rusqlite::Connection) {}
 fn migrate_files_to_file_assets(conn: &rusqlite::Connection) {
     let has_old = conn.prepare("SELECT global_name FROM file_assets LIMIT 0").is_ok();
     if has_old {
@@ -924,9 +916,6 @@ fn migrate_files_to_file_assets(conn: &rusqlite::Connection) {
         println!("[数据库] 文件相关表已重建为新 schema");
     }
 }
-
-/// ★ 将旧的五张域映射表迁移到 file_relations（新版直接使用 file_id）
-fn migrate_to_file_relations(_conn: &rusqlite::Connection) {}
 
 /// ★ 从旧版 file_objects/file_versions 反填 file_relations.file_id，然后清理旧表
 fn migrate_file_relations_add_file_id(conn: &rusqlite::Connection) {
@@ -988,8 +977,6 @@ fn dedupe_file_assets_hash(conn: &rusqlite::Connection) {
     }
     println!("[数据库] content_hash 去重完成");
 }
-
-fn fix_assets_fts_schema(_conn: &rusqlite::Connection) {}
 
 
 

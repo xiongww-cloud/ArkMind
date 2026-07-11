@@ -32,21 +32,17 @@
     "@tiptap/starter-kit": "^2.11.0",
     "@tiptap/vue-3": "^2.11.0",
     "@vue-office/excel": "^1.7.14",
-    "ali-oss": "^6.23.0",
     "apexcharts": "^5.15.0",
-    "axios": "^1.7.9",
     "dompurify": "^3.2.4",
     "exceljs": "^4.4.0",
     "file-saver": "^2.0.5",
     "mammoth": "^1.8.0",
     "marked": "^15.0.12",
     "pinia": "^2.1.7",
-    "sortablejs": "^1.15.7",
     "sql.js": "^1.11.0",
     "vue-demi": "^0.14.10",
     "vue-router": "^4.3.0",
-    "vue3-apexcharts": "^1.11.1",
-    "vuedraggable": "^4.1.0"
+    "vue3-apexcharts": "^1.11.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
