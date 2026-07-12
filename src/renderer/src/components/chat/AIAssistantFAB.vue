@@ -54,7 +54,6 @@ const messages = computed<ChatMessage[]>({
 
 function newSession() {
   stopAllTypewriters()
-  rendered.value = {}
   const id = crypto.randomUUID()
   const now = new Date().toLocaleString('sv-SE')
   sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: now, updatedAt: now })
@@ -65,17 +64,15 @@ function newSession() {
 async function switchSession(id: string) {
   if (currentSessionId.value === id) return
   stopAllTypewriters()
-  rendered.value = {}
   currentSessionId.value = id
   // 渲染当前会话的 AI 消息
   const session = currentSession.value
   if (session) {
-    await Promise.all(session.messages.map((m) => {
-      if (m.role === 'assistant' && m.content && !m.thinking) {
-        return renderMd(m.content.replace(/~/g, '～')).then(html => { rendered.value[m.id] = html })
+    session.messages.forEach((m) => {
+      if (m.role === 'assistant' && m.content && !m.thinking && !rendered.value[m.id]) {
+        renderMd(m.content.replace(/~/g, '～')).then(html => { rendered.value[m.id] = html })
       }
-      return Promise.resolve()
-    }))
+    })
   }
   scrollChat()
 }
@@ -205,7 +202,14 @@ function stopAllTypewriters() {
     const timer = typewriterTimers.get(msgId)
     if (timer) clearInterval(timer)
     const msg = messages.value.find(m => m.id === msgId)
-    if (msg) { msg.typewriterDone = true }
+    if (msg) {
+      // 确保渲染完成后再标记完成
+      const full = msg.typewriterText || msg.content || ''
+      renderMd(full.replace(/~/g, '～')).then(h => {
+        rendered.value[msgId] = h
+        msg.typewriterDone = true
+      }).catch(() => { msg.typewriterDone = true })
+    }
   }
   activeTypewriters.clear()
   typewriterTimers.clear()
@@ -230,7 +234,11 @@ function startTypewriter(msgId: string, text: string) {
       typewriterTimers.delete(msgId)
       activeTypewriters.delete(msgId)
       msg.typewriterText = full
-      msg.typewriterDone = true
+      // 确保渲染完成后再标记 typewriterDone
+      renderMd(full).then(h => {
+        rendered.value[msgId] = h
+        msg.typewriterDone = true
+      }).catch(() => { msg.typewriterDone = true })
       return
     }
     msg.typewriterText = full.slice(0, pos)
@@ -243,7 +251,6 @@ async function send() {
   const q = inputText.value.trim()
   if (!q || isChatting.value) return
   stopAllTypewriters()
-  rendered.value = {}
   inputText.value = ''
   
   // 如果是第一条消息，用用户提问作为会话名称
