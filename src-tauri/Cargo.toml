@@ -52,7 +52,7 @@ infer = "0.15"
 text-splitter = "0.29"
 
 # PDFium
-pdfium-render = { version = "0.8.19", default-features = false, features = ["pdfium_latest", "thread_safe", "image_025"] }
+pdfium-render = { version = "0.8.19", default-features = false, features = ["static", "pdfium_latest", "thread_safe", "image_025"] }
 
 # Image processing (for OCR base64 encoding, PDF rendering)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
