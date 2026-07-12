@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
+import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { fetchTodos, createTodo, toggleTodo, deleteTodo, updateTodo } from '@/api/db-client'
 import AppIcon from '@/components/common/AppIcon.vue'
@@ -67,6 +68,10 @@ async function toggleProjectTodo(todoId: string) {
 }
 
 async function removeProjectTodo(todoId: string) {
+  const todo = projectTodos.value.find((t: any) => t.id === todoId)
+  const todoTitle = todo?.title || '此待办'
+  const ok = await dangerConfirm({ title: '删除待办', message: `确定要删除待办「${todoTitle}」吗？此操作不可撤销。`, confirmText: '删除' })
+  if (!ok) return
   try {
     await deleteTodo(todoId)
     selectedTodoId.value = null

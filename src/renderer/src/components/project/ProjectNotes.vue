@@ -8,6 +8,7 @@ import { toast } from '@/composables/useToast'
 import { formatDateTime } from '@/utils/time'
 import { fetchProjectNotes, createNote, updateNote, deleteNote, fetchProjects } from '@/api/db-client'
 import AppIcon from '@/components/common/AppIcon.vue'
+import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
 import ProjectFilePanel from '@/components/project/ProjectFilePanel.vue'
 
 const props = defineProps<{ projectId: string }>()
@@ -75,6 +76,8 @@ const atOpen = ref(false)
 const allProjects = ref<any[]>([])
 
 function openAtSelector() { atOpen.value = true }
+
+watch(atOpen, (v) => { if (v) loadAllProjects() })
 
 function insertProjectLink(p: any) {
   if (!noteEditor.value) return
@@ -315,5 +318,6 @@ defineExpose({ closeNotePopups })
       <ProjectFilePanel ref="filePanelRef" :project-id="projectId" @insert-file="handleFilePanelInsert" />
     </div>
     <div v-else class="flex-1 flex items-center justify-center text-surface-300 text-xs bg-white min-w-0">从左侧选择一个笔记</div>
+    <AtMentionSelector v-if="atOpen" :projects="allProjects" @select-project="insertProjectLink($event)" @select-file="insertFileLink($event)" @close="atOpen = false" />
   </div>
 </template>
