@@ -1,5 +1,0 @@
-[target.aarch64-apple-darwin]
-rustflags = ["-L", "src-tauri/bin"]
-
-[target.x86_64-apple-darwin]
-rustflags = ["-L", "src-tauri/bin"]
