@@ -4,17 +4,6 @@
 use crate::database;
 use serde_json::json;
 use sha2::{Sha256, Digest};
-use std::sync::atomic::AtomicBool;
-
-static WATCHDOG_RUNNING: AtomicBool = AtomicBool::new(false);
-static LANCEDB_CHECKED: AtomicBool = AtomicBool::new(false);
-
-struct MaterializedResult {
-    text: String, project_id: Option<String>, dedup_key: String,
-    chunk_prefix: Option<String>, created_at: Option<String>, tags: Vec<String>,
-    source_data_id: Option<String>, real_title: String,
-}
-
 pub(crate) fn compute_content_hash(content: &str) -> String {
     let mut h = Sha256::new(); h.update(content.as_bytes()); hex::encode(&h.finalize()[..32])
 }
@@ -210,52 +199,6 @@ async fn import_sync_document(
 // ═══════════════════════════════════════════════════════════════════
 // Materialization: six source tables → natural language
 // ═══════════════════════════════════════════════════════════════════
-
-async fn materialize_task(source_table: &str, source_id: &str) -> MaterializedResult {
-    let empty = MaterializedResult { text: String::new(), project_id: None, dedup_key: format!("{source_table}-{source_id}"), chunk_prefix: None, created_at: None, tags: Vec::new(), source_data_id: None, real_title: String::new() };
-    let key = format!("{source_table}-{source_id}");
-
-    // ★ 统一从 source_data 读清洗后的内容，不做附加上下文拼接
-    let source_type_q = match source_table {
-        "chat_sessions" => "CHAT".to_string(),
-        _ => source_table.to_uppercase().trim_end_matches('S').to_string(),
-    };
-    eprintln!("[物化任务] source_table={}, source_id={}, query_type={}", source_table, source_id, source_type_q);
-    let sd = database::get(
-        "SELECT id,title,content,updated_at FROM source_data WHERE source_type=?1 AND source_id=?2",
-        &[json!(&source_type_q), json!(source_id)],
-    ).ok().flatten();
-
-    match source_table {
-        "files" | "notes" | "products" | "projects" | "todos" | "chat" => {
-            let row = match sd {
-                Some(r) => {
-                    let content_len = r["content"].as_str().map(|s| s.len()).unwrap_or(0);
-                    eprintln!("[物化任务] 找到 source_data: type={} content_len={}", source_type_q, content_len);
-                    r
-                }
-                None => {
-                    eprintln!("[物化任务] 未找到 source_data: type={} id={}", source_type_q, source_id);
-                    return empty;
-                }
-            };
-            let content = row["content"].as_str().unwrap_or("");
-            if content.is_empty() { return empty; }
-            let title = row["title"].as_str().unwrap_or("");
-            // text 不包含 title，由 build_chunk_metadata 提供元信息
-            let text = content.to_string();
-            let source_data_id = row["id"].as_str().map(String::from);
-
-            // 真实标题
-            let real_title = title.to_string();
-
-            let created_at = row["updated_at"].as_str().map(|s| s.to_string());
-            MaterializedResult { text, project_id: None, dedup_key: key, chunk_prefix: None, created_at, tags: Vec::new(), source_data_id, real_title }
-        }
-        _ => empty,
-    }
-}
-
 
 // ═══════════════════════════════════════════════════════════════════
 // Materialize and Store (new interface, used by knowledge_pipeline)

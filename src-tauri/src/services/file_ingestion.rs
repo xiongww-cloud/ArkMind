@@ -32,10 +32,6 @@ pub fn start(app_handle: tauri::AppHandle) {
     });
 }
 
-pub fn is_running() -> bool {
-    INGESTION_RUNNING.load(Ordering::Acquire)
-}
-
 fn ingestion_loop(app: tauri::AppHandle) {
     let mut loop_tick: u64 = 0;
 

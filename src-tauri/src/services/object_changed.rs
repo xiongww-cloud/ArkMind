@@ -5,7 +5,9 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectType {
-    Note, Product, Project, Todo, File, Memory,
+    Note, Product, Project, Todo, File,
+    #[allow(dead_code)]
+    Memory,
 }
 
 impl ObjectType {
@@ -16,6 +18,7 @@ impl ObjectType {
             Self::File => "files", Self::Memory => "memory",
         }
     }
+    #[allow(dead_code)]
     pub fn has_vector(self) -> bool {
         matches!(self, Self::Note | Self::Product | Self::Project | Self::Todo | Self::File | Self::Memory)
     }

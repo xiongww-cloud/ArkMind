@@ -84,39 +84,4 @@ pub async fn chat_completion(system: &str, user: &str, cfg: Option<ChatConfig>) 
     Ok(body["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string())
 }
 
-pub async fn chat_completion_stream(messages: &[Value], on_token: &(dyn Fn(&str) + Send + Sync)) -> Result<String, String> {
-    let config = get_chat_config();
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let mut req = HTTP_CLIENT.post(&url).json(&json!({"model": config.model, "max_tokens": config.max_tokens, "temperature": 0.3, "stream": true, "messages": messages}));
-    if !config.api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", config.api_key)); }
-    let resp = req.send().await.map_err(|e| format!("stream chat error: {}", e))?;
-    let st = resp.status();
-    if !st.is_success() { let b = resp.text().await.unwrap_or_default(); return Err(format!("stream chat HTTP {}: {}", st, b)); }
-    let mut full = String::new();
-    let mut stream = resp.bytes_stream();
-    use futures::StreamExt;
-    let mut buffer = String::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("stream read: {}", e))?;
-        let text = String::from_utf8_lossy(&chunk);
-        buffer.push_str(&text);
-        // 按行处理 SSE
-        loop {
-            let line_end = match buffer.find('\n') { Some(n) => n, None => { break } };
-            let line = buffer[..line_end].trim().to_string();
-            buffer = buffer[line_end + 1..].to_string();
-            if line.is_empty() || line.starts_with(':') { continue; }
-            if line.starts_with("data: ") {
-                let data = &line[6..];
-                if data == "[DONE]" { break; }
-                if let Ok(v) = serde_json::from_str::<Value>(data) {
-                    if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
-                        full.push_str(delta);
-                        on_token(delta);
-                    }
-                }
-            }
-        }
-    }
-    Ok(full)
-}
+

@@ -6,7 +6,6 @@ use rusqlite::{Connection, Result as SqliteResult};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use base64::Engine;
-use serde_json::json;
 
 static DB: Lazy<Mutex<Option<Connection>>> = Lazy::new(|| Mutex::new(None));
 
@@ -198,9 +197,6 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
             }
         }
     }
-
-    // ★ 初始化 AI 触发器（已禁用，改用时间戳驱动）
-    // init_ai_queue_triggers(&conn)?;
 
     // ★ ★ CHAT 去重：清理重复 + 唯一索引（P0 修复）
     let _ = conn.execute_batch("DELETE FROM source_data WHERE rowid NOT IN (SELECT MIN(rowid) FROM source_data GROUP BY source_type, source_id)");
@@ -553,17 +549,6 @@ pub(crate) fn all(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<V
     })
 }
 
-/// ★ Event Bus: 对象变更事件
-pub(crate) fn emit_event(
-    event_type: &str, object_type: &str, object_id: &str,
-    payload: serde_json::Value, source: &str, trace_id: &str,
-) {
-    run(
-        "INSERT INTO event_store(event_type,object_type,object_id,payload,source,trace_id) VALUES(?1,?2,?3,?4,?5,?6)",
-        &[json!(event_type), json!(object_type), json!(object_id), payload, json!(source), json!(trace_id)],
-    ).ok();
-}
-
 pub(crate) fn get(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<Option<serde_json::Value>> {
     all(sql, params).map(|rows| rows.into_iter().next())
 }
@@ -633,41 +618,6 @@ fn init_source_data_fts_triggers(conn: &rusqlite::Connection) -> rusqlite::Resul
 
 /// ★ 全量重建 global_search_fts 索引（幂等）。
 ///
-/// FTS5 'rebuild' 命令会：
-///   1. 清空当前倒排索引
-///   2. 遍历 source_data 每一行，通过 content_rowid 重新分词建索引
-/// 这个过程是原子化的本地操作，不需要网络调用，耗时与 source_data 行数成正比。
-fn rebuild_global_search_fts(conn: &rusqlite::Connection) {
-    let before: i64 = conn
-        .query_row("SELECT COUNT(*) FROM global_search_fts", [], |r| r.get(0))
-        .unwrap_or(-1);
-    let sd_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM source_data", [], |r| r.get(0))
-        .unwrap_or(0);
-
-    // 仅在 FTS 索引落后于源数据时才重建（减少不必要的重建开销）
-    if before < sd_count || before < 0 {
-        match conn.execute_batch(
-            "INSERT INTO global_search_fts(global_search_fts) VALUES('rebuild');"
-        ) {
-            Ok(()) => {
-                let after: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM global_search_fts", [], |r| r.get(0))
-                    .unwrap_or(0);
-                println!(
-                    "[数据库] global_search_fts 索引重建: {} → {} 条 (源数据 {})",
-                    before, after, sd_count
-                );
-            }
-            Err(e) => eprintln!("[数据库] global_search_fts 重建失败: {e}"),
-        }
-    } else {
-        println!(
-            "[数据库] global_search_fts 索引已同步 ({} 条 = 源数据 {})",
-            before, sd_count
-        );
-    }
-}
 
 /// Initialize AFTER INSERT/UPDATE/DELETE triggers for kk_chunks_fts (content-sync)
 fn init_kb_fts_triggers(conn: &rusqlite::Connection) -> SqliteResult<()> {
@@ -717,108 +667,6 @@ fn seed_kb_fts(conn: &rusqlite::Connection) {
     } else {
         println!("[数据库] kk_chunks_fts 索引已是最新");
     }
-}
-
-fn init_ai_queue_triggers(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    // ── AI sync queue triggers (AFTER INSERT/UPDATE on business tables) ──
-    // ★ 先清除旧的结构化数据 trigger（products/todos），避免已存在的数据库残留
-    if let Err(e) = conn.execute_batch(
-        "DROP TRIGGER IF EXISTS ai_sync_products_insert;
-         DROP TRIGGER IF EXISTS ai_sync_products_update;"
-    ) { eprintln!("[数据库] 清除旧 products trigger 失败: {}", e); }
-    // Notes: 仅原始 HTML content > 1000 字符的笔记入队（短笔记由摄入中台渲染键值对，不走 chunk）
-    for (table, id_col, source_type, length_filter) in &[
-        ("file_assets","id","files", ""),
-        ("notes","note_id","notes", ""),
-        ("products","id","products", ""),
-        ("projects","id","projects", ""),
-    ] {
-        let batch = format!(
-            "DROP TRIGGER IF EXISTS ai_sync_{table}_insert;
-             DROP TRIGGER IF EXISTS ai_sync_{table}_update;
-             CREATE TRIGGER ai_sync_{table}_insert AFTER INSERT ON {table} BEGIN
-               INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id)
-               SELECT '{source_type}',new.{id_col}{length_filter};
-             END;
-             CREATE TRIGGER ai_sync_{table}_update AFTER UPDATE ON {table} BEGIN
-               INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id)
-               SELECT '{source_type}',new.{id_col}{length_filter};
-               UPDATE ai_sync_queue
-               SET is_embedded=0,retry_count=0,last_error='',updated_at=datetime('now', 'localtime')
-               WHERE source_table='{source_type}' AND source_id=new.{id_col}
-                 AND (updated_at IS NULL OR datetime(updated_at,'+5 minutes')<datetime('now', 'localtime'));
-             END;"
-        );
-        if let Err(e) = conn.execute_batch(&batch) {
-            eprintln!("[数据库] ai_sync 触发器 '{}' 失败: {}", table, e);
-        }
-    }
-    // ★ todos: 仅未完成待办入队（已完成不进知识管线）
-    if let Err(e) = conn.execute_batch(
-        "DROP TRIGGER IF EXISTS ai_sync_todos_insert;
-         DROP TRIGGER IF EXISTS ai_sync_todos_update;
-         CREATE TRIGGER ai_sync_todos_insert AFTER INSERT ON todos BEGIN
-           INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id)
-           VALUES('todos',new.id);
-         END;
-         CREATE TRIGGER ai_sync_todos_update AFTER UPDATE ON todos BEGIN
-           INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id)
-           VALUES('todos',new.id);
-           UPDATE ai_sync_queue
-           SET is_embedded=0,retry_count=0,last_error='',updated_at=datetime('now', 'localtime')
-           WHERE source_table='todos' AND source_id=new.id
-             AND (updated_at IS NULL OR datetime(updated_at,'+5 minutes')<datetime('now', 'localtime'));
-         END;"
-    ) { eprintln!("[数据库] ai_sync todos 触发器失败: {}", e); }
-    // ── AI tag queue triggers ──
-    for (st, table, id_col) in &[
-        ("notes","notes","note_id"),
-        ("files","file_assets","id"),
-        ("products","products","id"),
-        ("projects","projects","id"),
-        ("todos","todos","id"),
-    ] {
-        let batch = format!(
-            "DROP TRIGGER IF EXISTS ai_tag_{st}_insert;
-             DROP TRIGGER IF EXISTS ai_tag_{st}_update;
-             CREATE TRIGGER ai_tag_{st}_insert AFTER INSERT ON {table} BEGIN
-               INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id)
-               SELECT '{st}',new.{id_col}
-               WHERE NOT EXISTS (
-                 SELECT 1 FROM tags t
-                 INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id
-                 WHERE tm.entity_type='{st}' AND tm.entity_id=new.{id_col} AND t.type='ai_shadow'
-               );
-             END;
-             CREATE TRIGGER ai_tag_{st}_update AFTER UPDATE ON {table} BEGIN
-               UPDATE ai_tag_queue
-               SET status=0,retry_count=0,last_error='',updated_at=datetime('now', 'localtime')
-               WHERE source_type='{st}' AND source_id=old.{id_col} AND status!=1
-                 AND NOT EXISTS (
-                   SELECT 1 FROM tags t
-                   INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id
-                   WHERE tm.entity_type='{st}' AND tm.entity_id=new.{id_col} AND t.type='ai_shadow'
-                 );
-             END;"
-        );
-        if let Err(e) = conn.execute_batch(&batch) {
-            eprintln!("[数据库] ai_tag 触发器 '{}' 失败: {}", st, e);
-        }
-    }
-    // Seed queues (idempotent)
-    if let Err(e) = conn.execute_batch(
-        "INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id) SELECT 'files',id FROM file_assets;
-         INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id) SELECT 'products',id FROM products;
-         INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id) SELECT 'projects',id FROM projects;
-         INSERT OR IGNORE INTO ai_sync_queue(source_table,source_id) SELECT 'todos',id FROM todos WHERE done=0;"
-    ) { eprintln!("[数据库] ai_sync 队列播种失败: {}", e); }
-    if let Err(e) = conn.execute_batch(
-        "INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'notes',note_id FROM notes;
-         INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'files',id FROM file_assets;
-         INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'products',id FROM products;
-         INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'projects',id FROM projects;"
-    ) { eprintln!("[数据库] ai_tag 队列播种失败: {}", e); }
-    Ok(())
 }
 
 pub fn check_license_premium() -> bool {
@@ -1342,20 +1190,6 @@ pub fn purge_stale_queue_entries() {
     }
 }
 
-pub fn seed_tag_queue() {
-    if let Err(e) = with_db(|conn| {
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'notes',note_id FROM notes;
-             INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'files',id FROM file_assets;
-             INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'products',id FROM products;
-             INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'projects',id FROM projects;
-             INSERT OR IGNORE INTO ai_tag_queue(source_type,source_id) SELECT 'todos',id FROM todos;"
-        )
-    }) {
-        eprintln!("[数据库] 播种标签队列失败: {}", e);
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // FTS5 Search — Child-only symmetric retrieval, BM25(1.0, 0.3)
 // ═══════════════════════════════════════════════════════════════════
@@ -1422,41 +1256,6 @@ pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) {
         // source_data 写入成功后触发同步入队和打标
         crate::services::ai_sync::trigger_sync("files", file_id);
     }
-}
-
-/// Batch-fetch parent blocks by chunk IDs — returns (parent_id, parent_content) tuples
-pub fn batch_get_parents_by_chunks(chunk_ids: &[i64]) -> SqliteResult<Vec<(i64, String)>> {
-    if chunk_ids.is_empty() { return Ok(Vec::new()); }
-    let placeholders: Vec<String> = chunk_ids.iter().map(|_| "?".to_string()).collect();
-    let sql = format!(
-        "SELECT dp.id, dp.content FROM knowledge_chunks kc \
-         INNER JOIN documents_parent dp ON dp.id = kc.parent_id \
-         WHERE kc.id IN ({})",
-        placeholders.join(",")
-    );
-    with_db(|conn| {
-        let params: Vec<rusqlite::types::Value> = chunk_ids.iter().map(|&id| rusqlite::types::Value::Integer(id)).collect();
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    })
-}
-
-/// Fetch full parent blocks by a list of parent IDs
-pub fn batch_get_parent_blocks(parent_ids: &[i64]) -> SqliteResult<Vec<(i64, String)>> {
-    if parent_ids.is_empty() { return Ok(Vec::new()); }
-    let placeholders: Vec<String> = parent_ids.iter().map(|_| "?".to_string()).collect();
-    let sql = format!("SELECT id, content FROM documents_parent WHERE id IN ({})", placeholders.join(","));
-    with_db(|conn| {
-        let params: Vec<rusqlite::types::Value> = parent_ids.iter().map(|&id| rusqlite::types::Value::Integer(id)).collect();
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    })
 }
 
 /// 迁移：将 source_data.id 从 INTEGER 改为 TEXT（使用 source_id）

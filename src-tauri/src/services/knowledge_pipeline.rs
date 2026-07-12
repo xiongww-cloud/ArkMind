@@ -202,17 +202,6 @@ async fn tag_loop() {
     }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────
-
-async fn run_timeout<F, Fut>(name: &str, f: F) -> bool
-where F: FnOnce() -> Fut, Fut: std::future::Future<Output = bool>,
-{
-    match tokio::time::timeout(Duration::from_secs(30), f()).await {
-        Ok(result) => result,
-        Err(_) => { log::warn!("[知识管线] {} 超时 (>30秒)", name); false }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

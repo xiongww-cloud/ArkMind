@@ -1,8 +1,6 @@
 //! RRF fusion engine — FTS5 + LanceDB symmetric retrieval
 use std::collections::HashMap;
 
-const RRF_K: f64 = 60.0;
-
 pub fn rrf_fusion(fts5: &[(String, f64)], vector: &[(String, f64)], k: f64) -> Vec<(String, f64)> {
     let mut scores: HashMap<String, f64> = HashMap::new();
     for (rank, (id, _)) in fts5.iter().enumerate() { *scores.entry(id.clone()).or_insert(0.0) += 1.0 / (k + (rank + 1) as f64); }

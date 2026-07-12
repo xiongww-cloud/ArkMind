@@ -20,59 +20,6 @@ pub fn notify_changed(source_type: &str, source_id: &str) {
     crate::services::push_pipeline::enqueue_push(source_type, source_id, "change");
 }
 
-/// 同步删除对象：清理 chunks + FTS5 + vector + LanceDB
-/// 用于文件删除等需要立即清理的场景
-pub fn delete_object(source_type: &str, source_id: &str) {
-    eprintln!("[记忆库] delete_object: {}/{}", source_type, source_id);
-    // 1. 收集 chunk ids
-    let chunk_ids: Vec<i64> = crate::database::all(
-        "SELECT id FROM knowledge_chunks WHERE source_type=?1 AND source_id=?2",
-        &[json!(source_type), json!(source_id)],
-    ).unwrap_or_default().iter().filter_map(|r| r["id"].as_i64()).collect();
-
-    // 2. 清理 FTS5
-    for cid in &chunk_ids {
-        let _ = crate::database::run("INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES('delete', ?)", &[json!(cid)]);
-    }
-
-    // 3. 禁用触发器，避免级联删除时冲突
-    let triggers = [
-        "sd_chunks_delete", "sd_fts_delete", "sd_fts_update",
-        "kk_chunks_fts_delete", "kk_chunks_fts_insert", "kk_chunks_fts_update",
-    ];
-    for t in &triggers {
-        crate::database::run(&format!("DROP TRIGGER IF EXISTS {}", t), &[]).ok();
-    }
-
-    // 4. 删除 knowledge_chunks
-    if !chunk_ids.is_empty() {
-        let ph: Vec<String> = chunk_ids.iter().map(|_| "?".to_string()).collect();
-        let params: Vec<serde_json::Value> = chunk_ids.iter().map(|id| json!(id)).collect();
-        let _ = crate::database::run(&format!("DELETE FROM knowledge_chunks WHERE id IN ({})", ph.join(",")), &params);
-    }
-
-    // 5. 删除 source_data
-    let _ = crate::database::run(
-        "DELETE FROM source_data WHERE source_type=?1 AND source_id=?2",
-        &[json!(source_type), json!(source_id)],
-    );
-
-    // 6. 重建触发器
-    restore_fts_triggers();
-
-    // 7. 清理 vector_cache + LanceDB
-    if !chunk_ids.is_empty() {
-        let ph: Vec<String> = chunk_ids.iter().map(|_| "?".to_string()).collect();
-        let params: Vec<serde_json::Value> = chunk_ids.iter().map(|id| json!(id)).collect();
-        let _ = crate::database::run(&format!("DELETE FROM vector_cache WHERE chunk_id IN ({})", ph.join(",")), &params);
-        if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
-            if let Some(ref c) = *g {
-                let _ = c.delete_chunks_by_rowids(&chunk_ids);
-            }
-        }
-    }
-}
-
 /// 文件上传后调用：入队等待推送
 /// 业务层只需传入 file_id，push_worker 完成剩余工作
 pub fn notify_file_upload(file_id: &str) {

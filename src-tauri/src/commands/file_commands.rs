@@ -4,11 +4,6 @@ use sha2::{Sha256, Digest};
 use std::io::{Read, BufReader};
 use std::fs::File;
 
-/// Unified knowledge base cleanup for any source type.
-pub fn cleanup_kb(source_type: &str, source_id: &str) {
-    crate::services::knowledge_lifecycle::delete_object(source_type, source_id);
-}
-
 use std::sync::Mutex;
 static STORAGE_BASE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -618,4 +613,3 @@ fn resolve_file_asset_id(relation_id: &str) -> Option<String> {
     }
     Ok(json!({"success":true}))
 }
-#[tauri::command] pub async fn file_repair_() -> Result<Value, String> { Ok(json!({"success":true})) }

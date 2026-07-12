@@ -40,6 +40,7 @@ impl GlobalHitCounter {
     pub fn increment(&self) {
         self.count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+    #[allow(dead_code)]
     pub fn take(&self) -> u64 {
         self.count.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
@@ -121,68 +122,12 @@ pub fn activate_child_chunk(child_id: i64) {
 // Object Links — Hebbian object co-activation (Object-level Memory)
 // ═══════════════════════════════════════════════════════════════════
 
-/// 确保 object_links 表存在（在 database::init 启动时调用）
-pub fn init_object_links() {
-    let _ = database::run(
-        "CREATE TABLE IF NOT EXISTS object_links (
-            source_id TEXT NOT NULL,
-            target_id TEXT NOT NULL,
-            weight REAL DEFAULT 1.0,
-            last_seen TEXT NOT NULL,
-            PRIMARY KEY(source_id, target_id)
-        )",
-        &[],
-    );
-    let _ = database::run("CREATE INDEX IF NOT EXISTS idx_ol_source ON object_links(source_id)", &[]);
-    let _ = database::run("CREATE INDEX IF NOT EXISTS idx_ol_target ON object_links(target_id)", &[]);
-}
-
 /// Helper: parse SQLite datetime string → unix seconds
 fn parse_datetime_to_secs(s: &str) -> f64 {
     if let Ok(ts) = s.parse::<i64>() { return ts as f64; }
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|dt| dt.and_utc().timestamp() as f64)
         .unwrap_or(0.0)
-}
-
-/// 共同激活（搜索路径）：将共同出现的 object_ids 建立 Hebbian 链接
-/// 使用与 chunk synapse 相同的衰减 + lerp 公式
-pub fn update_object_links(object_ids: &[String]) {
-    let mut unique: Vec<String> = object_ids.iter().cloned().collect();
-    unique.sort();
-    unique.dedup();
-    let n = unique.len();
-    if n < 2 { return; }
-    let now = now_secs();
-    for i in 0..n {
-        for j in (i+1)..n {
-            let (a, b) = if unique[i] < unique[j] {
-                (&unique[i], &unique[j])
-            } else {
-                (&unique[j], &unique[i])
-            };
-            // 读取现有行
-            let existing = database::get(
-                "SELECT weight, last_seen FROM object_links WHERE source_id=?1 AND target_id=?2",
-                &[json!(a), json!(b)],
-            ).ok().flatten();
-            let new_weight = if let Some(row) = existing {
-                let w = row["weight"].as_f64().unwrap_or(1.0);
-                let last_seen = row["last_seen"].as_str().unwrap_or("").to_string();
-                let last_secs = parse_datetime_to_secs(&last_seen);
-                let delta = (now - last_secs).max(0.0);
-                let decayed = w * (-GAMMA * delta).exp();
-                let new_w = decayed + (MAX_BASE_WEIGHT - decayed) * ACTIVATION_R;
-                new_w
-            } else {
-                1.0
-            };
-            let _ = database::run(
-                "INSERT INTO object_links(source_id,target_id,weight,last_seen) VALUES(?1,?2,?3,?4) ON CONFLICT(source_id,target_id) DO UPDATE SET weight=excluded.weight, last_seen=excluded.last_seen",
-                &[json!(a), json!(b), json!(new_weight), json!(now_secs() as i64)],
-            );
-        }
-    }
 }
 
 /// 从种子 object_id 扩散邻居，按衰减权重排序
@@ -222,90 +167,6 @@ fn now_secs() -> f64 {
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// Project risk audit
-// ═══════════════════════════════════════════════════════════════════
-
-pub async fn audit_project_risk(project_id: &str) -> Result<(), String> {
-    let rows = database::all(
-        "SELECT kc.content, kc.tags, kc.source_data_id
-         FROM knowledge_chunks kc
-         WHERE kc.source_data_id IN (
-           SELECT sd.id FROM source_data sd
-           WHERE sd.source_type='PROJECT' AND sd.source_id IN (
-             SELECT fr.entity_id FROM file_relations fr WHERE fr.entity_type='project' AND fr.entity_id = ?
-           )
-         )
-         ORDER BY kc.created_at DESC
-         LIMIT 50",
-        &[json!(project_id)],
-    )
-    .map_err(|e| format!("audit query failed: {}", e))?;
-
-    if rows.len() < 10 {
-        return Ok(());
-    }
-
-    let mut context = String::new();
-    for (i, row) in rows.iter().enumerate() {
-        let content = row["content"].as_str().unwrap_or("");
-        let tags = row["tags"].as_str().unwrap_or("");
-        context.push_str(&format!("[{i}] {tags}\n{content}\n\n"));
-        if context.len() > 8000 {
-            break;
-        }
-    }
-
-    let system = format!(
-        "你是一个项目管理审计员。请检查以下项目最新知识片段，识别潜在的冲突、矛盾或风险。
-         只输出 JSON 数组，每个元素为：{{\"level\":\"warning|info|risk\",\"title\":\"简短标题\",\"detail\":\"详细说明（≤50字）\"}}。
-         无问题时输出空数组 []。不要输出其他任何文字。"
-    );
-
-    let config = crate::services::chat_api::get_chat_config();
-    let raw = crate::services::chat_api::chat_completion(
-        "只输出 JSON 数组",
-        &format!("{} 项目片段：{}", system, context),
-        Some(crate::services::chat_api::ChatConfig {
-            temperature: 0.0,
-            max_tokens: 1024,
-            ..config
-        }),
-    )
-    .await
-    .map_err(|e| format!("audit LLM call failed: {}", e))?;
-
-    let trimmed = raw.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
-    if let Ok(notifications) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
-        for n in &notifications {
-            let level = n["level"].as_str().unwrap_or("info");
-            let title = n["title"].as_str().unwrap_or("审计发现");
-            let detail = n["detail"].as_str().unwrap_or("");
-            let payload = json!({
-                "project_id": project_id,
-                "level": level,
-                "title": title,
-                "detail": detail,
-                "source": "ai_audit",
-            });
-            let _ = database::run(
-                "INSERT INTO system_notifications (notification_type, project_id, payload) VALUES ('ai_audit', ?, ?)",
-                &[json!(project_id), json!(payload.to_string())],
-            );
-        }
-        if !notifications.is_empty() {
-            println!(
-                "[突触] 项目风险审计: 为项目 {} 生成 {} 条通知",
-                project_id,
-                notifications.len()
-            );
-        }
-    }
-
-    Ok(())
-}
-
 
 pub fn update_object_links_weighted(ids: &[String], boost: f64) {
     let mut u: Vec<String> = ids.iter().cloned().collect();

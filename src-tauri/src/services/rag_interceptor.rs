@@ -96,15 +96,3 @@ pub fn translate_to_file_ids(
     file_ids.dedup();
     file_ids
 }
-
-/// 供前端 /kb_search 调用的命令：
-/// 接收标签+领域限制，返回翻译后的 file_ids
-pub fn ext_tool_translate_filter_service(
-    domain: String,
-    tag_names: Vec<String>,
-    project_ids: Vec<String>,
-    product_ids: Vec<String>,
-) -> Result<Value, String> {
-    let ids = translate_to_file_ids(&domain, &tag_names, &project_ids, &product_ids);
-    Ok(json!({"success":true,"fileIds":ids,"count":ids.len()}))
-}

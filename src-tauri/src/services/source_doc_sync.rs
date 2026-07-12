@@ -65,28 +65,6 @@ pub fn sync_entity(source_type: &str, source_id: &str) {
     sync_entity_to_source_docs(source_type, source_id, &title, &content);
 }
 
-/// Resolve a human-readable name for an entity
-fn resolve_entity_name(entity_type: &str, entity_id: &str) -> String {
-    let sql = match entity_type {
-        "PROJECT" => Some("SELECT name FROM projects WHERE id=?"),
-        "PRODUCT" => Some("SELECT name FROM products WHERE id=?"),
-        "NOTE" => Some("SELECT title FROM notes WHERE note_id=?"),
-        "TODO" => Some("SELECT title FROM todos WHERE id=?"),
-        "FILE" => None, // files use custom_name from file_relations
-        _ => None,
-    };
-    if let Some(s) = sql {
-        if let Ok(Some(r)) = crate::database::get(s, &[serde_json::json!(entity_id)]) {
-            for key in &["name", "title"] {
-                if let Some(v) = r[*key].as_str().filter(|v| !v.is_empty()) {
-                    return v.to_string();
-                }
-            }
-        }
-    }
-    entity_id.to_string()
-}
-
 fn extract_note(note_id: &str) -> (String, String) {
     let row = match crate::database::get(
         "SELECT n.title, n.content, nb.name as nb_name FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1",

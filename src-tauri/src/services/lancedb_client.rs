@@ -51,6 +51,7 @@ impl LanceDBClient {
     }
 
     /// Drop the vector table (for model change reset).
+    #[allow(dead_code)]
     pub fn drop_table(&self) -> Result<(), String> {
         sync_run(self.db.drop_table(&self.table_name), "drop table").map_err(|e| e.to_string())
     }
@@ -104,6 +105,7 @@ impl LanceDBClient {
         Ok(items)
     }
 
+    #[allow(dead_code)]
     pub fn search_vectors_with_tags(&self, query: &[f32], limit: usize, tags: &[String]) -> Result<Vec<(i64, f64, String)>, String> {
         if query.is_empty() { return Ok(Vec::new()); }
         if !self.table_exists()? { return Ok(Vec::new()); }
@@ -149,12 +151,14 @@ impl LanceDBClient {
         Ok(items)
     }
 
+    #[allow(dead_code)]
     pub fn count_vectors(&self) -> Result<usize, String> {
         if !self.table_exists()? { return Ok(0); }
         let table = sync_run(self.db.open_table(&self.table_name).execute(), "open")?;
         sync_run(table.count_rows(None), "count")
     }
 
+    #[allow(dead_code)]
     pub fn delete_by_hash_prefix(&self, prefix: &str) -> Result<(), String> {
         if !self.table_exists()? { return Ok(()); }
         let table = sync_run(self.db.open_table(&self.table_name).execute(), "open")?;
@@ -208,6 +212,7 @@ pub fn get_lancedb() -> Result<std::sync::MutexGuard<'static, Option<LanceDBClie
     Ok(g)
 }
 
+#[allow(dead_code)]
 pub fn get_lancedb_safe() -> Option<LanceDBClient> {
     LANCEDB.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }

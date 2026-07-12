@@ -1,5 +1,5 @@
 use crate::database;
-use serde_json::{json, Value};
+use serde_json::json;
 
 /// Initialize the business_relations table
 pub fn init() {
@@ -214,77 +214,4 @@ pub fn delete_by_source(source_type: &str, source_id: &str) {
         &[json!(source_type), json!(source_id)],
     );
     eprintln!("[business_relations] 删除所有源关联: {}[{}]", source_type, source_id);
-}
-
-/// Delete all relations where an entity is the target
-pub fn delete_by_target(target_type: &str, target_id: &str) {
-    let _ = database::run(
-        "DELETE FROM business_relations WHERE target_type=? AND target_id=?",
-        &[json!(target_type), json!(target_id)],
-    );
-}
-
-/// Get all relations for an entity (as source or target)
-pub fn get_relations_for_entity(entity_type: &str, entity_id: &str) -> Vec<Value> {
-    let as_source = database::all(
-        "SELECT target_type, target_id, relation_type, metadata, updated_at FROM business_relations WHERE source_type=? AND source_id=?",
-        &[json!(entity_type), json!(entity_id)],
-    ).unwrap_or_default();
-    let as_target = database::all(
-        "SELECT source_type as target_type, source_id as target_id, relation_type, metadata, updated_at FROM business_relations WHERE target_type=? AND target_id=?",
-        &[json!(entity_type), json!(entity_id)],
-    ).unwrap_or_default();
-    let mut result = as_source;
-    result.extend(as_target);
-    result
-}
-
-/// Get relations changed since a timestamp (for knowledge pipeline)
-pub fn get_changed_since(since: &str, limit: usize) -> Vec<Value> {
-    database::all(
-        "SELECT source_type, source_id, target_type, target_id, relation_type, metadata, updated_at FROM business_relations WHERE updated_at > ?1 ORDER BY updated_at ASC LIMIT ?2",
-        &[json!(since), json!(limit as i64)],
-    ).unwrap_or_default()
-}
-
-/// Format relations for an entity as a display string for LLM output.
-/// Returns empty string if no relations.
-pub fn format_relations(entity_type: &str, entity_id: &str) -> String {
-    let rels = get_relations_for_entity(entity_type, entity_id);
-    if rels.is_empty() { return String::new(); }
-    let mut lines: Vec<String> = Vec::new();
-    for r in &rels {
-        let target_type = r["target_type"].as_str().unwrap_or("");
-        let target_id = r["target_id"].as_str().unwrap_or("");
-        let rel_type = r["relation_type"].as_str().unwrap_or("");
-        let target_name = resolve_entity_name(target_type, target_id);
-        // 返回 UUID 供 LLM 使用
-        lines.push(format!("{} [{}] {} (ID: {}-{})", rel_type, target_type, target_name, target_type, target_id));
-    }
-    format!("  📎 关联: {}", lines.join(", "))
-}
-
-/// Resolve a human-readable name for an entity
-fn resolve_entity_name(entity_type: &str, entity_id: &str) -> String {
-    let sql = match entity_type {
-        "PROJECT" => Some("SELECT name FROM projects WHERE id=?"),
-        "PRODUCT" => Some("SELECT name FROM products WHERE id=?"),
-        "NOTE" => Some("SELECT title FROM notes WHERE note_id=?"),
-        "TODO" => Some("SELECT title FROM todos WHERE id=?"),
-        "FILE" => Some("SELECT custom_name FROM file_relations WHERE file_id=?1 ORDER BY id LIMIT 1"),
-        "CHANNEL" => Some("SELECT name FROM partners WHERE id=? AND type='CHANNEL'"),
-        "VENDOR" => Some("SELECT name FROM partners WHERE id=? AND type='VENDOR'"),
-        "CUSTOMER" => Some("SELECT name FROM partners WHERE id=? AND type='CUSTOMER'"),
-        _ => None,
-    };
-    if let Some(s) = sql {
-        if let Ok(Some(r)) = database::get(s, &[json!(entity_id)]) {
-            for key in &["name", "title", "custom_name"] {
-                if let Some(v) = r[*key].as_str().filter(|v| !v.is_empty()) {
-                    return v.to_string();
-                }
-            }
-        }
-    }
-    entity_id.to_string()
 }

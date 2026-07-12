@@ -1,8 +1,3 @@
-pub struct CleanContext { pub file_extension: String, pub file_name: String }
-pub trait TextTransformer { fn transform(&self, ctx: &CleanContext, input: String) -> String; }
-pub struct HtmlToMarkdownTransformer;
-impl HtmlToMarkdownTransformer { pub fn new() -> Self { Self } }
-impl TextTransformer for HtmlToMarkdownTransformer { fn transform(&self, _: &CleanContext, input: String) -> String { input.replace("<br>","\n").replace("<p>","\n").replace("</p>","") } }
 pub struct DataPipeline;
 impl DataPipeline { pub fn process_file_stream(&self, _table: &str, _id: &str, text: String) -> String { text } }
 pub fn get_pipeline() -> DataPipeline { DataPipeline }

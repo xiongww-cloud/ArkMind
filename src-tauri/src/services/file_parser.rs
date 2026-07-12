@@ -42,6 +42,7 @@ impl VisionConfig {
 trait VisionAdapter {
     fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str) -> Value;
     fn parse_response(&self, body: &Value) -> String;
+    #[allow(dead_code)]
     fn default_prompt(&self) -> &'static str;
     /// 模型专属输出文本归一化（在 parse_response 之后调用）
     fn post_process(&self, text: &str) -> String {
@@ -859,32 +860,6 @@ pub fn html_to_markdown(html: &str) -> String {
     out
 }
 
-/// 统一换行符，去掉首尾空白行。
-fn ensure_table_separator(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut result = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        if line.trim().starts_with('|') && (i + 1 >= lines.len() || !lines[i + 1].contains("---")) {
-            // 找到第一个以 | 开头的行 → 插入分隔行
-            result.push_str(line);
-            result.push('\n');
-            let pipes = line.chars().filter(|&c| c == '|').count();
-            let cols = pipes.saturating_sub(1).max(1);
-            let sep = format!("|{}|", " --- |".repeat(cols).trim_end_matches('|'));
-            result.push_str(&sep);
-            result.push('\n');
-            i += 1;
-        } else {
-            result.push_str(line);
-            if i + 1 < lines.len() { result.push('\n'); }
-            i += 1;
-        }
-    }
-    result
-}
-
 /// 统一换行符，去掉首尾空白行。不改变段落结构。
 pub fn sanitize_chars(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -936,22 +911,6 @@ fn strip_garbled_lines(text: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-/// 去除 XLSX 解析噪音行：包含 sitecfgid/productcfgid/sbomid 等内部配置 ID 的行。
-/// 这些行来自 Excel 公式缓存值，对语义理解无意义。
-fn strip_xlsx_noise(text: &str) -> String {
-    text.lines()
-        .filter(|line| {
-            let t = line.trim();
-            if t.chars().count() < 30 { return true; } // 短行不判断
-            // 检测是否包含 XLSX 内部 ID 关键词（≥2 个则判定为噪音行）
-            let keywords = &["sitecfgid", "productcfgid", "sbomid", "fathersbomid", "erpid", "isquoteleaf", "discountcategoryid", "multidiscountcategoryid", "partnumber", "isquoteitem", "partType", "cfgmodeltypeid", "uniqueId", "locationid", "producttypeid"];
-            let matches = keywords.iter().filter(|&&kw| t.contains(kw)).count();
-            matches < 2
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// PDF 断行修复：合并非段落结尾的碎片行。
 /// 规则：不以句尾标点结尾的行，与下一行合并（加空格），除非下一行是标题。
 fn merge_pdf_broken_lines(text: &str) -> String {
@@ -999,16 +958,6 @@ fn merge_pdf_broken_lines(text: &str) -> String {
         i += 1;
     }
     result.join("\n")
-}
-
-/// 第一级：基础消毒 + 分格式策略。
-///   - pdf  → 基础消毒 + PDF 断行修复
-///   - docx → 基础消毒（Word 自带段落结构）
-///   - xlsx/xls → 基础消毒（保留表格行结构）
-///   - txt/md/csv 等 → 基础消毒
-///   - 未知格式 → 基础消毒
-pub fn clean_extracted_text(raw: &str) -> String {
-    sanitize_chars(raw)
 }
 
 /// 带格式提示的消毒版本，供摄入中台调用。
@@ -1565,11 +1514,4 @@ fn read_pdf(p: &str) -> String {
     pdf_extract::extract_text(p).unwrap_or_default()
 }
 
-// ── 兼容旧版导出 ──
-pub fn clean_pdf_table_flow(text: &str) -> String { text.replace('\r', "").replace("\n\n\n", "\n\n") }
-pub fn save_parsed_text(file_id: &str, text: &str) {
-    let _ = crate::database::run(
-        "UPDATE file_assets SET parsed_text=? WHERE id=?",
-        &[serde_json::json!(text), serde_json::json!(file_id)],
-    );
-}
+

@@ -30,6 +30,7 @@ pub struct Section {
 }
 
 impl Section {
+    #[allow(dead_code)]
     pub fn text(&self) -> String {
         let mut out = String::new();
         for b in &self.blocks {
@@ -280,32 +281,6 @@ pub fn accumulate_adaptive_parents(sections: Vec<Section>) -> Vec<String> {
     parents
 }
 
-// ── Heading-aware child split ──
-pub fn split_into_focused_heading_aware(prefix: &str, text: &str, target: usize) -> Vec<String> {
-    let has_headings = text.lines().any(|l| l.trim().starts_with("## ") || l.trim().starts_with("### "));
-    if !has_headings { return split_into_focused(prefix, text, target); }
-
-    let lines: Vec<&str> = text.lines().collect();
-    let mut chunks: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let mut section_lines = vec![lines[i]]; i += 1;
-        while i < lines.len() {
-            let ni = lines[i].trim().starts_with("## ") || lines[i].trim().starts_with("### ") || lines[i].trim().starts_with("# ");
-            if ni { break; }
-            section_lines.push(lines[i]); i += 1;
-        }
-        let section_text = section_lines.join("\n");
-        if section_text.chars().count() <= target + 100 {
-            chunks.push(section_text);
-        } else {
-            chunks.extend(split_into_focused(prefix, &section_text, target));
-        }
-    }
-    if chunks.is_empty() { chunks.push(text.to_string()); }
-    chunks
-}
-
 // ── Legacy functions ──
 pub fn split_into_parents(text: &str, max_chars: usize) -> Vec<String> {
     if text.chars().count() <= max_chars { return vec![text.to_string()]; }
@@ -322,36 +297,6 @@ pub fn split_into_parents(text: &str, max_chars: usize) -> Vec<String> {
     }
     if !current.trim().is_empty() { out.push(current.trim().to_string()); }
     if out.is_empty() { out.push(text.to_string()); }
-    out
-}
-
-pub fn split_into_focused(prefix: &str, text: &str, target: usize) -> Vec<String> {
-    if prefix.is_empty() {
-        let lines: Vec<&str> = text.lines().collect();
-        let mut out = Vec::new();
-        let mut cur = String::new();
-        for line in &lines {
-            if cur.chars().count() + 1 + line.len() > target + 100 && !cur.is_empty() {
-                out.push(cur.trim().to_string()); cur.clear();
-            }
-            if !cur.is_empty() { cur.push('\n'); }
-            cur.push_str(line);
-        }
-        if !cur.trim().is_empty() { out.push(cur.trim().to_string()); }
-        if out.is_empty() { out.push(text.to_string()); }
-        return out;
-    }
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out = Vec::new();
-    let mut cur = format!("{}\n", prefix);
-    for line in &lines {
-        if cur.chars().count() + 1 + line.len() > target + 100 && !cur.ends_with(prefix) {
-            out.push(cur.trim().to_string()); cur = format!("{}\n", prefix);
-        }
-        cur.push_str(line); cur.push('\n');
-    }
-    if cur.chars().count() > prefix.len() + 2 { out.push(cur.trim().to_string()); }
-    if out.is_empty() { out.push(format!("{}\n{}", prefix, text)); }
     out
 }
 

@@ -43,10 +43,6 @@ pub fn start() {
     std::thread::spawn(|| push_loop());
 }
 
-/// 停止 push worker
-pub fn stop() {
-    PUSH_RUNNING.store(false, Ordering::Release);
-}
 
 fn push_loop() {
     loop {

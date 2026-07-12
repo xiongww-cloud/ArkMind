@@ -131,7 +131,4 @@ fn verify_license_key_and_get_expiry(key: &str) -> Result<(String, String), Stri
     Ok((payload.product, payload.expires_at))
 }
 
-/// 保留旧签名以供 license-builder 等工具使用
-pub fn verify_license_key(key: &str) -> Result<String, String> {
-    verify_license_key_and_get_expiry(key).map(|(p, _)| p)
-}
+
