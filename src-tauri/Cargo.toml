@@ -83,6 +83,9 @@ dirs = "5"
 opener = "0.7"
 regex = "1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 panic = "abort"
 codegen-units = 1
