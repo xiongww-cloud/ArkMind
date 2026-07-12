@@ -298,6 +298,8 @@ defineExpose({ open, updatePosition })
                   <button
                     v-if="node._type !== 'file'"
                     @click="toggleFolder(node.id)"
+                    @mouseenter="(e: MouseEvent) => show(e.currentTarget as HTMLElement, node.name)"
+                    @mouseleave="hide"
                     class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50 transition-colors"
                     :style="{ paddingLeft: `${12 + (node._depth||0) * 16}px` }"
                   >
@@ -309,6 +311,8 @@ defineExpose({ open, updatePosition })
                   <button
                     v-else
                     @click="onSelectFile(node)"
+                    @mouseenter="(e: MouseEvent) => show(e.currentTarget as HTMLElement, node.name)"
+                    @mouseleave="hide"
                     class="w-full flex items-center gap-2 pr-3 py-1.5 text-xs text-left hover:bg-surface-50 transition-colors"
                     :style="{ paddingLeft: `${12 + (node._depth||0) * 16}px` }"
                   >
