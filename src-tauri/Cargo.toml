@@ -67,8 +67,6 @@ futures = "0.3"
 # OCR
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
-core-foundation = "0.10"
-core-graphics = "0.24"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = ["Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Foundation"] }

@@ -119,10 +119,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 if let Some(win) = app.get_webview_window("main") {
-                    if let Some(ns_window_ptr) = win.ns_window() {
+                    if let Ok(ns_window_ptr) = win.ns_window() {
                         unsafe {
                             use objc::runtime::{Object, Class};
-                            use objc::msg_send;
+                            use objc::{sel, sel_impl, msg_send};
                             let ns_window = ns_window_ptr as *mut Object;
                             // NSWindowStyleMask: titled | closable | miniaturizable | resizable
                             let style_mask: i32 = 1 | 2 | 4 | 8;
