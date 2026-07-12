@@ -286,6 +286,34 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS system_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, notification_type TEXT DEFAULT 'general', project_id TEXT, payload TEXT DEFAULT '{}', is_read INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS user_policies (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now', 'localtime')), is_active INTEGER DEFAULT 1);
+
+        -- Push pipeline queue: business layer -> knowledge base
+        CREATE TABLE IF NOT EXISTS knowledge_push_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            operation TEXT NOT NULL DEFAULT 'change',
+            status TEXT NOT NULL DEFAULT 'pending',
+            retry_count INTEGER DEFAULT 0,
+            last_error TEXT DEFAULT '',
+            debounce_until TEXT DEFAULT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+
+        -- Cleanup pipeline queue: async cascade delete
+        CREATE TABLE IF NOT EXISTS cleanup_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            status INTEGER DEFAULT 0,
+            retry_count INTEGER DEFAULT 0,
+            last_error TEXT DEFAULT '',
+            source_data_id INTEGER DEFAULT NULL,
+            chunk_ids TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
     ")?;
     Ok(())
 }
