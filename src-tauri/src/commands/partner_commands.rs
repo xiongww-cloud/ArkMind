@@ -127,6 +127,13 @@ pub async fn partner_delete(partner_id: String) -> Result<Value, String> {
     crate::services::source_doc_sync::delete_entity_source_doc(&ptype, &partner_id);
     crate::services::business_relations::delete_by_source(&ptype, &partner_id);
     emit_for_partner(&partner_id);
+    // 删除关联的联系人记录
+    let contact_ids: Vec<String> = database::all("SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?", &[json!(&partner_id)]).unwrap_or_default()
+        .into_iter().filter_map(|r| r["contact_id"].as_str().map(String::from)).collect();
+    for cid in &contact_ids {
+        database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?", &[json!(cid)]).ok();
+        database::run("DELETE FROM partner_contacts WHERE id=?", &[json!(cid)]).ok();
+    }
     database::run("DELETE FROM partner_contact_mapping WHERE partner_id=?",&[json!(&partner_id)]).ok();
     database::run("DELETE FROM partners WHERE id=?",&[json!(&partner_id)]).map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))
