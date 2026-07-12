@@ -1,6 +1,0 @@
-D:\Projects\ArkMind\tools\license-gen\target\debug\deps\clap_lex-ae0e8b2327348ec5.d: C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clap_lex-1.1.0\src\lib.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clap_lex-1.1.0\src\ext.rs
-
-D:\Projects\ArkMind\tools\license-gen\target\debug\deps\libclap_lex-ae0e8b2327348ec5.rmeta: C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clap_lex-1.1.0\src\lib.rs C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clap_lex-1.1.0\src\ext.rs
-
-C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clap_lex-1.1.0\src\lib.rs:
-C:\Users\x\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clap_lex-1.1.0\src\ext.rs:
