@@ -10,7 +10,9 @@
     "build": "vite build",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "license-gen": "start tools/license-gen/index.html"
+    "license-gen": "start tools/license-gen/index.html",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@heroicons/vue": "^2.1.1",
@@ -48,11 +50,13 @@
     "@tauri-apps/cli": "^2",
     "@types/node": "^22.19.1",
     "@vitejs/plugin-vue": "^6.0.2",
+    "@vue/test-utils": "^2.4.11",
     "autoprefixer": "^10.4.18",
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.5.5",
     "eslint-plugin-vue": "^10.6.2",
+    "happy-dom": "^20.10.6",
     "postcss": "^8.4.35",
     "prettier": "^3.7.4",
     "sharp": "^0.34.5",
@@ -60,6 +64,7 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.59.3",
     "vite": "^7.2.6",
+    "vitest": "^4.1.10",
     "vue": "^3.4.21",
     "vue-eslint-parser": "^10.2.0",
     "vue-tsc": "^3.1.6"
