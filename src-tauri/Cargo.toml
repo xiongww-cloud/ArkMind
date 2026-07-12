@@ -64,13 +64,6 @@ arrow-schema = "53"
 arrow-data = "53"
 futures = "0.3"
 
-# OCR
-[target.'cfg(target_os = "macos")'.dependencies]
-objc = "0.2"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = ["Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Foundation"] }
-
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -80,6 +73,13 @@ hostname = "0.4"
 dirs = "5"
 opener = "0.7"
 regex = "1"
+
+# OCR
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Foundation"] }
 
 [dev-dependencies]
 tempfile = "3"
