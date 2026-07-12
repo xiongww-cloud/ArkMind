@@ -24,13 +24,28 @@ fn compute_file_hash(path: &str) -> Result<(String, u64), String> {
 
 fn storage_base() -> String {
     { let guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()); if let Some(ref s) = *guard { return s.clone(); } }
-    let default = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .parent().unwrap_or(std::path::Path::new("."))
-        .join("files");
+    
+    // 1. 优先使用用户配置的路径
+    let configured = database::get(
+        "SELECT local_path FROM system_config WHERE tenant_id='local-user'", &[]
+    ).ok().flatten()
+     .and_then(|r| r["local_path"].as_str().map(String::from))
+     .filter(|s| !s.is_empty());
+    
+    // 2. 回退到 AppData 路径（稳定路径，不受编译缓存清理影响）
+    let default = configured.unwrap_or_else(|| {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("com.arkmind.app")
+            .join("files")
+            .to_string_lossy()
+            .to_string()
+    });
+    
     std::fs::create_dir_all(&default).ok();
-    let s = default.to_string_lossy().to_string();
-    let mut guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()); *guard = Some(s.clone()); s
+    let mut guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(default.clone());
+    default
 }
 
 pub fn invalidate_storage_base() { *STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()) = None; }
