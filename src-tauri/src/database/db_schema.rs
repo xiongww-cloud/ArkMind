@@ -286,6 +286,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS system_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, notification_type TEXT DEFAULT 'general', project_id TEXT, payload TEXT DEFAULT '{}', is_read INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS user_policies (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now', 'localtime')), is_active INTEGER DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS reminder_ack (id INTEGER PRIMARY KEY AUTOINCREMENT, reminder_type TEXT NOT NULL, entity_id TEXT NOT NULL, acked_at TEXT DEFAULT (datetime('now', 'localtime')), UNIQUE(reminder_type, entity_id));
 
         -- Push pipeline queue: business layer -> knowledge base
         CREATE TABLE IF NOT EXISTS knowledge_push_queue (

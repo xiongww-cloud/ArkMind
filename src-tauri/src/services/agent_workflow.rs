@@ -66,6 +66,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_manage_contact: 管理联系人（通讯录）。action=create(创建), action=update(更新), action=delete(删除), action=link_project(关联到项目), action=unlink_project(取消关联), action=list(查看通讯录)。
 - ext_tool_memory: 管理记忆。action=create(创建)，action=delete(删除)，action=search(搜索记忆)。
 - ext_tool_manage_policy: 管理用户规则（宪法）。有id+content=更新，有id+无content=删除，无id+有content=新增。
+- ext_tool_manage_reminder: 管理提醒。action=ack(确认提醒，不再显示)，action=unack(取消确认，重新显示)。当用户说"知道了""好的我会处理"时，调用ack确认提醒。
 
 ## 工具选择策略（必须遵守）
 - 搜索与回忆：用户询问「某实体有几个XX」「某实体是什么」-> 使用 ext_tool_search 搜索对象
@@ -76,6 +77,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - 数值比较/排序/分页：需要按数值比较、排序、分页 -> 使用 ext_tool_query
 - 管理操作：创建/更新/删除项目、待办、合作伙伴、联系人 -> 使用对应的 manage 工具
 - 记忆管理：记住重要结论 -> ext_tool_memory（action=create）；搜索记忆 -> ext_tool_memory（action=search）
+- 提醒管理：用户确认提醒（如"知道了""好的我会处理"）-> ext_tool_manage_reminder（action=ack, reminder_type, entity_id）
 - 不确定时：先用 ext_tool_search 搜索对象，再用 ext_tool_search 补充内容
 - ⚠️ 重要：每次工具调用后，立即评估返回结果是否已足够回答用户问题。如果已足够，必须直接输出最终答案，禁止再进行额外搜索。只有当返回结果明显不足或不相关时，才进行下一轮搜索。
 
@@ -647,6 +649,7 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_manage_partner","description":"管理合作伙伴（渠道/厂商/客户）。action: create(创建), update(更新), delete(删除), link_project(关联到项目), unlink_project(取消关联)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"partner_id":{"type":"string","description":"合作伙伴ID(update/delete/link_project/unlink_project用)"},"type":{"type":"string","description":"类型: CHANNEL/VENDOR/CUSTOMER(create用)"},"name":{"type":"string","description":"名称(create/update用)"},"phone":{"type":"string","description":"电话"},"address":{"type":"string","description":"地址"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人(通讯录). action: create(创建), update(更新), delete(删除), list(查看通讯录)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list"]},"contact_id":{"type":"string","description":"联系人ID(update/delete用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"parent_id":{"type":"string","description":"关联的合作伙伴ID(渠道/厂商/客户), 可选"},"project_id":{"type":"string","description":"关联的项目ID, 可选"},"type":{"type":"string","description":"类型过滤: CHANNEL/VENDOR/CUSTOMER(list用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_query","description":"Structured query for business data with field filtering, sorting, pagination.","parameters":{"type":"object","properties":{"entity":{"type":"string","enum":["project","product","partner","contact","todo","note"],"description":"Entity type to query"},"filters":{"type":"array","items":{"type":"object","properties":{"field":{"type":"string","description":"Field name"},"op":{"type":"string","enum":["=","!=",">","<",">=","<=","LIKE","IN","IS_NULL","IS_NOT_NULL"],"description":"Operator"},"value":{"type":["string","number","boolean","null"],"description":"Filter value"}},"required":["field","op","value"]},"description":"Filter conditions (AND)"},"sort":{"type":"object","properties":{"field":{"type":"string","description":"Sort field"},"order":{"type":"string","enum":["asc","desc"],"description":"Sort direction"}},"description":"Sort"},"limit":{"type":"integer","description":"Max results, default 20, max 100"},"offset":{"type":"integer","description":"Offset, default 0"}},"required":["entity"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_reminder","description":"Manage reminders. action=ack(acknowledge, hide from future reminders), action=unack(cancel acknowledgement, show again).","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["ack","unack"],"description":"ack=confirm reminder, unack=cancel confirmation"},"reminder_type":{"type":"string","enum":["todo_due","todo_today","project_stale","bid_deadline"],"description":"Type of reminder"},"entity_id":{"type":"string","description":"ID of the todo or project"}},"required":["action","reminder_type","entity_id"]}}},
         {"type":"function","function":{"name":"ext_tool_memory","description":"管理记忆. action=create(创建), action=delete(删除), action=search(搜索记忆)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete","search"],"description":"create=创建记忆, delete=删除记忆, search=搜索记忆"},"title":{"type":"string","description":"创建时的简短标题"},"content":{"type":"string","description":"创建时的记忆内容"},"memory_id":{"type":"string","description":"删除时用"},"replace_ids":{"type":"string","description":"创建时逗号分隔的旧记忆source_id"},"query":{"type":"string","description":"搜索关键词"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
     ])
 }
@@ -1759,9 +1762,9 @@ fn ext_tool_memory(action: &str, title: &str, content: &str, memory_id: &str, re
 fn check_proactive_reminders() -> String {
     let mut reminders = Vec::new();
 
-    // 1. 24h 内到期的待办
+    // 1. 24h 内到期的待办（排除已确认的）
     if let Ok(rows) = database::all(
-        "SELECT title, due_date FROM todos WHERE done=0 AND due_date IS NOT NULL AND due_date <= date('now','+1 day') AND due_date >= date('now') ORDER BY due_date ASC LIMIT 5",
+        "SELECT t.title, t.due_date, t.id FROM todos t WHERE t.done=0 AND t.due_date IS NOT NULL AND t.due_date <= date('now','+1 day') AND t.due_date >= date('now') AND NOT EXISTS (SELECT 1 FROM reminder_ack WHERE reminder_type='todo_due' AND entity_id=t.id) ORDER BY t.due_date ASC LIMIT 5",
         &[],
     ) {
         if !rows.is_empty() {
@@ -1774,9 +1777,9 @@ fn check_proactive_reminders() -> String {
         }
     }
 
-    // 2. 今天到期的待办（最高优先级）
+    // 2. 今天到期的待办（排除已确认的）
     if let Ok(rows) = database::all(
-        "SELECT title, due_date FROM todos WHERE done=0 AND due_date=date('now') ORDER BY due_date ASC LIMIT 5",
+        "SELECT t.title, t.id FROM todos t WHERE t.done=0 AND t.due_date=date('now') AND NOT EXISTS (SELECT 1 FROM reminder_ack WHERE reminder_type='todo_today' AND entity_id=t.id) ORDER BY t.due_date ASC LIMIT 5",
         &[],
     ) {
         if !rows.is_empty() {
@@ -1788,9 +1791,9 @@ fn check_proactive_reminders() -> String {
         }
     }
 
-    // 3. 7 天未更新的项目
+    // 3. 7 天未更新的项目（排除已确认的）
     if let Ok(rows) = database::all(
-        "SELECT name, updated_at FROM projects WHERE updated_at < date('now','-7 days') ORDER BY updated_at ASC LIMIT 3",
+        "SELECT p.name, p.updated_at, p.id FROM projects p WHERE p.updated_at < date('now','-7 days') AND NOT EXISTS (SELECT 1 FROM reminder_ack WHERE reminder_type='project_stale' AND entity_id=p.id) ORDER BY p.updated_at ASC LIMIT 3",
         &[],
     ) {
         if !rows.is_empty() {
@@ -1803,9 +1806,9 @@ fn check_proactive_reminders() -> String {
         }
     }
 
-    // 4. 3 天内投标截止
+    // 4. 3 天内投标截止（排除已确认的）
     if let Ok(rows) = database::all(
-        "SELECT name, bid_time FROM projects WHERE bid_time IS NOT NULL AND bid_time != '' AND bid_time <= date('now','+3 days') AND bid_time >= date('now') ORDER BY bid_time ASC LIMIT 3",
+        "SELECT p.name, p.bid_time, p.id FROM projects p WHERE p.bid_time IS NOT NULL AND p.bid_time != '' AND p.bid_time <= date('now','+3 days') AND p.bid_time >= date('now') AND NOT EXISTS (SELECT 1 FROM reminder_ack WHERE reminder_type='bid_deadline' AND entity_id=p.id) ORDER BY p.bid_time ASC LIMIT 3",
         &[],
     ) {
         if !rows.is_empty() {
@@ -3115,6 +3118,23 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                         }
                         "ext_tool_query" => {
                             let res = execute_structured_query(&a);
+                            (res, vec![])
+                        }
+                        "ext_tool_manage_reminder" => {
+                            let action = a["action"].as_str().unwrap_or("");
+                            let rtype = a["reminder_type"].as_str().unwrap_or("");
+                            let eid = a["entity_id"].as_str().unwrap_or("");
+                            let res = match action {
+                                "ack" => {
+                                    let _ = database::run("INSERT OR IGNORE INTO reminder_ack(reminder_type, entity_id) VALUES(?1, ?2)", &[json!(rtype), json!(eid)]);
+                                    format!("已确认提醒: {} ({})", rtype, eid)
+                                }
+                                "unack" => {
+                                    let _ = database::run("DELETE FROM reminder_ack WHERE reminder_type=?1 AND entity_id=?2", &[json!(rtype), json!(eid)]);
+                                    format!("已取消确认: {} ({})", rtype, eid)
+                                }
+                                _ => "未知操作。支持: ack, unack".to_string(),
+                            };
                             (res, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
