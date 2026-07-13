@@ -10,24 +10,40 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     let name = data["name"].as_str().unwrap_or("新项目").to_string();
     let desc = data["description"].as_str().unwrap_or("").to_string();
     let status = data["status"].as_str().unwrap_or("Lead");
+    let bid_time = if status == "Bidding" { data["bidTime"].as_str().unwrap_or("") } else { "" };
     let budget_val = data["budget"].as_f64()
         .or_else(|| data["budget"].as_str().and_then(|s| s.parse::<f64>().ok()))
         .unwrap_or(0.0);
     database::run("INSERT INTO projects(id,name,status,description,budget,customer,owner,user_id,bid_time,customer_contact,customer_phone) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-    &[json!(&id),json!(&name),json!(status),json!(&desc),json!(budget_val),json!(data["customer"].as_str().unwrap_or("")),json!(data["owner"].as_str().unwrap_or("")),json!(data["userId"].as_str().unwrap_or("")),json!(data["bidTime"].as_str().unwrap_or("")),json!(data["customerContact"].as_str().unwrap_or("")),json!(data["customerPhone"].as_str().unwrap_or(""))]).map_err(|e| e.to_string())?;
+    &[json!(&id),json!(&name),json!(status),json!(&desc),json!(budget_val),json!(data["customer"].as_str().unwrap_or("")),json!(data["owner"].as_str().unwrap_or("")),json!(data["userId"].as_str().unwrap_or("")),json!(bid_time),json!(data["customerContact"].as_str().unwrap_or("")),json!(data["customerPhone"].as_str().unwrap_or(""))]).map_err(|e| e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &id, crate::services::object_changed::Action::Created);
     database::get("SELECT * FROM projects WHERE id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null))
 }
 #[tauri::command] pub async fn project_update(id: String, data: Value) -> Result<(), String> {
     let mut fields: Vec<String> = Vec::new(); let mut values: Vec<Value> = Vec::new();
+    // 获取当前项目状态（优先用 data 中的，否则从数据库查）
+    let current_status = data["status"].as_str()
+        .map(String::from)
+        .unwrap_or_else(|| {
+            database::get("SELECT status FROM projects WHERE id=?", &[json!(&id)])
+                .ok().flatten()
+                .and_then(|r| r["status"].as_str().map(String::from))
+                .unwrap_or_else(|| "Lead".to_string())
+        });
     for (k, col) in &[
         ("name","name"),("status","status"),("owner","owner"),("customer","customer"),
         ("budget","budget"),("description","description"),
-        ("bid_time","bid_time"),("bidTime","bid_time"),
         ("customer_contact","customer_contact"),("customerContact","customer_contact"),
         ("customer_phone","customer_phone"),("customerPhone","customer_phone"),
     ] { if let Some(s) = data[*k].as_str() { fields.push(format!("{}=?",col)); values.push(json!(s)); } }
+    // bid_time 只在投标状态下有效
+    let bid_time_val = if current_status == "Bidding" {
+        data["bid_time"].as_str().or_else(|| data["bidTime"].as_str()).unwrap_or("").to_string()
+    } else {
+        String::new()
+    };
+    if !bid_time_val.is_empty() { fields.push("bid_time=?".into()); values.push(json!(bid_time_val)); }
     if let Some(_v) = data["budget"].as_f64() { /* already handled via str in loop above */ }
     if fields.is_empty() { return Ok(()); }
     fields.push("updated_at=datetime('now', 'localtime')".into()); values.push(json!(id));

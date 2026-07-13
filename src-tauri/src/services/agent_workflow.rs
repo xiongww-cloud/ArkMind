@@ -2720,7 +2720,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         let budget = a["budget"].as_f64().unwrap_or(0.0);
                                         let description = a["description"].as_str().unwrap_or("");
                                         let status = a["status"].as_str().unwrap_or("Lead");
-                                        let bid_time = a["bid_time"].as_str().unwrap_or("");
+                                        let bid_time = if status == "Bidding" { a["bid_time"].as_str().unwrap_or("") } else { "" };
                                         let customer_contact = a["customer_contact"].as_str().unwrap_or("");
                                         let customer_phone = a["customer_phone"].as_str().unwrap_or("");
                                         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -2749,8 +2749,15 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
                                         if let Some(v) = a["customer"].as_str().filter(|s| !s.is_empty()) { sets.push("customer=?"); vals.push(json!(v)); }
                                         if let Some(v) = a["description"].as_str().filter(|s| !s.is_empty()) { sets.push("description=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["status"].as_str().filter(|s| !s.is_empty()) { sets.push("status=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["bid_time"].as_str().filter(|s| !s.is_empty()) { sets.push("bid_time=?"); vals.push(json!(v)); }
+                                        // bid_time 只在投标状态下有效
+                                        let effective_status = a["status"].as_str().unwrap_or("");
+                                        if !effective_status.is_empty() { sets.push("status=?"); vals.push(json!(effective_status)); }
+                                        if effective_status == "Bidding" {
+                                            if let Some(v) = a["bid_time"].as_str().filter(|s| !s.is_empty()) { sets.push("bid_time=?"); vals.push(json!(v)); }
+                                        } else {
+                                            // 非投标状态：清空 bid_time
+                                            sets.push("bid_time=?"); vals.push(json!(""));
+                                        }
                                         if let Some(v) = a["customer_contact"].as_str().filter(|s| !s.is_empty()) { sets.push("customer_contact=?"); vals.push(json!(v)); }
                                         if let Some(v) = a["customer_phone"].as_str().filter(|s| !s.is_empty()) { sets.push("customer_phone=?"); vals.push(json!(v)); }
                                         if a.get("budget").and_then(|v| v.as_f64()).filter(|v| *v > 0.0).is_some() { sets.push("budget=?"); vals.push(json!(a["budget"])); }
