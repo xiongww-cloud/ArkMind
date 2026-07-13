@@ -18,7 +18,7 @@
         "minWidth": 900,
         "minHeight": 540,
         "decorations": false,
-        "titleBarStyle": "transparent",
+        "titleBarStyle": "Transparent",
         "center": true
       }
     ],

@@ -88,6 +88,7 @@ onMounted(async () => {
   else if (!currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
   // 渲染当前会话的消息
   if (currentSessionId.value) { await selectSession(currentSessionId.value) }
+  initialScrollDone = false
   nextTick(() => scrollToBottomIfNear())
 })
 // ★ 每次切换回来时重新加载会话（保持与全局对话框同步）
@@ -108,6 +109,7 @@ onActivated(async () => {
     }
     if (sessions.value.length && !currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
   } catch {}
+  initialScrollDone = false
   nextTick(() => scrollToBottomIfNear())
 })
 async function selectSession(id: string) {
