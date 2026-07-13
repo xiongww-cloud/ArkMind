@@ -577,6 +577,62 @@ fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collection
     if s.is_empty() { eprintln!("[Scope] scope_rowids 解析为空，scope=None"); None } else { Some(s) }
 }
 
+fn execute_structured_query(params: &Value) -> String {
+    let entity = params["entity"].as_str().unwrap_or("");
+    let (table, fields): (&str, &[&str]) = match entity {
+        "project" => ("projects", &["id","name","description","status","owner","budget","customer","bid_time","customer_contact","customer_phone","created_at","updated_at"]),
+        "product" => ("products", &["id","name","series_name","description","price","standard_specs","full_specs","sort_order","created_at","updated_at"]),
+        "partner" => ("partners", &["id","type","name","phone","address","remark","contact_person","contact_phone","created_at","updated_at"]),
+        "contact" => ("partner_contacts", &["id","name","phone","email","position","remark","created_at"]),
+        "todo" => ("todos", &["id","title","content","done","priority","due_date","repeat","created_at","updated_at"]),
+        "note" => ("notes", &["note_id","title","content","is_daily","notebook_id","deleted_at","created_at","updated_at"]),
+        _ => return format!("Unsupported entity: {}. Use: project, product, partner, contact, todo, note", entity),
+    };
+    let mut conditions: Vec<String> = Vec::new();
+    let mut values: Vec<serde_json::Value> = Vec::new();
+    if let Some(filters) = params["filters"].as_array() {
+        for filter in filters {
+            let field = filter["field"].as_str().unwrap_or("");
+            let op = filter["op"].as_str().unwrap_or("=");
+            let value = &filter["value"];
+            if !fields.contains(&field) { continue; }
+            match op {
+                "IS_NULL" => { conditions.push(format!("{} IS NULL", field)); }
+                "IS_NOT_NULL" => { conditions.push(format!("{} IS NOT NULL", field)); }
+                "IN" => {
+                    if let Some(arr) = value.as_array() {
+                        let placeholders: Vec<String> = arr.iter().map(|_| "?".to_string()).collect();
+                        conditions.push(format!("{} IN ({})", field, placeholders.join(",")));
+                        for v in arr { values.push(v.clone()); }
+                    }
+                }
+                "LIKE" => { conditions.push(format!("{} LIKE ?", field)); values.push(json!(value.as_str().unwrap_or(""))); }
+                "=" | "!=" | ">" | "<" | ">=" | "<=" => { conditions.push(format!("{} {} ?", field, op)); values.push(value.clone()); }
+                _ => {}
+            }
+        }
+    }
+    if entity == "note" && !conditions.iter().any(|c| c.contains("deleted_at")) {
+        conditions.push("deleted_at IS NULL".to_string());
+    }
+    let where_clause = if conditions.is_empty() { String::new() } else { format!(" WHERE {}", conditions.join(" AND ")) };
+    let order = if let Some(sort) = params["sort"].as_object() {
+        let field = sort["field"].as_str().unwrap_or("created_at");
+        let dir = if sort["order"].as_str().unwrap_or("desc") == "asc" { "ASC" } else { "DESC" };
+        if fields.contains(&field) { format!(" ORDER BY {} {}", field, dir) } else { String::new() }
+    } else { " ORDER BY created_at DESC".to_string() };
+    let limit = params["limit"].as_u64().unwrap_or(20).min(100);
+    let offset = params["offset"].as_u64().unwrap_or(0);
+    let sql = format!("SELECT * FROM {}{}{} LIMIT {} OFFSET {}", table, where_clause, order, limit, offset);
+    match crate::database::all(&sql, &values) {
+        Ok(rows) => {
+            if rows.is_empty() { format!("No results. Entity: {}, filters: {:?}", entity, params["filters"]) }
+            else { format!("Found {} records:\n{}", rows.len(), serde_json::to_string_pretty(&rows).unwrap_or_default()) }
+        }
+        Err(e) => format!("Query failed: {}", e)
+    }
+}
+
 fn build_tools_definitions() -> Value {
     json!([
         {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。支持时间范围过滤。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
@@ -3051,6 +3107,10 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                 }
                                 _ => format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project, list。", action),
                             };
+                            (res, vec![])
+                        }
+                        "ext_tool_query" => {
+                            let res = execute_structured_query(&a);
                             (res, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
