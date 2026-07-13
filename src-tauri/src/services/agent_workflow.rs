@@ -2499,7 +2499,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
     let limit = if limit == 0 { 50 } else { limit.min(100) };
     let (start, end) = match time_range {
         Some((s, e)) => (s, e),
-        None => (chrono::Local::now().format("%Y-%m-%d").to_string(), "2099-12-31".to_string()),
+        None => ("0001-01-01".to_string(), "2099-12-31".to_string()),
     };
     // 如果有关键词，优先使用关键词搜索模式
     if !query.trim().is_empty() {
