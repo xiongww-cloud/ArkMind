@@ -115,30 +115,6 @@ pub fn run() {
                 }
             }
 
-            // ★ macOS: 启用原生红绿灯按钮
-            #[cfg(target_os = "macos")]
-            {
-                if let Some(win) = app.get_webview_window("main") {
-                    if let Ok(ns_window_ptr) = win.ns_window() {
-                        unsafe {
-                            use objc::runtime::{Object, Class};
-                            use objc::{sel, sel_impl, msg_send};
-                            let ns_window = ns_window_ptr as *mut Object;
-                            // NSWindowStyleMask: titled | closable | miniaturizable | resizable
-                            let style_mask: i32 = 1 | 2 | 4 | 8;
-                            let _: () = msg_send![ns_window, setStyleMask: style_mask];
-                            let _: () = msg_send![ns_window, setTitlebarAppearsTransparent: true];
-                            let _: () = msg_send![ns_window, setTrafficLightPosition: (12.0f64, 12.0f64)];
-                            // 隐藏标题栏文字
-                            let empty_str: *mut Object = msg_send![Class::get("NSString").unwrap(), string];
-                            let _: () = msg_send![ns_window, setTitle: empty_str];
-                        }
-                        eprintln!("[窗口] macOS: 已启用原生红绿灯按钮");
-                    } else {
-                        eprintln!("[窗口] macOS: 无法获取 ns_window 指针");
-                    }
-                }
-            }
             migrate_fix_is_daily_corruption();
             commands::file_commands::cleanup_preview_links();
             if database::check_license_premium() { upgrade_fts5_triggers_on_startup(); }
