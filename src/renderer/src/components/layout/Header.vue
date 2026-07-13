@@ -221,11 +221,21 @@ async function deleteQuickTodo(t: any) {
 const quickNoteOpen = ref(false)
 const quickNoteText = ref('')
 const quickNoteRef = ref<HTMLTextAreaElement | null>(null)
+const quickNoteBtnRef = ref<HTMLElement | null>(null)
+const quickNotePos = ref({ top: 50, right: 24 })
 const todayNoteId = ref<string | null>(null)
 const isSaving = ref(false)
 
+function updateQuickNotePos() {
+  const btn = quickNoteBtnRef.value
+  if (!btn) return
+  const rect = btn.getBoundingClientRect()
+  quickNotePos.value = { top: rect.bottom + 4, right: window.innerWidth - rect.right }
+}
+
 // ── Open: ensure today's daily note exists ──
 async function openQuickNote() {
+  updateQuickNotePos()
   quickNoteOpen.value = true
   quickNoteText.value = ''
   todayNoteId.value = null
@@ -334,6 +344,7 @@ onMounted(() => {
   loadQuickTodos()
   todoPollTimer = setInterval(loadQuickTodos, 30 * 1000)
   document.addEventListener('mousedown', onDocumentMouseDown, true)
+  window.addEventListener('resize', () => { if (quickNoteOpen.value) updateQuickNotePos() })
 })
 // 路由变化时刷新待办计数
 watch(() => route.path, () => loadQuickTodos())
@@ -472,7 +483,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Quick note (闪记) button -->
-    <button class="titlebar-btn titlebar-btn--quicknote" @mousedown.stop @click="openQuickNote" title="快速闪记">
+    <button ref="quickNoteBtnRef" class="titlebar-btn titlebar-btn--quicknote" @mousedown.stop @click="openQuickNote" title="快速闪记">
       <AppIcon name="bolt" size="14" />
       <span>闪记</span>
     </button>
@@ -492,7 +503,7 @@ onUnmounted(() => {
 
     <!-- Quick note bubble — memo style -->
     <div v-if="quickNoteOpen" class="fixed inset-0 z-50" @click.self="closeWithSave">
-      <div class="absolute w-[340px]" :style="{ top: '50px', right: 'calc(72px + 0.5rem)' }">
+      <div class="absolute w-[340px]" :style="{ top: quickNotePos.top + 'px', right: quickNotePos.right + 'px' }">
         <!-- Memo card body -->
         <div class="quicknote-card">
           <!-- Rotated square arrow — fuses with card body -->
