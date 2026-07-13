@@ -506,8 +506,6 @@ onUnmounted(() => {
       <div class="absolute w-[340px]" :style="{ top: quickNotePos.top + 'px', right: quickNotePos.right + 'px' }">
         <!-- Memo card body -->
         <div class="quicknote-card">
-          <!-- Rotated square arrow — fuses with card body -->
-          <div class="quicknote-arrow" />
           <!-- Close X button -->
           <button
             @mousedown.prevent @click.stop="discardQuickNote"
