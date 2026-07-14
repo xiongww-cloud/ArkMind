@@ -118,28 +118,24 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
         }
         result
     };
-    let channels = {
-        let mut result = Vec::new();
-        for ch in database::all("SELECT * FROM channel_partners WHERE project_id=?",&[json!(&project_id)]).unwrap_or_default() {
-            let cid = ch["id"].as_str().unwrap_or("");
-            let contacts = database::all("SELECT * FROM channel_contacts WHERE channel_id=?",&[json!(cid)]).unwrap_or_default();
-            let mut c = ch.clone();
-            c.as_object_mut().map(|m| { m.insert("contacts".into(), json!(contacts)); });
-            result.push(c);
-        }
-        result
-    };
-    let vendors = {
-        let mut result = Vec::new();
-        for vp in database::all("SELECT * FROM vendor_partners WHERE project_id=?",&[json!(&project_id)]).unwrap_or_default() {
-            let vid = vp["id"].as_str().unwrap_or("");
-            let contacts = database::all("SELECT * FROM vendor_contacts WHERE vendor_id=?",&[json!(vid)]).unwrap_or_default();
-            let mut v = vp.clone();
-            v.as_object_mut().map(|m| { m.insert("contacts".into(), json!(contacts)); });
-            result.push(v);
-        }
-        result
-    };
+    let partners = database::all(
+        "SELECT DISTINCT p.* FROM partners p \
+         JOIN business_relations br ON br.source_id = p.id AND br.source_type = p.type \
+         WHERE br.target_type = 'PROJECT' AND br.target_id = ? AND br.relation_type = 'belongs_to'",
+        &[json!(&project_id)]
+    ).unwrap_or_default();
+    let partner_contacts = database::all(
+        "SELECT DISTINCT pc.*, pcm.partner_id FROM partner_contacts pc \
+         JOIN partner_contact_mapping pcm ON pc.id = pcm.contact_id \
+         WHERE pcm.partner_id IN (SELECT p.id FROM partners p \
+           JOIN business_relations br ON br.source_id = p.id AND br.source_type = p.type \
+           WHERE br.target_type = 'PROJECT' AND br.target_id = ?)",
+        &[json!(&project_id)]
+    ).unwrap_or_default();
+    let relations = database::all(
+        "SELECT * FROM business_relations WHERE target_type = 'PROJECT' AND target_id = ?",
+        &[json!(&project_id)]
+    ).unwrap_or_default();
     let dynamics = database::all("SELECT * FROM project_dynamics WHERE project_id=? ORDER BY created_at ASC",&[json!(&project_id)]).unwrap_or_default();
     let todos_mappings = database::all("SELECT * FROM todo_project_mapping WHERE project_id=?",&[json!(&project_id)]).unwrap_or_default();
     let todo_ids: Vec<String> = todos_mappings.iter().filter_map(|r| r["todo_id"].as_str().map(String::from)).collect();
@@ -158,8 +154,9 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
     let file_relations = database::all("SELECT fr.*, fa.file_ext, fa.file_size, fa.content_hash FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.entity_type='project' AND fr.entity_id=?",&[json!(&project_id)]).unwrap_or_default();
     let folders = database::all("SELECT * FROM library_folders WHERE project_id=?",&[json!(&project_id)]).unwrap_or_default();
     let manifest = json!({
-        "version":1,"name":name,"project":p,"solutions":solutions,
-        "channel_partners":channels,"vendor_partners":vendors,"dynamics":dynamics,
+        "version":2,"name":name,"project":p,"solutions":solutions,
+        "partners":partners,"partner_contacts":partner_contacts,"business_relations":relations,
+        "dynamics":dynamics,
         "todos":todos,"todo_mappings":todos_mappings,
         "notes":notes,"note_mappings":notes_mappings,
         "file_relations":file_relations,"library_folders":folders,
@@ -296,34 +293,106 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
                 }
             }
         }
-        // Import channels
-        if let Some(arr) = manifest["channel_partners"].as_array() {
-            for ch in arr {
-                database::run("INSERT OR REPLACE INTO channel_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                    ch["id"].clone(),json!(&pid),ch["name"].clone(),ch["phone"].clone(),ch["company"].clone(),ch["remark"].clone(),ch["created_at"].clone()
+        // Import partners (new or legacy format)
+        if let Some(arr) = manifest["partners"].as_array() {
+            for p in arr {
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",&[
+                    p["id"].clone(),p["type"].clone(),p["name"].clone(),
+                    p["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["created_at"].clone(),p["updated_at"].as_str().map(|s| json!(s)).unwrap_or(p["created_at"].clone())
                 ]).ok();
-                if let Some(contacts) = ch["contacts"].as_array() {
-                    for ct in contacts {
-                        database::run("INSERT OR REPLACE INTO channel_contacts(id,channel_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                            ct["id"].clone(),ch["id"].clone(),ct["name"].clone(),ct["phone"].clone(),ct["email"].clone(),ct["remark"].clone(),ct["created_at"].clone()
-                        ]).ok();
+            }
+        } else {
+            // Legacy format: convert channel_partners → partners
+            if let Some(arr) = manifest["channel_partners"].as_array() {
+                for ch in arr {
+                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)",&[
+                        ch["id"].clone(),ch["name"].clone(),
+                        ch["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        ch["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        ch["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        ch["created_at"].clone()
+                    ]).ok();
+                    crate::services::business_relations::upsert("CHANNEL", ch["id"].as_str().unwrap_or(""), "PROJECT", &pid, "belongs_to", "{}");
+                    if let Some(contacts) = ch["contacts"].as_array() {
+                        for ct in contacts {
+                            let ct_id = ct["id"].as_str().unwrap_or("");
+                            database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)",&[
+                                ct["id"].clone(),ct["name"].clone(),
+                                ct["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["created_at"].clone()
+                            ]).ok();
+                            database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)",&[
+                                ch["id"].clone(),json!(ct_id)
+                            ]).ok();
+                        }
+                    }
+                }
+            }
+            // Legacy format: convert vendor_partners → partners
+            if let Some(arr) = manifest["vendor_partners"].as_array() {
+                for vp in arr {
+                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)",&[
+                        vp["id"].clone(),vp["name"].clone(),
+                        vp["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        vp["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        vp["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        vp["created_at"].clone()
+                    ]).ok();
+                    crate::services::business_relations::upsert("VENDOR", vp["id"].as_str().unwrap_or(""), "PROJECT", &pid, "belongs_to", "{}");
+                    if let Some(contacts) = vp["contacts"].as_array() {
+                        for ct in contacts {
+                            let ct_id = ct["id"].as_str().unwrap_or("");
+                            database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)",&[
+                                ct["id"].clone(),ct["name"].clone(),
+                                ct["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["created_at"].clone()
+                            ]).ok();
+                            database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)",&[
+                                vp["id"].clone(),json!(ct_id)
+                            ]).ok();
+                        }
                     }
                 }
             }
         }
-        // Import vendors
-        if let Some(arr) = manifest["vendor_partners"].as_array() {
-            for vp in arr {
-                database::run("INSERT OR REPLACE INTO vendor_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                    vp["id"].clone(),json!(&pid),vp["name"].clone(),vp["phone"].clone(),vp["company"].clone(),vp["remark"].clone(),vp["created_at"].clone()
+        // Import partner contacts (new format)
+        if let Some(arr) = manifest["partner_contacts"].as_array() {
+            for pc in arr {
+                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
+                    pc["id"].clone(),pc["name"].clone(),
+                    pc["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["position"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["created_at"].clone()
                 ]).ok();
-                if let Some(contacts) = vp["contacts"].as_array() {
-                    for ct in contacts {
-                        database::run("INSERT OR REPLACE INTO vendor_contacts(id,vendor_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                            ct["id"].clone(),vp["id"].clone(),ct["name"].clone(),ct["phone"].clone(),ct["email"].clone(),ct["remark"].clone(),ct["created_at"].clone()
-                        ]).ok();
-                    }
-                }
+            }
+        }
+        if let Some(arr) = manifest["partner_contact_mapping"].as_array() {
+            for m in arr {
+                database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)",&[
+                    m["partner_id"].clone(),m["contact_id"].clone()
+                ]).ok();
+            }
+        }
+        // Import business relations (new format)
+        if let Some(arr) = manifest["business_relations"].as_array() {
+            for br in arr {
+                crate::services::business_relations::upsert(
+                    br["source_type"].as_str().unwrap_or(""),
+                    br["source_id"].as_str().unwrap_or(""),
+                    br["target_type"].as_str().unwrap_or(""),
+                    br["target_id"].as_str().unwrap_or(""),
+                    br["relation_type"].as_str().unwrap_or(""),
+                    br["metadata"].as_str().unwrap_or("{}"),
+                );
             }
         }
         // Import dynamics
@@ -455,34 +524,106 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
                 }
             }
         }
-        // Channels
-        if let Some(arr) = manifest["channel_partners"].as_array() {
-            for ch in arr {
-                database::run("INSERT OR REPLACE INTO channel_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                    ch["id"].clone(),json!(&pid),ch["name"].clone(),ch["phone"].clone(),ch["company"].clone(),ch["remark"].clone(),ch["created_at"].clone()
+        // Partners (new or legacy format)
+        if let Some(arr) = manifest["partners"].as_array() {
+            for p in arr {
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",&[
+                    p["id"].clone(),p["type"].clone(),p["name"].clone(),
+                    p["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["created_at"].clone(),p["updated_at"].as_str().map(|s| json!(s)).unwrap_or(p["created_at"].clone())
                 ]).ok();
-                if let Some(contacts) = ch["contacts"].as_array() {
-                    for ct in contacts {
-                        database::run("INSERT OR REPLACE INTO channel_contacts(id,channel_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                            ct["id"].clone(),ch["id"].clone(),ct["name"].clone(),ct["phone"].clone(),ct["email"].clone(),ct["remark"].clone(),ct["created_at"].clone()
-                        ]).ok();
+            }
+        } else {
+            // Legacy format: convert channel_partners → partners
+            if let Some(arr) = manifest["channel_partners"].as_array() {
+                for ch in arr {
+                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)",&[
+                        ch["id"].clone(),ch["name"].clone(),
+                        ch["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        ch["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        ch["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        ch["created_at"].clone()
+                    ]).ok();
+                    crate::services::business_relations::upsert("CHANNEL", ch["id"].as_str().unwrap_or(""), "PROJECT", &pid, "belongs_to", "{}");
+                    if let Some(contacts) = ch["contacts"].as_array() {
+                        for ct in contacts {
+                            let ct_id = ct["id"].as_str().unwrap_or("");
+                            database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)",&[
+                                ct["id"].clone(),ct["name"].clone(),
+                                ct["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["created_at"].clone()
+                            ]).ok();
+                            database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)",&[
+                                ch["id"].clone(),json!(ct_id)
+                            ]).ok();
+                        }
+                    }
+                }
+            }
+            // Legacy format: convert vendor_partners → partners
+            if let Some(arr) = manifest["vendor_partners"].as_array() {
+                for vp in arr {
+                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)",&[
+                        vp["id"].clone(),vp["name"].clone(),
+                        vp["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        vp["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        vp["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        vp["created_at"].clone()
+                    ]).ok();
+                    crate::services::business_relations::upsert("VENDOR", vp["id"].as_str().unwrap_or(""), "PROJECT", &pid, "belongs_to", "{}");
+                    if let Some(contacts) = vp["contacts"].as_array() {
+                        for ct in contacts {
+                            let ct_id = ct["id"].as_str().unwrap_or("");
+                            database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)",&[
+                                ct["id"].clone(),ct["name"].clone(),
+                                ct["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                ct["created_at"].clone()
+                            ]).ok();
+                            database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)",&[
+                                vp["id"].clone(),json!(ct_id)
+                            ]).ok();
+                        }
                     }
                 }
             }
         }
-        // Vendors
-        if let Some(arr) = manifest["vendor_partners"].as_array() {
-            for vp in arr {
-                database::run("INSERT OR REPLACE INTO vendor_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                    vp["id"].clone(),json!(&pid),vp["name"].clone(),vp["phone"].clone(),vp["company"].clone(),vp["remark"].clone(),vp["created_at"].clone()
+        // Partner contacts (new format)
+        if let Some(arr) = manifest["partner_contacts"].as_array() {
+            for pc in arr {
+                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
+                    pc["id"].clone(),pc["name"].clone(),
+                    pc["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["position"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["created_at"].clone()
                 ]).ok();
-                if let Some(contacts) = vp["contacts"].as_array() {
-                    for ct in contacts {
-                        database::run("INSERT OR REPLACE INTO vendor_contacts(id,vendor_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                            ct["id"].clone(),vp["id"].clone(),ct["name"].clone(),ct["phone"].clone(),ct["email"].clone(),ct["remark"].clone(),ct["created_at"].clone()
-                        ]).ok();
-                    }
-                }
+            }
+        }
+        if let Some(arr) = manifest["partner_contact_mapping"].as_array() {
+            for m in arr {
+                database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)",&[
+                    m["partner_id"].clone(),m["contact_id"].clone()
+                ]).ok();
+            }
+        }
+        // Business relations (new format)
+        if let Some(arr) = manifest["business_relations"].as_array() {
+            for br in arr {
+                crate::services::business_relations::upsert(
+                    br["source_type"].as_str().unwrap_or(""),
+                    br["source_id"].as_str().unwrap_or(""),
+                    br["target_type"].as_str().unwrap_or(""),
+                    br["target_id"].as_str().unwrap_or(""),
+                    br["relation_type"].as_str().unwrap_or(""),
+                    br["metadata"].as_str().unwrap_or("{}"),
+                );
             }
         }
         // Dynamics

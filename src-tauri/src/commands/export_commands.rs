@@ -31,22 +31,17 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
                 let solution_versions = crate::database::all("SELECT * FROM solution_versions", &[]).unwrap_or_default();
                 let solution_items = crate::database::all("SELECT * FROM solution_items", &[]).unwrap_or_default();
                 let dynamics = crate::database::all("SELECT * FROM project_dynamics", &[]).unwrap_or_default();
-                let channels = crate::database::all("SELECT * FROM channel_partners", &[]).unwrap_or_default();
-                let channel_contacts = crate::database::all("SELECT * FROM channel_contacts", &[]).unwrap_or_default();
-                let vendors = crate::database::all("SELECT * FROM vendor_partners", &[]).unwrap_or_default();
-                let vendor_contacts = crate::database::all("SELECT * FROM vendor_contacts", &[]).unwrap_or_default();
-                let customers = crate::database::all("SELECT * FROM partners WHERE type='CUSTOMER'", &[]).unwrap_or_default();
-                let channel_mappings = crate::database::all("SELECT * FROM project_channel_mapping", &[]).unwrap_or_default();
-                let vendor_mappings = crate::database::all("SELECT * FROM project_vendor_mapping", &[]).unwrap_or_default();
-                let customer_mappings = crate::database::all("SELECT * FROM project_customer_mapping", &[]).unwrap_or_default();
+                let partners = crate::database::all("SELECT * FROM partners", &[]).unwrap_or_default();
+                let partner_contacts = crate::database::all("SELECT * FROM partner_contacts", &[]).unwrap_or_default();
+                let partner_contact_mapping = crate::database::all("SELECT * FROM partner_contact_mapping", &[]).unwrap_or_default();
+                let business_relations = crate::database::all("SELECT * FROM business_relations WHERE source_type IN ('CHANNEL','VENDOR','CUSTOMER','CONTACT')", &[]).unwrap_or_default();
                 domain_data = json!({
                     "projects": projects, "solutions": solutions,
                     "solution_versions": solution_versions, "solution_items": solution_items,
-                    "project_dynamics": dynamics, "channel_partners": channels,
-                    "channel_contacts": channel_contacts, "vendor_partners": vendors,
-                    "vendor_contacts": vendor_contacts, "customers": customers,
-                    "project_channel_mapping": channel_mappings,
-                    "project_vendor_mapping": vendor_mappings, "project_customer_mapping": customer_mappings,
+                    "project_dynamics": dynamics, "partners": partners,
+                    "partner_contacts": partner_contacts,
+                    "partner_contact_mapping": partner_contact_mapping,
+                    "business_relations": business_relations,
                 });
             }
             "products" => {
@@ -306,29 +301,92 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
     if let Some(dyns) = data["project_dynamics"].as_array() {
         for d in dyns { database::run("INSERT OR REPLACE INTO project_dynamics(id,project_id,type,content,operator,created_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(d["id"]),json!(d["project_id"]),json!(d["type"]),json!(d["content"]),json!(d["operator"]),json!(d["created_at"])]).ok(); }
     }
-    // 渠道
-    if let Some(chs) = data["channel_partners"].as_array() {
-        for c in chs { database::run("INSERT OR REPLACE INTO channel_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(c["id"]),json!(c["project_id"]),json!(c["name"]),json!(c["phone"]),json!(c["company"]),json!(c["remark"]),json!(c["created_at"])]).ok(); }
+    // 合作伙伴（新格式或旧格式兼容）
+    if let Some(arr) = data["partners"].as_array() {
+        // 新格式：直接导入 partners 表
+        for p in arr {
+            database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[
+                json!(p["id"]),json!(p["type"]),json!(p["name"]),json!(p["phone"]),
+                json!(p["company"]),json!(p["remark"]),json!(p["contact_person"]),json!(p["contact_phone"]),
+                json!(p["created_at"]),json!(p["updated_at"])
+            ]).ok();
+        }
+    } else {
+        // 旧格式：转换 channel_partners → partners
+        if let Some(chs) = data["channel_partners"].as_array() {
+            for c in chs {
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)", &[
+                    json!(c["id"]),json!(c["name"]),json!(c["phone"]),json!(c["company"]),json!(c["remark"]),json!(c["created_at"])
+                ]).ok();
+            }
+        }
+        // 旧格式：转换 vendor_partners → partners
+        if let Some(vds) = data["vendor_partners"].as_array() {
+            for v in vds {
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)", &[
+                    json!(v["id"]),json!(v["name"]),json!(v["phone"]),json!(v["company"]),json!(v["remark"]),json!(v["created_at"])
+                ]).ok();
+            }
+        }
+        // 旧格式：客户
+        if let Some(custs) = data["customers"].as_array() {
+            for c in custs {
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,'CUSTOMER',?2,'','',?3,?4,?5,?6,?7)", &[
+                    json!(c["id"]),json!(c["name"]),json!(c["remark"]),json!(c["contact_person"]),json!(c["contact_phone"]),json!(c["created_at"]),json!(c["updated_at"])
+                ]).ok();
+            }
+        }
     }
-    if let Some(ccs) = data["channel_contacts"].as_array() {
-        for c in ccs { database::run("INSERT OR REPLACE INTO channel_contacts(id,channel_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(c["id"]),json!(c["channel_id"]),json!(c["name"]),json!(c["phone"]),json!(c["email"]),json!(c["remark"]),json!(c["created_at"])]).ok(); }
+    // 联系人（新格式或旧格式兼容）
+    if let Some(arr) = data["partner_contacts"].as_array() {
+        for pc in arr {
+            database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
+                json!(pc["id"]),json!(pc["name"]),json!(pc["phone"]),json!(pc["email"]),
+                json!(pc["position"]),json!(pc["remark"]),json!(pc["created_at"])
+            ]).ok();
+        }
+    } else {
+        // 旧格式：转换 channel_contacts → partner_contacts
+        if let Some(ccs) = data["channel_contacts"].as_array() {
+            for c in ccs {
+                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)", &[
+                    json!(c["id"]),json!(c["name"]),json!(c["phone"]),json!(c["email"]),
+                    json!(c["remark"]),json!(c["created_at"])
+                ]).ok();
+            }
+        }
+        // 旧格式：转换 vendor_contacts → partner_contacts
+        if let Some(vcs) = data["vendor_contacts"].as_array() {
+            for v in vcs {
+                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)", &[
+                    json!(v["id"]),json!(v["name"]),json!(v["phone"]),json!(v["email"]),
+                    json!(v["remark"]),json!(v["created_at"])
+                ]).ok();
+            }
+        }
     }
-    // 供应商
-    if let Some(vds) = data["vendor_partners"].as_array() {
-        for v in vds { database::run("INSERT OR REPLACE INTO vendor_partners(id,project_id,name,phone,company,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(v["id"]),json!(v["project_id"]),json!(v["name"]),json!(v["phone"]),json!(v["company"]),json!(v["remark"]),json!(v["created_at"])]).ok(); }
-    }
-    if let Some(vcs) = data["vendor_contacts"].as_array() {
-        for v in vcs { database::run("INSERT OR REPLACE INTO vendor_contacts(id,vendor_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(v["id"]),json!(v["vendor_id"]),json!(v["name"]),json!(v["phone"]),json!(v["email"]),json!(v["remark"]),json!(v["created_at"])]).ok(); }
-    }
-    // 客户（迁移到 partners 表）
-    if let Some(custs) = data["customers"].as_array() {
-        for c in custs {
-            database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,'CUSTOMER',?2,'','',?3,?4,?5,?6,?7)", &[
-                json!(c["id"]),json!(c["name"]),json!(c["remark"]),json!(c["contact_person"]),json!(c["contact_phone"]),json!(c["created_at"]),json!(c["updated_at"])
+    // 联系人映射
+    if let Some(arr) = data["partner_contact_mapping"].as_array() {
+        for m in arr {
+            database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)", &[
+                json!(m["partner_id"]),json!(m["contact_id"])
             ]).ok();
         }
     }
-    // 映射表
+    // 业务关联
+    if let Some(arr) = data["business_relations"].as_array() {
+        for br in arr {
+            crate::services::business_relations::upsert(
+                br["source_type"].as_str().unwrap_or(""),
+                br["source_id"].as_str().unwrap_or(""),
+                br["target_type"].as_str().unwrap_or(""),
+                br["target_id"].as_str().unwrap_or(""),
+                br["relation_type"].as_str().unwrap_or(""),
+                br["metadata"].as_str().unwrap_or("{}"),
+            );
+        }
+    }
+    // 映射表（保留兼容）
     if let Some(maps) = data["project_channel_mapping"].as_array() {
         for m in maps { database::run("INSERT OR IGNORE INTO project_channel_mapping(project_id,channel_id,selected_contact_id,created_at) VALUES(?1,?2,?3,?4)", &[json!(m["project_id"]),json!(m["channel_id"]),json!(m["selected_contact_id"]),json!(m["created_at"])]).ok(); }
     }
