@@ -856,6 +856,18 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
             let custom = meta_val.get("custom_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
             let mut extra = String::new();
             if let Some(cn) = custom { extra.push_str(&format!(" — 作为「{}」", cn)); }
+            // 联系人类型：查询归属的合作伙伴
+            if tt == "CONTACT" {
+                if let Ok(Some(pm)) = database::get(
+                    "SELECT p.name, p.type FROM partner_contact_mapping pcm JOIN partners p ON pcm.partner_id = p.id WHERE pcm.contact_id=?1 LIMIT 1",
+                    &[json!(tid)],
+                ) {
+                    let pname = pm["name"].as_str().unwrap_or("");
+                    let ptype = pm["type"].as_str().unwrap_or("");
+                    let type_label = match ptype { "CHANNEL" => "渠道商", "VENDOR" => "供应商", "CUSTOMER" => "客户", _ => ptype };
+                    if !pname.is_empty() { extra.push_str(&format!(" — {}({})", pname, type_label)); }
+                }
+            }
             Some(format!("· {}{}", name, extra))
         }).collect()
     };
