@@ -14,8 +14,8 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     let budget_val = data["budget"].as_f64()
         .or_else(|| data["budget"].as_str().and_then(|s| s.parse::<f64>().ok()))
         .unwrap_or(0.0);
-    database::run("INSERT INTO projects(id,name,status,description,budget,customer,owner,user_id,bid_time,customer_contact,customer_phone) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-    &[json!(&id),json!(&name),json!(status),json!(&desc),json!(budget_val),json!(data["customer"].as_str().unwrap_or("")),json!(data["owner"].as_str().unwrap_or("")),json!(data["userId"].as_str().unwrap_or("")),json!(bid_time),json!(data["customerContact"].as_str().unwrap_or("")),json!(data["customerPhone"].as_str().unwrap_or(""))]).map_err(|e| e.to_string())?;
+    database::run("INSERT INTO projects(id,name,status,description,budget,owner,user_id,bid_time) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+    &[json!(&id),json!(&name),json!(status),json!(&desc),json!(budget_val),json!(data["owner"].as_str().unwrap_or("")),json!(data["userId"].as_str().unwrap_or("")),json!(bid_time)]).map_err(|e| e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &id, crate::services::object_changed::Action::Created);
     database::get("SELECT * FROM projects WHERE id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null))
@@ -32,10 +32,8 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
                 .unwrap_or_else(|| "Lead".to_string())
         });
     for (k, col) in &[
-        ("name","name"),("status","status"),("owner","owner"),("customer","customer"),
+        ("name","name"),("status","status"),("owner","owner"),
         ("budget","budget"),("description","description"),
-        ("customer_contact","customer_contact"),("customerContact","customer_contact"),
-        ("customer_phone","customer_phone"),("customerPhone","customer_phone"),
     ] { if let Some(s) = data[*k].as_str() { fields.push(format!("{}=?",col)); values.push(json!(s)); } }
     // bid_time 只在投标状态下有效
     let bid_time_val = if current_status == "Bidding" {
@@ -264,7 +262,7 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
         let pid = proj["id"].as_str().unwrap_or("").to_string();
         if pid.is_empty() { return Err("项目ID缺失".into()); }
         // Insert project
-        let cols = ["id","name","description","status","owner","budget","customer","bid_time","customer_contact","customer_phone","created_at","updated_at"];
+        let cols = ["id","name","description","status","owner","budget","bid_time","created_at","updated_at"];
         let mut vals: Vec<Value> = Vec::new();
         let mut placeholders: Vec<String> = Vec::new();
         for c in &cols {
@@ -422,7 +420,7 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
         if pid.is_empty() { return Err("项目ID缺失".into()); }
 
         // Insert project
-        let cols = ["id","name","description","status","owner","budget","customer","bid_time","customer_contact","customer_phone","created_at","updated_at"];
+        let cols = ["id","name","description","status","owner","budget","bid_time","created_at","updated_at"];
         let mut vals: Vec<Value> = Vec::new();
         let mut placeholders: Vec<String> = Vec::new();
         for c in &cols {

@@ -204,26 +204,7 @@ async function saveName() {
 }
 function cancelEditName() { isEditingName.value = false }
 
-const isEditingCustomer = ref(false)
-const customerEditValue = ref('')
-const customerInputRef = ref(null)
-function startEditCustomer() { customerEditValue.value = project.value?.customer || ''; isEditingCustomer.value = true; nextTick(() => customerInputRef.value?.focus()) }
-async function saveCustomer() {
-  const v = customerEditValue.value.trim()
-  if (project.value) {
-    const current = project.value.customer || ''
-    if (v === current) { isEditingCustomer.value = false; return }
-    project.value.customer = v || null
-    projectStore.updateProjectInList(projectId.value, { customer: v || null })
-    await projectStore.updateProject(projectId.value, { customer: v || null })
-    const msg = v ? `客户从「${current}」更新为「${v}」` : '清除了客户信息'
-    await projectStore.addProjectDynamic(projectId.value, msg)
-    dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
-    await projectStore.fetchProjectDetail(projectId.value)
-  }
-  isEditingCustomer.value = false
-}
-function cancelEditCustomer() { isEditingCustomer.value = false }
+// 客户信息现在通过合作伙伴系统管理（ProjectDetailCustomer.vue）
 
 const isEditingDesc = ref(false)
 const descEditValue = ref('')
@@ -366,7 +347,6 @@ watch(() => projectId.value, async () => {
   activeTab.value = 'detail'
   isEditingName.value = false
   isEditingBudget.value = false
-  isEditingCustomer.value = false
   isEditingDesc.value = false
   showStatusDropdown.value = false
   showMoreMenu.value = false

@@ -614,7 +614,7 @@ fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collection
 fn execute_structured_query(params: &Value) -> String {
     let entity = params["entity"].as_str().unwrap_or("");
     let (table, fields): (&str, &[&str]) = match entity {
-        "project" => ("projects", &["id","name","description","status","owner","budget","customer","bid_time","customer_contact","customer_phone","created_at","updated_at"]),
+        "project" => ("projects", &["id","name","description","status","owner","budget","bid_time","created_at","updated_at"]),
         "product" => ("products", &["id","name","series_name","description","price","standard_specs","full_specs","sort_order","created_at","updated_at"]),
         "partner" => ("partners", &["id","type","name","phone","address","remark","contact_person","contact_phone","created_at","updated_at"]),
         "contact" => ("partner_contacts", &["id","name","phone","email","position","remark","created_at"]),
@@ -673,7 +673,7 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_object","description":"搜索知识库中的对象。四种模式：1.按单个ID精确获取（传id参数）2.按多个ID批量获取（传ids数组）3.按关键词搜索（传query参数）4.按时间范围浏览（传start_time/end_time）。当用户询问已知对象的详情时，优先用id/ids模式回忆。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"单个对象ID（如PROJECT-abc123），用于精确获取单个对象的完整信息"},"ids":{"type":"array","items":{"type":"string"},"description":"批量对象ID列表（如[\"PROJECT-xxx\",\"PROJECT-yyy\"]），最多30个，用于批量获取多个对象的完整信息"},"query":{"type":"string","description":"关键词过滤（如产品名/项目名/联系人名），留空则按时间范围展示全部对象"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE/TODO/CHANNEL/VENDOR/CONTACT，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页天数，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。⚠️ chunk_id 是8位短ID（如 47beae9a），来自 search() 结果中的「ChunkID」字段。绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID（如 47beae9a），必须来自 search() 结果的 ChunkID 字段，不是 source_id"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。action=create(title必填,priority从用户原话提取,due_date从用户原话提取,repeat可选daily/weekly/monthly,project_id关联项目), action=update, action=delete","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待办标题"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建), update(更新字段), delete(删除及关联数据)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"project_id":{"type":"string","description":"项目ID(update/delete用)"},"name":{"type":"string","description":"项目名称(create用)"},"customer":{"type":"string","description":"客户名称"},"customer_contact":{"type":"string","description":"客户联系人"},"customer_phone":{"type":"string","description":"客户联系电话"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建), update(更新字段), delete(删除及关联数据)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"project_id":{"type":"string","description":"项目ID(update/delete用)"},"name":{"type":"string","description":"项目名称(create用)"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_partner","description":"管理合作伙伴（渠道/厂商/客户）。action: create(创建), update(更新), delete(删除), link_project(关联到项目), unlink_project(取消关联)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"partner_id":{"type":"string","description":"合作伙伴ID(update/delete/link_project/unlink_project用)"},"type":{"type":"string","description":"类型: CHANNEL/VENDOR/CUSTOMER(create用)"},"name":{"type":"string","description":"名称(create/update用)"},"phone":{"type":"string","description":"电话"},"address":{"type":"string","description":"地址"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人(通讯录). action: create(创建), update(更新), delete(删除), list(查看通讯录)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list"]},"contact_id":{"type":"string","description":"联系人ID(update/delete用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"parent_id":{"type":"string","description":"关联的合作伙伴ID(渠道/厂商/客户), 可选"},"project_id":{"type":"string","description":"关联的项目ID, 可选"},"type":{"type":"string","description":"类型过滤: CHANNEL/VENDOR/CUSTOMER(list用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_query","description":"Structured query for business data with field filtering, sorting, pagination.","parameters":{"type":"object","properties":{"entity":{"type":"string","enum":["project","product","partner","contact","todo","note"],"description":"Entity type to query"},"filters":{"type":"array","items":{"type":"object","properties":{"field":{"type":"string","description":"Field name"},"op":{"type":"string","enum":["=","!=",">","<",">=","<=","LIKE","IN","IS_NULL","IS_NOT_NULL"],"description":"Operator"},"value":{"type":["string","number","boolean","null"],"description":"Filter value"}},"required":["field","op","value"]},"description":"Filter conditions (AND)"},"sort":{"type":"object","properties":{"field":{"type":"string","description":"Sort field"},"order":{"type":"string","enum":["asc","desc"],"description":"Sort direction"}},"description":"Sort"},"limit":{"type":"integer","description":"Max results, default 20, max 100"},"offset":{"type":"integer","description":"Offset, default 0"}},"required":["entity"]}}},
@@ -1012,8 +1012,8 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     let mut matched_sources: std::collections::HashSet<(String,String)> = std::collections::HashSet::new();
     if !keywords.is_empty() {
         let like = format!("%{}%", crate::database::escape_like(&keywords.join(" ")));
-        if let Ok(rows) = database::all("SELECT id,name,status,customer FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
-            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PROJECT".into(), id.clone())); obj_head.push_str(&format!("[Object] Project: {} | Status: {} | Customer: {}\n",r["name"].as_str().unwrap_or(""),r["status"].as_str().unwrap_or(""),r["customer"].as_str().unwrap_or(""))); }
+        if let Ok(rows) = database::all("SELECT id,name,status FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
+            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PROJECT".into(), id.clone())); obj_head.push_str(&format!("[Object] Project: {} | Status: {}\n",r["name"].as_str().unwrap_or(""),r["status"].as_str().unwrap_or(""))); }
         }
         if let Ok(rows) = database::all("SELECT id,name FROM products WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
             for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PRODUCT".into(), id.clone())); obj_head.push_str(&format!("[Object] Product: {}\n",r["name"].as_str().unwrap_or(""))); }
@@ -1913,7 +1913,6 @@ fn fetch_parent_chunks(source_id_str: &str, fields: &[String]) -> String {
         let matching_lines: Vec<&str> = full_content.lines().filter(|line| {
             let line_lower = line.to_lowercase();
             match field_lower.as_str() {
-                "customer" => line_lower.contains("客户") || line_lower.contains("customer"),
                 "vendor" => line_lower.contains("厂商") || line_lower.contains("供应商") || line_lower.contains("vendor"),
                 "channel" => line_lower.contains("渠道") || line_lower.contains("channel"),
                 "contact" => line_lower.contains("联系人") || line_lower.contains("contact"),
@@ -2810,17 +2809,14 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if name.is_empty() { "创建项目需要提供 name。".to_string() }
                                     else {
                                         let id = uuid::Uuid::new_v4().to_string();
-                                        let customer = a["customer"].as_str().unwrap_or("");
                                         let budget = a["budget"].as_f64().unwrap_or(0.0);
                                         let description = a["description"].as_str().unwrap_or("");
                                         let status = a["status"].as_str().unwrap_or("Lead");
                                         let bid_time = if status == "Bidding" { a["bid_time"].as_str().unwrap_or("") } else { "" };
-                                        let customer_contact = a["customer_contact"].as_str().unwrap_or("");
-                                        let customer_phone = a["customer_phone"].as_str().unwrap_or("");
                                         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                                         match database::run(
-                                            "INSERT INTO projects(id,name,customer,budget,description,status,bid_time,customer_contact,customer_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)",
-                                            &[json!(id),json!(name),json!(customer),json!(budget),json!(description),json!(status),json!(bid_time),json!(customer_contact),json!(customer_phone),json!(ts)]
+                                            "INSERT INTO projects(id,name,budget,description,status,bid_time,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
+                                            &[json!(id),json!(name),json!(budget),json!(description),json!(status),json!(bid_time),json!(ts)]
                                         ) {
                                             Ok(_) => {
                                                 // ★ 同步到 source_data（知识库索引）
@@ -2841,7 +2837,6 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         let mut sets = Vec::new();
                                         let mut vals: Vec<serde_json::Value> = Vec::new();
                                         if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["customer"].as_str().filter(|s| !s.is_empty()) { sets.push("customer=?"); vals.push(json!(v)); }
                                         if let Some(v) = a["description"].as_str().filter(|s| !s.is_empty()) { sets.push("description=?"); vals.push(json!(v)); }
                                         // bid_time 只在投标状态下有效
                                         let effective_status = a["status"].as_str().unwrap_or("");
@@ -2852,8 +2847,6 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             // 非投标状态：清空 bid_time
                                             sets.push("bid_time=?"); vals.push(json!(""));
                                         }
-                                        if let Some(v) = a["customer_contact"].as_str().filter(|s| !s.is_empty()) { sets.push("customer_contact=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["customer_phone"].as_str().filter(|s| !s.is_empty()) { sets.push("customer_phone=?"); vals.push(json!(v)); }
                                         if a.get("budget").and_then(|v| v.as_f64()).filter(|v| *v > 0.0).is_some() { sets.push("budget=?"); vals.push(json!(a["budget"])); }
                                         if sets.is_empty() { "未提供任何更新字段。".to_string() }
                                         else {

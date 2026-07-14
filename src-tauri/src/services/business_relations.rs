@@ -149,20 +149,6 @@ fn backfill() {
         }
     }
 
-    // 9. customer_contacts → employed_by (CONTACT → CUSTOMER)
-    if let Ok(rows) = database::all(
-        "SELECT id, customer_id FROM customer_contacts WHERE customer_id IS NOT NULL AND customer_id != ''",
-        &[]
-    ) {
-        for r in &rows {
-            let cid = r["id"].as_str().unwrap_or("");
-            let cuid = r["customer_id"].as_str().unwrap_or("");
-            if cid.is_empty() || cuid.is_empty() { continue; }
-            upsert("CONTACT", cid, "CUSTOMER", cuid, "employed_by", "{}");
-            total += 1;
-        }
-    }
-
     eprintln!("[business_relations] Backfill 完成，共同步 {} 条关联", total);
 }
 

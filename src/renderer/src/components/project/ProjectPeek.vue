@@ -34,7 +34,7 @@ const statusColors: Record<string, string> = {
     <div class="grid grid-cols-2 gap-3 mb-6">
       <div class="bg-surface-50 rounded-xl p-3.5">
         <p class="text-[11px] text-surface-400 mb-0.5">客户</p>
-        <p class="text-sm font-medium text-surface-700 truncate">{{ project.customer || '—' }}</p>
+        <p class="text-sm font-medium text-surface-700 truncate">—</p>
       </div>
       <div class="bg-surface-50 rounded-xl p-3.5">
         <p class="text-[11px] text-surface-400 mb-0.5">预算</p>

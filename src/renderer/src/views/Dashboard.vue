@@ -197,7 +197,6 @@ const activeProjects = computed(() => {
       status: p.status,
       stage: statusLabels[p.status] || p.status,
       budget: formatBudget(Number(p.budget) || 0),
-      customer: p.customer || '',
       owner: p.owner || '',
       bidTime: p.bid_time ? p.bid_time.slice(0, 10) : '',
       latestDynamic: dynamic ? { content: dynamic.content || '', time: timeAgo(dynamic.created_at || '') } : null,

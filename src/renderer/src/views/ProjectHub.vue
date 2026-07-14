@@ -87,7 +87,6 @@ async function syncFromBackend() {
       if (match) {
         match._backendId = r.id
         match.name = r.name
-        match.customer = r.customer || ''
         match.budget = r.budget || ''
         match.description = r.description || ''
         match.status = r.status
@@ -97,14 +96,12 @@ async function syncFromBackend() {
         match.createdAt = r.created_at || match.createdAt
         match.updatedAt = r.updated_at || null
         match.isArchived = r.isArchived || false
-        match.customerContact = r.customer_contact || ''
-        match.customerPhone = r.customer_phone || ''
         idMap[match.id] = r.id
       } else {
         // Step 2: Create local entry for unmatched backend projects
         store.push({
           id: r.id, _backendId: r.id,
-          name: r.name, customer: r.customer || '',
+          name: r.name,
           budget: r.budget || '', description: r.description || '',
           status: r.status, owner: r.owner || '',
           userId: r.userId || '',
@@ -112,8 +109,6 @@ async function syncFromBackend() {
           createdAt: r.created_at || new Date().toISOString().slice(0, 10),
           updatedAt: r.updated_at || null,
           isArchived: r.isArchived || false,
-          customerContact: r.customer_contact || '',
-          customerPhone: r.customer_phone || '',
           timeline: [], configurations: [], plans: [],
         })
       }
@@ -174,15 +169,12 @@ const statusDotColors = {
 
 const newProject = ref({
   name: '',
-  customer: '',
   budget: 0,
   description: '',
   status: 'Lead',
   owner: authStore.currentUser.name,
   userId: authStore.currentUser.id,
   bidTime: '',
-  customerContact: '',
-  customerPhone: '',
 })
 
 const newProjectStatusOpen = ref(false)
@@ -263,8 +255,7 @@ const filteredProjects = computed(() => {
   if (searchQuery.value.trim()) {
     const q = searchQuery.value.toLowerCase()
     result = result.filter(p =>
-      p.name.toLowerCase().includes(q) ||
-      p.customer.toLowerCase().includes(q)
+      p.name.toLowerCase().includes(q)
     )
   }
   // Time range filter (by updatedAt)
@@ -493,10 +484,10 @@ async function handleImportProject() {
         <!-- Divider -->
         <div class="border-t border-surface-100 mt-auto pt-2.5" />
 
-        <!-- Bottom rows: Customer+更新 / Budget+立项 -->
+        <!-- Bottom rows: 客户(合作伙伴) / 更新 / 预算 / 立项 -->
         <div class="space-y-0.5 mt-1.5">
           <div class="flex justify-between items-baseline">
-            <p class="text-xs text-surface-500 truncate min-w-0">{{ project.customer || '未指定客户' }}</p>
+            <p class="text-xs text-surface-500 truncate min-w-0" :title="project._customerName || ''">{{ project._customerName || '未指定客户' }}</p>
             <p class="text-[11px] text-surface-400 shrink-0 text-left w-[134px] ml-[16px]">更新：{{ formatDateTime(project.updatedAt || project.createdAt) }}</p>
           </div>
           <div class="flex justify-between items-baseline">

@@ -456,6 +456,34 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         [],
     ).ok();
 
+    // ★ 迁移 projects 客户字段到 partners + project_customer_mapping，然后删除旧列
+    let has_customer_col: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='customer'",
+        [], |r| r.get::<_,i64>(0),
+    ).unwrap_or(0) > 0;
+    if has_customer_col {
+        // 1. 将 projects.customer 迁移到 partners 表（创建 CUSTOMER 类型的合作伙伴）
+        let _ = conn.execute_batch("
+            INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, contact_person, contact_phone, created_at, updated_at)
+            SELECT hex(randomblob(16)), 'CUSTOMER', customer, '', '', '', customer_contact, customer_phone, datetime('now','localtime'), datetime('now','localtime')
+            FROM projects
+            WHERE customer IS NOT NULL AND customer != '';
+        ");
+        // 2. 创建 project_customer_mapping 条目
+        let _ = conn.execute_batch("
+            INSERT OR IGNORE INTO project_customer_mapping (project_id, customer_id)
+            SELECT p.id, pt.id
+            FROM projects p
+            JOIN partners pt ON pt.type='CUSTOMER' AND pt.name=p.customer
+            WHERE p.customer IS NOT NULL AND p.customer != '';
+        ");
+        // 3. 删除旧列
+        let _ = conn.execute("ALTER TABLE projects DROP COLUMN customer", []);
+        let _ = conn.execute("ALTER TABLE projects DROP COLUMN customer_contact", []);
+        let _ = conn.execute("ALTER TABLE projects DROP COLUMN customer_phone", []);
+        println!("[数据库] projects 客户字段已迁移到 partners + project_customer_mapping");
+    }
+
     Ok(())
 }
 

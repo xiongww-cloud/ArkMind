@@ -174,14 +174,14 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
 #[tauri::command]
 pub async fn ext_tool_get_project_context(query_name: String) -> Result<String, String> {
     if query_name.trim().is_empty() { return Ok("请提供项目名称".into()); }
-    let projects = database::all("SELECT id,name,customer,customer_contact,status,owner,budget,bid_time,description,created_at,updated_at FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1",&[json!(format!("%{}%",crate::database::escape_like(query_name.trim())))]).unwrap_or_default();
+    let projects = database::all("SELECT id,name,status,owner,budget,bid_time,description,created_at,updated_at FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1",&[json!(format!("%{}%",crate::database::escape_like(query_name.trim())))]).unwrap_or_default();
     let proj = match projects.first() { Some(p) => p, None => return Ok(format!("未找到匹配「{}」的项目", query_name)) };
     let project_id = proj["id"].as_str().unwrap_or("");
     let mut tags: Vec<String> = database::all("SELECT DISTINCT t.name FROM tags t INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id WHERE tm.entity_type='projects' AND tm.entity_id=?1",&[json!(project_id)]).unwrap_or_default().into_iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
     let note_tags: Vec<String> = database::all("SELECT DISTINCT t.name FROM tags t INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id INNER JOIN note_project_mapping npm ON npm.note_id=tm.entity_id WHERE tm.entity_type='notes' AND npm.project_id=?1",&[json!(project_id)]).unwrap_or_default().into_iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
     for nt in note_tags { if !tags.contains(&nt) { tags.push(nt); } }
     let bom: Vec<Value> = database::all("SELECT si.product_name,si.quantity,si.description,sv.version,s.name as solution_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 AND sv.status='final' ORDER BY sv.updated_at DESC,si.sort_order ASC",&[json!(project_id)]).unwrap_or_default().into_iter().map(|r| json!({"product_model":r["product_name"].as_str().unwrap_or(""),"quantity":r["quantity"].as_i64().unwrap_or(0),"spec":r["description"].as_str().unwrap_or(""),"solution":r["solution_name"].as_str().unwrap_or("")})).collect();
-    let result = json!({"project_id":project_id,"project_name":proj["name"].as_str().unwrap_or(""),"attributes":{"status":proj["status"].as_str().unwrap_or(""),"customer":proj["customer"].as_str().unwrap_or(""),"customer_contact":proj["customer_contact"].as_str().unwrap_or(""),"owner":proj["owner"].as_str().unwrap_or(""),"budget":proj["budget"].as_f64().unwrap_or(0.0),"bid_time":proj["bid_time"].as_str().unwrap_or(""),"description":proj["description"].as_str().unwrap_or("")},"tags":tags,"solution_bom":bom});
+    let result = json!({"project_id":project_id,"project_name":proj["name"].as_str().unwrap_or(""),"attributes":{"status":proj["status"].as_str().unwrap_or(""),"owner":proj["owner"].as_str().unwrap_or(""),"budget":proj["budget"].as_f64().unwrap_or(0.0),"bid_time":proj["bid_time"].as_str().unwrap_or(""),"description":proj["description"].as_str().unwrap_or("")},"tags":tags,"solution_bom":bom});
     Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 

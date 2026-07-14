@@ -35,8 +35,7 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
                 let channel_contacts = crate::database::all("SELECT * FROM channel_contacts", &[]).unwrap_or_default();
                 let vendors = crate::database::all("SELECT * FROM vendor_partners", &[]).unwrap_or_default();
                 let vendor_contacts = crate::database::all("SELECT * FROM vendor_contacts", &[]).unwrap_or_default();
-                let customers = crate::database::all("SELECT * FROM customers", &[]).unwrap_or_default();
-                let customer_contacts = crate::database::all("SELECT * FROM customer_contacts", &[]).unwrap_or_default();
+                let customers = crate::database::all("SELECT * FROM partners WHERE type='CUSTOMER'", &[]).unwrap_or_default();
                 let channel_mappings = crate::database::all("SELECT * FROM project_channel_mapping", &[]).unwrap_or_default();
                 let vendor_mappings = crate::database::all("SELECT * FROM project_vendor_mapping", &[]).unwrap_or_default();
                 let customer_mappings = crate::database::all("SELECT * FROM project_customer_mapping", &[]).unwrap_or_default();
@@ -46,7 +45,7 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
                     "project_dynamics": dynamics, "channel_partners": channels,
                     "channel_contacts": channel_contacts, "vendor_partners": vendors,
                     "vendor_contacts": vendor_contacts, "customers": customers,
-                    "customer_contacts": customer_contacts, "project_channel_mapping": channel_mappings,
+                    "project_channel_mapping": channel_mappings,
                     "project_vendor_mapping": vendor_mappings, "project_customer_mapping": customer_mappings,
                 });
             }
@@ -283,10 +282,10 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
         for p in projects {
             let id = p["id"].as_str().unwrap_or("");
             if id.is_empty() { continue; }
-            database::run("INSERT OR REPLACE INTO projects(id,name,description,status,owner,budget,customer,bid_time,customer_contact,customer_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", &[
+            database::run("INSERT OR REPLACE INTO projects(id,name,description,status,owner,budget,bid_time,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", &[
                 json!(id), json!(p["name"]), json!(p["description"]), json!(p["status"]),
-                json!(p["owner"]), json!(p["budget"]), json!(p["customer"]),
-                json!(p["bid_time"]), json!(p["customer_contact"]), json!(p["customer_phone"]),
+                json!(p["owner"]), json!(p["budget"]),
+                json!(p["bid_time"]),
                 json!(p["created_at"]), json!(p["updated_at"]),
             ]).ok();
         }
@@ -321,12 +320,13 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
     if let Some(vcs) = data["vendor_contacts"].as_array() {
         for v in vcs { database::run("INSERT OR REPLACE INTO vendor_contacts(id,vendor_id,name,phone,email,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(v["id"]),json!(v["vendor_id"]),json!(v["name"]),json!(v["phone"]),json!(v["email"]),json!(v["remark"]),json!(v["created_at"])]).ok(); }
     }
-    // 客户
+    // 客户（迁移到 partners 表）
     if let Some(custs) = data["customers"].as_array() {
-        for c in custs { database::run("INSERT OR REPLACE INTO customers(id,name,contact_person,contact_phone,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(c["id"]),json!(c["name"]),json!(c["contact_person"]),json!(c["contact_phone"]),json!(c["remark"]),json!(c["created_at"]),json!(c["updated_at"])]).ok(); }
-    }
-    if let Some(cts) = data["customer_contacts"].as_array() {
-        for c in cts { database::run("INSERT OR REPLACE INTO customer_contacts(id,customer_id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", &[json!(c["id"]),json!(c["customer_id"]),json!(c["name"]),json!(c["phone"]),json!(c["email"]),json!(c["position"]),json!(c["remark"]),json!(c["created_at"])]).ok(); }
+        for c in custs {
+            database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,'CUSTOMER',?2,'','',?3,?4,?5,?6,?7)", &[
+                json!(c["id"]),json!(c["name"]),json!(c["remark"]),json!(c["contact_person"]),json!(c["contact_phone"]),json!(c["created_at"]),json!(c["updated_at"])
+            ]).ok();
+        }
     }
     // 映射表
     if let Some(maps) = data["project_channel_mapping"].as_array() {

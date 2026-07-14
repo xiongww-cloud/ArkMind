@@ -19,8 +19,8 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS projects (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '',
             status TEXT DEFAULT 'Lead', owner TEXT DEFAULT '', user_id TEXT DEFAULT '',
-            budget REAL DEFAULT 0, customer TEXT DEFAULT '',
-            bid_time TEXT DEFAULT '', customer_contact TEXT DEFAULT '', customer_phone TEXT DEFAULT '',
+            budget REAL DEFAULT 0,
+            bid_time TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
         CREATE TABLE IF NOT EXISTS project_dynamics (
