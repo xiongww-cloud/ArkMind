@@ -93,6 +93,7 @@ async function syncFromBackend() {
         match.owner = r.owner || ''
         match.userId = r.userId || ''
         match.displayId = r.displayId || ''
+        match._customerName = r.customer_name || ''
         match.createdAt = r.created_at || match.createdAt
         match.updatedAt = r.updated_at || null
         match.isArchived = r.isArchived || false
@@ -106,6 +107,7 @@ async function syncFromBackend() {
           status: r.status, owner: r.owner || '',
           userId: r.userId || '',
           displayId: r.displayId || '',
+          _customerName: r.customer_name || '',
           createdAt: r.created_at || new Date().toISOString().slice(0, 10),
           updatedAt: r.updated_at || null,
           isArchived: r.isArchived || false,
