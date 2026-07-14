@@ -1038,54 +1038,60 @@ onMounted(async () => {
       <div v-if="showAiHelpModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="showAiHelpModal = false">
         <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] max-h-[80vh] overflow-y-auto p-6">
           <div class="flex items-center justify-between mb-4">
-            <h3 class="text-[14px] font-semibold text-surface-800">AI 模型配置指南</h3>
+            <h3 class="text-[14px] font-semibold text-surface-800">AI 模型配置帮助</h3>
             <button @click="showAiHelpModal = false" class="text-surface-400 hover:text-surface-600 transition-colors">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
             </button>
           </div>
           <div class="space-y-4 text-[11px] text-surface-600 leading-relaxed">
-            <!-- 对话模型 -->
+            <!-- 连接测试失败 -->
             <div>
-              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">1. 对话模型（LLM）</h4>
-              <p class="text-surface-500 mb-1">用途：AI 问答、知识库检索</p>
-              <p class="font-medium text-surface-600 mb-0.5">推荐配置：</p>
+              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">连接测试失败排查</h4>
+              <table class="w-full text-[10px] border-collapse">
+                <tr class="border-b border-surface-100"><td class="py-1.5 font-medium text-surface-700 w-[30%]">错误信息</td><td class="py-1.5 text-surface-500">可能原因</td><td class="py-1.5 text-surface-500">解决方案</td></tr>
+                <tr class="border-b border-surface-100"><td class="py-1.5 text-surface-700">连接超时 / 网络错误</td><td class="py-1.5 text-surface-500">网络不通或 URL 错误</td><td class="py-1.5 text-surface-500">检查网络连接，确认 URL 可以在浏览器中打开</td></tr>
+                <tr class="border-b border-surface-100"><td class="py-1.5 text-surface-700">401 Unauthorized</td><td class="py-1.5 text-surface-500">API Key 错误或过期</td><td class="py-1.5 text-surface-500">检查 Key 是否正确，是否已过期，是否有权限</td></tr>
+                <tr class="border-b border-surface-100"><td class="py-1.5 text-surface-700">404 Not Found</td><td class="py-1.5 text-surface-500">模型名称错误</td><td class="py-1.5 text-surface-500">检查模型名称拼写是否正确</td></tr>
+                <tr class="border-b border-surface-100"><td class="py-1.5 text-surface-700">429 Too Many Requests</td><td class="py-1.5 text-surface-500">请求频率超限</td><td class="py-1.5 text-surface-500">稍后再试，或升级 API 账户</td></tr>
+                <tr><td class="py-1.5 text-surface-700">SSL/TLS 错误</td><td class="py-1.5 text-surface-500">证书问题或代理干扰</td><td class="py-1.5 text-surface-500">检查代理设置，确认 URL 使用 https://</td></tr>
+              </table>
+            </div>
+            <!-- Base URL 填写规范 -->
+            <div>
+              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">Base URL 填写规范</h4>
+              <p class="text-surface-500 mb-1">Base URL 是 API 的基础地址，必须包含协议（https://）和版本路径。</p>
+              <p class="font-medium text-surface-600 mb-0.5">常见错误：</p>
               <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
-                <li><b>OpenAI</b>: Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.openai.com/v1</code>，模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">gpt-4o-mini</code></li>
-                <li><b>硅基流动</b>: Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.siliconflow.cn/v1</code>，模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">Qwen/Qwen2.5-7B-Instruct</code></li>
-                <li><b>通义千问</b>: Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://dashscope.aliyuncs.com/compatible-mode/v1</code>，模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">qwen-plus</code></li>
+                <li>❌ <code class="text-[10px] bg-red-50 px-1 rounded">api.openai.com</code>（缺少协议）</li>
+                <li>❌ <code class="text-[10px] bg-red-50 px-1 rounded">https://api.openai.com</code>（缺少版本路径）</li>
+                <li>✅ <code class="text-[10px] bg-emerald-50 px-1 rounded">https://api.openai.com/v1</code></li>
               </ul>
-              <p class="font-medium text-surface-600 mt-2 mb-0.5">如何获取 API Key：</p>
+              <p class="font-medium text-surface-600 mt-2 mb-0.5">常用地址：</p>
+              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
+                <li>OpenAI: <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.openai.com/v1</code></li>
+                <li>硅基流动: <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.siliconflow.cn/v1</code></li>
+                <li>通义千问: <code class="text-[10px] bg-surface-100 px-1 rounded">https://dashscope.aliyuncs.com/compatible-mode/v1</code></li>
+              </ul>
+            </div>
+            <!-- API Key 说明 -->
+            <div>
+              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">API Key 获取与安全</h4>
               <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
                 <li>OpenAI: platform.openai.com → API Keys → Create new secret key</li>
                 <li>硅基流动: cloud.siliconflow.cn → API 密钥</li>
                 <li>通义千问: dashscope.console.aliyun.com → API-KEY 管理</li>
               </ul>
+              <p class="text-amber-600 mt-1">⚠️ API Key 本地加密存储，不会上传到任何服务器。更换电脑后需要重新配置。</p>
             </div>
-            <!-- OCR 模型 -->
+            <!-- 常见问题 -->
             <div>
-              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">2. OCR 模型</h4>
-              <p class="text-surface-500 mb-1">用途：图片/PDF 中的文字识别</p>
-              <p class="font-medium text-surface-600 mb-0.5">推荐配置：</p>
-              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
-                <li><b>OpenAI</b>: 模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">gpt-4o-mini</code>，格式 = openai</li>
-                <li><b>通义千问</b>: 模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">qwen-vl-plus</code>，格式 = dashscope</li>
-              </ul>
-              <p class="font-medium text-surface-600 mt-2 mb-0.5">API 格式说明：</p>
-              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
-                <li><b>OpenAI 格式</b>：适用于 OpenAI、硅基流动等兼容 API</li>
-                <li><b>DashScope</b>：适用于阿里云通义千问视觉模型</li>
-              </ul>
-            </div>
-            <!-- 向量模型 -->
-            <div>
-              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">3. 向量模型</h4>
-              <p class="text-surface-500 mb-1">用途：将文本转换为数字向量，用于语义搜索</p>
-              <p class="font-medium text-surface-600 mb-0.5">推荐配置：</p>
-              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
-                <li>Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.openai.com/v1</code></li>
-                <li>模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">text-embedding-3-small</code></li>
-              </ul>
-              <p class="text-amber-600 mt-1">⚠️ 更换模型后需要重新向量化所有知识库内容</p>
+              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">常见问题</h4>
+              <p class="font-medium text-surface-600 mb-0.5">Q: 连接测试通过但 AI 不回答？</p>
+              <p class="text-surface-500 mb-2">A: 检查是否设置了默认模型（点击模型前的单选按钮并保存）。</p>
+              <p class="font-medium text-surface-600 mb-0.5">Q: 向量化失败怎么办？</p>
+              <p class="text-surface-500 mb-2">A: 确认向量模型配置正确，检查 API Key 是否有 embedding 权限。更换模型后需要清除知识库重新向量化。</p>
+              <p class="font-medium text-surface-600 mb-0.5">Q: OCR 解析不准确？</p>
+              <p class="text-surface-500 mb-2">A: 确认 OCR 模型配置正确。对于中文文档，推荐使用通义千问视觉模型。</p>
             </div>
           </div>
         </div>
