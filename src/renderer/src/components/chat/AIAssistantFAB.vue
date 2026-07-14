@@ -252,6 +252,7 @@ async function send() {
   if (!q || isChatting.value) return
   stopAllTypewriters()
   inputText.value = ''
+  nextTick(() => { const el = document.querySelector('.fab-input') as HTMLTextAreaElement; if (el) el.style.height = 'auto' })
   
   // 如果是第一条消息，用用户提问作为会话名称
   if (currentSession.value && currentSession.value.messages.length === 0 && currentSession.value.name === '新对话') {

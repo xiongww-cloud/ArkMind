@@ -223,6 +223,7 @@ async function handleSendMessage() {
   session.messages.push({ id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() })
   if (session.name === '新对话') { session.name = q.slice(0, 30) }
   sessionDirty.value = true; inputMessage.value = ''; saveToStorage(); scrollToBottomIfNear()
+  nextTick(() => { const el = document.querySelector('.chat-input-wrap textarea') as HTMLTextAreaElement; if (el) el.style.height = 'auto' })
   isChatting.value = true
   thinkingProgress.value = ''
   // ★ Real Cognitive Stream: 实时进度
