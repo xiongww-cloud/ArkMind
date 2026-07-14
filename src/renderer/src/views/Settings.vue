@@ -176,6 +176,7 @@ async function handleImportData() {
 }
 
 // ─── AI Config ───────────────────────────────────────────────────────────
+const showAiHelpModal = ref(false)
 // Multi-provider support: each provider has { id, name, apiKey, baseUrl, modelName }
 const aiProviders = ref([])
 const activeProviderId = ref(null) // system default (saved)
@@ -735,7 +736,13 @@ onMounted(async () => {
 
     <!-- AI 模型配置 ── Tab 切换 -->
     <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
-      <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">AI 模型配置</h2>
+      <div class="flex items-center justify-between px-5 pt-5 pb-0">
+        <h2 class="text-[13px] font-semibold text-surface-700">AI 模型配置</h2>
+        <button @click="showAiHelpModal = true" class="text-[10px] text-surface-400 hover:text-brand-600 flex items-center gap-1 transition-colors" title="配置帮助">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          帮助
+        </button>
+      </div>
       <div class="flex gap-0 border-b border-surface-100 px-5 mt-3">
         <button v-for="tab in ['llm','vision','vector']" :key="tab"
           @click="aiTab = tab"
@@ -1020,6 +1027,67 @@ onMounted(async () => {
             </div>
           </div>
           <p v-if="vecTestResult" class="text-[10px] mt-3" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- AI 模型配置帮助弹窗 -->
+  <Teleport to="body">
+    <Transition name="modal-fade">
+      <div v-if="showAiHelpModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="showAiHelpModal = false">
+        <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] max-h-[80vh] overflow-y-auto p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-[14px] font-semibold text-surface-800">AI 模型配置指南</h3>
+            <button @click="showAiHelpModal = false" class="text-surface-400 hover:text-surface-600 transition-colors">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="space-y-4 text-[11px] text-surface-600 leading-relaxed">
+            <!-- 对话模型 -->
+            <div>
+              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">1. 对话模型（LLM）</h4>
+              <p class="text-surface-500 mb-1">用途：AI 问答、知识库检索、自动打标</p>
+              <p class="font-medium text-surface-600 mb-0.5">推荐配置：</p>
+              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
+                <li><b>OpenAI</b>: Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.openai.com/v1</code>，模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">gpt-4o-mini</code></li>
+                <li><b>硅基流动</b>: Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.siliconflow.cn/v1</code>，模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">Qwen/Qwen2.5-7B-Instruct</code></li>
+                <li><b>通义千问</b>: Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://dashscope.aliyuncs.com/compatible-mode/v1</code>，模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">qwen-plus</code></li>
+              </ul>
+              <p class="font-medium text-surface-600 mt-2 mb-0.5">如何获取 API Key：</p>
+              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
+                <li>OpenAI: platform.openai.com → API Keys → Create new secret key</li>
+                <li>硅基流动: cloud.siliconflow.cn → API 密钥</li>
+                <li>通义千问: dashscope.console.aliyun.com → API-KEY 管理</li>
+              </ul>
+            </div>
+            <!-- OCR 模型 -->
+            <div>
+              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">2. OCR 模型</h4>
+              <p class="text-surface-500 mb-1">用途：图片/PDF 中的文字识别</p>
+              <p class="font-medium text-surface-600 mb-0.5">推荐配置：</p>
+              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
+                <li><b>OpenAI</b>: 模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">gpt-4o-mini</code>，格式 = openai</li>
+                <li><b>通义千问</b>: 模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">qwen-vl-plus</code>，格式 = dashscope</li>
+              </ul>
+              <p class="font-medium text-surface-600 mt-2 mb-0.5">API 格式说明：</p>
+              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
+                <li><b>OpenAI 格式</b>：适用于 OpenAI、硅基流动等兼容 API</li>
+                <li><b>DashScope</b>：适用于阿里云通义千问视觉模型</li>
+              </ul>
+            </div>
+            <!-- 向量模型 -->
+            <div>
+              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">3. 向量模型</h4>
+              <p class="text-surface-500 mb-1">用途：将文本转换为数字向量，用于语义搜索</p>
+              <p class="font-medium text-surface-600 mb-0.5">推荐配置：</p>
+              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
+                <li>Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.openai.com/v1</code></li>
+                <li>模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">text-embedding-3-small</code></li>
+              </ul>
+              <p class="text-amber-600 mt-1">⚠️ 更换模型后需要重新向量化所有知识库内容</p>
+            </div>
+          </div>
         </div>
       </div>
     </Transition>
