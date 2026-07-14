@@ -754,7 +754,7 @@ onMounted(async () => {
 
       <!-- LLM Tab -->
       <div v-show="aiTab === 'llm'" class="p-5 space-y-3">
-        <p class="text-[10px] text-surface-400">选择默认的大语言模型，用于 AI 打标、问答等任务</p>
+        <p class="text-[10px] text-surface-400">选择默认的大语言模型，用于 AI 问答、知识库检索等任务</p>
         <div v-for="p in aiProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="activeProviderId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
           <input type="radio" :value="p.id" :checked="pendingDefaultId === p.id" @change="setPendingDefault(p.id)" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
           <div class="flex-1 min-w-0">
@@ -1047,7 +1047,7 @@ onMounted(async () => {
             <!-- 对话模型 -->
             <div>
               <h4 class="text-[12px] font-semibold text-surface-700 mb-1">1. 对话模型（LLM）</h4>
-              <p class="text-surface-500 mb-1">用途：AI 问答、知识库检索、自动打标</p>
+              <p class="text-surface-500 mb-1">用途：AI 问答、知识库检索</p>
               <p class="font-medium text-surface-600 mb-0.5">推荐配置：</p>
               <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
                 <li><b>OpenAI</b>: Base URL = <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.openai.com/v1</code>，模型 = <code class="text-[10px] bg-surface-100 px-1 rounded">gpt-4o-mini</code></li>

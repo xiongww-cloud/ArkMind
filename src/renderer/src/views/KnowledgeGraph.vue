@@ -37,7 +37,7 @@ const weightDistChart = computed(() => {
 })
 const chartColors = ['#60a5fa','#fbbf24','#a78bfa','#34d399','#94a3b8','#f59e0b','#ec4899','#14b8a6']
 
-async function handleClearAll() { if (!(await dangerConfirm({ title: '重置全部数据', message: '确定重置全部数据？将重新从业务表抓取数据并重新物化打标。', confirmText: '重置' }))) return; try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] clearAll failed:', e); toast({ message: '重置失败', type: 'error' }) } }
+async function handleClearAll() { if (!(await dangerConfirm({ title: '重置全部数据', message: '确定重置全部数据？将重新从业务表抓取数据并重新物化知识。', confirmText: '重置' }))) return; try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] clearAll failed:', e); toast({ message: '重置失败', type: 'error' }) } }
 async function handleClearKnowledge() { if (!(await dangerConfirm({ title: '重置知识管线', message: '确定重置知识碎片和向量缓存？将重新从源数据物化。', confirmText: '重置' }))) return; try { await pipelineClearKnowledge(); toast({ message: '已重置知识管线，正在重新物化', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] clearKnowledge failed:', e); toast({ message: '重置失败', type: 'error' }) } }
 async function handleOrphanCleanup() { try { await cleanupOrphanData(); toast({ message: '孤儿数据清理已完成', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] orphanCleanup failed:', e); toast({ message: '清理失败', type: 'error' }) } }
 
