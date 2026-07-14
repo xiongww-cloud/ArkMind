@@ -1,8 +1,8 @@
 use crate::database;
 use serde_json::{json, Value};
 
-#[tauri::command] pub async fn project_list() -> Result<Vec<Value>, String> { database::all("SELECT * FROM projects ORDER BY updated_at DESC", &[]).map_err(|e| e.to_string()) }
-#[tauri::command] pub async fn project_get(id: String) -> Result<Value, String> { database::get("SELECT * FROM projects WHERE id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
+#[tauri::command] pub async fn project_list() -> Result<Vec<Value>, String> { database::all("SELECT p.*, pr.name as customer_name FROM projects p LEFT JOIN project_customer_mapping pcm ON p.id = pcm.project_id LEFT JOIN partners pr ON pcm.customer_id = pr.id AND pr.type = 'CUSTOMER' ORDER BY p.updated_at DESC", &[]).map_err(|e| e.to_string()) }
+#[tauri::command] pub async fn project_get(id: String) -> Result<Value, String> { database::get("SELECT p.*, pr.name as customer_name FROM projects p LEFT JOIN project_customer_mapping pcm ON p.id = pcm.project_id LEFT JOIN partners pr ON pcm.customer_id = pr.id AND pr.type = 'CUSTOMER' WHERE p.id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
 #[tauri::command]
 pub async fn project_create(data: Value) -> Result<Value, String> {
     let id = data["displayId"].as_str().filter(|s| !s.is_empty()).or_else(|| data["id"].as_str().filter(|s| !s.is_empty())).unwrap_or("").to_string();
