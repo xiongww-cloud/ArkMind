@@ -1531,6 +1531,7 @@ async fn execute_batch_recall(ids: &[String]) -> String {
     if ids.is_empty() { return "请提供至少一个对象 ID。".to_string(); }
     let limit = ids.len().min(30);
     let ids = &ids[..limit];
+    eprintln!("[batch_recall] 收到 {} 个ID: {:?}", ids.len(), ids.iter().take(3).collect::<Vec<_>>());
     
     // 并发获取每个对象的完整信息
     let mut handles = Vec::new();
@@ -1882,16 +1883,44 @@ fn fetch_parent_chunks(source_id_str: &str, fields: &[String]) -> String {
         ("__raw__".to_string(), source_id_str.to_string())
     };
     eprintln!("[fetch_parent_chunks] 查询: source_type={}, source_id={}", ot, oi);
-
+    
     let (sdid, resolved_type) = if ot == "__raw__" {
-        match database::get("SELECT id, source_type FROM source_data WHERE source_id=?1 LIMIT 1", &[json!(&oi)]) {
-            Ok(Some(r)) => (r["id"].as_str().unwrap_or("").to_string(), r["source_type"].as_str().unwrap_or("").to_string()),
-            _ => (String::new(), String::new())
+        // 裸 UUID：搜索所有类型的 source_data
+        let q = "SELECT id, source_type FROM source_data WHERE source_id=?1 LIMIT 1";
+        eprintln!("[fetch_parent_chunks] 裸UUID查询: {} | params: {:?}", q, oi);
+        match database::get(q, &[json!(&oi)]) {
+            Ok(Some(r)) => {
+                let id = r["id"].as_str().unwrap_or("").to_string();
+                let st = r["source_type"].as_str().unwrap_or("").to_string();
+                eprintln!("[fetch_parent_chunks] 找到: id={}, type={}", id, st);
+                (id, st)
+            }
+            Ok(None) => {
+                eprintln!("[fetch_parent_chunks] 查询返回None");
+                (String::new(), String::new())
+            }
+            Err(e) => {
+                eprintln!("[fetch_parent_chunks] 查询出错: {}", e);
+                (String::new(), String::new())
+            }
         }
     } else {
-        match database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(&ot), json!(&oi)]) {
-            Ok(Some(r)) => (r["id"].as_str().unwrap_or("").to_string(), ot.clone()),
-            _ => (String::new(), ot.clone())
+        let q = "SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2";
+        eprintln!("[fetch_parent_chunks] 带前缀查询: {} | params: {:?}, {:?}", q, ot, oi);
+        match database::get(q, &[json!(&ot), json!(&oi)]) {
+            Ok(Some(r)) => {
+                let id = r["id"].as_str().unwrap_or("").to_string();
+                eprintln!("[fetch_parent_chunks] 找到: id={}", id);
+                (id, ot.clone())
+            }
+            Ok(None) => {
+                eprintln!("[fetch_parent_chunks] 查询返回None");
+                (String::new(), ot.clone())
+            }
+            Err(e) => {
+                eprintln!("[fetch_parent_chunks] 查询出错: {}", e);
+                (String::new(), ot.clone())
+            }
         }
     };
 
