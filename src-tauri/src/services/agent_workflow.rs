@@ -62,8 +62,8 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_query: 结构化查询业务数据，支持按字段精确过滤、排序、分页。支持实体: project(项目), product(产品), partner(合作伙伴), contact(联系人), todo(待办), note(笔记)。过滤操作符: =, !=, >, <, >=, <=, LIKE, IN, IS NULL, IS NOT NULL。示例: 查询投标状态的项目 -> entity:"project", filters:[{field:"status",op:"=",value:"Bidding"}]; 查询预算>100万的项目 -> entity:"project", filters:[{field:"budget",op:">",value:100}]
 - ext_tool_manage_todo: 管理待办。action=create(创建，title必填)，action=update(更新)，action=delete(删除)。
 - ext_tool_manage_project: 管理项目。action=create(创建)，action=update(更新字段)，action=delete(删除及关联数据)。
-- ext_tool_manage_partner: 管理合作伙伴（渠道/厂商/客户）。action=create(创建), action=update(更新), action=delete(删除), action=link_project(关联到项目), action=unlink_project(取消关联)。
-- ext_tool_manage_contact: 管理联系人（通讯录）。action=create(创建), action=update(更新), action=delete(删除), action=link_project(关联到项目), action=unlink_project(取消关联), action=list(查看通讯录)。
+- ext_tool_manage_partner: 管理合作伙伴（渠道/厂商/客户）。action=create(创建), action=update(更新), action=delete(删除), action=link_project(关联到项目), action=unlink_project(取消关联)。注意：将联系人关联到项目时，应先确保联系人所属的合作伙伴也关联到项目。
+- ext_tool_manage_contact: 管理联系人（通讯录）。action=create(创建), action=update(更新), action=delete(删除), action=link_project(关联到项目，会自动关联父级合作伙伴), action=unlink_project(取消关联), action=list(查看通讯录)。
 - ext_tool_memory: 管理记忆。action=create(创建)，action=delete(删除)，action=search(搜索记忆)。
 - ext_tool_manage_policy: 管理用户规则（宪法）。有id+content=更新，有id+无content=删除，无id+有content=新增。
 - ext_tool_manage_reminder: 管理提醒。action=ack(确认提醒，不再显示)，action=unack(取消确认，重新显示)。当用户说"知道了""好的我会处理"时，调用ack确认提醒。
@@ -3103,6 +3103,13 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                                 // ★ 自动关联到项目（如果有 project_id）
                                                 if !project_id.is_empty() {
                                                     crate::services::business_relations::upsert("CONTACT", &id, "PROJECT", project_id, "belongs_to", "{}");
+                                                    // 如果有父级合作伙伴，也确保合作伙伴关联到项目
+                                                    if !parent_id.is_empty() {
+                                                        let ptype2 = database::get("SELECT type FROM partners WHERE id=?", &[json!(parent_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
+                                                        if !ptype2.is_empty() {
+                                                            crate::services::business_relations::upsert(&ptype2.to_uppercase(), parent_id, "PROJECT", project_id, "belongs_to", "{}");
+                                                        }
+                                                    }
                                                 }
                                                 // 同步到 source_data
                                                 crate::services::source_doc_sync::sync_entity("CONTACT", &id);
@@ -3153,7 +3160,19 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let project_id = a["project_id"].as_str().unwrap_or("");
                                     if contact_id.is_empty() || project_id.is_empty() { "关联需要提供 contact_id 和 project_id。".to_string() }
                                     else {
+                                        // 1. 创建联系人→项目的直接关联
                                         crate::services::business_relations::upsert("CONTACT", contact_id, "PROJECT", project_id, "belongs_to", "{}");
+                                        // 2. 查找联系人的父级合作伙伴，确保合作伙伴也关联到项目
+                                        if let Ok(Some(row)) = database::get(
+                                            "SELECT pcm.partner_id, p.type FROM partner_contact_mapping pcm JOIN partners p ON p.id = pcm.partner_id WHERE pcm.contact_id=?1 LIMIT 1",
+                                            &[json!(contact_id)],
+                                        ) {
+                                            let partner_id = row["partner_id"].as_str().unwrap_or("");
+                                            let partner_type = row["type"].as_str().unwrap_or("");
+                                            if !partner_id.is_empty() && !partner_type.is_empty() {
+                                                crate::services::business_relations::upsert(partner_type, partner_id, "PROJECT", project_id, "belongs_to", "{}");
+                                            }
+                                        }
                                         "已将联系人关联到项目".to_string()
                                     }
                                 }
