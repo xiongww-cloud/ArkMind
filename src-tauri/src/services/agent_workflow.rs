@@ -56,7 +56,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 最终回答应围绕用户的问题组织，而不是围绕查到的内容组织。
 
 ## 工具
-- ext_tool_object: 搜索知识库中的对象（项目、产品、渠道、厂商、联系人等）。支持按关键词过滤对象名称，也支持按时间范围查看。用于查找特定实体信息，如「XX有几个联系人」「查一下XX项目」。也支持按ID精确获取（传id/ids参数），会返回完整的知识上下文。
+- ext_tool_object: 搜索知识库中的对象。支持按关键词过滤、时间范围查看、按ID精确获取（传id/ids参数）。IDs格式为 TYPE-UUID（如 PROJECT-xxx），也支持裸UUID。会返回完整的知识上下文。
 - ext_tool_search: 从长期记忆中回忆相关知识片段，支持 time_range 时间范围过滤。用于搜索具体的文档内容、笔记内容，如「XX文档说了什么」「关于XX的技术细节」。
 - ext_tool_traverse: 沿记忆关联网络漫游（next/prev/related/references）。用于查看某个记忆片段的前后文或关联实体。⚠️ chunk_id 必须是 search 返回结果中的「ChunkID」字段（如 47beae9a），绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。
 - ext_tool_query: 结构化查询业务数据，支持按字段精确过滤、排序、分页。支持实体: project(项目), product(产品), partner(合作伙伴), contact(联系人), todo(待办), note(笔记)。过滤操作符: =, !=, >, <, >=, <=, LIKE, IN, IS NULL, IS NOT NULL。示例: 查询投标状态的项目 -> entity:"project", filters:[{field:"status",op:"=",value:"Bidding"}]; 查询预算>100万的项目 -> entity:"project", filters:[{field:"budget",op:">",value:100}]
@@ -670,7 +670,7 @@ fn execute_structured_query(params: &Value) -> String {
 fn build_tools_definitions() -> Value {
     json!([
         {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中检索证据。支持时间范围过滤。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
-        {"type":"function","function":{"name":"ext_tool_object","description":"搜索知识库中的对象。四种模式：1.按单个ID精确获取（传id参数）2.按多个ID批量获取（传ids数组）3.按关键词搜索（传query参数）4.按时间范围浏览（传start_time/end_time）。当用户询问已知对象的详情时，优先用id/ids模式回忆。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"单个对象ID（如PROJECT-abc123），用于精确获取单个对象的完整信息"},"ids":{"type":"array","items":{"type":"string"},"description":"批量对象ID列表（如[\"PROJECT-xxx\",\"PROJECT-yyy\"]），最多30个，用于批量获取多个对象的完整信息"},"query":{"type":"string","description":"关键词过滤（如产品名/项目名/联系人名），留空则按时间范围展示全部对象"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE/TODO/CHANNEL/VENDOR/CONTACT，留空全部类型"},"start_time":{"type":"string","description":"开始时间 如 昨天/2026-06-25"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页天数，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
+        {"type":"function","function":{"name":"ext_tool_object","description":"搜索知识库中的对象。支持按ID精确获取、按关键词搜索、按时间范围浏览。IDs格式为TYPE-UUID（如PROJECT-xxx），也支持裸UUID。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"单个对象ID（如PROJECT-abc123），也支持裸UUID"},"ids":{"type":"array","items":{"type":"string"},"description":"批量对象ID列表（如[\"PROJECT-xxx\",\"PROJECT-yyy\"]），也支持裸UUID，最多30个"},"query":{"type":"string","description":"关键词过滤"},"type":{"type":"string","description":"CHAT/NOTE/PRODUCT/PROJECT/FILE/TODO/CHANNEL/VENDOR/CONTACT"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页条数，默认50，最大100"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":[]}}},
         {"type":"function","function":{"name":"ext_tool_traverse","description":"沿关联图谱漫游。⚠️ chunk_id 是8位短ID（如 47beae9a），来自 search() 结果中的「ChunkID」字段。绝对不是 source_id（如 FILE-xxx 或 PRODUCT-xxx）。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID（如 47beae9a），必须来自 search() 结果的 ChunkID 字段，不是 source_id"},"edge_type":{"type":"string","enum":["next","prev","related","references"],"description":"next=向后翻页；prev=向前翻页；related=同项目/同产品/同实体；references=引用实体"},"target_name":{"type":"string","description":"目标名称（related/references 时用）"},"radius":{"type":"integer","description":"步长，默认 10，最大 20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。action=create(title必填,priority从用户原话提取,due_date从用户原话提取,repeat可选daily/weekly/monthly,project_id关联项目), action=update, action=delete","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待办标题"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。action: create(创建), update(更新字段), delete(删除及关联数据)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"project_id":{"type":"string","description":"项目ID(update/delete用)"},"name":{"type":"string","description":"项目名称(create用)"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"}},"required":["action"]}}},
@@ -1870,11 +1870,32 @@ fn resolve_time(s: &str) -> String {
 }
 
 fn fetch_parent_chunks(source_id_str: &str, fields: &[String]) -> String {
-    let (ot, oi) = if let Some(dash) = source_id_str.find('-') { source_id_str.split_at(dash) } else { return "".to_string() };
-    let oi = &oi[1..];
+    let known_types = ["PROJECT", "PRODUCT", "FILE", "NOTE", "TODO", "CHANNEL", "VENDOR", "CONTACT", "CUSTOMER", "MEMORY", "POLICY"];
+    let (ot, oi) = if let Some(dash) = source_id_str.find('-') {
+        let prefix = &source_id_str[..dash];
+        if known_types.contains(&prefix.to_uppercase().as_str()) {
+            (prefix.to_uppercase(), source_id_str[dash+1..].to_string())
+        } else {
+            ("__raw__".to_string(), source_id_str.to_string())
+        }
+    } else {
+        ("__raw__".to_string(), source_id_str.to_string())
+    };
     eprintln!("[fetch_parent_chunks] 查询: source_type={}, source_id={}", ot, oi);
-    let sdid = database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(oi)]).ok().flatten().and_then(|r| r["id"].as_str().map(String::from)).unwrap_or_default();
-    eprintln!("[fetch_parent_chunks] sdid={}", sdid);
+
+    let (sdid, resolved_type) = if ot == "__raw__" {
+        match database::get("SELECT id, source_type FROM source_data WHERE source_id=?1 LIMIT 1", &[json!(&oi)]) {
+            Ok(Some(r)) => (r["id"].as_str().unwrap_or("").to_string(), r["source_type"].as_str().unwrap_or("").to_string()),
+            _ => (String::new(), String::new())
+        }
+    } else {
+        match database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(&ot), json!(&oi)]) {
+            Ok(Some(r)) => (r["id"].as_str().unwrap_or("").to_string(), ot.clone()),
+            _ => (String::new(), ot.clone())
+        }
+    };
+
+    eprintln!("[fetch_parent_chunks] sdid={}, type={}", sdid, resolved_type);
     if sdid.is_empty() { return format!("未找到对象: {source_id_str}"); }
     let chunks: Vec<String> = database::all("SELECT chunk_id, content, chunk_index FROM knowledge_chunks WHERE source_data_id=?1 AND parent_id IS NULL ORDER BY chunk_index LIMIT 3", &[json!(sdid)]).unwrap_or_default().iter().map(|r| {
         let content = r["content"].as_str().unwrap_or("");
@@ -1890,13 +1911,13 @@ fn fetch_parent_chunks(source_id_str: &str, fields: &[String]) -> String {
         } else {
             content
         };
-        format!("[OBJECT-{} 父块{:?}] ChunkID: {}\n{}\n", ot, r["chunk_index"].as_i64().unwrap_or(0)+1, &chunk_id[..chunk_id.len().min(8)], content_truncated)
+        format!("[OBJECT-{} 父块{:?}] ChunkID: {}\n{}\n", resolved_type, r["chunk_index"].as_i64().unwrap_or(0)+1, &chunk_id[..chunk_id.len().min(8)], content_truncated)
     }).collect();
     if chunks.is_empty() { return format!("对象 {source_id_str} 无可用内容。"); }
     let mut full_content = chunks.join("\n");
 
     // 拼接关联对象元数据（从 business_relations 查询）
-    let meta = build_chunk_metadata(ot, oi);
+    let meta = build_chunk_metadata(&resolved_type, &oi);
     if !meta.is_empty() {
         full_content.push_str(&format!("\n\n{}", meta));
     }
@@ -1906,7 +1927,7 @@ fn fetch_parent_chunks(source_id_str: &str, fields: &[String]) -> String {
 
     // 按 fields 过滤，提取关键行
     let mut result: Vec<String> = Vec::new();
-    result.push(format!("[OBJECT-{} Recall by fields: {:?}]", ot, fields));
+    result.push(format!("[OBJECT-{} Recall by fields: {:?}]", resolved_type, fields));
     for field in fields {
         let field_lower = field.to_lowercase();
         // 在内容中查找包含该字段关键词的行
@@ -2485,7 +2506,7 @@ fn recall_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: usi
             let neighbors = crate::services::synapse::expand_object_links(&[seed], 5);
             
             // 输出主对象
-            out.push_str(&format!("{} [{}] {}\n", marker, st, name));
+            out.push_str(&format!("{} [{}] {} | source_id: {}-{}\n", marker, st, name, st, sid));
             
             // 输出关联对象
             for (nid, _) in &neighbors {
