@@ -193,9 +193,9 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
             if path.is_dir() { w.add_directory(name, opts).map_err(|e| e.to_string())?; add_dir_to_zip(w, base, &path, opts)?; }
             else { w.start_file(name, opts).map_err(|e| e.to_string())?; let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?; std::io::copy(&mut f, w).map_err(|e| e.to_string())?; }
         }
-        Ok(())
-    }
-    add_dir_to_zip(&mut zip_writer, &tmp, &tmp, opts)?;
+    Ok(())
+}
+    add_dir_to_zip(&mut zip_writer, &tmp, &tmp, opts).map_err(|e| e)?;
     zip_writer.finish().map_err(|e| e.to_string())?;
     std::fs::remove_dir_all(&tmp).ok();
     // ★ 发送完成事件
@@ -207,6 +207,159 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
     }));
     Ok(json!({"success": true}))
     }).await.map_err(|e| format!("导出任务失败: {}", e))?
+}
+
+/// 一键备份：打包所有数据到单个 ZIP 文件
+#[tauri::command]
+pub async fn backup_all(save_path: String) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let tmp = std::env::temp_dir().join(format!("arkmind_backup_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+
+        // 1. SQLite 数据库
+        let db_dir = tmp.join("database");
+        std::fs::create_dir_all(&db_dir).map_err(|e| e.to_string())?;
+        let db_path = dirs::data_dir().unwrap_or_default().join("arkmind.db");
+        if db_path.exists() {
+            std::fs::copy(&db_path, db_dir.join("arkmind.db")).map_err(|e| e.to_string())?;
+        }
+        let wal_path = db_path.with_extension("db-wal");
+        let shm_path = db_path.with_extension("db-shm");
+        if wal_path.exists() { std::fs::copy(&wal_path, db_dir.join("arkmind.db-wal")).ok(); }
+        if shm_path.exists() { std::fs::copy(&shm_path, db_dir.join("arkmind.db-shm")).ok(); }
+
+        // 2. 上传文件
+        let files_path = crate::commands::file_commands::storage_base();
+        let files_dir = tmp.join("files");
+        if std::path::Path::new(&files_path).exists() {
+            copy_dir_recursive(std::path::Path::new(&files_path), &files_dir).ok();
+        }
+
+        // 3. 向量数据库
+        let vectordb_path = dirs::data_dir().unwrap_or_default().join("arkmind").join("lancedb");
+        let vectordb_dir = tmp.join("vectordb");
+        if vectordb_path.exists() {
+            copy_dir_recursive(&vectordb_path, &vectordb_dir).ok();
+        }
+
+        // 4. manifest.json
+        let manifest = json!({
+            "version": "1.0",
+            "app_version": env!("CARGO_PKG_VERSION"),
+            "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            "contents": ["database", "files", "vectordb"]
+        });
+        std::fs::write(tmp.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap()).ok();
+
+        // 5. 打包为 ZIP
+        let zip_path = std::path::PathBuf::from(&save_path);
+        create_zip_archive(&tmp, &zip_path).map_err(|e| e.to_string())?;
+
+        // 6. 清理临时目录
+        std::fs::remove_dir_all(&tmp).ok();
+
+        Ok(json!({"success": true, "path": save_path}))
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// 一键恢复：从 ZIP 文件恢复所有数据
+#[tauri::command]
+pub async fn restore_all(backup_path: String) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let zip_path = std::path::PathBuf::from(&backup_path);
+        if !zip_path.exists() { return Err("备份文件不存在".to_string()); }
+
+        let tmp = std::env::temp_dir().join(format!("arkmind_restore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+
+        // 1. 解压 ZIP
+        let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        archive.extract(&tmp).map_err(|e| e.to_string())?;
+
+        // 2. 验证 manifest
+        let manifest_path = tmp.join("manifest.json");
+        if !manifest_path.exists() { return Err("无效的备份文件：缺少 manifest.json".to_string()); }
+
+        // 3. 恢复 SQLite 数据库
+        let db_dir = tmp.join("database");
+        if db_dir.exists() {
+            let db_dest = dirs::data_dir().unwrap_or_default().join("arkmind.db");
+            if let Some(parent) = db_dest.parent() { std::fs::create_dir_all(parent).ok(); }
+            std::fs::copy(db_dir.join("arkmind.db"), &db_dest).map_err(|e| e.to_string())?;
+            let wal_src = db_dir.join("arkmind.db-wal");
+            let shm_src = db_dir.join("arkmind.db-shm");
+            if wal_src.exists() { std::fs::copy(&wal_src, db_dest.with_extension("db-wal")).ok(); }
+            if shm_src.exists() { std::fs::copy(&shm_src, db_dest.with_extension("db-shm")).ok(); }
+        }
+
+        // 4. 恢复上传文件
+        let files_dir = tmp.join("files");
+        if files_dir.exists() {
+            let files_dest = crate::commands::file_commands::storage_base();
+            let dest_path = std::path::PathBuf::from(&files_dest);
+            if let Some(parent) = dest_path.parent() { std::fs::create_dir_all(parent).ok(); }
+            copy_dir_recursive(&files_dir, &dest_path).ok();
+        }
+
+        // 5. 恢复向量数据库
+        let vectordb_dir = tmp.join("vectordb");
+        if vectordb_dir.exists() {
+            let vectordb_dest = dirs::data_dir().unwrap_or_default().join("arkmind").join("lancedb");
+            if let Some(parent) = vectordb_dest.parent() { std::fs::create_dir_all(parent).ok(); }
+            copy_dir_recursive(&vectordb_dir, &vectordb_dest).ok();
+        }
+
+        // 6. 清理临时目录
+        std::fs::remove_dir_all(&tmp).ok();
+
+        Ok(json!({"success": true}))
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// 递归复制目录
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), std::io::Error> {
+    if !src.exists() { return Ok(()); }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            if let Some(parent) = dst_path.parent() { std::fs::create_dir_all(parent)?; }
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// 创建 ZIP 归档
+fn create_zip_archive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let file = std::fs::File::create(dst)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    add_directory_to_zip(&mut zip, src, src, options)?;
+    zip.finish()?;
+    Ok(())
+}
+
+fn add_directory_to_zip(zip: &mut zip::ZipWriter<std::fs::File>, base: &std::path::Path, current: &std::path::Path, options: zip::write::FileOptions) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = path.strip_prefix(base).map_err(|e| e.to_string())?;
+        if path.is_dir() {
+            zip.add_directory(name.to_string_lossy(), options)?;
+            add_directory_to_zip(zip, base, &path, options)?;
+        } else {
+            zip.start_file(name.to_string_lossy(), options)?;
+            let mut f = std::fs::File::open(&path)?;
+            std::io::copy(&mut f, zip)?;
+        }
+    }
+    Ok(())
 }
 
 /// 从 .ark ZIP 文件导入业务数据

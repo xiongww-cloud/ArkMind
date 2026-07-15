@@ -387,6 +387,8 @@ export async function fetchMigrationProgress(): Promise<MigrationProgress> { ret
 // ─── Export ────────────────────────────────────────────────────
 export async function exportAllData(domains: string[], savePath: string): Promise<{success:boolean;error?:string}> { return invoke('export_data', { domains, savePath }) }
 export async function importData(filePath: string): Promise<ImportResult> { return invoke('import_data', { filePath }) }
+export async function backupAll(savePath: string): Promise<SuccessResponse> { return invoke('backup_all', { savePath }) }
+export async function restoreAll(backupPath: string): Promise<SuccessResponse> { return invoke('restore_all', { backupPath }) }
 export async function productsExport(): Promise<ProductsExportResult> { return invoke('products_export') }
 export async function productsImport(data: unknown): Promise<ProductsExportResult> { return invoke('products_import', { data }) }
 export async function productsExportFile(): Promise<ProductsExportResult> { return invoke('products_export_file') }

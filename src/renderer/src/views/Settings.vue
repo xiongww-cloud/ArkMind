@@ -101,6 +101,8 @@ const licenseProductLabel = computed(() => {
 // ─── 全局导出 ──────────────────────────────────────────────────────
 const isExporting = ref(false)
 const showDomainSelector = ref(false)
+const isBackingUp = ref(false)
+const isRestoring = ref(false)
 const selectedDomains = ref([
   { key: 'projects', label: '项目（含方案、动态、渠道）', selected: true },
   { key: 'products', label: '产品（含系列、物料）', selected: true },
@@ -172,6 +174,59 @@ async function handleImportData() {
     alert({ title: '导入失败', message: (e && e.message) || '未知错误' })
   } finally {
     isImporting.value = false
+  }
+}
+
+// ─── 一键备份/恢复 ──────────────────────────────────────────────────
+async function handleBackupAll() {
+  isBackingUp.value = true
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const savePath = await save({
+      defaultPath: `arkmind-backup-${new Date().toISOString().slice(0,10)}.zip`,
+      filters: [{ name: 'ZIP 文件', extensions: ['zip'] }],
+    })
+    if (!savePath) { isBackingUp.value = false; return }
+    const { backupAll } = await import('@/api/db-client')
+    const result = await backupAll(savePath)
+    if (result.success) {
+      toast.success(`备份已保存到：${savePath}`)
+    } else {
+      alert({ title: '备份失败', message: result.error || '未知错误' })
+    }
+  } catch (e) {
+    alert({ title: '备份失败', message: (e && e.message) || '未知错误' })
+  } finally {
+    isBackingUp.value = false
+  }
+}
+
+async function handleRestoreAll() {
+  const ok = await dangerConfirm({
+    title: '一键恢复',
+    message: '恢复将覆盖当前所有数据（数据库、文件、向量库）。恢复后需要重启应用。是否继续？',
+    confirmText: '确认恢复',
+  })
+  if (!ok) return
+  isRestoring.value = true
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const filePath = await open({
+      filters: [{ name: 'ZIP 文件', extensions: ['zip'] }],
+      multiple: false,
+    })
+    if (!filePath) { isRestoring.value = false; return }
+    const { restoreAll } = await import('@/api/db-client')
+    const result = await restoreAll(filePath as string)
+    if (result.success) {
+      toast.success('数据已恢复，请重启应用以完成恢复。')
+    } else {
+      alert({ title: '恢复失败', message: result.error || '未知错误' })
+    }
+  } catch (e) {
+    alert({ title: '恢复失败', message: (e && e.message) || '未知错误' })
+  } finally {
+    isRestoring.value = false
   }
 }
 
@@ -840,6 +895,21 @@ onMounted(async () => {
             <p class="text-[10px] text-surface-400">从 .ark 文件恢复业务数据</p>
           </div>
           <button class="btn-primary text-[11px]" :disabled="isImporting" @click="handleImportData">{{ isImporting ? '导入中...' : '导入数据' }}</button>
+        </div>
+        <hr class="border-surface-100" />
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-[12px] font-medium text-surface-700">一键备份</p>
+            <p class="text-[10px] text-surface-400">打包所有数据（数据库、文件、向量库）到单个 .zip 文件</p>
+          </div>
+          <button class="btn-secondary text-[11px]" :disabled="isBackingUp" @click="handleBackupAll">{{ isBackingUp ? '备份中...' : '一键备份' }}</button>
+        </div>
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-[12px] font-medium text-surface-700">一键恢复</p>
+            <p class="text-[10px] text-surface-400">从 .zip 备份文件恢复所有数据（需重启应用）</p>
+          </div>
+          <button class="btn-secondary text-[11px]" :disabled="isRestoring" @click="handleRestoreAll">{{ isRestoring ? '恢复中...' : '一键恢复' }}</button>
         </div>
         <!-- Domain Selector Modal -->
         <Teleport to="body"><Transition name="modal-fade"><div v-if="showDomainSelector" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="showDomainSelector=false">

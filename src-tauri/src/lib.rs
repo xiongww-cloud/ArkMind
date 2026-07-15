@@ -239,7 +239,7 @@ pub fn run() {
             // Window
             commands::window_minimize, commands::window_toggle_maximize, commands::window_close,
             // Export
-            commands::export_data, commands::import_data,
+            commands::export_data, commands::import_data, commands::backup_all, commands::restore_all,
             commands::solution_download_excel,
             // Todos
             commands::todos_list, commands::todos_create, commands::todos_update, commands::todos_delete,

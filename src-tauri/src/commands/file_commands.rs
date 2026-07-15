@@ -22,7 +22,7 @@ fn compute_file_hash(path: &str) -> Result<(String, u64), String> {
     Ok((hash, file_size))
 }
 
-fn storage_base() -> String {
+pub fn storage_base() -> String {
     { let guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()); if let Some(ref s) = *guard { return s.clone(); } }
     
     // 使用 AppData 路径作为稳定的文件存储位置
