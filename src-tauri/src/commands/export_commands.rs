@@ -168,6 +168,20 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
                     }
                 }
             }
+            "contacts" => {
+                let partners = crate::database::all("SELECT * FROM partners", &[]).unwrap_or_default();
+                let partner_contacts = crate::database::all("SELECT * FROM partner_contacts", &[]).unwrap_or_default();
+                let partner_contact_mapping = crate::database::all("SELECT * FROM partner_contact_mapping", &[]).unwrap_or_default();
+                let business_relations = crate::database::all(
+                    "SELECT * FROM business_relations WHERE source_type IN ('CHANNEL','VENDOR','CUSTOMER','CONTACT') OR target_type IN ('CHANNEL','VENDOR','CUSTOMER','CONTACT')", &[]
+                ).unwrap_or_default();
+                domain_data = json!({
+                    "partners": partners,
+                    "partner_contacts": partner_contacts,
+                    "partner_contact_mapping": partner_contact_mapping,
+                    "business_relations": business_relations,
+                });
+            }
             _ => continue,
         }
         let domain_file = tmp.join(format!("{}.json", domain));
@@ -477,6 +491,7 @@ pub async fn import_data(file_path: String) -> Result<Value, String> {
             "notes" => import_notes(&data, &tmp),
             "todos" => import_todos(&data, &tmp),
             "files" => import_files(&data, &tmp),
+            "contacts" => import_contacts(&data),
             _ => Ok(()),
         };
         if let Err(e) = result {
@@ -767,3 +782,63 @@ fn import_files(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+
+fn import_contacts(data: &Value) -> Result<(), String> {
+    // Import partners
+    if let Some(arr) = data["partners"].as_array() {
+        for p in arr {
+            database::run(
+                "INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                &[
+                    p["id"].clone(), p["type"].clone(), p["name"].clone(),
+                    p["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["address"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["contact_person"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["contact_phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["created_at"].clone(), p["updated_at"].clone(),
+                ],
+            ).ok();
+        }
+    }
+    // Import partner_contacts
+    if let Some(arr) = data["partner_contacts"].as_array() {
+        for pc in arr {
+            database::run(
+                "INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                &[
+                    pc["id"].clone(), pc["name"].clone(),
+                    pc["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["position"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    pc["created_at"].clone(),
+                ],
+            ).ok();
+        }
+    }
+    // Import partner_contact_mapping
+    if let Some(arr) = data["partner_contact_mapping"].as_array() {
+        for pcm in arr {
+            database::run(
+                "INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id,created_at) VALUES(?1,?2,?3)",
+                &[pcm["partner_id"].clone(), pcm["contact_id"].clone(), pcm["created_at"].clone()],
+            ).ok();
+        }
+    }
+    // Import business_relations
+    if let Some(arr) = data["business_relations"].as_array() {
+        for br in arr {
+            database::run(
+                "INSERT OR IGNORE INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                &[
+                    br["id"].clone(), br["source_type"].clone(), br["source_id"].clone(),
+                    br["target_type"].clone(), br["target_id"].clone(), br["relation_type"].clone(),
+                    br["metadata"].as_str().map(|s| json!(s)).unwrap_or(json!("{}")),
+                    br["created_at"].clone(), br["updated_at"].clone(),
+                ],
+            ).ok();
+        }
+    }
+    Ok(())
+}

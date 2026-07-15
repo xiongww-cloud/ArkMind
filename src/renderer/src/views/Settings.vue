@@ -109,6 +109,7 @@ const selectedDomains = ref([
   { key: 'notes', label: '笔记（含笔记本、附件）', selected: true },
   { key: 'todos', label: '待办（含附件）', selected: true },
   { key: 'files', label: '文件资料库', selected: true },
+  { key: 'contacts', label: '通讯录（含合作伙伴、联系人）', selected: true },
 ])
 
 async function handleExportData() {
