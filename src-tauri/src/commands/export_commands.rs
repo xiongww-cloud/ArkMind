@@ -213,15 +213,21 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
 #[tauri::command]
 pub async fn backup_all(save_path: String) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
+        eprintln!("[备份] 开始一键备份 -> {}", save_path);
         let tmp = std::env::temp_dir().join(format!("arkmind_backup_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
 
         // 1. SQLite 数据库
+        eprintln!("[备份] 步骤 1/4: 复制数据库...");
         let db_dir = tmp.join("database");
         std::fs::create_dir_all(&db_dir).map_err(|e| e.to_string())?;
         let db_path = dirs::data_dir().unwrap_or_default().join("arkmind.db");
         if db_path.exists() {
+            let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
             std::fs::copy(&db_path, db_dir.join("arkmind.db")).map_err(|e| e.to_string())?;
+            eprintln!("[备份] 数据库已复制 ({} KB)", db_size / 1024);
+        } else {
+            eprintln!("[备份] 数据库不存在，跳过");
         }
         let wal_path = db_path.with_extension("db-wal");
         let shm_path = db_path.with_extension("db-shm");
@@ -229,17 +235,25 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
         if shm_path.exists() { std::fs::copy(&shm_path, db_dir.join("arkmind.db-shm")).ok(); }
 
         // 2. 上传文件
+        eprintln!("[备份] 步骤 2/4: 复制上传文件...");
         let files_path = crate::commands::file_commands::storage_base();
         let files_dir = tmp.join("files");
         if std::path::Path::new(&files_path).exists() {
-            copy_dir_recursive(std::path::Path::new(&files_path), &files_dir).ok();
+            let count = copy_dir_recursive(std::path::Path::new(&files_path), &files_dir).unwrap_or(0);
+            eprintln!("[备份] 上传文件已复制 ({} 个文件)", count);
+        } else {
+            eprintln!("[备份] 上传文件目录不存在，跳过");
         }
 
         // 3. 向量数据库
+        eprintln!("[备份] 步骤 3/4: 复制向量数据库...");
         let vectordb_path = dirs::data_dir().unwrap_or_default().join("arkmind").join("lancedb");
         let vectordb_dir = tmp.join("vectordb");
         if vectordb_path.exists() {
-            copy_dir_recursive(&vectordb_path, &vectordb_dir).ok();
+            let count = copy_dir_recursive(&vectordb_path, &vectordb_dir).unwrap_or(0);
+            eprintln!("[备份] 向量数据库已复制 ({} 个文件)", count);
+        } else {
+            eprintln!("[备份] 向量数据库不存在，跳过");
         }
 
         // 4. manifest.json
@@ -252,8 +266,11 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
         std::fs::write(tmp.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap()).ok();
 
         // 5. 打包为 ZIP
+        eprintln!("[备份] 步骤 4/4: 打包 ZIP 文件...");
         let zip_path = std::path::PathBuf::from(&save_path);
         create_zip_archive(&tmp, &zip_path).map_err(|e| e.to_string())?;
+        let zip_size = std::fs::metadata(&zip_path).map(|m| m.len()).unwrap_or(0);
+        eprintln!("[备份] 完成! 备份文件: {} ({} KB)", save_path, zip_size / 1024);
 
         // 6. 清理临时目录
         std::fs::remove_dir_all(&tmp).ok();
@@ -266,6 +283,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
 #[tauri::command]
 pub async fn restore_all(backup_path: String) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
+        eprintln!("[恢复] 开始一键恢复 <- {}", backup_path);
         let zip_path = std::path::PathBuf::from(&backup_path);
         if !zip_path.exists() { return Err("备份文件不存在".to_string()); }
 
@@ -273,15 +291,21 @@ pub async fn restore_all(backup_path: String) -> Result<Value, String> {
         std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
 
         // 1. 解压 ZIP
+        eprintln!("[恢复] 步骤 1/4: 解压备份文件...");
         let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        let file_count = archive.len();
         archive.extract(&tmp).map_err(|e| e.to_string())?;
+        eprintln!("[恢复] 解压完成 ({} 个文件)", file_count);
 
         // 2. 验证 manifest
         let manifest_path = tmp.join("manifest.json");
         if !manifest_path.exists() { return Err("无效的备份文件：缺少 manifest.json".to_string()); }
+        let manifest_str = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
+        eprintln!("[恢复] 备份信息: {}", manifest_str.lines().next().unwrap_or(""));
 
         // 3. 恢复 SQLite 数据库
+        eprintln!("[恢复] 步骤 2/4: 恢复数据库...");
         let db_dir = tmp.join("database");
         if db_dir.exists() {
             let db_dest = dirs::data_dir().unwrap_or_default().join("arkmind.db");
@@ -291,48 +315,62 @@ pub async fn restore_all(backup_path: String) -> Result<Value, String> {
             let shm_src = db_dir.join("arkmind.db-shm");
             if wal_src.exists() { std::fs::copy(&wal_src, db_dest.with_extension("db-wal")).ok(); }
             if shm_src.exists() { std::fs::copy(&shm_src, db_dest.with_extension("db-shm")).ok(); }
+            eprintln!("[恢复] 数据库已恢复到: {}", db_dest.display());
+        } else {
+            eprintln!("[恢复] 备份中无数据库，跳过");
         }
 
         // 4. 恢复上传文件
+        eprintln!("[恢复] 步骤 3/4: 恢复上传文件...");
         let files_dir = tmp.join("files");
         if files_dir.exists() {
             let files_dest = crate::commands::file_commands::storage_base();
             let dest_path = std::path::PathBuf::from(&files_dest);
             if let Some(parent) = dest_path.parent() { std::fs::create_dir_all(parent).ok(); }
-            copy_dir_recursive(&files_dir, &dest_path).ok();
+            let count = copy_dir_recursive(&files_dir, &dest_path).unwrap_or(0);
+            eprintln!("[恢复] 上传文件已恢复 ({} 个文件)", count);
+        } else {
+            eprintln!("[恢复] 备份中无上传文件，跳过");
         }
 
         // 5. 恢复向量数据库
+        eprintln!("[恢复] 步骤 4/4: 恢复向量数据库...");
         let vectordb_dir = tmp.join("vectordb");
         if vectordb_dir.exists() {
             let vectordb_dest = dirs::data_dir().unwrap_or_default().join("arkmind").join("lancedb");
             if let Some(parent) = vectordb_dest.parent() { std::fs::create_dir_all(parent).ok(); }
-            copy_dir_recursive(&vectordb_dir, &vectordb_dest).ok();
+            let count = copy_dir_recursive(&vectordb_dir, &vectordb_dest).unwrap_or(0);
+            eprintln!("[恢复] 向量数据库已恢复 ({} 个文件)", count);
+        } else {
+            eprintln!("[恢复] 备份中无向量数据库，跳过");
         }
 
         // 6. 清理临时目录
         std::fs::remove_dir_all(&tmp).ok();
+        eprintln!("[恢复] 完成! 请重启应用以完成恢复。");
 
         Ok(json!({"success": true}))
     }).await.map_err(|e| e.to_string())?
 }
 
-/// 递归复制目录
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), std::io::Error> {
-    if !src.exists() { return Ok(()); }
+/// 递归复制目录，返回复制的文件数量
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<usize, std::io::Error> {
+    if !src.exists() { return Ok(0); }
     std::fs::create_dir_all(dst)?;
+    let mut count = 0;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+            count += copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             if let Some(parent) = dst_path.parent() { std::fs::create_dir_all(parent)?; }
             std::fs::copy(&src_path, &dst_path)?;
+            count += 1;
         }
     }
-    Ok(())
+    Ok(count)
 }
 
 /// 创建 ZIP 归档
