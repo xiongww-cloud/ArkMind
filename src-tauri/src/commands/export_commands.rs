@@ -236,13 +236,52 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
 
         // 2. 上传文件
         eprintln!("[备份] 步骤 2/4: 复制上传文件...");
+        let mut files_dir = tmp.join("files");
         let files_path = crate::commands::file_commands::storage_base();
-        let files_dir = tmp.join("files");
+        let mut total_files = 0;
+        
+        // 检查 AppData 路径
         if std::path::Path::new(&files_path).exists() {
             let count = copy_dir_recursive(std::path::Path::new(&files_path), &files_dir).unwrap_or(0);
-            eprintln!("[备份] 上传文件已复制 ({} 个文件)", count);
-        } else {
-            eprintln!("[备份] 上传文件目录不存在，跳过");
+            if count > 0 {
+                eprintln!("[备份] 从 AppData 复制了 {} 个文件", count);
+                total_files += count;
+            }
+        }
+        
+        // 检查 exe 相对路径（旧版本存储位置）
+        if total_files == 0 {
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(parent) = exe_path.parent() {
+                    let old_path = parent.join("files");
+                    if old_path.exists() {
+                        let count = copy_dir_recursive(&old_path, &files_dir).unwrap_or(0);
+                        if count > 0 {
+                            eprintln!("[备份] 从旧路径复制了 {} 个文件: {}", count, old_path.display());
+                            total_files += count;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 检查 target/debug/files 和 target/release/files
+        if total_files == 0 {
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            for subdir in &["debug/files", "release/files"] {
+                let target_path = manifest_dir.join("target").join(subdir);
+                if target_path.exists() {
+                    let count = copy_dir_recursive(&target_path, &files_dir).unwrap_or(0);
+                    if count > 0 {
+                        eprintln!("[备份] 从 target/{} 复制了 {} 个文件", subdir, count);
+                        total_files += count;
+                    }
+                }
+            }
+        }
+        
+        if total_files == 0 {
+            eprintln!("[备份] 未找到任何上传文件");
         }
 
         // 3. 向量数据库
