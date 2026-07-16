@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Arkmind 方舟智库",
+        "title": "Arkmind",
         "width": 1200,
         "height": 700,
         "minWidth": 900,

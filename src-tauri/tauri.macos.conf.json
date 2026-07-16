@@ -2,7 +2,7 @@
   "app": {
     "windows": [
       {
-        "title": "Arkmind 方舟智库",
+        "title": "Arkmind",
         "decorations": true,
         "width": 1200,
         "height": 700
