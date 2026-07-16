@@ -585,6 +585,7 @@ onUnmounted(() => {
 .titlebar-btn--quicknote {
   gap: 6px;
   padding: 6px 12px;
+  margin-right: 8px;
   font-size: 12px;
   font-weight: 500;
   color: #d97706;
