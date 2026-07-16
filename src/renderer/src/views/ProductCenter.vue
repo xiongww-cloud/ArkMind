@@ -113,7 +113,15 @@ async function onDragUp() {
       await store.fetchSeries(); toast({ message: '目录已移动', type: 'success' })
     } catch { toast({ message: '移动失败', type: 'error' }) }
   }
-  else if (type === 'product') { if (!pId) return; if (tid === store.uncategorizedSeriesId || tid === '__root__') return; try { await store.updateProduct(pId, { seriesId: tid }); await store.fetchProducts(); toast({ message: '产品已移动', type: 'success' }) } catch { toast({ message: '移动失败', type: 'error' }) } }
+  else if (type === 'product') {
+    if (!pId) return
+    try {
+      const newSeriesId = (tid === store.uncategorizedSeriesId || tid === '__root__') ? null : tid
+      await store.updateProduct(pId, { seriesId: newSeriesId })
+      await store.fetchProducts()
+      toast({ message: '产品已移动', type: 'success' })
+    } catch { toast({ message: '移动失败', type: 'error' }) }
+  }
 }
 onUnmounted(() => { if (dragTimer.value) clearTimeout(dragTimer.value); document.removeEventListener('mousemove', onDragMove); document.removeEventListener('mouseup', onDragUp); document.removeEventListener('mouseup', onDragUpPre); unlistenDragDrop?.() })
 
@@ -129,10 +137,13 @@ function isDuplicateName(name: string, excludeId?: string): boolean {
 }
 async function createProduct() {
   try {
-    const name = '新产品'
-    if (isDuplicateName(name)) { toast({ message: '已存在同名产品，请修改名称', type: 'error' }); return }
+    let name = '新产品'
+    let i = 1
+    while (isDuplicateName(name)) { name = `新产品 ${++i}` }
     const d: any = { name }
-    if (selectedSeriesId.value) d.seriesId = selectedSeriesId.value
+    if (selectedSeriesId.value && selectedSeriesId.value !== store.uncategorizedSeriesId) {
+      d.seriesId = selectedSeriesId.value
+    }
     const newProduct = await store.createProduct(d)
     await store.fetchProducts()
     if (newProduct?.id) {
