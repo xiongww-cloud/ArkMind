@@ -31,7 +31,7 @@ struct VisionConfig {
 impl VisionConfig {
     /// 统一默认提示词
     fn default_prompt(_api_format: &str) -> &'static str {
-        "输出 Markdown 格式， 标题用 #，段落用纯文本。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
+        "从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 表格内容提炼为简洁的文本段落，每条规格独立一行；3. 不要输出原始表格格式；4. 保留所有数值、型号、技术参数；5. 每个特性用一句话概括"
     }
 }
 
@@ -67,7 +67,7 @@ impl VisionAdapter for OpenaiAdapter {
         body["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string()
     }
     fn default_prompt(&self) -> &'static str {
-        "输出 Markdown 格式， 标题用 #，段落用纯文本。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
+        "从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 表格内容提炼为简洁的文本段落，每条规格独立一行；3. 不要输出原始表格格式；4. 保留所有数值、型号、技术参数；5. 每个特性用一句话概括"
     }
 }
 
@@ -97,7 +97,7 @@ impl VisionAdapter for DashscopeAdapter {
             .to_string()
     }
     fn default_prompt(&self) -> &'static str {
-        "输出 Markdown 格式， 标题用 #，段落用纯文本。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
+        "从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 表格内容提炼为简洁的文本段落，每条规格独立一行；3. 不要输出原始表格格式；4. 保留所有数值、型号、技术参数；5. 每个特性用一句话概括"
     }
 }
 
@@ -157,7 +157,7 @@ impl VisionAdapter for Qwen3VlAdapter {
             .to_string()
     }
     fn default_prompt(&self) -> &'static str {
-        "输出 Markdown 格式， 标题用 #，段落用纯文本。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
+        "从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 表格内容提炼为简洁的文本段落，每条规格独立一行；3. 不要输出原始表格格式；4. 保留所有数值、型号、技术参数；5. 每个特性用一句话概括"
     }
 
     fn post_process(&self, text: &str) -> String {
