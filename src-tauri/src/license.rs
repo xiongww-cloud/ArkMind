@@ -29,14 +29,17 @@ pub fn get_machine_hash() -> String {
 #[cfg(target_os = "windows")]
 fn get_hardware_id() -> String {
     use std::process::Command;
-    // Try motherboard UUID first (most stable across Windows reinstalls)
-    if let Ok(output) = Command::new("wmic").args(["csproduct", "get", "uuid"]).output() {
-        let text = String::from_utf8_lossy(&output.stdout);
-        for line in text.lines() {
-            let t = line.trim();
-            if !t.is_empty() && !t.eq_ignore_ascii_case("UUID") && t.len() > 8 {
-                return t.to_string();
-            }
+    use std::os::windows::process::CommandExt;
+    // Use PowerShell hidden window to get motherboard UUID (avoids wmic console flash)
+    if let Ok(output) = Command::new("powershell")
+        .args(["-WindowStyle", "Hidden", "-NoProfile", "-Command",
+               "(Get-CimInstance Win32_ComputerSystemProduct).UUID"])
+        .creation_flags(0x08000000)
+        .output()
+    {
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !text.is_empty() && text.len() > 8 {
+            return text;
         }
     }
     // Fallback: hostname

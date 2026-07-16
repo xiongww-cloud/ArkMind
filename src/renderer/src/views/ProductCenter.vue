@@ -241,7 +241,7 @@ async function openMaterialUpload() {
 }
 async function handleFilePick() {
   try {
-    const result = await openDialog({ multiple: false })
+    const result = await openDialog({ filters: [], multiple: false })
     if (!result) return
     const path = typeof result === 'string' ? result : (result as any).path || result
     const name = typeof result === 'string' ? path.replace(/^.*[\\\/]/, '') : ((result as any).name || path.replace(/^.*[\\\/]/, ''))

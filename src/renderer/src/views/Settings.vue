@@ -670,23 +670,27 @@ async function testVecConnection() {
 }
 
 async function testProviderConnection(provider?: any) {
-  // 弹窗中调用时使用 editingProvider（含原始 apiKey）+ providerForm 的修改值
-  const base = editingProvider.value || provider || {}
-  const form = (provider ? {} : providerForm.value)
-  const p = {
-    ...base,
-    baseUrl: form.baseUrl || base.baseUrl,
-    apiKey: form.apiKey || base.apiKey,
-    modelName: form.modelName || base.modelName,
-    id: base.id || '__form__',
+  // 弹窗中调用（无参数）时直接取 providerForm 的值
+  // 列表中调用（有参数）时取 provider 本身的值
+  let baseUrl: string, apiKey: string, modelName: string, label: string
+  if (provider) {
+    baseUrl = provider.baseUrl || ''
+    apiKey = provider.apiKey || ''
+    modelName = provider.modelName || ''
+    label = modelName || provider.name || '模型'
+  } else {
+    const f = providerForm.value
+    baseUrl = (f.baseUrl || '').trim()
+    apiKey = (f.apiKey || '').trim()
+    modelName = (f.modelName || '').trim()
+    label = modelName || '模型'
   }
-  testingProviderId.value = p.id || '__form__'
+  testingProviderId.value = provider?.id || '__form__'
   aiTestResult.value = ''
   aiTesting.value = true
-  const label = p.modelName || p.name || '模型'
   try {
     const { aiTestProvider } = await import('@/api/db-client')
-    const data: any = { baseUrl: p.baseUrl, apiKey: p.apiKey, modelName: p.modelName }
+    const data: any = { baseUrl, apiKey, modelName }
     const result = await aiTestProvider(data)
     if (result.success) {
       aiTestResult.value = result.message || `「${label}」连接成功`

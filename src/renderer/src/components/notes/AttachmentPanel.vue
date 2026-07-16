@@ -23,7 +23,7 @@ const editingName = ref('')
 
 async function triggerFileInput() {
   const { open } = await import('@tauri-apps/plugin-dialog')
-  const result = await open({ multiple: true })
+  const result = await open({ filters: [], multiple: true })
   if (!result) return
   const paths = Array.isArray(result) ? result : [result]
   for (const p of paths) {

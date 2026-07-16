@@ -421,11 +421,16 @@ fn try_pdftoppm(path: &str) -> Option<Vec<String>> {
     std::fs::create_dir_all(&tmp_dir).ok()?;
 
     let output_prefix = tmp_dir.join("page").to_string_lossy().to_string();
-    let status = std::process::Command::new(cmd)
-        .args(["-png", "-r", "150", path, &output_prefix])
+    let mut cmd_obj = std::process::Command::new(cmd);
+    cmd_obj.args(["-png", "-r", "150", path, &output_prefix])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status().ok()?;
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd_obj.creation_flags(0x08000000);
+    }
+    let status = cmd_obj.status().ok()?;
     if !status.success() { let _ = std::fs::remove_dir_all(&tmp_dir); return None; }
 
     let mut results = Vec::new();
