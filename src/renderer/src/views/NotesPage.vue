@@ -502,6 +502,7 @@ function formatNoteTime(ts: string): string {
 const dragTimer = ref<ReturnType<typeof setTimeout>|null>(null)
 
 function startNoteDrag(e: MouseEvent, noteId: string) {
+  e.preventDefault()
   dragX.value = dragStartX.value = e.clientX
   dragY.value = dragStartY.value = e.clientY
   document.addEventListener('mousemove', onDragMove)
@@ -515,6 +516,7 @@ function startNoteDrag(e: MouseEvent, noteId: string) {
 }
 
 function startNotebookDrag(e: MouseEvent, notebookId: string) {
+  e.preventDefault()
   e.stopPropagation()
   dragX.value = dragStartX.value = e.clientX
   dragY.value = dragStartY.value = e.clientY

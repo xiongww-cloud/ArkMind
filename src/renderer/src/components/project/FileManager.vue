@@ -107,6 +107,7 @@ const dragFileTimer = ref<ReturnType<typeof setTimeout>|null>(null)
 const dragTargetId = ref<string|null>(null)
 
 function startFileDrag(e: MouseEvent, fileId: string) {
+  e.preventDefault()
   dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY
   document.addEventListener('mousemove', onFileDragMove)
   dragFileTimer.value = setTimeout(() => { isDraggingFile.value = true; dragFileId.value = fileId; dragStarted.value = true }, 300)

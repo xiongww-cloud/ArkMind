@@ -230,12 +230,14 @@ const dragTargetId = ref<string|null>(null)
 const dragInsert = ref<{targetId:string;side:'above'|'below'|'inside'}|null>(null)
 
 function startFolderDrag(e: MouseEvent, fid: string) {
+  e.preventDefault()
   dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY
   document.addEventListener('mousemove', onDragMove)
   dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'folder'; dragFolderId.value = fid; dragStarted.value = true }, 300)
   document.addEventListener('mouseup', onDragUpPre)
 }
 function startFileDrag(e: MouseEvent, fid: string) {
+  e.preventDefault()
   dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY
   document.addEventListener('mousemove', onDragMove)
   dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'file'; dragFileId.value = fid; dragStarted.value = true }, 300)
