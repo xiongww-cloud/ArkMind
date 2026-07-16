@@ -443,7 +443,7 @@ function getFileColor(fileName) {
     <div class="flex-1 overflow-y-auto p-2 space-y-1">
       <div v-if="isFetching" class="text-center py-8"><p class="text-xs text-surface-400">加载中...</p></div>
       <div v-else-if="filteredFiles.length === 0" class="text-center py-8"><p class="text-xs text-surface-400">暂无文件</p></div>
-      <div v-for="file in filteredFiles" :key="file.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200 select-none" :class="isDraggingFile && dragFileId===file.id ? 'opacity-30' : ''" @mousedown="startFileDrag($event, file.id)">
+      <div v-for="file in filteredFiles" :key="file.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200" :class="[isDraggingFile && dragFileId===file.id ? 'opacity-30 select-none' : '']" @mousedown="startFileDrag($event, file.id)">
         <div class="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[9px] font-bold tracking-wider" :class="getFileColor(file.name)">{{ (file.name || '').split('.').pop()?.toUpperCase() || 'FILE' }}</div>
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 min-w-0">
