@@ -163,7 +163,7 @@ const { start: tdStart, done: tdDone, fail: tdFail } = useUploadProgress()
 async function handleUpload() {
   if (!selectedTodoId.value) return
   const { open } = await import('@tauri-apps/plugin-dialog')
-  const result = await open({ filters: [{name:'所有文件',extensions:['*']}], multiple: false })
+  const result = await open({ filters: [{name:'所有文件',extensions:['*']}], directory: false, multiple: false })
   if (!result) return
   const filePath = result as string
   const fileName = filePath.replace(/^.*[\\\/]/, '')
