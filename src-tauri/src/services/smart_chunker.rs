@@ -246,7 +246,11 @@ pub fn accumulate_adaptive_parents(sections: Vec<Section>) -> Vec<String> {
             // ── Table: output KV text ──
             let cur_trim = current.trim().to_string();
             let cur_chars = cur_trim.chars().count();
-            let kv = crate::services::semantic_builder::html_table_to_kv(block_text);
+            let kv = if block_text.trim().starts_with("<table") {
+                crate::services::semantic_builder::html_table_to_kv(block_text)
+            } else {
+                crate::services::semantic_builder::markdown_table_to_kv(block_text)
+            };
 
             if cur_chars > 0 && cur_chars <= COMPACT_THRESHOLD {
                 if cur_chars > 0 { current.push_str("\n\n"); }

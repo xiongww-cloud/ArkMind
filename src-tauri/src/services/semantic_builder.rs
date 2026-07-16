@@ -279,6 +279,113 @@ fn record_output(all_rows: &[Vec<String>], html: &str) -> String {
     if out.is_empty() { html.to_string() } else { out }
 }
 
+/// Convert a markdown table (pipe-delimited) to KV text.
+///
+/// Markdown format:
+///   | 列名1 | 列名2 | 列名3 |
+///   | --- | --- | --- |
+///   | 值1 | 值2 | 值3 |
+///
+/// Output (header mode):
+///   列名1=值1；列名2=值2；列名3=值3。
+///
+/// Output (record mode):
+///   值1：值2，值3
+pub fn markdown_table_to_kv(md: &str) -> String {
+    // 1. Parse rows: split by lines, split each line by |
+    let raw_lines: Vec<&str> = md.lines().collect();
+    let mut all_rows: Vec<Vec<String>> = Vec::new();
+
+    for line in &raw_lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        // Must contain | to be a table line
+        if !trimmed.contains('|') { continue; }
+        // Skip separator row (| --- | --- |)
+        if trimmed.chars().all(|c| c == '|' || c == '-' || c == ' ' || c == ':') { continue; }
+
+        let cells: Vec<String> = trimmed
+            .trim_start_matches('|')
+            .trim_end_matches('|')
+            .split('|')
+            .map(|c| c.trim().to_string())
+            .collect();
+        if cells.iter().all(|c| c.trim().is_empty()) { continue; }
+        all_rows.push(cells);
+    }
+
+    if all_rows.is_empty() { return md.to_string(); }
+
+    // 2. Normalize column counts
+    let max_cols = all_rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    for row in &mut all_rows {
+        while row.len() < max_cols { row.push(String::new()); }
+    }
+
+    // 3. Detect header (reuse same heuristic as html_table_to_kv)
+    let max_scan = 2.min(all_rows.len().saturating_sub(2));
+    let header_row = (0..=max_scan).find(|&ri| {
+        for prev in 0..ri {
+            let prev_row = &all_rows[prev];
+            let non_empty: Vec<&str> = prev_row.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            if non_empty.is_empty() || non_empty.iter().any(|s| *s != non_empty[0]) {
+                return false;
+            }
+        }
+        looks_like_header_row_md(&all_rows, ri)
+    });
+
+    if let Some(ri) = header_row {
+        let mut sliced = vec![all_rows[ri].clone()];
+        sliced.extend_from_slice(&all_rows[ri + 1..]);
+        header_kv_output(&sliced, md)
+    } else {
+        record_output(&all_rows, md)
+    }
+}
+
+/// Heuristic for markdown table header detection (same logic as looks_like_header_row)
+fn looks_like_header_row_md(all_rows: &[Vec<String>], ri: usize) -> bool {
+    let Some(row) = all_rows.get(ri) else { return false };
+    if ri + 1 >= all_rows.len() { return false; }
+    let ncols = row.len();
+
+    // Rule 1: If any cell contains check/cross marks, it's data
+    if row.iter().any(|c| c.contains('✓') || c.contains('×')) { return false; }
+
+    // Rule 2: If >50% of cells are empty, can't be column names
+    let empty_count = row.iter().filter(|c| c.trim().is_empty()).count();
+    if empty_count > ncols / 2 { return false; }
+
+    // Rule 3: If all non-empty cells are identical, it's a section title
+    let non_empty: Vec<&str> = row.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if !non_empty.is_empty() && non_empty.iter().all(|s| *s == non_empty[0]) { return false; }
+
+    // Rule 4: If first column value repeats in >50% of data rows, it's a category column
+    let data_rows = &all_rows[(ri + 1)..];
+    if !data_rows.is_empty() {
+        let first_val = row.first().map(|s| s.trim()).unwrap_or("");
+        if !first_val.is_empty() {
+            let repeat = data_rows.iter()
+                .filter(|r| r.first().map(|s| s.trim() == first_val).unwrap_or(false))
+                .count();
+            if repeat > data_rows.len() / 2 { return false; }
+        }
+    }
+
+    // Rule 5: For non-row-0, first column should be Chinese text
+    if ri > 0 {
+        let first_val = row.first().map(|s| s.trim()).unwrap_or("");
+        if !first_val.is_empty() {
+            let ascii_alpha: usize = first_val.chars().filter(|c| c.is_ascii_alphabetic()).count();
+            let non_ascii: usize = first_val.chars().filter(|c| !c.is_ascii()).count();
+            if non_ascii < 2 && ascii_alpha > non_ascii { return false; }
+        }
+    }
+
+    true
+}
+
 fn get_attr(tag_str: &str, attr: &str) -> usize {
     let search = format!("{}=\"", attr);
     tag_str.find(&search)
@@ -631,5 +738,42 @@ mod tests {
         assert!(out.contains("型号=LST7SFUHX100"), "got: {}", out);
         // Should NOT contain section title in KV output
         assert!(!out.contains("产品规格表"), "should NOT include section title, got: {}", out);
+    }
+
+    #[test]
+    fn test_markdown_table_to_kv_simple() {
+        let md = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 10 |\n| 香蕉 | 20 |";
+        let out = markdown_table_to_kv(md);
+        assert!(out.contains("名称=苹果"), "got: {}", out);
+        assert!(out.contains("数量=10"), "got: {}", out);
+        assert!(out.contains("名称=香蕉"), "got: {}", out);
+        assert!(out.contains("数量=20"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_markdown_table_to_kv_no_separator() {
+        let md = "| 名称 | 数量 |\n| 苹果 | 10 |";
+        let out = markdown_table_to_kv(md);
+        assert!(out.contains("名称=苹果"), "got: {}", out);
+        assert!(out.contains("数量=10"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_markdown_table_to_kv_record_mode() {
+        // All rows are data (no distinct header)
+        let md = "| LST7SFUEX100 | S12700E交换网单元E(X1) |\n| LST7SFUHX100 | S12700E交换网单元E(X2) |";
+        let out = markdown_table_to_kv(md);
+        eprintln!("[test_markdown_table_to_kv_record_mode] output:\n{}", out);
+        // Should produce record-style output
+        assert!(!out.contains("<table>"), "should not be HTML, got: {}", out);
+        assert!(out.contains("LST7SFUEX100"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_markdown_table_to_kv_empty_cells() {
+        let md = "| 类别 | 说明 |\n| --- | --- |\n| MPLS | |\n| | 支持 QoS |";
+        let out = markdown_table_to_kv(md);
+        assert!(out.contains("类别=MPLS"), "got: {}", out);
+        assert!(out.contains("说明="), "got: {}", out);
     }
 }
