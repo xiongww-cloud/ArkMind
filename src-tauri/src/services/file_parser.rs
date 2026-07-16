@@ -954,6 +954,8 @@ fn merge_pdf_broken_lines(text: &str) -> String {
                 || current.ends_with('：') || current.ends_with(':')
                 || current.ends_with('」') || current.ends_with('"');
             if ends_with_sentence { break; }
+            // 当前行是标题 → 停止合并（标题后必须换行）
+            if current.trim_start().starts_with('#') { break; }
             // HTML 表格标签 → 停止合并（wrap_orphan_table_html 已拆到单独行）
             if next.starts_with("<table") || next.starts_with("</table>") { break; }
             // 下一行是短章节标题 → 停止合并
