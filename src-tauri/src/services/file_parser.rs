@@ -29,12 +29,9 @@ struct VisionConfig {
 }
 
 impl VisionConfig {
-    /// 每个适配器有自己的默认 prompt
-    fn default_prompt(api_format: &str) -> &'static str {
-        match api_format {
-            "dashscope" => "请仅输出图像中的文本内容，保留表格、列表、代码块等格式。",
-            _ => "# document: <image> Convert the document to markdown. Preserve all tables, lists, and code blocks.",
-        }
+    /// 统一默认提示词
+    fn default_prompt(_api_format: &str) -> &'static str {
+        "输出 Markdown 格式， 标题用 #，段落用纯文本。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
     }
 }
 
@@ -70,7 +67,7 @@ impl VisionAdapter for OpenaiAdapter {
         body["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string()
     }
     fn default_prompt(&self) -> &'static str {
-        "# document: <image> Convert the document to markdown. Preserve all tables, lists, and code blocks."
+        "输出 Markdown 格式， 标题用 #，段落用纯文本。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
     }
 }
 
@@ -100,7 +97,7 @@ impl VisionAdapter for DashscopeAdapter {
             .to_string()
     }
     fn default_prompt(&self) -> &'static str {
-        "请仅输出图像中的文本内容，保留表格、列表、代码块等格式。"
+        "输出 Markdown 格式， 标题用 #，段落用纯文本。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
     }
 }
 
@@ -160,7 +157,7 @@ impl VisionAdapter for Qwen3VlAdapter {
             .to_string()
     }
     fn default_prompt(&self) -> &'static str {
-        "输出 Markdown 格式。标题用 #，段落用纯文本，表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
+        "输出 Markdown 格式， 标题用 #，段落用纯文本。表格用 HTML <table>。每个表格独立一行，不要将 <table> 和标题放在同一行。"
     }
 
     fn post_process(&self, text: &str) -> String {
