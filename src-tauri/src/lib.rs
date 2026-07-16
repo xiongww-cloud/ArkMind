@@ -10,7 +10,7 @@ mod time_utils;
 
 /// 获取应用数据目录
 /// - macOS: ~/Arkmind
-/// - Windows: %LOCALAPPDATA%/com.arkmind.app
+/// - Windows: %APPDATA%/com.arkmind.app
 pub fn get_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -18,10 +18,9 @@ pub fn get_data_dir() -> PathBuf {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        dirs::data_local_dir()
+        dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("com.arkmind.app")
-            .join("files")
     }
 }
 
