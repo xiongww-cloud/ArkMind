@@ -271,7 +271,13 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
 
     let body = adapter.build_request(&cfg, base64_data_uri);
 
-    let mut req = client.post(&cfg.base_url).json(&body);
+    // 自动拼接 /chat/completions（与 LLM 请求和测试连接保持一致）
+    let url = if cfg.base_url.contains("/v1/") || cfg.base_url.ends_with("/chat/completions") {
+        cfg.base_url.clone()
+    } else {
+        format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'))
+    };
+    let mut req = client.post(&url).json(&body);
     if !cfg.api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", cfg.api_key));
     }
