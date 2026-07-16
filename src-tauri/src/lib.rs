@@ -99,17 +99,27 @@ pub fn run() {
             // ★ 启动时清理过期许可证
             license::cleanup_expired_licenses();
 
-            // Window maximize event
+            // Window events
             {
                 let handle = app.handle().clone();
                 if let Some(win) = app.get_webview_window("main") {
                     let was = std::cell::Cell::new(win.is_maximized().unwrap_or(false));
                     win.on_window_event(move |ev| {
-                        if let tauri::WindowEvent::Resized(_) = ev {
-                            if let Some(w) = handle.get_webview_window("main") {
-                                let is = w.is_maximized().unwrap_or(false);
-                                if is != was.get() { let _ = w.emit("window:maximizeChange", is); was.set(is); }
+                        match ev {
+                            tauri::WindowEvent::Resized(_) => {
+                                if let Some(w) = handle.get_webview_window("main") {
+                                    let is = w.is_maximized().unwrap_or(false);
+                                    if is != was.get() { let _ = w.emit("window:maximizeChange", is); was.set(is); }
+                                }
                             }
+                            // 关闭窗口时隐藏而非退出（macOS 保留在 Dock）
+                            tauri::WindowEvent::CloseRequested { api, .. } => {
+                                if let Some(w) = handle.get_webview_window("main") {
+                                    let _ = w.hide();
+                                }
+                                api.prevent_close();
+                            }
+                            _ => {}
                         }
                     });
                 }
