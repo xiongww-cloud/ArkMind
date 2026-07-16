@@ -262,7 +262,7 @@ async function triggerNewFile() {
   newFile.value = { note: '', file: null, customName: '' }
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    const result = await open({ filters: [{name:'所有文件',extensions:['*']}], directory: false, multiple: false })
+    const result = await open({ multiple: false, canCreateDirectories: false })
     if (!result) return
     const path = typeof result === 'string' ? result : (result as any).path || result
     const name = path.replace(/^.*[\\\/]/, '')

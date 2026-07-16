@@ -159,7 +159,7 @@ function fileTypeColor(ext?: string): string { const key = ext?.toLowerCase() ||
 // ─── Upload ───────────────────────────────────────────────────────────
 const { start, done, fail } = useUploadProgress()
 async function handleUpload() {
-  const result = await openDialog({ filters: [{ name:'所有文件', extensions:['*'] }], multiple: false })
+  const result = await openDialog({ multiple: false, canCreateDirectories: false })
   if (!result) return
   const path = typeof result === 'string' ? result : (result as any).path
   if (!path) return
