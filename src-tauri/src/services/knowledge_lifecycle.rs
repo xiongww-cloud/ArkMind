@@ -85,7 +85,7 @@ pub fn reset_pipeline() {
         if let Some(ref c) = *g { let _ = c.clear_all_vectors(); }
     }
     // 2. 删除 LanceDB 数据目录
-    let lancedb_dir = dirs::data_dir().unwrap_or_default().join("arkmind").join("lancedb");
+    let lancedb_dir = crate::get_data_dir().join("lancedb");
     let _ = std::fs::remove_dir_all(&lancedb_dir);
     crate::services::lancedb_client::invalidate_lancedb_cache();
 

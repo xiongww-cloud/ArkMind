@@ -206,7 +206,7 @@ static LANCEDB: Lazy<Mutex<Option<LanceDBClient>>> = Lazy::new(|| Mutex::new(Non
 pub fn get_lancedb() -> Result<std::sync::MutexGuard<'static, Option<LanceDBClient>>, String> {
     let mut g = LANCEDB.lock().unwrap_or_else(|p| p.into_inner());
     if g.is_none() {
-        let path = dirs::data_dir().unwrap_or_default().join("arkmind").join("lancedb");
+        let path = crate::get_data_dir().join("lancedb");
         match LanceDBClient::new(&path.to_string_lossy(), "knowledge_vectors") { Ok(c) => { *g = Some(c); }, Err(e) => { *g = None; return Err(e); } }
     }
     Ok(g)

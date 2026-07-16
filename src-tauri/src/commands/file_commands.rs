@@ -26,9 +26,7 @@ pub fn storage_base() -> String {
     { let guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()); if let Some(ref s) = *guard { return s.clone(); } }
     
     // 使用 AppData 路径作为稳定的文件存储位置
-    let default = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("com.arkmind.app")
+    let default = crate::get_data_dir()
         .join("files")
         .to_string_lossy()
         .to_string();

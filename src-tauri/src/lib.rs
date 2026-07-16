@@ -8,12 +8,29 @@ mod oss;
 mod services;
 mod time_utils;
 
+/// 获取应用数据目录
+/// - macOS: ~/Arkmind
+/// - Windows: %LOCALAPPDATA%/com.arkmind.app
+pub fn get_data_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join("Arkmind")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("com.arkmind.app")
+            .join("files")
+    }
+}
+
 use database::db_path;
 use std::path::PathBuf;
 use tauri::{Manager, Emitter};
 
-fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
-    app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."))
+fn app_data_dir(_app: &tauri::AppHandle) -> PathBuf {
+    get_data_dir()
 }
 
 fn upgrade_fts5_triggers_on_startup() {

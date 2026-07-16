@@ -235,7 +235,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
         eprintln!("[备份] 步骤 1/4: 复制数据库...");
         let db_dir = tmp.join("database");
         std::fs::create_dir_all(&db_dir).map_err(|e| e.to_string())?;
-        let db_path = dirs::data_dir().unwrap_or_default().join("arkmind.db");
+        let db_path = crate::get_data_dir().join("arkmind.db");
         if db_path.exists() {
             let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
             std::fs::copy(&db_path, db_dir.join("arkmind.db")).map_err(|e| e.to_string())?;
@@ -300,7 +300,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
 
         // 3. 向量数据库
         eprintln!("[备份] 步骤 3/4: 复制向量数据库...");
-        let vectordb_path = dirs::data_dir().unwrap_or_default().join("arkmind").join("lancedb");
+        let vectordb_path = crate::get_data_dir().join("lancedb");
         let vectordb_dir = tmp.join("vectordb");
         if vectordb_path.exists() {
             let count = copy_dir_recursive(&vectordb_path, &vectordb_dir).unwrap_or(0);
@@ -361,7 +361,7 @@ pub async fn restore_all(backup_path: String) -> Result<Value, String> {
         eprintln!("[恢复] 步骤 2/4: 恢复数据库...");
         let db_dir = tmp.join("database");
         if db_dir.exists() {
-            let db_dest = dirs::data_dir().unwrap_or_default().join("arkmind.db");
+            let db_dest = crate::get_data_dir().join("arkmind.db");
             if let Some(parent) = db_dest.parent() { std::fs::create_dir_all(parent).ok(); }
             std::fs::copy(db_dir.join("arkmind.db"), &db_dest).map_err(|e| e.to_string())?;
             let wal_src = db_dir.join("arkmind.db-wal");
@@ -390,7 +390,7 @@ pub async fn restore_all(backup_path: String) -> Result<Value, String> {
         eprintln!("[恢复] 步骤 4/4: 恢复向量数据库...");
         let vectordb_dir = tmp.join("vectordb");
         if vectordb_dir.exists() {
-            let vectordb_dest = dirs::data_dir().unwrap_or_default().join("arkmind").join("lancedb");
+            let vectordb_dest = crate::get_data_dir().join("lancedb");
             if let Some(parent) = vectordb_dest.parent() { std::fs::create_dir_all(parent).ok(); }
             let count = copy_dir_recursive(&vectordb_dir, &vectordb_dest).unwrap_or(0);
             eprintln!("[恢复] 向量数据库已恢复 ({} 个文件)", count);
