@@ -566,104 +566,56 @@ fn try_pdfium_extract(path: &str) -> String {
 }
 
 fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
+    // OCR 模式：跳过 pdfium 文本提取，直接全量 OCR
+    if enable_ocr {
+        if get_vision_config().is_none() {
+            eprintln!("[文件解析] 未配置视觉模型，跳过 OCR");
+            return String::new();
+        }
+        let uris = match pdf_to_images_base64(path) {
+            Some(u) => u,
+            None => {
+                eprintln!("[文件解析] PDF 渲染失败: {}", path);
+                // 渲染失败时回退到 pdfium 文本提取
+                return match try_pdfium_text_per_page(path) {
+                    Some(pages) => pages.iter().enumerate().fold(String::new(), |mut acc, (i, text)| {
+                        if !text.is_empty() { if !acc.is_empty() { acc.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); } acc.push_str(text); }
+                        acc
+                    }),
+                    None => String::new(),
+                };
+            }
+        };
+        eprintln!("[文件解析] 全量 OCR: {} 页", uris.len());
+        let mut full_text = String::new();
+        for (i, uri) in uris.iter().enumerate() {
+            if !std::path::Path::new(path).exists() {
+                eprintln!("[文件解析] 文件已被删除，终止 OCR（已处理 {} / {} 页）", i, uris.len());
+                break;
+            }
+            let cropped = crop_image_uri(uri, 0.04, 0.04).unwrap_or_else(|| uri.clone());
+            let ocr_text = ocr_image_sync(&cropped);
+            if has_real_text(&ocr_text) {
+                if !full_text.is_empty() { full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); }
+                full_text.push_str(&ocr_text);
+            }
+        }
+        return full_text;
+    }
+
+    // 非 OCR 模式：使用 pdfium 文本提取
     let pdfium_pages = match try_pdfium_text_per_page(path) {
         Some(pages) => pages,
         None => {
-            if !enable_ocr {
-                eprintln!("[文件解析] pdfium 不可用");
-                return String::new();
-            }
-            let uris = match pdf_to_images_base64(path) {
-                Some(u) => u,
-                None => { eprintln!("[文件解析] PDF 渲染失败: {}", path); return String::new(); }
-            };
-            eprintln!("[文件解析] 全量 OCR: {} 页", uris.len());
-            let mut full_text = String::new();
-            for (i, uri) in uris.iter().enumerate() {
-                if !std::path::Path::new(path).exists() {
-                    eprintln!("[文件解析] 文件已被删除，终止 OCR（已处理 {} / {} 页）", i, uris.len());
-                    break;
-                }
-                let cropped = crop_image_uri(uri, 0.04, 0.04).unwrap_or_else(|| uri.clone());
-                let ocr_text = ocr_image_sync(&cropped);
-                if has_real_text(&ocr_text) {
-                    if !full_text.is_empty() { full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); }
-                    full_text.push_str(&ocr_text);
-                }
-            }
-            return full_text;
+            eprintln!("[文件解析] pdfium 不可用");
+            return String::new();
         }
     };
-    let page_count = pdfium_pages.len();
-
-    fn has_table_pattern(text: &str) -> bool {
-        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-        if lines.len() < 5 { return false; }
-        let short = lines.iter().filter(|l| l.trim().chars().count() < 20).count();
-        short as f64 / lines.len() as f64 > 0.4
-    }
-
-    let mut ocr_needed = vec![false; page_count];
-    let mut any_ocr = false;
-    for (i, text) in pdfium_pages.iter().enumerate() {
-        let clean_len = text.chars().filter(|c| !c.is_whitespace()).count();
-        if clean_len < 100 || has_table_pattern(text) {
-            ocr_needed[i] = true; any_ocr = true;
-        }
-    }
-
-    // 纯文本 → 直接返回
-    if !any_ocr {
-        eprintln!("[文件解析] pdfium 提取完成（{} 页，纯文本）", page_count);
-        return pdfium_pages.iter().enumerate().fold(String::new(), |mut acc, (i, text)| {
-            if !text.is_empty() { if !acc.is_empty() { acc.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); } acc.push_str(text); }
-            acc
-        });
-    }
-
-    // OCR 未开启 → 返回 pdfium 文本
-    if !enable_ocr {
-        eprintln!("[文件解析] pdfium 提取完成（{} 页，{} 页疑似表格）", page_count, ocr_needed.iter().filter(|&n| *n).count());
-        return pdfium_pages.iter().enumerate().fold(String::new(), |mut acc, (i, text)| {
-            if !text.is_empty() { if !acc.is_empty() { acc.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); } acc.push_str(text); }
-            acc
-        });
-    }
-
-    // OCR 开启，渲染并逐页 OCR
-    let uris = match pdf_to_images_base64(path) {
-        Some(u) => u,
-        None => { eprintln!("[文件解析] PDF 渲染失败"); return pdfium_pages.join("\n\n--- 页分割 ---\n\n"); }
-    };
-    eprintln!("[文件解析] OCR 处理中: {} 页中 {} 页需要 OCR", page_count, ocr_needed.iter().filter(|&n| *n).count());
-
-    let mut full_text = String::new();
-    for i in 0..page_count {
-        // ★ 每页检查文件是否仍存在
-        if enable_ocr && !std::path::Path::new(path).exists() {
-            eprintln!("[文件解析] 文件已被删除，终止 OCR（已处理 {} / {} 页）", i, page_count);
-            if !full_text.is_empty() { full_text.push_str("\n\n[解析中断: 文件已删除]\n"); }
-            break;
-        }
-        let pdfium_text = pdfium_pages.get(i).map(|s| s.as_str()).unwrap_or("");
-        let page_text = if ocr_needed[i] {
-            match uris.get(i) {
-                Some(u) => {
-                    let cropped = crop_image_uri(u, 0.04, 0.04).unwrap_or_else(|| u.clone());
-                    let ocr_text = ocr_image_sync(&cropped);
-                    if has_real_text(&ocr_text) { ocr_text } else { pdfium_text.to_string() }
-                }
-                None => pdfium_text.to_string(),
-            }
-        } else {
-            pdfium_text.to_string()
-        };
-        if !page_text.is_empty() {
-            if !full_text.is_empty() { full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); }
-            full_text.push_str(&page_text);
-        }
-    }
-    full_text
+    eprintln!("[文件解析] pdfium 提取完成（{} 页）", pdfium_pages.len());
+    pdfium_pages.iter().enumerate().fold(String::new(), |mut acc, (i, text)| {
+        if !text.is_empty() { if !acc.is_empty() { acc.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); } acc.push_str(text); }
+        acc
+    })
 }
 pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     if !std::path::Path::new(path).exists() {
