@@ -923,7 +923,7 @@ fn merge_pdf_broken_lines(text: &str) -> String {
 }
 
 /// 带格式提示的消毒版本，供摄入中台调用。
-///   - pdf  → 基础消毒 + PDF 断行修复
+///   - pdf  → 基础消毒（OCR 输出格式已完整，无需断行修复）
 ///   - docx → 基础消毒
 ///   - xlsx/xls → 基础消毒（已输出 Markdown 表格）
 ///   - 其他 → 基础消毒 + 游离表格 HTML 补全（OCR 输出经常缺 <table> 标签）
@@ -931,7 +931,7 @@ pub fn clean_extracted_text_with_hint(raw: &str, ext: &str) -> String {
     let base = sanitize_chars(raw);
     let base = wrap_orphan_table_html(&base);
     match ext.to_lowercase().as_str() {
-        "pdf" => merge_pdf_broken_lines(&base),
+        "pdf" => base,
         "docx" => base,
         "xlsx" | "xls" => clean_xlsx(&base),
         "txt" | "md" | "csv" | "json" => base,
