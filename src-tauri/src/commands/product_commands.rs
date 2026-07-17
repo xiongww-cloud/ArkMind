@@ -39,7 +39,10 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn product_update(id: String, data: Value) -> Result<(), String> {
     let mut fields: Vec<String>=Vec::new(); let mut values: Vec<Value>=Vec::new();
     if let Some(v)=data["name"].as_str(){fields.push("name=?".into());values.push(json!(v));}
-    if let Some(v)=data["seriesId"].as_str(){fields.push("series_id=?".into());values.push(json!(v));}
+    if data.get("seriesId").is_some() {
+        let v = data["seriesId"].as_str().map(|s| json!(s)).unwrap_or(json!(null));
+        fields.push("series_id=?".into()); values.push(v);
+    }
     if let Some(v)=data["description"].as_str(){fields.push("description=?".into());values.push(json!(v));}
     if let Some(v)=data["fullSpecs"].as_str(){fields.push("full_specs=?".into());values.push(json!(v));}
     if let Some(v)=data["standardSpecs"].as_str(){fields.push("standard_specs=?".into());values.push(json!(v));}
