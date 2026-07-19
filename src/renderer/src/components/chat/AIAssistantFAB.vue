@@ -328,15 +328,9 @@ onUnmounted(() => {
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ m.content }}</pre>
             </div>
             <!-- AI -->
-            <div v-else class="fab-bubble-ai">
-              <div v-if="m.error" class="text-[12px] text-red-500">{{ m.error }}</div>
-              <div v-else-if="m.thinking && !thinkingProgress && !rendered[m.id]" class="flex items-center gap-1.5 py-1">
-                <span class="thinking-dot" style="animation-delay:0ms"/>
-                <span class="thinking-dot" style="animation-delay:150ms"/>
-                <span class="thinking-dot" style="animation-delay:300ms"/>
-              </div>
-              <div v-else-if="m.thinking && thinkingProgress" class="text-[12px] text-[#3a3a3c] leading-relaxed">{{ thinkingProgress }}</div>
-              <div v-else class="fab-md" v-html="rendered[m.id] || m.content" />
+            <div v-else class="fab-bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
+              <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
+              <div v-else class="fab-md" v-html="rendered[m.id] || m.content || '思考中'" />
             </div>
           </div>
         </div>
@@ -547,11 +541,11 @@ onUnmounted(() => {
 .fab-md :deep(li) { font-size: 12px; color: #3a3a3c; margin: 0.05em 0; }
 .fab-md :deep(strong) { color: #1d1d1f; font-weight: 600; }
 .fab-md :deep(code) { background: rgba(0,0,0,0.04); color: #e11d48; padding: 0px 3px; border-radius: 3px; font-size: 0.9em; }
-.fab-md :deep(pre) { background: #1d1d1f; color: #f5f5f7; padding: 6px 10px; border-radius: 6px; overflow-x: auto; margin: 0.3em 0; font-size: 10px; }
+.fab-md :deep(pre) { background: #1d1d1f; color: #f5f5f7; padding: 6px 10px; border-radius: 6px; overflow-x: auto; margin: 0.3em 0; font-size: 12px; }
 .fab-md :deep(pre code) { background: none; color: inherit; padding: 0; }
 .fab-md :deep(blockquote) { border-left: 2px solid #2563eb; padding: 2px 8px; margin: 0.2em 0; color: #6e6e73; background: rgba(37,99,235,0.03); border-radius: 0 4px 4px 0; }
 .fab-md :deep(a) { color: #2563eb; }
-.fab-md :deep(table) { width: 100%; border-collapse: collapse; margin: 0.3em 0; font-size: 10px; }
+.fab-md :deep(table) { width: 100%; border-collapse: collapse; margin: 0.3em 0; font-size: 12px; }
 .fab-md :deep(th) { background: #f5f5f7; color: #1d1d1f; font-weight: 600; padding: 4px 6px; text-align: left; border-bottom: 1px solid rgba(0,0,0,0.06); }
 .fab-md :deep(td) { padding: 4px 6px; color: #3a3a3c; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .cursor-blink { animation: blink 1s step-end infinite; }
@@ -562,14 +556,23 @@ onUnmounted(() => {
 /* ═══ Animation ═══ */
 @keyframes fade-in { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
 .animate-fade-in { animation: fade-in 0.25s ease-out; }
-@keyframes thinking-dot {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-  40% { transform: scale(1); opacity: 1; }
+@keyframes thinking-shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
 }
-.thinking-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #2563eb;
-  animation: thinking-dot 1.2s infinite ease-in-out;
+.thinking-bubble {
+  position: relative;
+  overflow: hidden;
+}
+.thinking-bubble::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 30%, rgba(37,99,235,0.08) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: thinking-shimmer 1.8s ease-in-out infinite;
+  pointer-events: none;
+  border-radius: inherit;
 }
 .fab-panel-enter-active { transition: all 0.25s cubic-bezier(0.16,1,0.3,1); }
 .fab-panel-leave-active { transition: all 0.15s ease; }

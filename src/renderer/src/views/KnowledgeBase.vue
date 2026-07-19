@@ -504,15 +504,9 @@ onUnmounted(() => {
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
-              <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-1 shadow-sm" :class="{ 'thinking-bubble': msg.isThinking }">
-                <div v-if="msg.isThinking && !thinkingProgress && !renderedContent(msg.id || '')" class="flex items-center gap-1.5 py-1">
-                  <span class="thinking-dot" style="animation-delay:0ms"/>
-                  <span class="thinking-dot" style="animation-delay:150ms"/>
-                  <span class="thinking-dot" style="animation-delay:300ms"/>
-                </div>
-                <div v-else-if="msg.isThinking && thinkingProgress" class="text-[12px] text-[#3a3a3c] leading-relaxed">{{ thinkingProgress }}</div>
-                <div v-else-if="isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || msg.content"></div>
-                <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || msg.content"></div>
+              <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 shadow-sm" :class="{ 'thinking-bubble': msg.isThinking }">
+                <div v-if="isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || msg.content || '思考中'"></div>
+                <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || msg.content || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || msg.content || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || msg.content || '思考中'"></div>
               </div>
               <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
                 <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3 h-3" /></button>
@@ -576,17 +570,26 @@ onUnmounted(() => {
 <style scoped>
 @keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
 @keyframes recall { 0%,100%{opacity:0.2;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
+@keyframes thinking-shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
 .animate-bounce { animation: bounce 1.2s infinite ease-in-out; }
 .animate-fade-in { animation: fadeIn 0.3s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes thinking-dot {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-  40% { transform: scale(1); opacity: 1; }
+.thinking-bubble {
+  position: relative;
+  overflow: hidden;
 }
-.thinking-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #2563eb;
-  animation: thinking-dot 1.2s infinite ease-in-out;
+.thinking-bubble::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 30%, rgba(37,99,235,0.08) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: thinking-shimmer 1.8s ease-in-out infinite;
+  pointer-events: none;
+  border-radius: inherit;
 }
 .modal-fade-enter-active,.modal-fade-leave-active { transition: opacity 0.2s ease; }
 .modal-fade-enter-from,.modal-fade-leave-to { opacity: 0; }
