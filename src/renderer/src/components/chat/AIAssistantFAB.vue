@@ -181,7 +181,7 @@ async function send() {
       scrollChat()
     })
     unlistenThought = await listen<{ text: string }>('agent:thought', (ev) => {
-      thinkingProgress.value = ev.payload.text; scrollChat()
+      thinkingProgress.value += ev.payload.text; scrollChat()
     })
     const unlistenRoundThought = await listen('agent:round-thought', () => {
       streamedContent = ''
