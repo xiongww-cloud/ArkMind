@@ -816,8 +816,13 @@ async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app
                                 let _ = h.emit("agent:token", json!({"token": tok}));
                             }
                         }
-                        // reasoning_content → 仅累积（不污染最终回答）
-                        if let Some(rtok) = delta["reasoning_content"].as_str() { st.reasoning.push_str(rtok); }
+                        // reasoning_content → 累积并推送到前端显示思考过程
+                        if let Some(rtok) = delta["reasoning_content"].as_str() {
+                            st.reasoning.push_str(rtok);
+                            if let Some(ref h) = app {
+                                let _ = h.emit("agent:thought", json!({"text": rtok}));
+                            }
+                        }
                         // tool_calls delta → 按 index 累积
                         if let Some(tds) = delta["tool_calls"].as_array() {
                             for td in tds {
