@@ -14,14 +14,14 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         if !parent.exists() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 let msg = format!("[数据库] 创建目录失败 {:?}: {}", parent, e);
-                eprintln!("{}", msg);
+                log::info!("{}", msg);
                 rusqlite::Error::InvalidParameterName(msg)
             })?;
         }
     }
-    eprintln!("[数据库] 正在打开数据库 {:?}", path);
+    log::info!("正在打开数据库 {:?}", path);
     let conn = Connection::open(path).map_err(|e| {
-        eprintln!("[数据库] 打开数据库失败: {}", e);
+        log::info!("[数据库] 打开数据库失败: {}", e);
         e
     })?;
 
@@ -38,14 +38,14 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap();
         for row in rows.flatten() {
             let (name, sql) = row;
-            if sql.contains("source_data_old") || name.starts_with("sd_") {
-                eprintln!("[数据库] 残留触发器: {} => {}", name, &sql[..sql.len().min(300)]);
+            if sql.contains("source_data_old") {
+                log::info!("[数据库] 残留触发器: {} => {}", name, &sql[..sql.len().min(300)]);
             }
         }
     }
 
     // ★ 清理所有旧的 source_data 触发器（避免引用不存在的 source_data_old 表）
-    eprintln!("[数据库] 清理旧触发器...");
+    log::info!("[数据库] 清理旧触发器...");
     conn.execute_batch("
         DROP TRIGGER IF EXISTS sd_notes_insert;
         DROP TRIGGER IF EXISTS sd_notes_update;
@@ -87,7 +87,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         DROP TRIGGER IF EXISTS sd_chunks_delete;
         DROP TRIGGER IF EXISTS sd_todos_done_cleanup;
     ").ok();
-    eprintln!("[数据库] 旧触发器清理完成");
+    log::info!("旧触发器清理完成");
 
     // ★ 列出清理后所有触发器（调试用）
     {
@@ -96,7 +96,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         for row in rows.flatten() {
             let (name, sql) = row;
             if sql.contains("source_data_old") {
-                eprintln!("[数据库] ⚠️ 仍引用 source_data_old: {} => {}", name, &sql[..sql.len().min(300)]);
+                log::info!("[数据库] ⚠️ 仍引用 source_data_old: {} => {}", name, &sql[..sql.len().min(300)]);
             }
         }
     }
@@ -157,7 +157,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
                WHERE new.chunk_type = 'child';
          END;"
     )?;
-    eprintln!("[数据库] kk_chunks_fts 触发器已创建（INSERT + UPDATE）");
+    log::info!("[数据库] kk_chunks_fts 触发器已创建（INSERT + UPDATE）");
     // ★ 回填已有数据到 kk_chunks_fts（触发器不覆盖已有行）
     let seeded: i64 = conn.query_row(
         "SELECT COUNT(*) FROM kk_chunks_fts", [], |r| r.get(0)
@@ -167,9 +167,9 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
             "INSERT OR IGNORE INTO kk_chunks_fts(rowid, doc_title, content) SELECT rowid, doc_title, content FROM knowledge_chunks WHERE chunk_type = 'child'",
             [],
         ).unwrap_or(0);
-        eprintln!("[数据库] kk_chunks_fts 回填: {} 行", n);
+        log::info!("[数据库] kk_chunks_fts 回填: {} 行", n);
     } else {
-        eprintln!("[数据库] kk_chunks_fts 已有数据 ({} 行)，跳过回填", seeded);
+        log::info!("[数据库] kk_chunks_fts 已有数据 ({} 行)，跳过回填", seeded);
     }
 
     // ★ FTS5 自动镜像（已移除写入触发器，改为业务命令调用 notify_changed）
@@ -178,9 +178,9 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     db_migrations::migrate_source_data_to_text_id(&conn)?;
 
     // ★ FTS5 触发器在迁移后创建，确保引用正确的表名
-    eprintln!("[数据库] 创建 FTS5 触发器...");
+    log::info!("[数据库] 创建 FTS5 触发器...");
     db_fts::init_source_data_fts_triggers(&conn)?;
-    eprintln!("[数据库] FTS5 触发器创建完成");
+    log::info!("FTS5 触发器创建完成");
 
     // ★ 最终检查：列出所有触发器
     {
@@ -189,7 +189,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         for row in rows.flatten() {
             let (name, sql) = row;
             if sql.contains("source_data_old") {
-                eprintln!("[数据库] ⚠️ 最终检查 - 仍引用 source_data_old: {} => {}", name, &sql[..sql.len().min(300)]);
+                log::info!("[数据库] ⚠️ 最终检查 - 仍引用 source_data_old: {} => {}", name, &sql[..sql.len().min(300)]);
             }
         }
     }
@@ -197,14 +197,14 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     // ★ ★ CHAT 去重：清理重复 + 唯一索引（P0 修复）
     let _ = conn.execute_batch("DELETE FROM source_data WHERE rowid NOT IN (SELECT MIN(rowid) FROM source_data GROUP BY source_type, source_id)");
     let _ = conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_sd_unique ON source_data(source_type, source_id)");
-    println!("[数据库] FTS5 + AI 触发器已初始化");
+    log::info!("[数据库] FTS5 + AI 触发器已初始化");
 
     // Store in global AFTER all init is done
     db_core::set_db(conn);
 
     db_migrations::purge_stale_queue_entries();
     if let Err(e) = with_db(|c| c.pragma_update(None, "wal_checkpoint", "TRUNCATE")) {
-        eprintln!("[数据库] WAL 检查点警告: {}", e);
+        log::warn!("WAL 检查点警告: {}", e);
     }
     Ok(())
 }

@@ -112,7 +112,7 @@ pub fn activate_child_chunk(child_id: i64) {
         "UPDATE knowledge_chunks SET base_weight=?1, last_access_at=?2, access_count=?3 WHERE id=?4 AND chunk_type='child'",
         &[json!(new_base), json!(now), json!(count + 1), json!(child_id)],
     ) {
-        eprintln!("[突触] 激活子块 {} 失败: {}", child_id, e);
+        log::info!("[突触] 激活子块 {} 失败: {}", child_id, e);
     } else {
         GLOBAL_HITS.increment();
     }

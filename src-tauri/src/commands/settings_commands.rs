@@ -171,3 +171,11 @@ pub async fn ai_test_embedding(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn storage_migrate_progress() -> Result<Value, String> { Ok(json!({"status":"idle","total":0,"current":0})) }
 #[tauri::command] pub async fn storage_default_path() -> Result<String, String> { Ok(".".to_string()) }
 #[tauri::command] pub async fn oss_raw_diagnose() -> Result<Value, String> { Ok(json!({"success":true})) }
+
+// ─── 日志 ─────────────────────────────────────────────────
+#[tauri::command] pub fn get_logs(state: tauri::State<'_, crate::services::log_collector::LogState>) -> Vec<crate::services::log_collector::LogEntry> {
+    state.get_all()
+}
+#[tauri::command] pub fn clear_logs(state: tauri::State<'_, crate::services::log_collector::LogState>) {
+    state.clear();
+}

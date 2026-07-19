@@ -58,7 +58,7 @@ pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) {
         ).map(|_|())
     });
     if let Err(e) = result {
-        eprintln!("[数据库] 写入 source_data 失败 (file={}): {}", file_id, e);
+        log::info!("[数据库] 写入 source_data 失败 (file={}): {}", file_id, e);
     } else {
         // source_data 写入成功后触发同步入队和打标
         crate::services::ai_sync::trigger_sync("files", file_id);
@@ -103,8 +103,8 @@ pub(crate) fn init_source_data_fts_triggers(conn: &Connection) -> rusqlite::Resu
          END;"
     );
     match result {
-        Ok(()) => println!("[数据库] source_data → global_search_fts 镜像触发器已就绪"),
-        Err(ref e) => eprintln!("[数据库] FTS5 镜像触发器初始化失败: {e}"),
+        Ok(()) => log::info!("[数据库] source_data → global_search_fts 镜像触发器已就绪"),
+        Err(ref e) => log::info!("[数据库] FTS5 镜像触发器初始化失败: {e}"),
     }
     Ok(())
 }
@@ -135,8 +135,8 @@ pub(crate) fn init_kb_fts_triggers(conn: &Connection) -> SqliteResult<()> {
          END;"
     );
     match result {
-        Ok(()) => println!("[数据库] kk_chunks_fts 内容同步触发器已初始化 (仅限子块)"),
-        Err(e) => eprintln!("[数据库] 警告: kk_chunks_fts 触发器初始化失败 (可能来自旧版本 schema): {e}"),
+        Ok(()) => log::info!("[数据库] kk_chunks_fts 内容同步触发器已初始化 (仅限子块)"),
+        Err(e) => log::info!("[数据库] 警告: kk_chunks_fts 触发器初始化失败 (可能来自旧版本 schema): {e}"),
     }
     Ok(())
 }
@@ -149,12 +149,12 @@ pub(crate) fn seed_kb_fts(conn: &Connection) {
          INSERT OR IGNORE INTO kk_chunks_fts(rowid, doc_title, content)
          SELECT rowid, doc_title, content FROM knowledge_chunks WHERE chunk_type = 'child';"
     ) {
-        eprintln!("[数据库] kk_chunks_fts 播种批量失败: {}", e);
+        log::info!("[数据库] kk_chunks_fts 播种批量失败: {}", e);
     }
     let after: i64 = conn.query_row("SELECT COUNT(*) FROM kk_chunks_fts", [], |r| r.get(0)).unwrap_or(0);
     if after > before {
-        println!("[数据库] kk_chunks_fts 播种 (仅限子块): {} 行", after - before);
+        log::info!("[数据库] kk_chunks_fts 播种 (仅限子块): {} 行", after - before);
     } else {
-        println!("[数据库] kk_chunks_fts 索引已是最新");
+        log::info!("[数据库] kk_chunks_fts 索引已是最新");
     }
 }

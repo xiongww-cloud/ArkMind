@@ -314,6 +314,22 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             UNIQUE(file_id, page_num)
         );
 
+        -- ★ MEMORY 独立表（原 source_data.source_type='MEMORY'）
+        CREATE TABLE IF NOT EXISTS memories (
+            id         TEXT PRIMARY KEY,
+            content    TEXT NOT NULL DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+
+        -- ★ POLICY 独立表（原 source_data.source_type='POLICY'）
+        CREATE TABLE IF NOT EXISTS policies (
+            id         TEXT PRIMARY KEY,
+            content    TEXT NOT NULL DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+
 
     ")?;
     Ok(())

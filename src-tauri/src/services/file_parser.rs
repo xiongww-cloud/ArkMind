@@ -341,7 +341,7 @@ fn pdf_to_images_base64(path: &str) -> Option<Vec<String>> {
     let result = try_pdftoppm(path);
     if result.is_some() { return result; }
 
-    eprintln!("[文件解析] 所有 PDF 渲染方法均不可用");
+    log::info!("[文件解析] 所有 PDF 渲染方法均不可用");
     None
 }
 
@@ -350,7 +350,7 @@ fn try_load_pdfium() -> Option<pdfium_render::prelude::Pdfium> {
     // 静态链接：Pdfium::default() 自动使用编译时链接的二进制
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Pdfium::default())) {
         Ok(p) => return Some(p),
-        Err(_) => eprintln!("[文件解析] PDFium 静态链接加载失败"),
+        Err(_) => log::info!("[文件解析] PDFium 静态链接加载失败"),
     }
     None
 }
@@ -534,7 +534,7 @@ pub fn ocr_image_sync(base64_uri: &str) -> String {
         match handle.block_on(ocr_with_vision_api(base64_uri)) {
             Ok(text) => text,
             Err(e) => {
-                eprintln!("[文件解析] OCR 失败: {}", e);
+                log::info!("[文件解析] OCR 失败: {}", e);
                 String::new()
             }
         }
@@ -545,12 +545,12 @@ pub fn ocr_image_sync(base64_uri: &str) -> String {
             .build()
         {
             Ok(r) => r,
-            Err(e) => { eprintln!("[文件解析] tokio 运行时创建失败: {}", e); return String::new(); }
+            Err(e) => { log::info!("[文件解析] tokio 运行时创建失败: {}", e); return String::new(); }
         };
         match rt.block_on(ocr_with_vision_api(base64_uri)) {
             Ok(text) => text,
             Err(e) => {
-                eprintln!("[文件解析] OCR 失败: {}", e);
+                log::info!("[文件解析] OCR 失败: {}", e);
                 String::new()
             }
         }
@@ -562,7 +562,7 @@ fn try_ocr_image(path: &str, mime: &str) -> String {
     match file_to_data_uri(path, mime) {
         Some(uri) => ocr_image_sync(&uri),
         None => {
-            eprintln!("[文件解析] 图片读取失败: {}", path);
+            log::info!("[文件解析] 图片读取失败: {}", path);
             String::new()
         }
     }
@@ -597,7 +597,7 @@ pub fn has_real_text(text: &str) -> bool {
 
 fn try_ocr_pdf(path: &str) -> String {
     if get_vision_config().is_none() {
-        eprintln!("[文件解析] 未配置视觉模型，跳过 OCR");
+        log::info!("[文件解析] 未配置视觉模型，跳过 OCR");
         return String::new();
     }
     try_pdfium_with_ocr(path, true)
@@ -611,13 +611,13 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
     // OCR 模式：跳过 pdfium 文本提取，直接全量 OCR
     if enable_ocr {
         if get_vision_config().is_none() {
-            eprintln!("[文件解析] 未配置视觉模型，跳过 OCR");
+            log::info!("[文件解析] 未配置视觉模型，跳过 OCR");
             return String::new();
         }
         let uris = match pdf_to_images_base64(path) {
             Some(u) => u,
             None => {
-                eprintln!("[文件解析] PDF 渲染失败: {}", path);
+                log::info!("[文件解析] PDF 渲染失败: {}", path);
                 // 渲染失败时回退到 pdfium 文本提取
                 return match try_pdfium_text_per_page(path) {
                     Some(pages) => pages.iter().enumerate().fold(String::new(), |mut acc, (i, text)| {
@@ -628,11 +628,11 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
                 };
             }
         };
-        eprintln!("[文件解析] 全量 OCR: {} 页", uris.len());
+        log::info!("[文件解析] 全量 OCR: {} 页", uris.len());
         let mut full_text = String::new();
         for (i, uri) in uris.iter().enumerate() {
             if !std::path::Path::new(path).exists() {
-                eprintln!("[文件解析] 文件已被删除，终止 OCR（已处理 {} / {} 页）", i, uris.len());
+                log::info!("[文件解析] 文件已被删除，终止 OCR（已处理 {} / {} 页）", i, uris.len());
                 break;
             }
             let cropped = crop_image_uri(uri, 0.04, 0.04).unwrap_or_else(|| uri.clone());
@@ -649,11 +649,11 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
     let pdfium_pages = match try_pdfium_text_per_page(path) {
         Some(pages) => pages,
         None => {
-            eprintln!("[文件解析] pdfium 不可用");
+            log::info!("[文件解析] pdfium 不可用");
             return String::new();
         }
     };
-    eprintln!("[文件解析] pdfium 提取完成（{} 页）", pdfium_pages.len());
+    log::info!("[文件解析] pdfium 提取完成（{} 页）", pdfium_pages.len());
     pdfium_pages.iter().enumerate().fold(String::new(), |mut acc, (i, text)| {
         if !text.is_empty() { if !acc.is_empty() { acc.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); } acc.push_str(text); }
         acc
@@ -683,7 +683,7 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
                 if !pdfium_text.is_empty() {
                     return ParseResult { success: true, text: pdfium_text };
                 }
-                eprintln!("[文件解析] PDF 解析失败，回退到 pdf-extract");
+                log::info!("[文件解析] PDF 解析失败，回退到 pdf-extract");
                 let text = read_pdf(path);
                 return ParseResult { success: !text.is_empty(), text };
             }
@@ -915,6 +915,7 @@ fn strip_garbled_lines(text: &str) -> String {
 }
 /// PDF 断行修复：合并非段落结尾的碎片行。
 /// 规则：不以句尾标点结尾的行，与下一行合并（加空格），除非下一行是标题。
+#[allow(dead_code)]
 fn merge_pdf_broken_lines(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() < 2 { return text.to_string(); }

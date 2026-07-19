@@ -10,26 +10,26 @@ use serde_json::json;
 
 /// 业务对象删除时调用 → 入队等待推送
 pub fn notify_deleted(source_type: &str, source_id: &str) {
-    eprintln!("[记忆库] notify_deleted: {}/{}", source_type, source_id);
+    log::info!("[记忆库] notify_deleted: {}/{}", source_type, source_id);
     crate::services::push_pipeline::enqueue_push(source_type, source_id, "delete");
 }
 
 /// 业务对象创建/更新时调用 → 入队等待推送
 pub fn notify_changed(source_type: &str, source_id: &str) {
-    eprintln!("[记忆库] notify_changed: {}/{}", source_type, source_id);
+    log::info!("[记忆库] notify_changed: {}/{}", source_type, source_id);
     crate::services::push_pipeline::enqueue_push(source_type, source_id, "change");
 }
 
 /// 文件上传后调用：入队等待推送
 /// 业务层只需传入 file_id，push_worker 完成剩余工作
 pub fn notify_file_upload(file_id: &str) {
-    eprintln!("[记忆库] notify_file_upload: {}", file_id);
+    log::info!("[记忆库] notify_file_upload: {}", file_id);
     crate::services::push_pipeline::enqueue_push("FILE", file_id, "file_upload");
 }
 
 /// 重置知识管线：清空 chunks + 向量 + LanceDB，重新物化
 pub fn reset_pipeline() {
-    eprintln!("[记忆库] reset_pipeline: 重置知识管线");
+    log::info!("[记忆库] reset_pipeline: 重置知识管线");
     // 1. 清空向量
     crate::database::run("DELETE FROM vector_cache", &[]).ok();
     if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
@@ -70,16 +70,16 @@ pub fn cleanup_orphaned_fts5() {
     ).ok();
     let after: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM kk_chunks_fts", [], |r| r.get(0))).unwrap_or(0);
     if before != after {
-        eprintln!("[记忆库] FTS5 清理: {} → {} 条 (孤儿删除+缺失补插)", before, after);
+        log::info!("[记忆库] FTS5 清理: {} → {} 条 (孤儿删除+缺失补插)", before, after);
     } else {
-        eprintln!("[记忆库] FTS5 无需清理 ({} 条)", after);
+        log::info!("[记忆库] FTS5 无需清理 ({} 条)", after);
     }
 }
 
 /// 获取指定时间之后变更的对象列表（供知识管线调用）
 pub fn get_changed_since(since: &str, limit: i64) -> Vec<(String, String, String, String)> {
     crate::database::all(
-        "SELECT source_type, source_id, content, updated_at FROM source_data WHERE updated_at > ?1 AND source_type != 'MEMORY' ORDER BY updated_at ASC LIMIT ?2",
+        "SELECT source_type, source_id, content, updated_at FROM source_data WHERE updated_at > ?1 ORDER BY updated_at ASC LIMIT ?2",
         &[json!(since), json!(limit)],
     )
     .unwrap_or_default()

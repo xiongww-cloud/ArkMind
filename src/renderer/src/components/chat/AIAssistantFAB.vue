@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { listen } from '@tauri-apps/api/event'
-import { kbAgentChat, kbSaveSessions, kbLoadSessions, kbDeleteSession } from '@/api/db-client'
+import { invoke } from '@tauri-apps/api/core'
 import { sanitizeHtml } from '@/utils/sanitize'
-import { dangerConfirm } from '@/composables/useConfirm'
-import { toast } from '@/composables/useToast'
-import AppIcon from '@/components/common/AppIcon.vue'
+import { pickRetrievalPhrase } from '@/utils/chat'
 
 async function renderMd(text: string): Promise<string> {
   if (!text) return ''
@@ -22,8 +20,7 @@ async function renderMd(text: string): Promise<string> {
 }
 
 // ─── Types ──────────────────────────────────────────────────
-interface ChatMessage { id: string; role: string; content: string; error?: string; thinking?: boolean; typewriterText?: string; typewriterDone?: boolean; timestamp?: number; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[] }
-interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string; updatedAt: string }
+interface ChatMessage { id: string; role: string; content: string; error?: string; thinking?: boolean; timestamp?: number }
 
 // ─── State ──────────────────────────────────────────────────
 const open = ref(false)
@@ -35,129 +32,9 @@ const rendered = ref<Record<string, string>>({})
 const activeTypewriters = new Set<string>()
 const typewriterTimers = new Map<string, ReturnType<typeof setInterval>>()
 
-// ─── Session Management ─────────────────────────────────────
-const sessions = ref<ChatSession[]>([])
-const currentSessionId = ref<string | null>(null)
-const showSessionDropdown = ref(false)
-const sessionNameEdit = ref('')
-const editingSessionId = ref<string | null>(null)
-const sessionDirty = ref(false)
-let lastSavedContent = ''
-
-const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
-
-// 代理 messages 到当前会话
-const messages = computed<ChatMessage[]>({
-  get: () => currentSession.value?.messages || [],
-  set: (val) => { if (currentSession.value) currentSession.value.messages = val }
-})
-
-function newSession() {
-  stopAllTypewriters()
-  const id = crypto.randomUUID()
-  const now = new Date().toLocaleString('sv-SE')
-  sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: now, updatedAt: now })
-  currentSessionId.value = id
-  saveToStorage()
-}
-
-async function switchSession(id: string) {
-  if (currentSessionId.value === id) return
-  stopAllTypewriters()
-  currentSessionId.value = id
-  // 渲染当前会话的 AI 消息
-  const session = currentSession.value
-  if (session) {
-    session.messages.forEach((m) => {
-      if (m.role === 'assistant' && m.content && !m.thinking && !rendered.value[m.id]) {
-        renderMd(m.content.replace(/~/g, '～')).then(html => { rendered.value[m.id] = html })
-      }
-    })
-  }
-  scrollChat()
-}
-
-async function deleteSession(id: string) {
-  if (sessions.value.length <= 1) return
-  const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？此操作不可撤销。', confirmText: '删除' })
-  if (!ok) return
-  kbDeleteSession(id).catch(() => {})
-  sessions.value = sessions.value.filter(s => s.id !== id)
-  if (currentSessionId.value === id) {
-    currentSessionId.value = sessions.value[0]?.id ?? null
-  }
-  sessionDirty.value = true
-  saveToStorage()
-  toast({ message: '会话已删除', type: 'success' })
-}
-
-function startRenameSession(id: string) {
-  const s = sessions.value.find(x => x.id === id)
-  if (s) { editingSessionId.value = id; sessionNameEdit.value = s.name }
-}
-
-function saveRenameSession(id: string) {
-  const s = sessions.value.find(x => x.id === id)
-  if (s && sessionNameEdit.value.trim()) {
-    s.name = sessionNameEdit.value.trim()
-    sessionDirty.value = true
-    saveToStorage()
-  }
-  editingSessionId.value = null
-}
-
-function saveToStorage() {
-  const s = currentSession.value
-  if (s && s.messages.length > 0 && sessionDirty.value) {
-    const currentContent = JSON.stringify(s.messages)
-    if (currentContent === lastSavedContent) {
-      sessionDirty.value = false
-      return
-    }
-    s.updatedAt = new Date().toLocaleString('sv-SE')
-    sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
-    sessionDirty.value = false
-    lastSavedContent = currentContent
-    kbSaveSessions([s]).catch((e) => console.error('[FAB] 保存会话失败:', e))
-  }
-}
-
-async function loadFromStorage() {
-  try {
-    const r = await kbLoadSessions()
-    if (r?.sessions && Array.isArray(r.sessions)) {
-      sessions.value = r.sessions.map((s: any) => ({
-        ...s,
-        name: s.title || '新对话',
-        updatedAt: s.updated_at || s.updatedAt,
-        createdAt: s.created_at || s.createdAt,
-        messages: (s.messages || []).map((m: any) => {
-          const { isThinking, typewriterText, typewriterDone, ...rest } = m
-          return rest
-        })
-      })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
-    }
-  } catch { sessions.value = [] }
-  if (!sessions.value.length) { newSession(); return }
-  currentSessionId.value = sessions.value[0].id
-  // 初始化
-  const s = currentSession.value
-  if (s) {
-    for (const m of s.messages) {
-      if (m.role === 'assistant') { m.thinking = false; m.typewriterDone = true }
-    }
-    lastSavedContent = JSON.stringify(s.messages)
-  }
-  // 渲染 AI 消息
-  const msgs = sessions.value[0].messages
-  await Promise.all(msgs.map((m) => {
-    if (m.role === 'assistant' && m.content) {
-      return renderMd(m.content.replace(/~/g, '～')).then(html => { rendered.value[m.id] = html })
-    }
-    return Promise.resolve()
-  }))
-  scrollChat()
-}
+// ─── Messages ───────────────────────────────────────────────
+const messages = ref<ChatMessage[]>([])
+const MAX_MESSAGES = 20
 
 // ─── Drag ────────────────────────────────────────────────────
 const fabY = ref(0)
@@ -254,111 +131,91 @@ async function send() {
   inputText.value = ''
   nextTick(() => { const el = document.querySelector('.fab-input') as HTMLTextAreaElement; if (el) el.style.height = 'auto' })
   
-  // 如果是第一条消息，用用户提问作为会话名称
-  if (currentSession.value && currentSession.value.messages.length === 0 && currentSession.value.name === '新对话') {
-    currentSession.value.name = q.slice(0, 30)
-  }
-  
   messages.value.push({ id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() })
   const aiMsg = { id: crypto.randomUUID(), role: 'assistant', content: '', thinking: true }
   messages.value.push(aiMsg)
-  sessionDirty.value = true
+  // 限制消息数量为20条
+  while (messages.value.length > 20) { messages.value.shift() }
   scrollChat()
   isChatting.value = true
   thinkingProgress.value = ''
 
-  // ★ 冷启动障眼法：立即显示拟人化短句
-  const thinkingPhrases = ['让我想想啊……', '嗯……我回忆一下。', '别急，我翻一下脑子里的记录。', '稍等，我查查看……', '嗯，我想想……']
-  const randomPhrase = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)]
-  aiMsg.content = randomPhrase
+  // ★ 检索阶段固定文案：随机选一条，LLM 调用工具期间不再切换
+  const presetText = pickRetrievalPhrase()
+  aiMsg.content = presetText
+  renderMd(presetText.replace(/~/g, '～')).then(h => { rendered.value[aiMsg.id] = h })
   scrollChat()
 
-  const unlistenProgress = await listen<{ msg: string }>('agent:progress', (ev) => { thinkingProgress.value = ev.payload.msg })
+  const unlistenProgress = await listen<{ msg: string }>('agent:progress', (ev) => { thinkingProgress.value = ev.payload.msg; scrollChat() })
   let unlistenStream: (() => void) | null = null
   let unlistenThought: (() => void) | null = null
-  let unlistenStatus: (() => void) | null = null
   try {
-    // ★ 监听 status 事件，动态演变拟人化文案
-    const toolHints: Record<string, string> = {
-      ext_tool_search: '我正在检索相关资料',
-      ext_tool_object: '我在翻看记忆中的对象',
-      ext_tool_traverse: '我在继续往后翻看',
-      ext_tool_batch_search: '我在同时查几个方向',
-    }
-    unlistenStatus = await listen<{ stage: string; tool?: string; target?: string }>('agent:status', (ev) => {
-      const { stage, tool } = ev.payload
-      if (stage === 'tool_start' && tool) {
-        const hint = toolHints[tool] || `正在调用 ${tool}`
-        aiMsg.content = hint
-        scrollChat()
-      }
+    const isRealStreaming = ref(false)
+    let streamedContent = ''
+    let lastRenderTime = 0
+    const RENDER_THROTTLE_MS = 80
+    const unlistenStartAnswer = await listen('agent:start-answer', () => {
+      isRealStreaming.value = true
+      streamedContent = ''
+      scrollChat()
     })
-    const streamed = ref('')
     unlistenStream = await listen<{ token: string }>('agent:token', (ev) => {
-      streamed.value += ev.payload.token
-      aiMsg.content = streamed.value
+      if (!isRealStreaming.value) return // start-answer 前的 token 仅作为检索/思考，不显示为答案
+      streamedContent += ev.payload.token
+      aiMsg.content = streamedContent.replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+      const now = Date.now()
+      if (now - lastRenderTime > RENDER_THROTTLE_MS) {
+        lastRenderTime = now
+        const text = streamedContent.replace(/<refs>[\s\S]*<\/refs>/g, '').replace(/~/g, '～')
+        renderMd(text).then(h => { if (h) rendered.value[aiMsg.id] = h })
+      }
       scrollChat()
     })
     unlistenThought = await listen<{ text: string }>('agent:thought', (ev) => {
-      let idx = 0; const full = ev.payload.text; thinkingProgress.value = ''
-      const t = setInterval(() => { thinkingProgress.value = full.slice(0, ++idx); if (idx >= full.length) clearInterval(t) }, 30)
+      thinkingProgress.value = ev.payload.text; scrollChat()
     })
-    const history: any[] = []
-    for (const m of messages.value) {
-      if (m === aiMsg) continue
-      if (m.role === 'user') history.push({ role: 'user', content: m.content })
-      else if (m.role === 'assistant') {
-        // ★ 包含 tool_calls 以保持完整上下文
-        if ((m as any).toolCalls?.length) {
-          history.push({ role: 'assistant', content: m.content || '', tool_calls: (m as any).toolCalls })
+    const unlistenRoundThought = await listen('agent:round-thought', () => {
+      streamedContent = ''
+      thinkingProgress.value = ''
+      aiMsg.content = presetText
+      renderMd(presetText.replace(/~/g, '～')).then(h => { rendered.value[aiMsg.id] = h })
+      aiMsg.thinking = true
+      isRealStreaming.value = false
+      scrollChat()
+    })
+    invoke('kb_agent_chat', { data: { query: q, history: [] } }).catch((err) => {
+      console.error('[FAB] invoke failed:', err)
+      aiMsg.thinking = false
+      aiMsg.error = String(err)
+      isChatting.value = false; scrollChat()
+    })
+    const unlistenDone = await listen<any>('agent:done', (ev) => {
+      const result = ev.payload
+      aiMsg.thinking = false; thinkingProgress.value = ''
+      if (result && result.success) {
+        const finalAnswer = (result.answer || streamedContent || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+        if (isRealStreaming.value) {
+          aiMsg.content = finalAnswer
+          renderMd(finalAnswer.replace(/~/g, '～')).then(h => { rendered.value[aiMsg.id] = h })
         } else {
-          history.push({ role: 'assistant', content: m.content || '' })
+          startTypewriter(aiMsg.id, finalAnswer)
         }
+      } else {
+        aiMsg.content = result?.answer || result?.error || '请求失败'
       }
-    }
-    const result: any = await kbAgentChat({ query: q, history })
-    aiMsg.thinking = false; thinkingProgress.value = ''
-    if (result.success) {
-      // 过滤 XML 工具调用标签和 refs 标签
-      let content = (result.answer || '')
-        .replace(/<｜｜DSML｜｜[\s\S]*?<\/｜｜DSML｜｜tool_calls>/g, '')
-        .replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, '')
-        .replace(/<refs>[\s\S]*<\/refs>/g, '')
-        .trim()
-      aiMsg.content = content
-      if (streamed.value) {
-        content = streamed.value
-          .replace(/<｜｜DSML｜｜[\s\S]*?<\/｜｜DSML｜｜tool_calls>/g, '')
-          .replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, '')
-          .replace(/<refs>[\s\S]*<\/refs>/g, '')
-          .trim()
-        aiMsg.content = content
-      }
-      // ★ 提取工具调用和结果
-      if (result.tools && Array.isArray(result.tools)) {
-        const rawCalls: any[] = []
-        const toolResults: any[] = []
-        for (const t of result.tools) {
-          const callId = 'call_' + Math.random().toString(36).slice(2, 8)
-          rawCalls.push({ id: callId, type: 'function', function: { name: t.tool, arguments: typeof t.args === 'string' ? t.args : JSON.stringify(t.args) } })
-          const rawResult = typeof t.result === 'string' ? t.result : ''
-          const truncated = rawResult.length > 30000 ? rawResult.substring(0, 30000) + '\n\n[结果已截断]' : rawResult
-          toolResults.push({ id: callId, name: t.tool, content: truncated })
-        }
-        aiMsg.rawToolCalls = rawCalls
-        aiMsg.toolResults = toolResults
-      }
-    } else {
-      aiMsg.content = result.answer || result.error || '失败'
-    }
-    startTypewriter(aiMsg.id, aiMsg.content)
+      isChatting.value = false; scrollChat()
+      try { unlistenDone(); unlistenStream?.(); unlistenStartAnswer?.(); unlistenThought?.(); unlistenProgress(); unlistenRoundThought() } catch {}
+    })
+    const unlistenError = await listen<any>('agent:error', (ev) => {
+      aiMsg.thinking = false
+      aiMsg.error = ev.payload.error || 'AI 服务异常'
+      isChatting.value = false; scrollChat()
+      try { unlistenError(); unlistenDone(); unlistenStream?.(); unlistenStartAnswer?.(); unlistenThought?.(); unlistenProgress(); unlistenRoundThought() } catch {}
+    })
   } catch (e: any) {
     aiMsg.thinking = false
     aiMsg.error = typeof e === 'string' ? e : (e.message || 'AI 服务异常')
-  } finally {
     isChatting.value = false; scrollChat()
-    sessionDirty.value = true; saveToStorage()
-    try { unlistenStream?.(); unlistenThought?.(); unlistenStatus?.(); unlistenProgress() } catch {}
   }
 }
 
@@ -367,14 +224,10 @@ async function stopAgent() {
     const { agentCancel } = await import('@/api/db-client')
     await agentCancel()
     isChatting.value = false
-    // 更新最后一条 AI 消息
-    const session = currentSession.value
-    if (session) {
-      const lastMsg = session.messages[session.messages.length - 1]
-      if (lastMsg && lastMsg.role === 'assistant' && lastMsg.thinking) {
-        lastMsg.thinking = false
-        if (!lastMsg.content) lastMsg.content = '已停止执行。'
-      }
+    const lastMsg = messages.value[messages.value.length - 1]
+    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.thinking) {
+      lastMsg.thinking = false
+      if (!lastMsg.content) lastMsg.content = '已停止执行。'
     }
     scrollChat()
   } catch (e) {
@@ -385,38 +238,18 @@ async function stopAgent() {
 function toggle() {
   if (dragMoved.value) return
   open.value = !open.value
-  if (open.value) {
-    // 打开时重新加载会话，保持与知识库页面同步
-    loadFromStorage()
-    nextTick(() => { scrollChat() })
-  }
+  if (open.value) nextTick(() => { scrollChat() })
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────
-function handleClickOutside(e: MouseEvent) {
-  const target = e.target as HTMLElement
-  if (!target.closest('.fab-panel')) {
-    showSessionDropdown.value = false
-  }
-}
-
-onMounted(async () => {
+onMounted(() => {
   initFabY()
-  await loadFromStorage()
-  document.addEventListener('click', handleClickOutside)
 })
 
 onUnmounted(() => {
-  saveToStorage()
   stopAllTypewriters()
-  document.removeEventListener('click', handleClickOutside)
 })
 
-// 监听会话切换，清空渲染缓存
-watch(currentSessionId, () => {
-  rendered.value = {}
-  stopAllTypewriters()
-})
 </script>
 
 <template>
@@ -450,51 +283,10 @@ watch(currentSessionId, () => {
       </button>
 
       <!-- Title Bar -->
-      <div class="flex items-center gap-1.5 px-3 py-1.5 border-b border-white/20 bg-white/20 backdrop-blur">
-        <svg class="w-3.5 h-3.5 text-[#2563eb] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
-        
-        <!-- Session Selector -->
-        <div class="relative flex-1 min-w-0">
-          <button @click="showSessionDropdown = !showSessionDropdown"
-            @blur="setTimeout(() => showSessionDropdown = false, 150)"
-            class="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-white/30 transition-colors max-w-full w-full">
-            <span class="text-[11px] font-medium text-[#3a3a3c] truncate">{{ currentSession?.name || '新对话' }}</span>
-            <svg class="w-3 h-3 text-[#86868b] flex-shrink-0 transition-transform" :class="showSessionDropdown ? 'rotate-180' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
-          </button>
-          
-          <!-- Dropdown -->
-          <div v-if="showSessionDropdown" class="absolute top-full left-0 mt-1 w-72 bg-white rounded-xl shadow-lg border border-[#e5e5ea] z-50 overflow-hidden" @click.stop>
-            <div class="px-3 py-2 border-b border-[#e5e5ea]">
-              <button @click="newSession(); showSessionDropdown = false" class="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-lg text-[12px] text-[#2563eb] hover:bg-blue-50 transition-colors">
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 4v16m8-8H4"/></svg>
-                新建对话
-              </button>
-            </div>
-            <div class="overflow-y-auto max-h-[300px] py-1">
-              <div v-for="s in sessions" :key="s.id"
-                class="group flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[#f8f9fa] transition-colors"
-                :class="s.id === currentSessionId ? 'bg-[#2563eb]/5' : ''"
-                @click="switchSession(s.id); showSessionDropdown = false">
-                <svg class="w-3.5 h-3.5 flex-shrink-0" :class="s.id === currentSessionId ? 'text-[#2563eb]' : 'text-[#86868b]'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-                <template v-if="editingSessionId === s.id">
-                  <input v-model="sessionNameEdit" @keyup.enter="saveRenameSession(s.id)" @keyup.escape="editingSessionId = null" @blur="saveRenameSession(s.id)"
-                    class="flex-1 min-w-0 bg-white border border-[#2563eb] rounded px-1.5 py-0.5 text-[12px] outline-none" @click.stop autofocus />
-                </template>
-                <template v-else>
-                  <div class="flex-1 min-w-0">
-                    <div class="truncate text-[12px]" :class="s.id === currentSessionId ? 'font-medium text-[#1d1d1f]' : 'text-[#3a3a3c]'">{{ s.name }}</div>
-                    <div v-if="s.messages.length" class="text-[10px] text-[#86868b] truncate mt-0.5">{{ (() => { const m = [...s.messages].reverse().find((m: any) => !m.thinking); return m?.content?.slice(0, 40) || '...' })() }}</div>
-                  </div>
-                  <button @click.stop="startRenameSession(s.id)" class="w-5 h-5 flex items-center justify-center rounded text-[#86868b] hover:text-[#2563eb] hover:bg-[#2563eb]/5 opacity-0 group-hover:opacity-100 transition-all" title="重命名">
-                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                  </button>
-                  <button v-if="sessions.length > 1" @click.stop="deleteSession(s.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" title="删除">
-                    <AppIcon name="trash" size="12"/>
-                  </button>
-                </template>
-              </div>
-            </div>
-          </div>
+      <div class="flex items-center justify-between px-3 py-1.5 border-b border-white/20 bg-white/20 backdrop-blur">
+        <div class="flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5 text-[#2563eb] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+          <span class="text-[11px] font-medium text-[#3a3a3c]">AI 助手</span>
         </div>
       </div>
 
@@ -525,27 +317,14 @@ watch(currentSessionId, () => {
           <div v-else class="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
           <div class="min-w-0" :class="m.role === 'user' ? 'max-w-[70%]' : 'max-w-[80%]'">
             <div class="text-[10px] text-[#c7c7cc] mb-0.5 px-0.5" :class="m.role === 'user' ? 'text-right' : ''">{{ fmtTime() }}</div>
-            <!-- Thinking -->
-            <div v-if="m.thinking" class="bg-white border border-[#e5e5ea] rounded-2xl px-3 py-1.5 shadow-sm rounded-tl-[4px]">
-              <div class="flex items-center gap-1.5">
-                <div class="flex gap-0.5">
-                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:0ms"/>
-                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:150ms"/>
-                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:300ms"/>
-                </div>
-                <span class="text-[11px] text-[#86868b] transition-colors duration-300">{{ m.content || thinkingProgress || '思考中' }}</span>
-              </div>
-            </div>
             <!-- User -->
-            <div v-else-if="m.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-1.5">
+            <div v-if="m.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-1.5">
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ m.content }}</pre>
             </div>
             <!-- AI -->
-            <div v-else class="fab-bubble-ai">
+            <div v-else class="fab-bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
               <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
-              <div v-else-if="m.typewriterText !== undefined && !m.typewriterDone" class="fab-md" v-html="rendered[m.id] || ''"></div>
-              <div v-else-if="rendered[m.id]" class="fab-md" v-html="rendered[m.id]" />
-              <div v-else class="text-[11px] text-[#3a3a3c] leading-relaxed whitespace-pre-wrap">{{ m.content }}</div>
+              <div v-else class="fab-md" v-html="rendered[m.id] || m.content || '思考中'" />
             </div>
           </div>
         </div>
@@ -771,6 +550,24 @@ watch(currentSessionId, () => {
 /* ═══ Animation ═══ */
 @keyframes fade-in { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
 .animate-fade-in { animation: fade-in 0.25s ease-out; }
+@keyframes thinking-shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+.thinking-bubble {
+  position: relative;
+  overflow: hidden;
+}
+.thinking-bubble::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 30%, rgba(37,99,235,0.08) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: thinking-shimmer 1.8s ease-in-out infinite;
+  pointer-events: none;
+  border-radius: inherit;
+}
 .fab-panel-enter-active { transition: all 0.25s cubic-bezier(0.16,1,0.3,1); }
 .fab-panel-leave-active { transition: all 0.15s ease; }
 .fab-panel-enter-from { opacity: 0; transform: scale(0.88) translateY(12px); }

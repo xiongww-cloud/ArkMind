@@ -104,6 +104,14 @@ pub fn run() {
                     let _ = window.set_focus();
                 }
             }
+            // ★ 初始化日志系统
+            let log_state = services::log_collector::init_logger(1000)
+                .unwrap_or_else(|e| {
+                    eprintln!("Logger init failed: {}", e);
+                    services::log_collector::LogState::new()
+                });
+            app.manage(log_state);
+
             let data_dir = app_data_dir(&app.handle());
             let db_file = db_path(&data_dir);
             if let Err(e) = database::init_database(&db_file) { eprintln!("DB init failed: {}", e); return Err(Box::new(e)); }
@@ -271,6 +279,8 @@ pub fn run() {
             commands::todos_toggle, commands::todos_get,
             // OSS
             commands::oss_raw_diagnose,
+            // Logs
+            commands::get_logs, commands::clear_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arkmind");

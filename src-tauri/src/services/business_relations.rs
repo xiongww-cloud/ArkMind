@@ -3,26 +3,85 @@ use serde_json::json;
 
 /// Initialize the business_relations table
 pub fn init() {
-    let _ = database::run(
-        "CREATE TABLE IF NOT EXISTS business_relations (
-            id TEXT PRIMARY KEY,
-            source_type TEXT NOT NULL,
-            source_id TEXT NOT NULL,
-            target_type TEXT NOT NULL,
-            target_id TEXT NOT NULL,
-            relation_type TEXT NOT NULL,
-            metadata TEXT DEFAULT '{}',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(source_type, source_id, target_type, target_id, relation_type)
-        )", &[]
-    );
+    // 检查表是否存在，如果存在则检查是否有 UNIQUE 约束
+    let has_table: bool = database::get(
+        "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='business_relations'",
+        &[]
+    ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0) > 0;
+
+    if has_table {
+        // 检查是否有 UNIQUE 约束
+        let has_unique: bool = database::get(
+            "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='index' AND name='idx_br_unique'",
+            &[]
+        ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0) > 0;
+
+        if !has_unique {
+            log::info!("[business_relations] 检测到表缺少 UNIQUE 约束，正在重建...");
+            // 清理重复数据
+            cleanup_duplicates();
+            // 重建表（保留数据）
+            let _ = crate::database::with_db(|conn| {
+                conn.execute_batch("
+                    CREATE TABLE business_relations_new AS
+                    SELECT MIN(id) as id, source_type, source_id, target_type, target_id, relation_type,
+                           metadata, created_at, updated_at
+                    FROM business_relations
+                    GROUP BY source_type, source_id, target_type, target_id, relation_type;
+                    DROP TABLE business_relations;
+                    ALTER TABLE business_relations_new RENAME TO business_relations;
+                    CREATE UNIQUE INDEX idx_br_unique ON business_relations(source_type, source_id, target_type, target_id, relation_type);
+                ")
+            });
+            println!("[business_relations] 表已重建，UNIQUE 约束已添加");
+        }
+    } else {
+        // 创建新表（带 UNIQUE 约束）
+        let _ = database::run(
+            "CREATE TABLE IF NOT EXISTS business_relations (
+                id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                relation_type TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_type, source_id, target_type, target_id, relation_type)
+            )", &[]
+        );
+    }
+
+    // 确保索引存在
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_br_source ON business_relations(source_type, source_id)", &[]);
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_br_target ON business_relations(target_type, target_id)", &[]);
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_br_type ON business_relations(relation_type)", &[]);
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_br_updated ON business_relations(updated_at)", &[]);
+
     // Backfill existing business relations
     backfill();
+}
+
+/// 清理重复数据（保留 id 最小的记录）
+fn cleanup_duplicates() {
+    let before: i64 = database::get("SELECT COUNT(*) as cnt FROM business_relations", &[])
+        .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE id NOT IN (
+            SELECT MIN(id) FROM business_relations
+            GROUP BY source_type, source_id, target_type, target_id, relation_type
+        )",
+        &[]
+    );
+
+    let after: i64 = database::get("SELECT COUNT(*) as cnt FROM business_relations", &[])
+        .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+
+    if before > after {
+        println!("[business_relations] 已清理 {} 条重复数据", before - after);
+    }
 }
 
 /// One-time backfill: sync all existing business layer relations into business_relations table
@@ -30,10 +89,10 @@ fn backfill() {
     let count: i64 = database::get("SELECT COUNT(*) as cnt FROM business_relations", &[])
         .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     if count > 0 {
-        eprintln!("[business_relations] 已有 {} 条记录，跳过 backfill", count);
+        log::info!("[business_relations] 已有 {} 条记录，跳过 backfill", count);
         return;
     }
-    eprintln!("[business_relations] 开始 backfill 业务关联...");
+    log::info!("[business_relations] 开始 backfill 业务关联...");
     let mut total = 0i64;
 
     // 1. file_relations → has_file (FILE → PRODUCT/NOTE/TODO/PROJECT/etc.)
@@ -149,7 +208,7 @@ fn backfill() {
         }
     }
 
-    eprintln!("[business_relations] Backfill 完成，共同步 {} 条关联", total);
+    log::info!("[business_relations] Backfill 完成，共同步 {} 条关联", total);
 }
 
 /// Insert or update a business relation (dedup by source+target+type)
@@ -167,7 +226,7 @@ pub fn upsert(
     );
     if let Ok(c) = changes {
         if c.changes > 0 {
-            eprintln!("[business_relations] 更新: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
+            log::info!("[business_relations] 更新: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
             return;
         }
     }
@@ -177,7 +236,7 @@ pub fn upsert(
         "INSERT INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,datetime('now','localtime'),datetime('now','localtime'))",
         &[json!(id), json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type), json!(metadata)],
     );
-    eprintln!("[business_relations] 新增: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
+    log::info!("[business_relations] 新增: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
 }
 
 /// Delete a specific business relation
@@ -190,7 +249,7 @@ pub fn delete(
         "DELETE FROM business_relations WHERE source_type=? AND source_id=? AND target_type=? AND target_id=? AND relation_type=?",
         &[json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type)],
     );
-    eprintln!("[business_relations] 删除: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
+    log::info!("[business_relations] 删除: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
 }
 
 /// Delete all relations where an entity is the source
@@ -199,5 +258,5 @@ pub fn delete_by_source(source_type: &str, source_id: &str) {
         "DELETE FROM business_relations WHERE source_type=? AND source_id=?",
         &[json!(source_type), json!(source_id)],
     );
-    eprintln!("[business_relations] 删除所有源关联: {}[{}]", source_type, source_id);
+    log::info!("[business_relations] 删除所有源关联: {}[{}]", source_type, source_id);
 }

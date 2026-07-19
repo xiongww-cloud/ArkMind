@@ -160,9 +160,9 @@ pub async fn search_source_data(query: String) -> Result<Value, String> {
     let fts_q = q.split_whitespace().map(|k| format!("\"{}\"", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
     let mut objects: Vec<Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    // 排除 MEMORY 类型，只返回 type + id，业务层自行查询名称
+    // MEMORY 已迁移到独立表，global_search_fts 中不再有 MEMORY
     if let Ok(rows) = database::all(
-        "SELECT source_type, source_id FROM global_search_fts WHERE global_search_fts MATCH ?1 AND source_type != 'MEMORY' ORDER BY bm25(global_search_fts, 1.0, 1.0) LIMIT 30",
+        "SELECT source_type, source_id FROM global_search_fts WHERE global_search_fts MATCH ?1 ORDER BY bm25(global_search_fts, 1.0, 1.0) LIMIT 30",
         &[json!(&fts_q)],
     ) {
         for r in &rows {

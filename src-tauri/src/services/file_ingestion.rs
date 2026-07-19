@@ -99,7 +99,7 @@ fn process_push_queue_non_blocking() {
     ) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[数据中台] ⚠ 查询 knowledge_push_queue 失败: {}", e);
+            log::info!("[数据中台] ⚠ 查询 knowledge_push_queue 失败: {}", e);
             return;
         }
     };
@@ -176,13 +176,13 @@ fn process_task_with_retry(task: serde_json::Value) {
                     "UPDATE knowledge_push_queue SET status='failed', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
                     &[json!(retry_count + 1), json!(&e), json!(id)],
                 );
-                eprintln!("[数据中台] ✗ {}/{} 超过最大重试次数: {}", source_type, source_id, e);
+                log::info!("[数据中台] ✗ {}/{} 超过最大重试次数: {}", source_type, source_id, e);
             } else {
                 let _ = crate::database::run(
                     "UPDATE knowledge_push_queue SET status='pending', debounce_until=datetime('now','localtime','+5 seconds'), retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
                     &[json!(retry_count + 1), json!(&e), json!(id)],
                 );
-                eprintln!("[数据中台] ⚠ {}/{} 重试 {}/10: {}", source_type, source_id, retry_count + 1, e);
+                log::info!("[数据中台] ⚠ {}/{} 重试 {}/10: {}", source_type, source_id, retry_count + 1, e);
             }
         }
     }
@@ -263,7 +263,7 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
     // 检查视觉模型配置
     let has_vision = crate::services::file_parser::get_vision_config().is_some();
     if !has_vision {
-        eprintln!("[数据中台] {} 未配置视觉模型，使用 pdfium 文本提取", log_tag);
+        log::info!("[数据中台] {} 未配置视觉模型，使用 pdfium 文本提取", log_tag);
         return process_pdf_text_only(&file_id, &path, total_pages, source_type, source_id);
     }
 
@@ -273,7 +273,7 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
     for page_num in 0..total_pages {
         // 检查文件是否仍然存在
         if !std::path::Path::new(&path).exists() {
-            eprintln!("[数据中台] {} 文件已被删除，终止解析（已处理 {} / {} 页）", log_tag, page_num, total_pages);
+            log::info!("[数据中台] {} 文件已被删除，终止解析（已处理 {} / {} 页）", log_tag, page_num, total_pages);
             break;
         }
 
@@ -297,7 +297,7 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
             let image_uri = match pdfium_render_page(&path, page_num) {
                 Some(uri) => uri,
                 None => {
-                    eprintln!("[数据中台] {} 第 {}/{} 页渲染失败", log_tag, page_num + 1, total_pages);
+                    log::info!("[数据中台] {} 第 {}/{} 页渲染失败", log_tag, page_num + 1, total_pages);
                     continue;
                 }
             };
@@ -439,7 +439,7 @@ fn process_cleanup(source_type: &str, source_id: &str) -> Result<(), String> {
         if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
             if let Some(ref c) = *g {
                 if let Err(e) = c.delete_chunks_by_rowids(&chunk_ids) {
-                    eprintln!("[数据中台] LanceDB 清理失败: {}", e);
+                    log::info!("[数据中台] LanceDB 清理失败: {}", e);
                 }
             }
         }
@@ -568,7 +568,7 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
             clean_text.len()
         );
     } else {
-        eprintln!("[数据摄入中台] {} source_data 写入后验证失败!", log_tag);
+        log::info!("[数据摄入中台] {} source_data 写入后验证失败!", log_tag);
     }
 
     println!(
@@ -624,7 +624,7 @@ fn ingest_pending_notes() {
     ) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[数据中台] ⚠ 查询笔记失败: {}", e);
+            log::info!("[数据中台] ⚠ 查询笔记失败: {}", e);
             return;
         }
     };
@@ -677,7 +677,7 @@ fn ingest_pending_products() {
     ) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[数据中台] ⚠ 查询产品失败: {}", e);
+            log::info!("[数据中台] ⚠ 查询产品失败: {}", e);
             return;
         }
     };
@@ -746,7 +746,7 @@ fn ingest_pending_projects() {
     ) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[数据中台] ⚠ 查询项目失败: {}", e);
+            log::info!("[数据中台] ⚠ 查询项目失败: {}", e);
             return;
         }
     };
@@ -811,7 +811,7 @@ fn ingest_pending_todos() {
     ) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[数据中台] ⚠ 查询待办失败: {}", e);
+            log::info!("[数据中台] ⚠ 查询待办失败: {}", e);
             return;
         }
     };
@@ -911,7 +911,7 @@ pub fn cleanup_orphan_source_data() {
                 "[数据中台] 已清理 knowledge_chunks: {} 行",
                 r.changes
             ),
-            Err(e) => eprintln!("[数据中台] knowledge_chunks 清理失败: {}", e),
+            Err(e) => log::info!("[数据中台] knowledge_chunks 清理失败: {}", e),
         }
     }
 
@@ -953,7 +953,7 @@ pub fn cleanup_orphan_source_data() {
                 "[数据中台] 孤儿 source_data 清理 ({}): {} 行",
                 source_type, r.changes
             ),
-            Err(e) => eprintln!(
+            Err(e) => log::info!(
                 "[数据中台] 孤儿 source_data 清理失败 ({}): {}",
                 source_type, e
             ),
@@ -995,7 +995,7 @@ pub fn cleanup_orphan_source_data() {
             &[],
         ) {
             Ok(r) => println!("[数据中台] 已清理 business_relations 孤儿: {} 行", r.changes),
-            Err(e) => eprintln!("[数据中台] business_relations 孤儿清理失败: {}", e),
+            Err(e) => log::info!("[数据中台] business_relations 孤儿清理失败: {}", e),
         }
     }
 }

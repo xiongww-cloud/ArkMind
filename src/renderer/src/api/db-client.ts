@@ -24,7 +24,7 @@ export interface AiProvider { id: string; name: string; apiKey: string; baseUrl:
 export interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 export interface ChatMessage { role: 'user'|'assistant'; content: string; [key:string]: unknown }
 export interface UserProfile { id: string; name: string; username: string; role: string; phone: string; email: string; avatar: string; aiConfig: string }
-export interface UserPolicy { id: number; content: string; created_at: string; is_active: number }
+
 export interface KbConfig { embeddingApiUrl?: string; embeddingApiKey?: string; embeddingModelName?: string; embeddingActive?: boolean; chatApiUrl?: string; chatApiKey?: string; chatModelName?: string }
 export interface KbSearchResult { source_type: string; source_id: string; title: string; chunk_text: string; score: number }
 export interface KbDiagnoseResult { success: boolean; embedding_configured: boolean; chat_configured: boolean; lancedb_count: number; fts5_count: number }
@@ -190,10 +190,10 @@ export async function updateSettings(data: Record<string,unknown>): Promise<{suc
 export async function fetchAiConfig(): Promise<AiConfig> { return invoke('get_ai_config') }
 export async function updateAiConfig(data: Record<string,unknown>): Promise<{success: boolean}> { return invoke('update_ai_config', { data: { ai_config: JSON.stringify(data) } }) }
 
-// ─── User Policies (用户策略/宪法) ───────────────────────────────
-export async function getUserPolicies(): Promise<{success:boolean;policies:UserPolicy[]}> { return invoke('get_user_policies') }
-export async function setUserPolicies(policies: string): Promise<{success:boolean}> { return invoke('set_user_policies', { policies }) }
-export async function managePolicy(id?: number, content?: string): Promise<{success:boolean;action?:string;message?:string}> { return invoke('manage_policy', { id: id ?? null, content: content ?? null }) }
+// ─── Logs ──────────────────────────────────────────────────────
+export interface LogEntry { timestamp: string; level: string; module: string; message: string }
+export async function getLogs(): Promise<LogEntry[]> { return invoke('get_logs') }
+export async function clearLogs(): Promise<void> { return invoke('clear_logs') }
 
 // ─── Notes ─────────────────────────────────────────────────────
 export async function fetchNotes(): Promise<FetchNotesResponse> { return invoke('notes_list_all') }

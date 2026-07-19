@@ -31,6 +31,7 @@ pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &st
 }
 
 /// 删除实体对应的 source_data 记录
+#[allow(dead_code)]
 pub fn delete_entity_source_doc(source_type: &str, source_id: &str) {
     let _ = crate::database::run(
         "DELETE FROM source_data WHERE source_type=?1 AND source_id=?2",
@@ -53,15 +54,15 @@ pub fn sync_entity(source_type: &str, source_id: &str) {
         "VENDOR" => extract_vendor(source_id),
         "CUSTOMER" => extract_customer(source_id),
         _ => {
-            eprintln!("[source_doc_sync] 未知 source_type: {}", source_type);
+            log::info!("[source_doc_sync] 未知 source_type: {}", source_type);
             return;
         }
     };
     if content.trim().is_empty() {
-        eprintln!("[source_doc_sync] 内容为空，跳过: {}/{}", source_type, source_id);
+        log::info!("[source_doc_sync] 内容为空，跳过: {}/{}", source_type, source_id);
         return;
     }
-    eprintln!("[source_doc_sync] 同步: {}/{} ({})", source_type, source_id, title);
+    log::info!("[source_doc_sync] 同步: {}/{} ({})", source_type, source_id, title);
     sync_entity_to_source_docs(source_type, source_id, &title, &content);
 }
 
@@ -154,7 +155,7 @@ fn extract_project(project_id: &str) -> (String, String) {
         &[serde_json::json!(project_id)]
     ) {
         let dyn_str: Vec<String> = dynamics.iter().filter_map(|d| {
-            let t = d["type"].as_str().unwrap_or("");
+            let _t = d["type"].as_str().unwrap_or("");
             let c = d["content"].as_str().unwrap_or("");
             let dt = d["created_at"].as_str().unwrap_or("");
             if !c.is_empty() { Some(format!("- {} ({})", c, dt)) } else { None }

@@ -370,10 +370,18 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
         "SELECT file_id FROM file_relations WHERE id=?", &[json!(&file_id)]
     ).ok().flatten().and_then(|r| r["file_id"].as_str().map(|s| s.to_string()));
 
-    // 2. Delete the specific file_relations record
+    // 2. Get entity info BEFORE deleting (for business_relations cleanup)
+    let rel_info: Option<(String, String)> = database::get(
+        "SELECT entity_type, entity_id FROM file_relations WHERE id=?", &[json!(&file_id)]
+    ).ok().flatten().map(|r| (
+        r["entity_type"].as_str().unwrap_or("").to_uppercase(),
+        r["entity_id"].as_str().unwrap_or("").to_string(),
+    ));
+
+    // 3. Delete the specific file_relations record
     database::run("DELETE FROM file_relations WHERE id=?", &[json!(&file_id)]).map_err(|e| e.to_string())?;
 
-    // 3. If file_assets has no remaining relations, clean up everything
+    // 4. If file_assets has no remaining relations, clean up everything
     if let Some(ref aid) = asset_id {
         let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?", &[json!(aid)])
             .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
@@ -382,6 +390,13 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
             if let Some(p) = get_physical_path(aid) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
             database::run("DELETE FROM library_file_locations WHERE file_id=?", &[json!(aid)]).ok();
             database::run("DELETE FROM file_assets WHERE id=?", &[json!(aid)]).ok();
+        }
+    }
+
+    // 5. Clean up business_relations
+    if let Some((entity_type, entity_id)) = &rel_info {
+        if !entity_type.is_empty() && !entity_id.is_empty() {
+            crate::services::business_relations::delete("FILE", &asset_id.unwrap_or_default(), entity_type, entity_id, "has_file");
         }
     }
     Ok(json!({"success":true}))

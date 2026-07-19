@@ -19,3 +19,4 @@ pub mod semantic_builder;
 pub mod knowledge_lifecycle;
 pub mod push_pipeline;
 pub mod business_relations;
+pub mod log_collector;

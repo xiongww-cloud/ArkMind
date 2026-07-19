@@ -6,6 +6,7 @@ import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbDeleteSession } from '@/api/db-client'
 import { sanitizeHtml, sanitizeHtmlSync } from '@/utils/sanitize'
+import { pickRetrievalPhrase } from '@/utils/chat'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -22,12 +23,12 @@ async function renderMarkdown(text: string): Promise<string> {
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 // ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage { id?: string; role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean; timestamp?: number; blocks?: {content:string}[] }
+interface ChatMessage { id?: string; role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean; timestamp?: number }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
 const rendered = ref<Record<string,string>>({})
 async function renderMessageContent(msgId: string, text: string) {
-  if (!text) { rendered.value[msgId] = ''; return }
+  if (!text) return
   const safeText = text.replace(/~/g, '～')
   rendered.value[msgId] = await renderMarkdown(safeText)
 }
@@ -244,31 +245,16 @@ async function handleSendMessage() {
   const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
     thinkingProgress.value = ev.payload.msg; scrollToBottomIfNear()
   })
-  const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], blocks: [], timestamp: Date.now() }
+  const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
   session.messages.push(aiMsg); const aiIdx = session.messages.length - 1
-  // ★ 冷启动障眼法：立即显示拟人化短句
-  const thinkingPhrases = ['让我想想啊……', '嗯……我回忆一下。', '别急，我翻一下脑子里的记录。', '稍等，我查查看……', '嗯，我想想……']
-  aiMsg.content = thinkingPhrases[Math.floor(Math.random() * thinkingPhrases.length)]
+  // ★ 检索阶段固定文案：随机选一条，LLM 调用工具期间不再切换
+  const presetText = pickRetrievalPhrase()
+  aiMsg.content = presetText
+  renderMessageContent(aiMsg.id || '', aiMsg.content)
   sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
   let unlistenStream: (() => void) | null = null
   let unlistenThought: (() => void) | null = null
-  let unlistenStatus: (() => void) | null = null
   try {
-    // ★ 监听 status 事件，动态演变拟人化文案
-    const toolHints: Record<string, string> = {
-      ext_tool_search: '我正在检索相关资料',
-      ext_tool_object: '我在翻看记忆中的对象',
-      ext_tool_traverse: '我在继续往后翻看',
-      ext_tool_batch_search: '我在同时查几个方向',
-    }
-    unlistenStatus = await listen<{stage:string; tool?:string; target?:string}>('agent:status', (ev) => {
-      const { stage, tool } = ev.payload
-      if (stage === 'tool_start' && tool) {
-        const hint = toolHints[tool] || `正在调用 ${tool}`
-        session.messages[aiIdx].content = hint
-        scrollToBottomIfNear()
-      }
-    })
     // ★ 流式监听：实时显示 LLM 最终答案（逐 token 渲染）
     const isRealStreaming = ref(false)
     let streamedContent = ''
@@ -278,15 +264,14 @@ async function handleSendMessage() {
     const unlistenStartAnswer = await listen('agent:start-answer', () => {
       console.log('[FE] start-answer received')
       isRealStreaming.value = true
-      const msg = session.messages[aiIdx]
-      if (msg.isThinking) msg.isThinking = false
       streamedContent = ''
+      scrollToBottomIfNear()
     })
     unlistenStream = await listen<{token:string}>('agent:token', (ev) => {
+      if (!isRealStreaming.value) return // start-answer 前的 token 仅作为检索/思考，不显示为答案
       if (!streamedContent) console.log('[FE] first token received:', JSON.stringify(ev.payload.token))
       streamedContent += ev.payload.token
       const msg = session.messages[aiIdx]
-      if (msg.isThinking) msg.isThinking = false
       msg.content = streamedContent.replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
       const now = Date.now()
       if (now - lastRenderTime > RENDER_THROTTLE_MS) {
@@ -296,16 +281,16 @@ async function handleSendMessage() {
       scrollToBottomIfNear()
     })
     unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { thinkingProgress.value = ev.payload.text; scrollToBottomIfNear() })
-    // ★ 工具轮结束：本轮已流式输出的 interim 内容归置到思考区，恢复思考气泡
+    // ★ 工具轮结束：恢复预设文案，保持呼吸气泡
     const unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
       console.log('[FE] round-thought received')
-      const msg = session.messages[aiIdx]
-      const thoughtText = (streamedContent || ev.payload.text || '').trim()
-      if (thoughtText) { if (!msg.blocks) msg.blocks = []; msg.blocks.push({ content: thoughtText }) }
       streamedContent = ''
       thinkingProgress.value = ''
-      msg.content = ''
+      const msg = session.messages[aiIdx]
       msg.isThinking = true
+      msg.content = presetText
+      renderMessageContent(msg.id || '', presetText)
+      isRealStreaming.value = false
       scrollToBottomIfNear()
     })
 
@@ -341,7 +326,7 @@ async function handleSendMessage() {
         msg.workspace = result.workspace || '';
       } else { msg.error = result.answer || result.error || '失败' }
       isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-      try { unlistenDone(); unlistenStream(); unlistenStartAnswer(); unlistenThought(); unlistenProgress(); unlistenStatus?.(); unlistenRoundThought() } catch (e) { console.error('[KB] unlisten failed:', e) }
+      try { unlistenDone(); unlistenStream(); unlistenStartAnswer(); unlistenThought(); unlistenProgress(); unlistenRoundThought() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
 
     // ★ 监听 agent:error 事件
@@ -349,7 +334,7 @@ async function handleSendMessage() {
       const msg = session.messages[aiIdx]; msg.isThinking = false
       msg.error = ev.payload.error || 'AI 服务异常'
       isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-      try { unlistenError(); unlistenDone(); unlistenStream(); unlistenStartAnswer(); unlistenThought(); unlistenProgress(); unlistenStatus?.(); unlistenRoundThought() } catch {}
+      try { unlistenError(); unlistenDone(); unlistenStream(); unlistenStartAnswer(); unlistenThought(); unlistenProgress(); unlistenRoundThought() } catch {}
     })
 
     // ★ 调用命令（立即返回，不等待结果）
@@ -510,33 +495,22 @@ onUnmounted(() => {
             <div v-else-if="msg.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-2">
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
             </div>
-            <div v-if="msg.isThinking && (!msg.blocks || msg.blocks.length === 0)" class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm">
-              <div class="flex items-center gap-2">
-                <div class="flex gap-1">
-                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:0ms"/>
-                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:150ms"/>
-                  <span class="w-1.5 h-1.5 bg-[#2563eb] rounded-full animate-bounce" style="animation-delay:300ms"/>
-                </div>
-                <span class="text-[12px] text-[#3a3a3c] transition-colors duration-500">{{ thinkingProgress || msg.content || '思考中' }}</span>
+            <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
+              <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-0.5 shadow-sm" :class="{ 'thinking-bubble': msg.isThinking }">
+                <div v-if="isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || msg.content || '思考中'"></div>
+                <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || msg.content || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || msg.content || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || msg.content || '思考中'"></div>
               </div>
-            </div>
-            <div v-if="msg.isThinking && msg.blocks && msg.blocks.length > 0" class="space-y-1.5 mb-2">
-              <div v-for="(block, bi) in msg.blocks" :key="bi" class="text-[12px] text-surface-600 bg-surface-50 px-3 py-1.5 rounded-lg border-l-2 border-surface-200 italic">{{ block.content }}</div>
-            </div>
-            <div v-if="!msg.isThinking && msg.content && msg.role !== 'user'" :class="'bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm'">
-                <div v-if="isTypewriting(msg)" class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '')"></div>
-                <div v-else class="text-[13px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: renderedContent(msg.id || '') ? 1 : 0, transform: renderedContent(msg.id || '') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '')"></div>
-                <div class="flex items-center gap-1 mt-3 pt-3 border-t border-[#e5e5ea]">
-                  <button @click="copyAnswer(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3.5 h-3.5" /></button>
-                  <button @click="copyFullTrace(idx)" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制完整对话">
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                  </button>
-                  <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-7 h-7 flex items-center justify-center rounded-lg transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" title="查看 Workspace">
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 17V7m0 10a2 2 0 01-2-2V9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2m-6 0h6"/></svg>
-                  </button>
-                  <button @click="openNotebookPicker(msg.id || '')" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="保存到笔记"><AppIcon name="file-plus" class="w-3.5 h-3.5" /></button>
-                </div>
-                <div v-if="showWorkspaceIdx === idx && msg.workspace" class="mt-2 p-3 bg-[#f8f9fa] border border-[#e5e5ea] rounded-xl text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-[#3a3a3c] max-h-[300px] overflow-y-auto">{{ msg.workspace }}</div>
+              <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
+                <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3 h-3" /></button>
+                <button @click="copyFullTrace(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制完整对话">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                </button>
+                <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" title="查看 Workspace">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 17V7m0 10a2 2 0 01-2-2V9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2m-6 0h6"/></svg>
+                </button>
+                <button @click="openNotebookPicker(msg.id || '')" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="保存到笔记"><AppIcon name="file-plus" class="w-3 h-3" /></button>
+              </div>
+              <div v-if="showWorkspaceIdx === idx && msg.workspace" class="mt-1 p-3 bg-[#f8f9fa] border border-[#e5e5ea] rounded-xl text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-[#3a3a3c] max-h-[300px] overflow-y-auto">{{ msg.workspace }}</div>
             </div>
           </div>
         </div>
@@ -588,9 +562,27 @@ onUnmounted(() => {
 <style scoped>
 @keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
 @keyframes recall { 0%,100%{opacity:0.2;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
+@keyframes thinking-shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
 .animate-bounce { animation: bounce 1.2s infinite ease-in-out; }
 .animate-fade-in { animation: fadeIn 0.3s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.thinking-bubble {
+  position: relative;
+  overflow: hidden;
+}
+.thinking-bubble::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 30%, rgba(37,99,235,0.08) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: thinking-shimmer 1.8s ease-in-out infinite;
+  pointer-events: none;
+  border-radius: inherit;
+}
 .modal-fade-enter-active,.modal-fade-leave-active { transition: opacity 0.2s ease; }
 .modal-fade-enter-from,.modal-fade-leave-to { opacity: 0; }
 .sidebar-slide-enter-active,.sidebar-slide-leave-active { transition: width 0.2s ease, opacity 0.2s ease; overflow: hidden; }
@@ -601,7 +593,7 @@ onUnmounted(() => {
 </style>
 
 <style>
-.markdown-body { font-size: 13px; color: #3a3a3c; line-height: 1.75; }
+.markdown-body { font-size: 12px; color: #3a3a3c; line-height: 1.75; }
 .markdown-body h1 { font-size: 1.1rem; font-weight: 700; margin: 1rem 0 0.5rem; color: #1d1d1f; }
 .markdown-body h2 { font-size: 1rem; font-weight: 600; margin: 0.9rem 0 0.4rem; color: #1d1d1f; }
 .markdown-body h3 { font-size: 0.9rem; font-weight: 600; margin: 0.8rem 0 0.3rem; color: #3a3a3c; }

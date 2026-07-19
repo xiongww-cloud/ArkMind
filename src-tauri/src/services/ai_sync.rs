@@ -57,7 +57,7 @@ async fn import_sync_document(
     let blocks = parse_blocks(text);
     let sections = build_sections(blocks);
     let parents = if sections.is_empty() || (sections.len() == 1 && sections[0].heading.is_none() && sections[0].blocks.is_empty()) {
-        eprintln!("[导入文档] ⚠ parse/build_sections 无结果，回退到 split_into_parents");
+        log::info!("[导入文档] ⚠ parse/build_sections 无结果，回退到 split_into_parents");
         split_into_parents(text, MAX_PARENT)
     } else {
         accumulate_adaptive_parents(sections)
@@ -78,7 +78,7 @@ async fn import_sync_document(
         let unchanged = existing_hashes.len() == new_hashes.len()
             && existing_hashes.iter().zip(new_hashes.iter()).all(|(a, b)| a == b);
         if unchanged {
-            eprintln!("[导入文档] 内容未改变，跳过: source_data_id={}", sdid);
+            log::info!("[导入文档] 内容未改变，跳过: source_data_id={}", sdid);
             return Ok(0);  // 内容未变，0 个块
         }
     }
@@ -101,7 +101,7 @@ async fn import_sync_document(
 
         // 删除旧块
         let old_count = database::run("DELETE FROM knowledge_chunks WHERE source_data_id=?", &[json!(sdid)]);
-        eprintln!("[导入文档] 已删除旧块: source_data_id={}, deleted={:?}", sdid, old_count.map(|r| r.changes));
+        log::info!("[导入文档] 已删除旧块: source_data_id={}, deleted={:?}", sdid, old_count.map(|r| r.changes));
 
         // 清理 vector_cache 中的孤儿
         if !old_rowids.is_empty() {
@@ -154,13 +154,13 @@ async fn import_sync_document(
         let parent_id = uuid::Uuid::new_v4().to_string();
 
         // Parent record in knowledge_chunks
-        eprintln!("[导入文档] 插入父块[{}/{}]: chunk_id={}, 内容长度={}", ei+1, parent_entries_len, &parent_id[..8], parent_text.len());
+        log::info!("[导入文档] 插入父块[{}/{}]: chunk_id={}, 内容长度={}", ei+1, parent_entries_len, &parent_id[..8], parent_text.len());
         let pr = database::run(
             "INSERT INTO knowledge_chunks(chunk_id,chunk_type,parent_id,source_data_id,source_type,source_id,content,doc_title,chunk_index,content_hash,created_at) VALUES(?1,'parent',NULL,?2,?3,?4,?5,?6,?7,?8,datetime('now','localtime'))",
             &[json!(&parent_id), json!(source_data_id), json!(source_type), json!(source_id), json!(parent_text), json!(doc_title), json!((ei) as i64), json!(&compute_content_hash(parent_text))],
         );
         if let Err(e) = &pr {
-            eprintln!("[导入文档] 父块插入失败: {}", e);
+            log::info!("[导入文档] 父块插入失败: {}", e);
             return Err(format!("parent insert: {e}"));
         }
 
@@ -172,11 +172,11 @@ async fn import_sync_document(
             let child_id = uuid::Uuid::new_v4().to_string();
             let child_text = if prefix.is_empty() { parent_text.clone() } else { format!("{prefix}\n{parent_text}") };
             let hash = compute_content_hash(&child_text);
-            eprintln!("[导入文档] 插入子块: parent_id={}, source_data_id={:?}", &parent_id[..parent_id.len().min(8)], source_data_id);
+            log::info!("[导入文档] 插入子块: parent_id={}, source_data_id={:?}", &parent_id[..parent_id.len().min(8)], source_data_id);
             if database::run(
                 "INSERT INTO knowledge_chunks(chunk_id,chunk_type,parent_id,source_data_id,source_type,source_id,content,doc_title,chunk_index,content_hash,base_weight,created_at) VALUES(?1,'child',?2,?3,?4,?5,?6,?7,0,?8,5.0,datetime('now','localtime'))",
                 &[json!(&child_id), json!(&parent_id), json!(source_data_id), json!(source_type), json!(source_id), json!(&child_text), json!(doc_title), json!(&hash)],
-            ).is_ok() { total += 1; } else { eprintln!("[导入文档] 子块插入失败"); }
+            ).is_ok() { total += 1; } else { log::info!("[导入文档] 子块插入失败"); }
         } else {
             let focused = split_text_by_lines(parent_text, FOCUSED_TARGET);
             let focused: Vec<String> = if focused.is_empty() { vec![parent_text.clone()] } else { focused };
@@ -279,7 +279,7 @@ pub async fn materialize_and_store(
     
     if let Some(existing_hash) = existing.and_then(|r| r["content_hash"].as_str().map(String::from)) {
         if existing_hash == content_hash {
-            eprintln!("[物化] 内容未变，跳过: {}:{}", source_type, source_id);
+            log::info!("[物化] 内容未变，跳过: {}:{}", source_type, source_id);
             return Ok(0);
         }
     }

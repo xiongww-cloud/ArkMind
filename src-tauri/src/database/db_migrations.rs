@@ -32,7 +32,7 @@ pub fn check_license_premium() -> bool {
     }) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[数据库] license 检查失败: {}", e);
+            log::info!("[数据库] license 检查失败: {}", e);
             false
         }
     }
@@ -41,7 +41,7 @@ pub fn check_license_premium() -> bool {
 pub(crate) fn migrate_files_to_file_assets(conn: &Connection) {
     let has_old = conn.prepare("SELECT global_name FROM file_assets LIMIT 0").is_ok();
     if has_old {
-        println!("[数据库] 检测到旧版 file_assets，正在重建...");
+        log::info!("[数据库] 检测到旧版 file_assets，正在重建...");
         let _ = conn.execute_batch("
             DELETE FROM file_project_mapping WHERE file_id IN (SELECT id FROM file_assets);
             DELETE FROM file_product_mapping WHERE file_id IN (SELECT id FROM file_assets);
@@ -93,7 +93,7 @@ pub(crate) fn migrate_files_to_file_assets(conn: &Connection) {
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS global_search_fts USING fts5(source_type UNINDEXED, source_id UNINDEXED, title, content, content='source_data', content_rowid='rowid');
         ");
-        println!("[数据库] 文件相关表已重建为新 schema");
+        log::info!("[数据库] 文件相关表已重建为新 schema");
     }
 }
 
@@ -107,7 +107,7 @@ pub(crate) fn migrate_file_relations_add_file_id(conn: &Connection) {
     // 从 file_versions 反填 file_relations.file_id（旧版通过 object_id 关联）
     let need: i64 = conn.query_row("SELECT COUNT(*) FROM file_relations WHERE file_id IS NULL AND object_id IS NOT NULL",[],|r|r.get(0)).unwrap_or(0);
     if need > 0 {
-        println!("[迁移] 回填 {} 条 file_relations.file_id", need);
+        log::info!("[迁移] 回填 {} 条 file_relations.file_id", need);
         conn.execute("UPDATE file_relations SET file_id=(SELECT fv.file_id FROM file_versions fv WHERE fv.object_id=file_relations.object_id LIMIT 1) WHERE file_id IS NULL AND object_id IS NOT NULL",[]).ok();
     }
     // 清理旧表
@@ -137,7 +137,7 @@ pub(crate) fn dedupe_file_assets_hash(conn: &Connection) {
         s.query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(|r| r.ok()).collect()
     };
     if dupes.is_empty() { return; }
-    println!("[数据库] 发现 {} 个重复 content_hash，开始归并...", dupes.len());
+    log::info!("[数据库] 发现 {} 个重复 content_hash，开始归并...", dupes.len());
 
     for hash in &dupes {
         let rows: Vec<(String,)> = {
@@ -155,7 +155,7 @@ pub(crate) fn dedupe_file_assets_hash(conn: &Connection) {
             conn.execute("DELETE FROM file_assets WHERE id=?1", rusqlite::params![dup_id]).ok();
         }
     }
-    println!("[数据库] content_hash 去重完成");
+    log::info!("[数据库] content_hash 去重完成");
 }
 
 pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -212,7 +212,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     ).unwrap_or(0) > 0;
     if has_company_col {
         conn.execute_batch("ALTER TABLE partners RENAME COLUMN company TO address").ok();
-        println!("[数据库] partners.company → address 迁移完成");
+        log::info!("[数据库] partners.company → address 迁移完成");
     }
 
     // ★ 迁移渠道/厂商数据到映射表（从 direct project_id 到 many-to-many mapping）
@@ -298,7 +298,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
             DROP TABLE IF EXISTS partner_contacts;
             ALTER TABLE partner_contacts_backup RENAME TO partner_contacts;
         ");
-        println!("[数据库] partner_contacts 表已重建（移除 partner_id 列）");
+        log::info!("[数据库] partner_contacts 表已重建（移除 partner_id 列）");
     }
 
     // 确保 partner_contact_mapping 表存在
@@ -318,7 +318,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     ).unwrap_or(0) > 0;
     if has_old_col {
         conn.execute_batch("ALTER TABLE library_file_locations RENAME COLUMN object_id TO file_id").ok();
-        println!("[数据库] library_file_locations.object_id → file_id 迁移完成");
+        log::info!("[数据库] library_file_locations.object_id → file_id 迁移完成");
     }
 
     // ★ 修复异常 base_weight：超过上限的 child chunk 重置为 5.0，NULL 或 0 重置为 1.0
@@ -362,9 +362,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
             CREATE INDEX IF NOT EXISTS idx_kc_parent ON knowledge_chunks(parent_id);
             CREATE INDEX IF NOT EXISTS idx_kc_source ON knowledge_chunks(source_data_id);
         ").ok();
-        println!("[数据库] knowledge_chunks 已重构: chunk_type + source_data_id");
+        log::info!("[数据库] knowledge_chunks 已重构: chunk_type + source_data_id");
     } else {
-        println!("[数据库] knowledge_chunks 结构已正确 (chunk_type 存在)");
+        log::info!("[数据库] knowledge_chunks 结构已正确 (chunk_type 存在)");
         // 确保新索引存在（兼容新库直接走 create_schema 的场景）
         conn.execute_batch("
             CREATE INDEX IF NOT EXISTS idx_kc_type ON knowledge_chunks(chunk_type);
@@ -375,7 +375,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     // ★ 重置失败的同步任务（已完成的不动）
     let _ = conn.execute("UPDATE ai_sync_queue SET is_embedded=0,retry_count=0,last_error='' WHERE is_embedded=-1", []);
     if conn.changes() > 0 {
-        println!("[数据库] 已重置 {} 个同步任务", conn.changes());
+        log::info!("[数据库] 已重置 {} 个同步任务", conn.changes());
     }
 
     // ★ Migrate todos.project_id → todo_project_mapping, then drop redundant columns
@@ -387,7 +387,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         .prepare("SELECT doc_title FROM kk_chunks_fts LIMIT 0")
         .is_ok();
     if !has_fts_doc_title {
-        println!("[数据库] kk_chunks_fts 缺少 doc_title 列，正在重建...");
+        log::info!("[数据库] kk_chunks_fts 缺少 doc_title 列，正在重建...");
         let _ = conn.execute_batch(
             "DROP TRIGGER IF EXISTS kk_chunks_fts_insert;
              DROP TRIGGER IF EXISTS kk_chunks_fts_delete;
@@ -420,7 +420,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
                    WHERE new.chunk_type = 'child';
              END;"
         );
-        println!("[数据库] kk_chunks_fts 重建完成（含 doc_title）");
+        log::info!("[数据库] kk_chunks_fts 重建完成（含 doc_title）");
     }
 
     // ── Products: deduplicate by name, then add unique index ──
@@ -436,10 +436,10 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
             [],
         ).unwrap_or(0);
         if deduped > 0 {
-            println!("[数据库] 产品去重: 删除了 {} 条同名记录", deduped);
+            log::info!("[数据库] 产品去重: 删除了 {} 条同名记录", deduped);
         }
         conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name ON products(name);")?;
-        println!("[数据库] 产品名称唯一索引已创建");
+        log::info!("[数据库] 产品名称唯一索引已创建");
     }
 
     // ★ 清理存量孤儿 chunk
@@ -477,7 +477,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         let _ = conn.execute("ALTER TABLE projects DROP COLUMN customer", []);
         let _ = conn.execute("ALTER TABLE projects DROP COLUMN customer_contact", []);
         let _ = conn.execute("ALTER TABLE projects DROP COLUMN customer_phone", []);
-        println!("[数据库] projects 客户字段已迁移到 partners + project_customer_mapping");
+        log::info!("[数据库] projects 客户字段已迁移到 partners + project_customer_mapping");
     }
 
     // ★ 迁移 file_assets 表：移除 parse_status 字段
@@ -486,14 +486,14 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         [], |r| r.get::<_,i64>(0),
     ).unwrap_or(0) > 0;
     if has_parse_status {
-        println!("[数据库] 检测到 file_assets.parse_status 字段，正在重建表...");
+        log::info!("[数据库] 检测到 file_assets.parse_status 字段，正在重建表...");
         let _ = conn.execute_batch("
             CREATE TABLE file_assets_new AS SELECT id, file_ext, file_size, content_hash, original_name, created_at, updated_at FROM file_assets;
             DROP TABLE file_assets;
             ALTER TABLE file_assets_new RENAME TO file_assets;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_file_assets_content_hash ON file_assets(content_hash);
         ");
-        println!("[数据库] file_assets 表已重建（移除 parse_status 字段）");
+        log::info!("[数据库] file_assets 表已重建（移除 parse_status 字段）");
     }
 
     // ★ 删除 cleanup_queue 表（功能已合并到 knowledge_push_queue）
@@ -503,7 +503,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     ).unwrap_or(0) > 0;
     if has_cleanup_queue {
         let _ = conn.execute_batch("DROP TABLE IF EXISTS cleanup_queue;");
-        println!("[数据库] cleanup_queue 表已删除");
+        log::info!("[数据库] cleanup_queue 表已删除");
     }
 
     // ★ 创建 file_parse_cache 表（PDF断点续传临时缓存）
@@ -528,8 +528,11 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
             ALTER TABLE knowledge_push_queue ADD COLUMN progress_page INTEGER DEFAULT 0;
             ALTER TABLE knowledge_push_queue ADD COLUMN progress_total INTEGER DEFAULT 0;
         ");
-        println!("[数据库] knowledge_push_queue 已添加进度字段");
+        log::info!("[数据库] knowledge_push_queue 已添加进度字段");
     }
+
+    // ★ 迁移 MEMORY / POLICY 到独立表
+    migrate_memory_policy_to_own_tables(conn);
 
     Ok(())
 }
@@ -554,7 +557,7 @@ fn migrate_todo_project_mapping(conn: &Connection) {
         .map(|n| n as i64)
         .unwrap_or(0);
     if moved > 0 {
-        println!("[数据库] 待办→项目映射迁移: {} 条记录", moved);
+        log::info!("[数据库] 待办→项目映射迁移: {} 条记录", moved);
     }
 
     // Attempt to drop legacy columns (SQLite 3.35+, ignore errors on older versions)
@@ -575,23 +578,23 @@ pub fn purge_stale_queue_entries() {
             "DELETE FROM ai_sync_queue WHERE source_table='todos' AND source_id NOT IN (SELECT id FROM todos)",
         ] {
             if let Err(inner) = conn.execute(sql, []) {
-                eprintln!("[数据库] 清理过期队列出错: {}", inner);
+                log::info!("[数据库] 清理过期队列出错: {}", inner);
             }
         }
         // ★ 清理超过 7 天的已完成待办及其管线数据
         let cutoff = "datetime('now', '-7 days', 'localtime')";
         if let Ok(n) = conn.execute(
             &format!("DELETE FROM ai_sync_queue WHERE source_table='todos' AND source_id IN (SELECT id FROM todos WHERE done=1 AND updated_at < {cutoff})"), []
-        ) { if n > 0 { println!("[数据库] 清理已完成待办队列: {} 条", n); } }
+        ) { if n > 0 { log::info!("[数据库] 清理已完成待办队列: {} 条", n); } }
         if let Ok(n) = conn.execute(
             &format!("DELETE FROM source_data WHERE source_type='TODO' AND source_id IN (SELECT id FROM todos WHERE done=1 AND updated_at < {cutoff})"), []
-        ) { if n > 0 { println!("[数据库] 清理已完成待办 source_data: {} 条", n); } }
+        ) { if n > 0 { log::info!("[数据库] 清理已完成待办 source_data: {} 条", n); } }
         if let Ok(n) = conn.execute(
             &format!("DELETE FROM todos WHERE done=1 AND updated_at < {cutoff}"), []
-        ) { if n > 0 { println!("[数据库] 清理超过 7 天的已完成待办: {} 条", n); } }
+        ) { if n > 0 { log::info!("[数据库] 清理超过 7 天的已完成待办: {} 条", n); } }
         Ok(())
     }) {
-        eprintln!("[数据库] 清理过期队列失败: {}", e);
+        log::info!("[数据库] 清理过期队列失败: {}", e);
     }
 }
 
@@ -604,16 +607,16 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
         [], |r| r.get(0),
     ).unwrap_or_default();
     
-    eprintln!("[迁移] source_data.id 类型: {}", id_type);
+    log::info!("[迁移] source_data.id 类型: {}", id_type);
     
     if id_type == "TEXT" {
-        eprintln!("[迁移] 已迁移，跳过");
+        log::info!("[迁移] 已迁移，跳过");
         return Ok(()); // 已迁移
     }
     
-    eprintln!("[迁移] 开始迁移 source_data.id 为 TEXT...");
+    log::info!("[迁移] 开始迁移 source_data.id 为 TEXT...");
     
-    eprintln!("[迁移] 创建 source_data_new 表...");
+    log::info!("[迁移] 创建 source_data_new 表...");
     // 1. 创建新表
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS source_data_new (
@@ -628,7 +631,7 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
         );
     ")?;
     
-    eprintln!("[迁移] 复制数据到 source_data_new...");
+    log::info!("[迁移] 复制数据到 source_data_new...");
     // 2. 迁移数据（id = source_id）
     conn.execute_batch("
         INSERT OR REPLACE INTO source_data_new (id, source_type, source_id, title, content, created_at, updated_at)
@@ -636,7 +639,7 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
         FROM source_data;
     ")?;
     
-    eprintln!("[迁移] 重命名表...");
+    log::info!("[迁移] 重命名表...");
     // 3. 备份旧表，重命名新表
     conn.execute_batch("
         DROP TABLE IF EXISTS source_data_old;
@@ -644,7 +647,7 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
         ALTER TABLE source_data_new RENAME TO source_data;
     ")?;
     
-    eprintln!("[迁移] 重建 FTS5 索引...");
+    log::info!("[迁移] 重建 FTS5 索引...");
     // 4. 重建 FTS5 索引
     conn.execute_batch("
         DROP TABLE IF EXISTS global_search_fts;
@@ -656,17 +659,17 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
         INSERT INTO global_search_fts(global_search_fts) VALUES('rebuild');
     ")?;
     
-    eprintln!("[迁移] 检查 knowledge_chunks 是否需要更新...");
+    log::info!("[迁移] 检查 knowledge_chunks 是否需要更新...");
     // 5. 迁移 knowledge_chunks.source_data_id 为 TEXT
     let has_sd_id_text: bool = conn.query_row(
         "SELECT COUNT(*) FROM pragma_table_info('knowledge_chunks') WHERE name='source_type'",
         [], |r| r.get::<_, i64>(0),
     ).unwrap_or(0) > 0;
     
-    eprintln!("[迁移] knowledge_chunks 已有 source_type 字段: {}", has_sd_id_text);
+    log::info!("[迁移] knowledge_chunks 已有 source_type 字段: {}", has_sd_id_text);
     
     if !has_sd_id_text {
-        eprintln!("[迁移] 添加 source_type 和 source_id 字段...");
+        log::info!("[迁移] 添加 source_type 和 source_id 字段...");
         // 添加 source_type 和 source_id 字段
         conn.execute_batch("ALTER TABLE knowledge_chunks ADD COLUMN source_type TEXT DEFAULT '';")?;
         conn.execute_batch("ALTER TABLE knowledge_chunks ADD COLUMN source_id TEXT DEFAULT '';")?;
@@ -677,11 +680,11 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
             [], |r| r.get::<_, i64>(0),
         ).unwrap_or(0) > 0;
         
-        eprintln!("[迁移] source_data_old 存在: {}", has_old_table);
+        log::info!("[迁移] source_data_old 存在: {}", has_old_table);
         
         // 从 source_data 填充数据
         let source_table = if has_old_table { "source_data_old" } else { "source_data" };
-        eprintln!("[迁移] 从 {} 填充 knowledge_chunks...", source_table);
+        log::info!("[迁移] 从 {} 填充 knowledge_chunks...", source_table);
         conn.execute_batch(&format!(
             "UPDATE knowledge_chunks SET 
                 source_type = (SELECT source_type FROM {} WHERE id = knowledge_chunks.source_data_id),
@@ -689,14 +692,14 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
             WHERE source_data_id IS NOT NULL;",
             source_table, source_table
         ))?;
-        eprintln!("[迁移] knowledge_chunks 更新完成");
+        log::info!("[迁移] knowledge_chunks 更新完成");
     }
     
-    eprintln!("[迁移] 清理 source_data_old...");
+    log::info!("[迁移] 清理 source_data_old...");
     // 6. 清理旧表
     conn.execute_batch("DROP TABLE IF EXISTS source_data_old;")?;
     
-    eprintln!("[迁移] 迁移完成");
+    log::info!("[迁移] 迁移完成");
     
     // 7. 重建索引
     conn.execute_batch("
@@ -704,7 +707,7 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_sd_type_id ON source_data(source_type, source_id);
     ")?;
     
-    println!("[数据库] source_data.id 迁移完成");
+    log::info!("[数据库] source_data.id 迁移完成");
     Ok(())
 }
 
@@ -724,11 +727,93 @@ pub(crate) fn migrate_user_policies_to_source_data(conn: &Connection) {
         .unwrap_or(0);
     if count == 0 { return; }
 
-    eprintln!("[迁移] 迁移 {} 条 user_policies → source_data(POLICY)...", count);
+    log::info!("[迁移] 迁移 {} 条 user_policies → source_data(POLICY)...", count);
     let _ = conn.execute_batch(
         "INSERT OR IGNORE INTO source_data(id,source_type,source_id,title,content,updated_at)
          SELECT 'policy-' || id, 'POLICY', 'policy-' || id, substr(content,1,50), content, created_at
          FROM user_policies WHERE is_active=1"
     );
-    println!("[数据库] user_policies 迁移完成");
+    log::info!("[数据库] user_policies 迁移完成");
+}
+
+/// 迁移 source_data 中的 MEMORY / POLICY 数据到独立表
+pub(crate) fn migrate_memory_policy_to_own_tables(conn: &Connection) {
+    // 检查 source_data 中是否还有 MEMORY / POLICY 数据
+    let has_memory: bool = conn
+        .prepare("SELECT 1 FROM source_data WHERE source_type='MEMORY' LIMIT 1")
+        .ok()
+        .and_then(|mut s| s.query_row([], |_| Ok(true)).ok())
+        .unwrap_or(false);
+    let has_policy: bool = conn
+        .prepare("SELECT 1 FROM source_data WHERE source_type='POLICY' LIMIT 1")
+        .ok()
+        .and_then(|mut s| s.query_row([], |_| Ok(true)).ok())
+        .unwrap_or(false);
+    if !has_memory && !has_policy { return; }
+
+    log::info!("[迁移] 迁移 MEMORY / POLICY 到独立表...");
+
+    // 1. 迁移 MEMORY
+    if has_memory {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_data WHERE source_type='MEMORY'", [], |r| r.get(0))
+            .unwrap_or(0);
+        log::info!("[迁移] 迁移 {} 条 MEMORY → memories", count);
+        let _ = conn.execute_batch(
+            "INSERT OR IGNORE INTO memories(id, content, created_at, updated_at)
+             SELECT source_id, content, created_at, updated_at
+             FROM source_data WHERE source_type='MEMORY'"
+        );
+        let _ = conn.execute("DELETE FROM source_data WHERE source_type='MEMORY'", []);
+    }
+
+    // 2. 迁移 POLICY
+    if has_policy {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_data WHERE source_type='POLICY'", [], |r| r.get(0))
+            .unwrap_or(0);
+        log::info!("[迁移] 迁移 {} 条 POLICY → policies", count);
+        let _ = conn.execute_batch(
+            "INSERT OR IGNORE INTO policies(id, content, created_at, updated_at)
+             SELECT source_id, content, created_at, updated_at
+             FROM source_data WHERE source_type='POLICY'"
+        );
+        let _ = conn.execute("DELETE FROM source_data WHERE source_type='POLICY'", []);
+    }
+
+    // 3. 创建 memories FTS5 虚拟表和触发器（如果不存在）
+    let fts_exists: bool = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'")
+        .ok()
+        .and_then(|mut s| s.query_row([], |_| Ok(true)).ok())
+        .unwrap_or(false);
+    if !fts_exists {
+        let _ = conn.execute_batch(
+            "CREATE VIRTUAL TABLE memories_fts USING fts5(
+                content,
+                content='memories', content_rowid='rowid'
+            )"
+        );
+        let _ = conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+             END;
+             CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+             END;
+             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+             END;"
+        );
+        log::info!("[迁移] memories_fts 虚拟表和触发器已创建");
+    }
+
+    // 5. 重建 FTS5 索引（外部内容 FTS5 表初始为空，需要 rebuild 才能索引已插入的数据）
+    let _ = conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')", []);
+
+    // 6. 清理旧 user_policies 表
+    let _ = conn.execute("DROP TABLE IF EXISTS user_policies", []);
+
+    log::info!("[迁移] MEMORY / POLICY 独立表迁移完成");
 }

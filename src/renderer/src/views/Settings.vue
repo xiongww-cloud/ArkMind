@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
@@ -8,6 +8,7 @@ import {
   fetchSettings, updateSettings, browseFolder,
   updateAiConfig, fetchAiConfig,
   migrateFiles, pipelineClearVectors,
+  getLogs, clearLogs,
 } from '@/api/db-client'
 
 // ─── Vite define: 替换为 Cargo.toml 中的版本号
@@ -781,13 +782,34 @@ async function openFolderPicker() {
   }
 }
 
+// ─── Logs ────────────────────────────────────────────────────────────────
+const logs = ref<any[]>([])
+const showLogModal = ref(false)
+let logTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshLogs() {
+  try {
+    logs.value = await getLogs()
+  } catch {}
+}
+
+function clearAllLogs() {
+  clearLogs().then(() => { logs.value = [] })
+}
+
 // ─── Init ────────────────────────────────────────────────────────────────
 onMounted(async () => {
   await Promise.all([
     loadStorageConfig(),
     loadLicense(),
     loadAiConfig(),
+    refreshLogs(),
   ])
+  logTimer = setInterval(refreshLogs, 3000)
+})
+
+onUnmounted(() => {
+  if (logTimer) clearInterval(logTimer)
 })
 </script>
 
@@ -993,6 +1015,19 @@ onMounted(async () => {
     </div>
 
 
+    <!-- 日志 -->
+    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-[13px] font-semibold text-surface-700">运行日志</h2>
+        <div class="flex gap-2">
+          <button @click="refreshLogs" class="px-3 py-1 text-[11px] text-surface-500 hover:text-surface-700 border border-surface-200 rounded-lg hover:bg-surface-50 transition-colors">刷新</button>
+          <button @click="clearAllLogs" class="px-3 py-1 text-[11px] text-red-500 hover:text-red-600 border border-surface-200 rounded-lg hover:bg-red-50 transition-colors">清空</button>
+          <button @click="showLogModal = true" class="px-3 py-1 text-[11px] text-white bg-brand-500 hover:bg-brand-600 rounded-lg transition-colors">查看全部</button>
+        </div>
+      </div>
+      <p class="text-[11px] text-surface-400">共 {{ logs.length }} 条日志 · 每 3 秒自动刷新</p>
+    </div>
+
     <!-- 关于 -->
     <div class="bg-white rounded-2xl border border-surface-200 shadow-sm p-5">
       <h2 class="text-[13px] font-semibold text-surface-700 mb-2">关于</h2>
@@ -1170,6 +1205,43 @@ onMounted(async () => {
               <p class="text-surface-500 mb-2">A: 确认向量模型配置正确，检查 API Key 是否有 embedding 权限。更换模型后需要清除知识库重新向量化。</p>
               <p class="font-medium text-surface-600 mb-0.5">Q: OCR 解析不准确？</p>
               <p class="text-surface-500 mb-2">A: 确认 OCR 模型配置正确。对于中文文档，推荐使用通义千问视觉模型。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- Log Modal -->
+  <Teleport to="body">
+    <Transition name="modal-fade">
+      <div v-if="showLogModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="showLogModal = false">
+        <div class="bg-white rounded-2xl shadow-2xl w-[720px] max-w-[90vw] h-[70vh] flex flex-col">
+          <div class="flex items-center justify-between px-5 py-3 border-b border-surface-200">
+            <h3 class="text-[13px] font-semibold text-surface-800">运行日志（{{ logs.length }} 条）</h3>
+            <button @click="showLogModal = false" class="text-surface-400 hover:text-surface-600 transition-colors">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-4 font-mono text-[10px] leading-relaxed">
+            <div v-if="logs.length === 0" class="text-surface-400 text-center py-8">暂无日志</div>
+            <div v-for="(log, i) in logs" :key="i" class="flex gap-2 mb-0.5 hover:bg-surface-50 px-1 rounded">
+              <span class="text-surface-400 whitespace-nowrap">{{ log.timestamp }}</span>
+              <span :class="{
+                'text-red-500': log.level === 'ERROR',
+                'text-amber-500': log.level === 'WARN',
+                'text-blue-500': log.level === 'INFO',
+                'text-surface-400': log.level === 'DEBUG' || log.level === 'TRACE'
+              }" class="whitespace-nowrap font-medium">{{ log.level }}</span>
+              <span class="text-surface-400 whitespace-nowrap">[{{ log.module }}]</span>
+              <span class="text-surface-700 break-all">{{ log.message }}</span>
+            </div>
+          </div>
+          <div class="flex items-center justify-between px-5 py-2 border-t border-surface-200">
+            <p class="text-[10px] text-surface-400">每 3 秒自动刷新 · 重启后清空</p>
+            <div class="flex gap-2">
+              <button @click="clearAllLogs" class="px-3 py-1 text-[11px] text-red-500 hover:text-red-600 border border-surface-200 rounded-lg hover:bg-red-50 transition-colors">清空</button>
+              <button @click="refreshLogs" class="px-3 py-1 text-[11px] text-surface-500 hover:text-surface-700 border border-surface-200 rounded-lg hover:bg-surface-50 transition-colors">刷新</button>
             </div>
           </div>
         </div>

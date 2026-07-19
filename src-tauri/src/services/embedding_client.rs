@@ -99,7 +99,7 @@ pub async fn embed_texts_with_caller(texts: &[String], caller: &str) -> Result<V
     } else { 
         format!("{}/v1/embeddings", base) 
     };
-    eprintln!("[嵌入] POST {} 模型={} 数量={} 调用方={}", url, config.model, texts.len(), caller);
+    log::info!("[嵌入] POST {} 模型={} 数量={} 调用方={}", url, config.model, texts.len(), caller);
     let mut req = SHARED_CLIENT.post(&url).json(&json!({"model": config.model, "input": texts}));
     if !config.api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", config.api_key)); }
     let resp = req.send().await.map_err(|e| format!("embed error: {}", e))?;

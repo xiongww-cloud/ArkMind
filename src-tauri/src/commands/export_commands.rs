@@ -250,7 +250,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
 
         // 2. 上传文件
         eprintln!("[备份] 步骤 2/4: 复制上传文件...");
-        let mut files_dir = tmp.join("files");
+        let files_dir = tmp.join("files");
         let files_path = crate::commands::file_commands::storage_base();
         let mut total_files = 0;
         
