@@ -535,6 +535,7 @@ onUnmounted(() => {
 
 /* ═══ Markdown ═══ */
 .fab-md :deep(p) { margin: 0.25em 0; font-size: 12px; color: #3a3a3c; line-height: 1.65; }
+.fab-md { font-size: 12px; }
 .fab-md :deep(h1), .fab-md :deep(h2), .fab-md :deep(h3), .fab-md :deep(h4) { color: #1d1d1f; margin: 0.4em 0 0.15em; font-weight: 600; }
 .fab-md :deep(h1) { font-size: 0.85rem; } .fab-md :deep(h2) { font-size: 0.8rem; } .fab-md :deep(h3) { font-size: 0.75rem; } .fab-md :deep(h4) { font-size: 0.7rem; }
 .fab-md :deep(ul), .fab-md :deep(ol) { padding-left: 1.2em; margin: 0.15em 0; }
