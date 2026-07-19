@@ -888,139 +888,15 @@ async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<ta
 pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
     if source_type.is_empty() || source_id.is_empty() { return String::new(); }
 
-    // ── 1. 来源标题（从 source_data.title）──
+    // ── 来源标题（从 source_data.title）──
     let title = database::get(
         "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
         &[json!(source_type), json!(source_id)],
     ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
 
-    let mut lines: Vec<String> = Vec::new();
     let type_label = match source_type { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", "CHANNEL" => "渠道", "VENDOR" => "供应商", "CONTACT" => "联系人", "CUSTOMER" => "客户", _ => source_type };
     let title_display = if title.is_empty() { source_id } else { title.as_str() };
-    lines.push(format!("来源：{} · {} | source_id: {}-{}", type_label, title_display, source_type.to_uppercase(), source_id));
-
-    // ── 2. 从 business_relations 查所有关联 ──
-    let rels = database::all(
-        "SELECT target_type, target_id, relation_type, metadata FROM business_relations WHERE source_type=?1 AND source_id=?2",
-        &[json!(source_type), json!(source_id)],
-    ).unwrap_or_default();
-    let reverse_rels = database::all(
-        "SELECT source_type as target_type, source_id as target_id, relation_type, metadata FROM business_relations WHERE target_type=?1 AND target_id=?2",
-        &[json!(source_type), json!(source_id)],
-    ).unwrap_or_default();
-
-    // 合并双向关联，去重
-    let mut all_rels: Vec<(String, String, String, String)> = rels.into_iter()
-        .chain(reverse_rels.into_iter())
-        .filter_map(|r| {
-            Some((r["target_type"].as_str()?.to_string(), r["target_id"].as_str()?.to_string(), r["relation_type"].as_str().unwrap_or("").to_string(), r["metadata"].as_str().unwrap_or("{}").to_string()))
-        }).collect();
-    all_rels.sort_by(|a,b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    all_rels.dedup_by(|a,b| a.0 == b.0 && a.1 == b.1);
-
-    if all_rels.is_empty() {
-        // 无关联时只返回标题行
-        return if lines.is_empty() { String::new() } else { lines.join("\n") };
-    }
-
-    // ── 3. 批量查名称 ──
-    let mut name_cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut targets_by_type: std::collections::HashMap<String, Vec<(String, String, String)>> = std::collections::HashMap::new();
-    for (tt, tid, rt, _meta) in &all_rels {
-        targets_by_type.entry(tt.clone()).or_default().push((tid.clone(), rt.clone(), _meta.clone()));
-    }
-    for (tt, targets) in &targets_by_type {
-        let ids: Vec<String> = targets.iter().map(|(id,_,_)| id.clone()).collect();
-        if ids.is_empty() { continue; }
-        let ph: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
-        let params: Vec<serde_json::Value> = ids.iter().map(|id| json!(id)).collect();
-        let type_upper = tt.to_uppercase();
-        // FILE 类型：从 source_data.title 取名称（已存原始文件名）
-        let rows = database::all(
-            &format!("SELECT source_id, title FROM source_data WHERE source_type=?1 AND source_id IN ({})", ph.join(",")),
-            &[json!(&type_upper)].iter().chain(params.iter()).cloned().collect::<Vec<_>>().as_slice(),
-        ).unwrap_or_default();
-        for r in &rows {
-            if let (Some(id), Some(t)) = (r["source_id"].as_str(), r["title"].as_str()) {
-                if !t.is_empty() { name_cache.insert(format!("{}-{}", type_upper, id), t.to_string()); }
-            }
-        }
-    }
-
-    // 关系类型中文映射（按 source_type / target_type / relation_type 方向感知）
-    let relation_label = |st: &str, tt: &str, rt: &str| -> String {
-        match (st, tt, rt) {
-            // PROJECT 作为主体的正向关系
-            ("PROJECT", "PRODUCT", "has_product") | ("PROJECT", "PRODUCT", "belongs_to") | ("PROJECT", "PRODUCT", "uses") => "项目使用".to_string(),
-            ("PROJECT", "FILE", "has_file") | ("PROJECT", "FILE", "belongs_to") => "项目文件".to_string(),
-            ("PROJECT", "CHANNEL", _) => "项目渠道".to_string(),
-            ("PROJECT", "VENDOR", _) => "项目厂商".to_string(),
-            ("PROJECT", "CONTACT", _) => "项目联系人".to_string(),
-            ("PROJECT", "CUSTOMER", _) => "项目客户".to_string(),
-            ("PROJECT", "NOTE", "authored_by") | ("PROJECT", "NOTE", "has_note") | ("PROJECT", "NOTE", "belongs_to") => "项目笔记".to_string(),
-            ("PROJECT", "TODO", "has_todo") | ("PROJECT", "TODO", "belongs_to") => "项目待办".to_string(),
-
-            // 反向关系（target 指向 source）
-            ("PRODUCT", "PROJECT", "has_product") | ("PRODUCT", "PROJECT", "belongs_to") | ("PRODUCT", "PROJECT", "uses") => "用于项目".to_string(),
-            ("FILE", "PROJECT", "has_file") | ("FILE", "PROJECT", "belongs_to") => "项目文件".to_string(),
-            ("CHANNEL", "PROJECT", _) => "渠道归属".to_string(),
-            ("VENDOR", "PROJECT", _) => "厂商归属".to_string(),
-            ("CONTACT", "PROJECT", _) => "项目联系人".to_string(),
-            ("CUSTOMER", "PROJECT", _) => "客户归属".to_string(),
-            ("NOTE", "PROJECT", "authored_by") | ("NOTE", "PROJECT", "has_note") => "项目笔记".to_string(),
-            ("TODO", "PROJECT", "has_todo") => "项目待办".to_string(),
-
-            // FILE 与 PRODUCT 之间
-            ("FILE", "PRODUCT", "has_file") => "产品资料".to_string(),
-            ("PRODUCT", "FILE", "has_file") => "产品资料".to_string(),
-
-            // 通用兜底
-            (_, _, "belongs_to") => "归属于".to_string(),
-            (_, _, "related") => "相关".to_string(),
-            (_, _, "authored_by") => "创建".to_string(),
-            _ => rt.to_string(),
-        }
-    };
-
-    // ── 4. 按类型格式化 ──
-    let format_targets = |tt: &str, targets: &[(String, String, String)]| -> Vec<String> {
-        targets.iter().filter_map(|(tid, rt, meta)| {
-            let name = name_cache.get(&format!("{}-{}", tt, tid)).map(|s| s.as_str()).unwrap_or("");
-            let type_label = match tt { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", "CHANNEL" => "渠道", "VENDOR" => "供应商", "CONTACT" => "联系人", "CUSTOMER" => "客户", _ => tt };
-            let display_name = format!("[{}] {}", type_label, if name.is_empty() { tid.as_str() } else { name });
-            let meta_val: Value = serde_json::from_str(meta).unwrap_or(Value::Null);
-            let custom = meta_val.get("custom_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
-            let mut extra = String::new();
-            if let Some(cn) = custom { extra.push_str(&format!(" — 作为「{}」", cn)); }
-            // 联系人类型：查询归属的合作伙伴
-            if tt == "CONTACT" {
-                if let Ok(Some(pm)) = database::get(
-                    "SELECT p.name, p.type FROM partner_contact_mapping pcm JOIN partners p ON pcm.partner_id = p.id WHERE pcm.contact_id=?1 LIMIT 1",
-                    &[json!(tid)],
-                ) {
-                    let pname = pm["name"].as_str().unwrap_or("");
-                    let ptype = pm["type"].as_str().unwrap_or("");
-                    let type_label = match ptype { "CHANNEL" => "渠道商", "VENDOR" => "供应商", "CUSTOMER" => "客户", _ => ptype };
-                    if !pname.is_empty() { extra.push_str(&format!(" — {}({})", pname, type_label)); }
-                }
-            }
-            Some(format!("· {} | 关系：{} | source_id: {}-{}", display_name, relation_label(source_type, tt, rt), tt, tid))
-        }).collect()
-    };
-
-    let mut rel_items: Vec<String> = Vec::new();
-    for (_, type_key) in &[("关联项目", "PROJECT"), ("关联产品", "PRODUCT"), ("关联笔记", "NOTE"), ("关联待办", "TODO"), ("关联文件", "FILE"), ("关联渠道", "CHANNEL"), ("关联供应商", "VENDOR"), ("关联联系人", "CONTACT"), ("关联客户", "CUSTOMER")] {
-        if type_key == &source_type { continue; } // 跳过自身类型
-        if let Some(targets) = targets_by_type.get(*type_key) {
-            rel_items.extend(format_targets(type_key, targets));
-        }
-    }
-    if !rel_items.is_empty() {
-        lines.push(format!("关联对象：\n{}", rel_items.join("\n")));
-    }
-
-    if lines.is_empty() { return String::new(); }
-    lines.join("\n")
+    format!("来源：{} · {} | source_id: {}-{}", type_label, title_display, source_type.to_uppercase(), source_id)
 }
 
 // ═══════════════════════════════════════════════════════════════════
