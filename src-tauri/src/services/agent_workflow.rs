@@ -838,6 +838,10 @@ async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app
         st.buf.push_str(&String::from_utf8_lossy(&bytes));
         st.buf = st.buf.replace("\r\n", "\n");
         while try_process_one(&mut st, &app_handle) {}
+        if AGENT_CANCEL.load(Ordering::Acquire) {
+            log::info!("SSE stream cancelled +{}ms tokens={}", t0.elapsed().as_millis(), st.count);
+            return Err("cancelled".into());
+        }
     }
     // 流结束后处理剩余数据
     while try_process_one(&mut st, &app_handle) {}
