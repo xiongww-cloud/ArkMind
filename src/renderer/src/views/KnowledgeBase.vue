@@ -296,7 +296,6 @@ async function handleSendMessage() {
     const unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
       console.log('[FE] round-thought received')
       streamedContent = ''
-      thinkingProgress.value = ''
       const msg = session.messages[aiIdx]
       msg.isThinking = true
       msg.content = presetText
