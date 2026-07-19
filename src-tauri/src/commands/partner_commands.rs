@@ -93,7 +93,7 @@ pub async fn partner_create(data: Value) -> Result<Value, String> {
     if !pid.is_empty() {
         crate::services::business_relations::upsert(&partner_type, &id, "PROJECT", &pid, "belongs_to", "{}");
     }
-    crate::services::source_doc_sync::sync_entity(&partner_type, &id);
+    crate::services::knowledge_lifecycle::notify_changed(&partner_type, &id);
     emit_for_project(&pid);
     Ok(json!({"success":true,"id":id,"name":name}))
 }
@@ -115,7 +115,7 @@ pub async fn partner_update(data: Value) -> Result<Value, String> {
     values.push(json!(id));
     database::run(&format!("UPDATE partners SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
     let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
-    crate::services::source_doc_sync::sync_entity(&ptype, id);
+    crate::services::knowledge_lifecycle::notify_changed(&ptype, id);
     emit_for_partner(id);
     Ok(json!({"success":true}))
 }
@@ -124,13 +124,14 @@ pub async fn partner_update(data: Value) -> Result<Value, String> {
 #[tauri::command]
 pub async fn partner_delete(partner_id: String) -> Result<Value, String> {
     let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
-    crate::services::source_doc_sync::delete_entity_source_doc(&ptype, &partner_id);
+    crate::services::knowledge_lifecycle::notify_deleted(&ptype, &partner_id);
     crate::services::business_relations::delete_by_source(&ptype, &partner_id);
     emit_for_partner(&partner_id);
     // 删除关联的联系人记录
     let contact_ids: Vec<String> = database::all("SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?", &[json!(&partner_id)]).unwrap_or_default()
         .into_iter().filter_map(|r| r["contact_id"].as_str().map(String::from)).collect();
     for cid in &contact_ids {
+        crate::services::knowledge_lifecycle::notify_deleted("CONTACT", cid);
         database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?", &[json!(cid)]).ok();
         database::run("DELETE FROM partner_contacts WHERE id=?", &[json!(cid)]).ok();
     }
@@ -153,7 +154,7 @@ pub async fn partner_link_project(partner_id: String, project_id: String, contac
             crate::services::business_relations::upsert("CONTACT", cid, "PROJECT", &project_id, "belongs_to", "{}");
         }
     }
-    crate::services::source_doc_sync::sync_entity(&ptype, &partner_id);
+    crate::services::knowledge_lifecycle::notify_changed(&ptype, &partner_id);
     Ok(json!({"success":true}))
 }
 
@@ -175,7 +176,7 @@ pub async fn partner_unlink_project(partner_id: String, project_id: String) -> R
             crate::services::business_relations::delete("CONTACT", &cid, "PROJECT", &project_id, "belongs_to");
         }
     }
-    crate::services::source_doc_sync::sync_entity(&ptype, &partner_id);
+    crate::services::knowledge_lifecycle::notify_changed(&ptype, &partner_id);
     Ok(json!({"success":true}))
 }
 
@@ -213,7 +214,7 @@ pub async fn partner_contact_create(data: Value) -> Result<Value, String> {
     let position = data["position"].as_str().unwrap_or("").to_string();
     let remark = data["remark"].as_str().unwrap_or("").to_string();
     database::run("INSERT INTO partner_contacts(id,name,phone,email,position,remark) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(id),json!(&name),json!(&phone),json!(&email),json!(&position),json!(&remark)]).map_err(|e|e.to_string())?;
-    crate::services::source_doc_sync::sync_entity("CONTACT", &id);
+    crate::services::knowledge_lifecycle::notify_changed("CONTACT", &id);
     if !partner_id.is_empty() {
         let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
         database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)", &[json!(&partner_id), json!(&id)]).map_err(|e|e.to_string())?;
@@ -237,7 +238,7 @@ pub async fn partner_contact_update(data: Value) -> Result<Value, String> {
     if fields.is_empty() { return Ok(json!({"success":true})); }
     values.push(json!(id));
     database::run(&format!("UPDATE partner_contacts SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
-    crate::services::source_doc_sync::sync_entity("CONTACT", id);
+    crate::services::knowledge_lifecycle::notify_changed("CONTACT", id);
     emit_for_partner_contact(id);
     Ok(json!({"success":true}))
 }
@@ -245,7 +246,7 @@ pub async fn partner_contact_update(data: Value) -> Result<Value, String> {
 /// 删除联系人
 #[tauri::command]
 pub async fn partner_contact_delete(contact_id: String) -> Result<Value, String> {
-    crate::services::source_doc_sync::delete_entity_source_doc("CONTACT", &contact_id);
+    crate::services::knowledge_lifecycle::notify_deleted("CONTACT", &contact_id);
     crate::services::business_relations::delete_by_source("CONTACT", &contact_id);
     emit_for_partner_contact(&contact_id);
     database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?",&[json!(&contact_id)]).ok();
@@ -257,7 +258,7 @@ pub async fn partner_contact_delete(contact_id: String) -> Result<Value, String>
 #[tauri::command]
 pub async fn contact_link_project(contact_id: String, project_id: String) -> Result<Value, String> {
     crate::services::business_relations::upsert("CONTACT", &contact_id, "PROJECT", &project_id, "belongs_to", "{}");
-    crate::services::source_doc_sync::sync_entity("CONTACT", &contact_id);
+    crate::services::knowledge_lifecycle::notify_changed("CONTACT", &contact_id);
     Ok(json!({"success":true}))
 }
 
@@ -265,7 +266,7 @@ pub async fn contact_link_project(contact_id: String, project_id: String) -> Res
 #[tauri::command]
 pub async fn contact_unlink_project(contact_id: String, project_id: String) -> Result<Value, String> {
     crate::services::business_relations::delete("CONTACT", &contact_id, "PROJECT", &project_id, "belongs_to");
-    crate::services::source_doc_sync::sync_entity("CONTACT", &contact_id);
+    crate::services::knowledge_lifecycle::notify_changed("CONTACT", &contact_id);
     Ok(json!({"success":true}))
 }
 

@@ -74,11 +74,20 @@ fn extract_note(note_id: &str) -> (String, String) {
         _ => return (String::new(), String::new()),
     };
     let title = row["title"].as_str().unwrap_or("").to_string();
+    let content = row["content"].as_str().unwrap_or("");
+    let markdown = if content.contains('<') {
+        crate::services::file_parser::html_to_markdown(content)
+    } else {
+        content.to_string()
+    };
     let mut parts = Vec::new();
-    if !title.is_empty() { parts.push(format!("title: {}", title)); }
-    if let Some(c) = row["content"].as_str().filter(|c| !c.is_empty()) { parts.push(format!("content: {}", c)); }
-    if let Some(nb) = row["nb_name"].as_str().filter(|n| !n.is_empty()) { parts.push(format!("notebook: {}", nb)); }
-    (title, parts.join("\n"))
+    if !title.is_empty() {
+        parts.push(format!("# {}", title));
+    }
+    if !markdown.trim().is_empty() {
+        parts.push(markdown);
+    }
+    (title, parts.join("\n\n"))
 }
 
 fn extract_product(product_id: &str) -> (String, String) {
@@ -91,12 +100,26 @@ fn extract_product(product_id: &str) -> (String, String) {
     };
     let title = row["name"].as_str().unwrap_or("").to_string();
     let mut parts = Vec::new();
-    parts.push(format!("name: {}", title));
-    if let Some(d) = row["description"].as_str().filter(|d| !d.is_empty()) { parts.push(format!("description: {}", d)); }
-    if let Some(s) = row["series_name"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("series_name: {}", s)); }
-    if let Some(p) = row["standard_specs"].as_str().filter(|p| !p.is_empty()) { parts.push(format!("standard_specs: {}", p)); }
-    if let Some(f) = row["full_specs"].as_str().filter(|f| !f.is_empty()) { parts.push(format!("full_specs: {}", f)); }
-    (title, parts.join("\n"))
+    if !title.is_empty() {
+        parts.push(format!("# {}", title));
+    }
+    if let Some(d) = row["description"].as_str().filter(|d| !d.is_empty()) {
+        parts.push(d.to_string());
+    }
+    let mut specs = Vec::new();
+    if let Some(s) = row["series_name"].as_str().filter(|s| !s.is_empty()) {
+        specs.push(format!("系列：{}", s));
+    }
+    if let Some(p) = row["standard_specs"].as_str().filter(|p| !p.is_empty()) {
+        specs.push(format!("标准规格：{}", p));
+    }
+    if let Some(f) = row["full_specs"].as_str().filter(|f| !f.is_empty()) {
+        specs.push(format!("完整规格：{}", f));
+    }
+    if !specs.is_empty() {
+        parts.push(format!("## 技术规格\n{}", specs.join("\n")));
+    }
+    (title, parts.join("\n\n"))
 }
 
 fn extract_project(project_id: &str) -> (String, String) {
@@ -109,19 +132,20 @@ fn extract_project(project_id: &str) -> (String, String) {
     };
     let title = row["name"].as_str().unwrap_or("").to_string();
     let mut parts = Vec::new();
-    parts.push(format!("name: {}", title));
-    if let Some(d) = row["description"].as_str().filter(|d| !d.is_empty()) { parts.push(format!("description: {}", d)); }
-    if let Some(s) = row["status"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("status: {}", s)); }
-    if let Some(o) = row["owner"].as_str().filter(|o| !o.is_empty()) { parts.push(format!("owner: {}", o)); }
-    if let Some(b) = row["budget"].as_f64().filter(|b| *b > 0.0) { parts.push(format!("budget: {:.2}", b)); }
-    if let Some(bt) = row["bid_time"].as_str().filter(|bt| !bt.is_empty()) { parts.push(format!("bid_time: {}", bt)); }
+    if !title.is_empty() {
+        parts.push(format!("# {}", title));
+    }
+    if let Some(d) = row["description"].as_str().filter(|d| !d.is_empty()) {
+        parts.push(d.to_string());
+    }
     // 解决方案产品
     if let Ok(Some(sols)) = crate::database::get(
         "SELECT GROUP_CONCAT(DISTINCT si.product_name) as products FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 AND COALESCE(si.product_name,'')!=''",
         &[serde_json::json!(project_id)]
     ) {
         if let Some(products) = sols["products"].as_str().filter(|p| !p.is_empty()) {
-            parts.push(format!("solution_products: {}", products));
+            let product_list: Vec<String> = products.split(',').map(|p| format!("- {}", p.trim())).collect();
+            parts.push(format!("## 方案产品\n{}", product_list.join("\n")));
         }
     }
     // 项目动态
@@ -133,11 +157,13 @@ fn extract_project(project_id: &str) -> (String, String) {
             let t = d["type"].as_str().unwrap_or("");
             let c = d["content"].as_str().unwrap_or("");
             let dt = d["created_at"].as_str().unwrap_or("");
-            if !c.is_empty() { Some(format!("{}: {} ({})", t, c, dt)) } else { None }
+            if !c.is_empty() { Some(format!("- {} ({})", c, dt)) } else { None }
         }).collect();
-        if !dyn_str.is_empty() { parts.push(format!("dynamics: {}", dyn_str.join(" | "))); }
+        if !dyn_str.is_empty() {
+            parts.push(format!("## 项目动态\n{}", dyn_str.join("\n")));
+        }
     }
-    (title, parts.join("\n"))
+    (title, parts.join("\n\n"))
 }
 
 fn extract_channel(channel_id: &str) -> (String, String) {
@@ -150,11 +176,23 @@ fn extract_channel(channel_id: &str) -> (String, String) {
     };
     let title = row["name"].as_str().unwrap_or("").to_string();
     let mut parts = Vec::new();
-    parts.push(format!("name: {}", title));
-    if let Some(p) = row["phone"].as_str().filter(|p| !p.is_empty()) { parts.push(format!("phone: {}", p)); }
-    if let Some(c) = row["address"].as_str().filter(|c| !c.is_empty()) { parts.push(format!("address: {}", c)); }
-    if let Some(r) = row["remark"].as_str().filter(|r| !r.is_empty()) { parts.push(format!("remark: {}", r)); }
-    (title, parts.join("\n"))
+    if !title.is_empty() {
+        parts.push(format!("# {}", title));
+    }
+    let mut details = Vec::new();
+    if let Some(p) = row["phone"].as_str().filter(|p| !p.is_empty()) {
+        details.push(format!("电话：{}", p));
+    }
+    if let Some(c) = row["address"].as_str().filter(|c| !c.is_empty()) {
+        details.push(format!("地址：{}", c));
+    }
+    if let Some(r) = row["remark"].as_str().filter(|r| !r.is_empty()) {
+        details.push(format!("备注：{}", r));
+    }
+    if !details.is_empty() {
+        parts.push(details.join("\n"));
+    }
+    (title, parts.join("\n\n"))
 }
 
 fn extract_vendor(vendor_id: &str) -> (String, String) {
@@ -167,11 +205,23 @@ fn extract_vendor(vendor_id: &str) -> (String, String) {
     };
     let title = row["name"].as_str().unwrap_or("").to_string();
     let mut parts = Vec::new();
-    parts.push(format!("name: {}", title));
-    if let Some(p) = row["phone"].as_str().filter(|p| !p.is_empty()) { parts.push(format!("phone: {}", p)); }
-    if let Some(c) = row["address"].as_str().filter(|c| !c.is_empty()) { parts.push(format!("address: {}", c)); }
-    if let Some(r) = row["remark"].as_str().filter(|r| !r.is_empty()) { parts.push(format!("remark: {}", r)); }
-    (title, parts.join("\n"))
+    if !title.is_empty() {
+        parts.push(format!("# {}", title));
+    }
+    let mut details = Vec::new();
+    if let Some(p) = row["phone"].as_str().filter(|p| !p.is_empty()) {
+        details.push(format!("电话：{}", p));
+    }
+    if let Some(c) = row["address"].as_str().filter(|c| !c.is_empty()) {
+        details.push(format!("地址：{}", c));
+    }
+    if let Some(r) = row["remark"].as_str().filter(|r| !r.is_empty()) {
+        details.push(format!("备注：{}", r));
+    }
+    if !details.is_empty() {
+        parts.push(details.join("\n"));
+    }
+    (title, parts.join("\n\n"))
 }
 
 fn extract_customer(customer_id: &str) -> (String, String) {
@@ -184,11 +234,23 @@ fn extract_customer(customer_id: &str) -> (String, String) {
     };
     let title = row["name"].as_str().unwrap_or("").to_string();
     let mut parts = Vec::new();
-    parts.push(format!("name: {}", title));
-    if let Some(p) = row["phone"].as_str().filter(|p| !p.is_empty()) { parts.push(format!("phone: {}", p)); }
-    if let Some(c) = row["address"].as_str().filter(|c| !c.is_empty()) { parts.push(format!("address: {}", c)); }
-    if let Some(r) = row["remark"].as_str().filter(|r| !r.is_empty()) { parts.push(format!("remark: {}", r)); }
-    (title, parts.join("\n"))
+    if !title.is_empty() {
+        parts.push(format!("# {}", title));
+    }
+    let mut details = Vec::new();
+    if let Some(p) = row["phone"].as_str().filter(|p| !p.is_empty()) {
+        details.push(format!("电话：{}", p));
+    }
+    if let Some(c) = row["address"].as_str().filter(|c| !c.is_empty()) {
+        details.push(format!("地址：{}", c));
+    }
+    if let Some(r) = row["remark"].as_str().filter(|r| !r.is_empty()) {
+        details.push(format!("备注：{}", r));
+    }
+    if !details.is_empty() {
+        parts.push(details.join("\n"));
+    }
+    (title, parts.join("\n\n"))
 }
 
 fn extract_todo(todo_id: &str) -> (String, String) {
@@ -200,12 +262,20 @@ fn extract_todo(todo_id: &str) -> (String, String) {
         _ => return (String::new(), String::new()),
     };
     let title = row["title"].as_str().unwrap_or("").to_string();
+    let content = row["content"].as_str().unwrap_or("");
+    let markdown = if content.contains('<') {
+        crate::services::file_parser::html_to_markdown(content)
+    } else {
+        content.to_string()
+    };
     let mut parts = Vec::new();
-    parts.push(format!("title: {}", title));
-    if let Some(c) = row["content"].as_str().filter(|c| !c.is_empty()) { parts.push(format!("content: {}", c)); }
-    if let Some(p) = row["priority"].as_str().filter(|p| !p.is_empty()) { parts.push(format!("priority: {}", p)); }
-    if let Some(d) = row["due_date"].as_str().filter(|d| !d.is_empty()) { parts.push(format!("due_date: {}", d)); }
-    (title, parts.join("\n"))
+    if !title.is_empty() {
+        parts.push(format!("# {}", title));
+    }
+    if !markdown.trim().is_empty() {
+        parts.push(markdown);
+    }
+    (title, parts.join("\n\n"))
 }
 
 fn extract_file(file_id: &str) -> (String, String) {
@@ -221,7 +291,9 @@ fn extract_file(file_id: &str) -> (String, String) {
         .filter_map(|r| r["custom_name"].as_str().filter(|n| !n.is_empty()).map(String::from))
         .collect();
     if names.is_empty() { return (String::new(), String::new()); }
-    (String::new(), names.join("\n"))
+    let title = names.first().cloned().unwrap_or_default();
+    let content = names.join("\n");
+    (title, content)
 }
 
 fn extract_chat(session_id: &str) -> (String, String) {
@@ -246,7 +318,14 @@ fn extract_chat(session_id: &str) -> (String, String) {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    (title, chat_text)
+    let mut parts = Vec::new();
+    if !title.is_empty() {
+        parts.push(format!("# {}", title));
+    }
+    if !chat_text.is_empty() {
+        parts.push(chat_text);
+    }
+    (title, parts.join("\n\n"))
 }
 
 fn extract_contact(contact_id: &str) -> (String, String) {
@@ -268,12 +347,25 @@ fn extract_contact(contact_id: &str) -> (String, String) {
 fn build_contact_content(row: &serde_json::Value) -> (String, String) {
     let name = row["name"].as_str().unwrap_or("").to_string();
     if name.is_empty() { return (String::new(), String::new()); }
-    let mut parts = vec![format!("name: {}", name)];
-    if let Some(v) = row["phone"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("phone: {}", v)); }
-    if let Some(v) = row["email"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("email: {}", v)); }
-    if let Some(v) = row["position"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("position: {}", v)); }
-    if let Some(v) = row["address"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("address: {}", v)); }
-    if let Some(v) = row["role"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("role: {}", v)); }
-    if let Some(v) = row["remark"].as_str().filter(|s| !s.is_empty()) { parts.push(format!("remark: {}", v)); }
-    (name, parts.join("\n"))
+    let mut parts = vec![format!("# {}", name)];
+    let mut details = Vec::new();
+    if let Some(v) = row["phone"].as_str().filter(|s| !s.is_empty()) {
+        details.push(format!("电话：{}", v));
+    }
+    if let Some(v) = row["email"].as_str().filter(|s| !s.is_empty()) {
+        details.push(format!("邮箱：{}", v));
+    }
+    if let Some(v) = row["position"].as_str().filter(|s| !s.is_empty()) {
+        details.push(format!("职位：{}", v));
+    }
+    if let Some(v) = row["address"].as_str().filter(|s| !s.is_empty()) {
+        details.push(format!("公司：{}", v));
+    }
+    if let Some(v) = row["role"].as_str().filter(|s| !s.is_empty()) {
+        details.push(format!("角色：{}", v));
+    }
+    if !details.is_empty() {
+        parts.push(details.join("\n"));
+    }
+    (name, parts.join("\n\n"))
 }

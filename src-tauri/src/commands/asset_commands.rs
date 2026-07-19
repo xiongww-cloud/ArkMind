@@ -11,7 +11,7 @@ use serde_json::{json, Value}; use crate::database;
     let results = database::fts5_search_chunks_slim(query, limit as usize).unwrap_or_default();
     Ok(json!({"success":true,"results":results}))
 }
-#[tauri::command] pub async fn assets_list() -> Result<Value, String> { let assets = database::all("SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, sd.content as parsed_text, fa.created_at, fa.updated_at, fr.custom_name as lib_gn, fr.custom_name as lib_cn, fa.id as latest_version_id, fa.file_size as latest_version_size FROM file_assets fa LEFT JOIN source_data sd ON sd.source_type='FILE' AND sd.source_id=fa.id LEFT JOIN file_relations fr ON fr.file_id = fa.id AND fr.entity_type='library' ORDER BY fa.updated_at DESC",&[]).map_err(|e| e.to_string())?; Ok(json!({"success":true,"assets":assets})) }
+#[tauri::command] pub async fn assets_list() -> Result<Value, String> { let assets = database::all("SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, sd.content as parsed_text, fa.created_at, fa.updated_at, fr.custom_name as lib_gn, fr.custom_name as lib_cn, fa.id as latest_version_id, fa.file_size as latest_version_size FROM file_assets fa LEFT JOIN source_data sd ON sd.source_type='FILE' AND sd.source_id=fa.id LEFT JOIN file_relations fr ON fr.file_id = fa.id AND fr.entity_type='library' ORDER BY fa.updated_at DESC",&[]).map_err(|e| e.to_string())?; Ok(json!({"success":true,"assets":assets})) }
 #[tauri::command] pub async fn asset_sync_status() -> Result<Value, String> {
     let running = crate::services::knowledge_pipeline::is_running();
     let pending: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE status='pending'",[],|r|r.get(0))).unwrap_or(0);
@@ -57,7 +57,8 @@ use serde_json::{json, Value}; use crate::database;
         let ext = f["file_ext"].as_str().unwrap_or("");
         let result = crate::services::file_parser::parse_file_with_hint(&path, ext);
         if result.success && !result.text.is_empty() {
-            let _ = database::run("UPDATE file_assets SET parse_status='COMPLETED' WHERE id=?",&[json!(fid)]);
+            // 写入 source_data
+            crate::database::file_sync_to_source_data(fid, &result.text);
             migrated += 1;
         }
     }

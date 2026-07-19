@@ -21,9 +21,9 @@ use serde_json::{json, Value};
 }
 #[tauri::command] pub async fn kb_list_documents(pid: Option<String>) -> Result<Value, String> {
     let docs = if let Some(ref p) = pid.filter(|s| !s.is_empty()) {
-        database::all("SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name as global_name, fr.custom_name as custom_name FROM file_assets fa INNER JOIN file_relations fr ON fr.file_id=fa.id AND fr.entity_type='project' WHERE fr.entity_id=? ORDER BY fa.updated_at DESC",&[json!(p)]).unwrap_or_default()
+        database::all("SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name as global_name, fr.custom_name as custom_name FROM file_assets fa INNER JOIN file_relations fr ON fr.file_id=fa.id AND fr.entity_type='project' WHERE fr.entity_id=? ORDER BY fa.updated_at DESC",&[json!(p)]).unwrap_or_default()
     } else {
-        database::all("SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at FROM file_assets fa ORDER BY fa.updated_at DESC LIMIT 200",&[]).unwrap_or_default()
+        database::all("SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at FROM file_assets fa ORDER BY fa.updated_at DESC LIMIT 200",&[]).unwrap_or_default()
     };
     Ok(json!({"success":true,"documents":docs}))
 }

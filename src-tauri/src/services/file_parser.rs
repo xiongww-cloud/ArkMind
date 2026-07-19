@@ -20,7 +20,7 @@ pub struct ParseResult { pub text: String, pub success: bool }
 // ═══════════════════════════════════════════════════════════════
 
 /// 视觉模型配置
-struct VisionConfig {
+pub struct VisionConfig {
     base_url: String,
     api_key: String,
     model: String,
@@ -223,7 +223,7 @@ fn get_adapter(api_format: &str, model_name: &str) -> Box<dyn VisionAdapter> {
 }
 
 /// 从 ai_config 读取视觉模型配置（visionProviders + activeVisionId）
-fn get_vision_config() -> Option<VisionConfig> {
+pub fn get_vision_config() -> Option<VisionConfig> {
     let row = database::get(
         "SELECT ai_config FROM system_config WHERE tenant_id='local-user'",
         &[],
@@ -259,7 +259,6 @@ fn file_to_data_uri(path: &str, mime: &str) -> Option<String> {
 async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     let cfg = get_vision_config().ok_or("未配置视觉模型，请在设置页配置视觉模型")?;
     let adapter = get_adapter(&cfg.api_format, &cfg.model);
-    eprintln!("[文件解析] OCR 请求: model={}, format={}, prompt_preview={}", cfg.model, cfg.api_format, cfg.prompt.chars().take(60).collect::<String>());
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
@@ -296,7 +295,6 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     let text = adapter.parse_response(&resp_body);
     // ★ 模型专属后处理（格式归一化）
     let text = adapter.post_process(&text);
-    eprintln!("[文件解析] OCR 模型返回 (前200字): {}", text.chars().take(200).collect::<String>());
     if text.is_empty() {
         return Err("OCR 返回空内容".into());
     }
@@ -357,8 +355,44 @@ fn try_load_pdfium() -> Option<pdfium_render::prelude::Pdfium> {
     None
 }
 
+/// 获取 PDF 总页数
+pub fn get_pdf_page_count(path: &str) -> Option<u16> {
+    let pdfium = try_load_pdfium()?;
+    let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pdfium.load_pdf_from_file(path, None)))
+        .ok()?.ok()?;
+    Some(doc.pages().len())
+}
+
+/// 渲染 PDF 单页为 base64 图片（150 DPI，JPEG 格式）
+pub fn pdfium_render_page(path: &str, page_num: u16) -> Option<String> {
+    use base64::Engine;
+    let pdfium = try_load_pdfium()?;
+    let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pdfium.load_pdf_from_file(path, None)))
+        .ok()?.ok()?;
+    let pages = doc.pages();
+    let page = pages.get(page_num).ok()?;
+
+    let scale = 150.0 / 72.0;
+    let width = (page.width().value * scale) as i32;
+    let height = (page.height().value * scale) as i32;
+    let bitmap = page.render(width, height, None).ok()?;
+
+    // pdfium 输出 BGRA 格式，需要转换为 RGB
+    let bgra = bitmap.as_raw_bytes();
+    let rgb: Vec<u8> = bgra.chunks(4)
+        .flat_map(|c| [c[2], c[1], c[0]])  // BGRA → RGB
+        .collect();
+    let img = image::RgbImage::from_raw(width as u32, height as u32, rgb)?;
+
+    let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).ok()?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+
+    Some(format!("data:image/jpeg;base64,{}", b64))
+}
+
 /// 通过 pdfium-render 提取每页纯文本
-fn try_pdfium_text_per_page(path: &str) -> Option<Vec<String>> {
+pub fn try_pdfium_text_per_page(path: &str) -> Option<Vec<String>> {
     let pdfium = try_load_pdfium()?;
     let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pdfium.load_pdf_from_file(path, None)))
         .ok()?.ok()?;
@@ -378,7 +412,7 @@ fn try_pdfium_text_per_page(path: &str) -> Option<Vec<String>> {
     Some(result)
 }
 
-/// 通过 pdfium-render 渲染 PDF 全部页面为 base64 图片
+/// 通过 pdfium-render 渲染 PDF 全部页面为 base64 图片（150 DPI，JPEG 格式）
 fn try_pdfium_render(path: &str) -> Option<Vec<String>> {
     let pdfium = try_load_pdfium()?;
 
@@ -388,7 +422,7 @@ fn try_pdfium_render(path: &str) -> Option<Vec<String>> {
     let count = pages.len();
     if count == 0 { return None; }
 
-    let scale = 200.0 / 72.0;
+    let scale = 150.0 / 72.0;
     let mut results = Vec::with_capacity(count as usize);
 
     for i in 0..count {
@@ -402,16 +436,19 @@ fn try_pdfium_render(path: &str) -> Option<Vec<String>> {
             Ok(b) => b,
             Err(_) => continue,
         };
-        let rgba = bitmap.as_raw_bytes();
-        let rgb: Vec<u8> = rgba.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect();
+        // pdfium 输出 BGRA 格式，需要转换为 RGB
+        let bgra = bitmap.as_raw_bytes();
+        let rgb: Vec<u8> = bgra.chunks(4)
+            .flat_map(|c| [c[2], c[1], c[0]])  // BGRA → RGB
+            .collect();
         let img = match image::RgbImage::from_raw(width as u32, height as u32, rgb) {
             Some(i) => i,
             None => continue,
         };
-        let mut png_buf = std::io::Cursor::new(Vec::new());
-        if img.write_to(&mut png_buf, image::ImageFormat::Png).is_err() { continue; }
-        let b64 = base64::engine::general_purpose::STANDARD.encode(png_buf.into_inner());
-        results.push(format!("data:image/png;base64,{}", b64));
+        let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+        if img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).is_err() { continue; }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
+        results.push(format!("data:image/jpeg;base64,{}", b64));
     }
     if results.is_empty() { None } else { Some(results) }
 }
@@ -425,7 +462,7 @@ fn try_pdftoppm(path: &str) -> Option<Vec<String>> {
 
     let output_prefix = tmp_dir.join("page").to_string_lossy().to_string();
     let mut cmd_obj = std::process::Command::new(cmd);
-    cmd_obj.args(["-png", "-r", "150", path, &output_prefix])
+    cmd_obj.args(["-jpeg", "-r", "150", path, &output_prefix])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(target_os = "windows")]
@@ -439,9 +476,9 @@ fn try_pdftoppm(path: &str) -> Option<Vec<String>> {
     let mut results = Vec::new();
     let mut page_num = 1;
     loop {
-        let page_path = tmp_dir.join(format!("page-{}.png", page_num));
+        let page_path = tmp_dir.join(format!("page-{}.jpg", page_num));
         if !page_path.exists() { break; }
-        if let Some(uri) = file_to_data_uri(&page_path.to_string_lossy(), "image/png") {
+        if let Some(uri) = file_to_data_uri(&page_path.to_string_lossy(), "image/jpeg") {
             results.push(uri);
         }
         page_num += 1;
@@ -490,7 +527,7 @@ fn try_macos_sips(path: &str) -> Option<Vec<String>> {
 }
 
 /// 同步调用 OCR API 的阻塞封装（供同步 parse_file_smart 调用）
-fn ocr_image_sync(base64_uri: &str) -> String {
+pub fn ocr_image_sync(base64_uri: &str) -> String {
     // 检查是否已在 tokio runtime 中，避免 "Cannot start a runtime from within a runtime" panic
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         // 已在 runtime 中，直接 block_on
@@ -532,8 +569,13 @@ fn try_ocr_image(path: &str, mime: &str) -> String {
 }
 
 /// 对 base64 data URI 图片进行裁剪：去掉顶部和底部指定比例（默认 8%）
-fn crop_image_uri(uri: &str, top_pct: f64, bottom_pct: f64) -> Option<String> {
-    let header = "data:image/png;base64,";
+pub fn crop_image_uri(uri: &str, top_pct: f64, bottom_pct: f64) -> Option<String> {
+    // 支持 PNG 和 JPEG 格式
+    let (header, format, mime) = if uri.starts_with("data:image/jpeg;base64,") {
+        ("data:image/jpeg;base64,", image::ImageFormat::Jpeg, "image/jpeg")
+    } else {
+        ("data:image/png;base64,", image::ImageFormat::Png, "image/png")
+    };
     let b64 = uri.strip_prefix(header)?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     let mut img = image::load_from_memory(&bytes).ok()?;
@@ -543,13 +585,13 @@ fn crop_image_uri(uri: &str, top_pct: f64, bottom_pct: f64) -> Option<String> {
     if top + bottom >= h { return None; }
     let cropped = img.crop(0, top, w, h - top - bottom);
     let mut buf = std::io::Cursor::new(Vec::new());
-    cropped.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    cropped.write_to(&mut buf, format).ok()?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
-    Some(format!("data:image/png;base64,{}", b64))
+    Some(format!("data:{};base64,{}", mime, b64))
 }
 
-/// 对 PDF 执行 OCR：PDF 所有页渲染为图片 → 裁剪页眉页脚 → 逐页 OCR → 合并
-fn has_real_text(text: &str) -> bool {
+/// 检查文本是否包含有效字符
+pub fn has_real_text(text: &str) -> bool {
     text.chars().any(|c| c.is_ascii_alphanumeric() || c as u32 > 127)
 }
 

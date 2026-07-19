@@ -134,15 +134,16 @@ pub async fn entity_remove_tag(entity_type: String, entity_id: String, tag_id: S
     Ok(json!({"success":true}))
 }
 
-/// 调试：返回 cleanup_queue 的原始数据
+/// 调试：返回 knowledge_push_queue 的原始数据
 #[tauri::command]
 pub async fn kb_pipeline_debug() -> Result<Value, String> {
-    let cleanup = database::all("SELECT * FROM cleanup_queue ORDER BY id DESC LIMIT 30", &[]).map_err(|e| e.to_string())?;
-    let cleanup_pending = database::get("SELECT COUNT(*) as cnt FROM cleanup_queue WHERE status=0", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-    let cleanup_done = database::get("SELECT COUNT(*) as cnt FROM cleanup_queue WHERE status=1", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    let push_queue = database::all("SELECT * FROM knowledge_push_queue ORDER BY id DESC LIMIT 30", &[]).map_err(|e| e.to_string())?;
+    let push_pending = database::get("SELECT COUNT(*) as cnt FROM knowledge_push_queue WHERE status='pending'", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    let push_processing = database::get("SELECT COUNT(*) as cnt FROM knowledge_push_queue WHERE status='processing'", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    let push_failed = database::get("SELECT COUNT(*) as cnt FROM knowledge_push_queue WHERE status='failed'", &[]).map_err(|e| e.to_string())?.and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     Ok(json!({
         "success":true,
-        "stats": {"cleanup_pending":cleanup_pending,"cleanup_done":cleanup_done},
-        "cleanup_queue": cleanup
+        "stats": {"push_pending":push_pending,"push_processing":push_processing,"push_failed":push_failed},
+        "push_queue": push_queue
     }))
 }

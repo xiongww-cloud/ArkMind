@@ -60,6 +60,8 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?))", &[json!(&id)]).ok();
     database::run("DELETE FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?)", &[json!(&id)]).ok();
     database::run("DELETE FROM solutions WHERE project_id=?", &[json!(&id)]).ok();
+    // 清理 business_relations 表中与该项目相关的关联
+    database::run("DELETE FROM business_relations WHERE (source_type='PROJECT' AND source_id=?) OR (target_type='PROJECT' AND target_id=?)", &[json!(&id), json!(&id)]).ok();
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))
 }
@@ -446,7 +448,7 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
                     if let Some(parent) = std::path::Path::new(&dest).parent() { std::fs::create_dir_all(parent).ok(); }
                     std::fs::copy(&src, &dest).ok();
                 }
-                database::run("INSERT OR REPLACE INTO file_assets(id,file_ext,file_size,content_hash,parse_status,created_at,updated_at) VALUES(?1,?2,?3,?4,'COMPLETED',?5,?6)",&[
+                database::run("INSERT OR REPLACE INTO file_assets(id,file_ext,file_size,content_hash,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)",&[
                     json!(fid),fr["file_ext"].clone(),fr["file_size"].clone(),json!(hash),fr["created_at"].clone(),fr["updated_at"].clone()
                 ]).ok();
                 database::run("INSERT OR REPLACE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator,description,folder_id,created_at) VALUES(?1,?2,'project',?3,?4,?5,?6,?7,?8)",&[
@@ -676,7 +678,7 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
                     if let Some(parent) = std::path::Path::new(&dest).parent() { std::fs::create_dir_all(parent).ok(); }
                     std::fs::copy(&src, &dest).map_err(|e| format!("文件复制失败({}): {}", hash, e))?;
                 }
-                database::run("INSERT OR REPLACE INTO file_assets(id,file_ext,file_size,content_hash,parse_status,created_at,updated_at) VALUES(?1,?2,?3,?4,'COMPLETED',?5,?6)",&[
+                database::run("INSERT OR REPLACE INTO file_assets(id,file_ext,file_size,content_hash,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)",&[
                     json!(fid),fr["file_ext"].clone(),fr["file_size"].clone(),json!(hash),fr["created_at"].clone(),fr["updated_at"].clone()
                 ]).ok();
                 database::run("INSERT OR REPLACE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator,description,folder_id,created_at) VALUES(?1,?2,'project',?3,?4,?5,?6,?7,?8)",&[

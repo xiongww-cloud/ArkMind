@@ -7,6 +7,7 @@ import { dangerConfirm } from '@/composables/useConfirm'
 import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbDeleteSession } from '@/api/db-client'
 import { sanitizeHtml, sanitizeHtmlSync } from '@/utils/sanitize'
 import { listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
 
 // ─── Markdown renderer ──────────────────────────────────────────
 async function renderMarkdown(text: string): Promise<string> {
@@ -21,7 +22,7 @@ async function renderMarkdown(text: string): Promise<string> {
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 // ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage { id?: string; role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean; timestamp?: number }
+interface ChatMessage { id?: string; role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean; timestamp?: number; blocks?: {content:string}[] }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
 const rendered = ref<Record<string,string>>({})
@@ -36,23 +37,35 @@ function renderedContent(msgId: string): string { return rendered.value[msgId] |
 const activeTypewriters = new Set<ChatMessage>()
 const typewriterTimers = new Map<ChatMessage, ReturnType<typeof setInterval>>()
 function startTypewriter(msg: ChatMessage, fullText: string, speed = 8) {
+  console.log('[FE] startTypewriter CALLED, textLen=', fullText.length)
+  console.trace('[FE] startTypewriter stack')
   stopTypewriter(msg)
-  if (!fullText) { msg.typewriterText = ''; msg.typewriterDone = true; return }
+  if (!fullText) { msg.content = ''; msg.typewriterText = ''; msg.typewriterDone = true; renderMessageContent(msg.id || '', ''); return }
   const msgId = msg.id || ''
-  // 预渲染完整文本
-  renderMessageContent(msgId, fullText)
   const TYPEWRITER_CHUNK_SIZE = 5
   let pos = 0
-  msg.typewriterText = fullText.slice(0, pos)
+  msg.content = ''
+  msg.typewriterText = ''
   msg.typewriterDone = false
   activeTypewriters.add(msg)
+  let lastRenderTime = 0
+  const RENDER_THROTTLE_MS = 80
   const timer = setInterval(() => {
     pos += TYPEWRITER_CHUNK_SIZE
     if (pos >= fullText.length) {
       pos = fullText.length; clearInterval(timer); typewriterTimers.delete(msg); activeTypewriters.delete(msg)
-      msg.typewriterText = fullText; msg.typewriterDone = true; return
+      msg.content = fullText; msg.typewriterText = fullText; msg.typewriterDone = true
+      renderMessageContent(msgId, fullText)
+      return
     }
-    msg.typewriterText = fullText.slice(0, pos)
+    const partial = fullText.slice(0, pos)
+    msg.content = partial
+    msg.typewriterText = partial
+    const now = Date.now()
+    if (now - lastRenderTime > RENDER_THROTTLE_MS) {
+      lastRenderTime = now
+      renderMessageContent(msgId, partial)
+    }
   }, speed)
   typewriterTimers.set(msg, timer)
 }
@@ -218,6 +231,7 @@ const MAX_INPUT_LENGTH = 5000
 async function handleSendMessage() {
   const q = inputMessage.value.trim()
   if (!q || isChatting.value) return
+  console.log('[FE] handleSendMessage BUILD=streamfix-0719')
   if (q.length > MAX_INPUT_LENGTH) { toast({ message: `输入内容过长（${q.length}/${MAX_INPUT_LENGTH}），请精简后重试`, type: 'error' }); return }
   const session = currentSession.value; if (!session) return
   session.messages.push({ id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() })
@@ -255,10 +269,90 @@ async function handleSendMessage() {
         scrollToBottomIfNear()
       }
     })
-    // ★ 流式监听：实时显示 LLM thought + 最终答案
-    const streamedContent = ref('')
-    unlistenStream = await listen<{token:string}>('agent:token', (ev) => { streamedContent.value += ev.payload.token; scrollToBottomIfNear() })
+    // ★ 流式监听：实时显示 LLM 最终答案（逐 token 渲染）
+    const isRealStreaming = ref(false)
+    let streamedContent = ''
+    let lastRenderTime = 0
+    const RENDER_THROTTLE_MS = 80
+    // 首字清空：收到 agent:start-answer 时标记真正流式开始
+    const unlistenStartAnswer = await listen('agent:start-answer', () => {
+      console.log('[FE] start-answer received')
+      isRealStreaming.value = true
+      const msg = session.messages[aiIdx]
+      if (msg.isThinking) msg.isThinking = false
+      streamedContent = ''
+    })
+    unlistenStream = await listen<{token:string}>('agent:token', (ev) => {
+      if (!streamedContent) console.log('[FE] first token received:', JSON.stringify(ev.payload.token))
+      streamedContent += ev.payload.token
+      const msg = session.messages[aiIdx]
+      if (msg.isThinking) msg.isThinking = false
+      msg.content = streamedContent.replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+      const now = Date.now()
+      if (now - lastRenderTime > RENDER_THROTTLE_MS) {
+        lastRenderTime = now
+        renderMessageContent(msg.id || '', msg.content)
+      }
+      scrollToBottomIfNear()
+    })
     unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { thinkingProgress.value = ev.payload.text; scrollToBottomIfNear() })
+    // ★ 工具轮结束：本轮已流式输出的 interim 内容归置到思考区，恢复思考气泡
+    const unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
+      console.log('[FE] round-thought received')
+      const msg = session.messages[aiIdx]
+      const thoughtText = (streamedContent || ev.payload.text || '').trim()
+      if (thoughtText) { if (!msg.blocks) msg.blocks = []; msg.blocks.push({ content: thoughtText }) }
+      streamedContent = ''
+      thinkingProgress.value = ''
+      msg.content = ''
+      msg.isThinking = true
+      scrollToBottomIfNear()
+    })
+
+    // ★ 监听 agent:done 事件（后台任务完成时触发）
+    const unlistenDone = await listen<any>('agent:done', (ev) => {
+      console.log('[FE] done received, isRealStreaming=', isRealStreaming.value)
+      const result = ev.payload
+      const msg = session.messages[aiIdx]; msg.isThinking = false
+      if (result.success) {
+        const finalAnswer = (result.answer || streamedContent || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+        thinkingProgress.value = ''
+        msg.toolCalls = result.tool_log || []
+        if (isRealStreaming.value) {
+          console.log('[FE] done -> DIRECT branch')
+          msg.content = finalAnswer
+          renderMessageContent(msg.id || '', msg.content)
+        } else {
+          console.log('[FE] done -> TYPEWRITER branch')
+          startTypewriter(msg, finalAnswer)
+        }
+        const rawCalls: any[] = []; const toolResults: any[] = []
+        for (const r of (result.tool_log || [])) {
+          for (const t of (r.tools || [])) {
+            const callId = 'call_' + Math.random().toString(36).slice(2, 8)
+            rawCalls.push({ id: callId, type: 'function', function: { name: t.tool, arguments: typeof t.args === 'string' ? t.args : JSON.stringify(t.args) } })
+            const TOOL_RESULT_MAX_LENGTH = 30000
+            const rawResult = typeof t.result === 'string' ? t.result : ''
+            const truncated = rawResult.length > TOOL_RESULT_MAX_LENGTH
+            toolResults.push({ id: callId, name: t.tool, content: truncated ? rawResult.substring(0, TOOL_RESULT_MAX_LENGTH) + '\n\n[结果已截断，原始长度: ' + rawResult.length + ' 字符]' : rawResult })
+          }
+        }
+        msg.rawToolCalls = rawCalls; msg.toolResults = toolResults; msg.contextDocs = result.context_docs || result.sources || [];
+        msg.workspace = result.workspace || '';
+      } else { msg.error = result.answer || result.error || '失败' }
+      isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
+      try { unlistenDone(); unlistenStream(); unlistenStartAnswer(); unlistenThought(); unlistenProgress(); unlistenStatus?.(); unlistenRoundThought() } catch (e) { console.error('[KB] unlisten failed:', e) }
+    })
+
+    // ★ 监听 agent:error 事件
+    const unlistenError = await listen<any>('agent:error', (ev) => {
+      const msg = session.messages[aiIdx]; msg.isThinking = false
+      msg.error = ev.payload.error || 'AI 服务异常'
+      isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
+      try { unlistenError(); unlistenDone(); unlistenStream(); unlistenStartAnswer(); unlistenThought(); unlistenProgress(); unlistenStatus?.(); unlistenRoundThought() } catch {}
+    })
+
+    // ★ 调用命令（立即返回，不等待结果）
     const history: any[] = []
     for (const m of session.messages) {
       if (m === aiMsg) continue
@@ -270,35 +364,16 @@ async function handleSendMessage() {
         if (m.toolResults) { for (const tr of m.toolResults) history.push({ role: 'tool', content: tr.content || '', tool_call_id: tr.id, name: tr.name }) }
       }
     }
-    const result: any = await kbAgentChat({ query: q, history })
-    const msg = session.messages[aiIdx]; msg.isThinking = false
-    if (result.success) {
-      msg.content = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-      thinkingProgress.value = ''
-      if (streamedContent.value) { msg.content = streamedContent.value.replace(/<refs>[\s\S]*<\/refs>/g, '').trim(); streamedContent.value = '' }
-      msg.toolCalls = result.tool_log || []
-      startTypewriter(msg, msg.content)
-      const rawCalls: any[] = []; const toolResults: any[] = []
-      for (const r of (result.tool_log || [])) {
-        for (const t of (r.tools || [])) {
-          const callId = 'call_' + Math.random().toString(36).slice(2, 8)
-          rawCalls.push({ id: callId, type: 'function', function: { name: t.tool, arguments: typeof t.args === 'string' ? t.args : JSON.stringify(t.args) } })
-          const TOOL_RESULT_MAX_LENGTH = 30000
-          const rawResult = typeof t.result === 'string' ? t.result : ''
-          const truncated = rawResult.length > TOOL_RESULT_MAX_LENGTH
-          toolResults.push({ id: callId, name: t.tool, content: truncated ? rawResult.substring(0, TOOL_RESULT_MAX_LENGTH) + '\n\n[结果已截断，原始长度: ' + rawResult.length + ' 字符]' : rawResult })
-        }
-      }
-      msg.rawToolCalls = rawCalls; msg.toolResults = toolResults; msg.contextDocs = result.context_docs || result.sources || [];
-      msg.workspace = result.workspace || '';
-      renderMessageContent(msg.id || '', msg.content)
-    } else { msg.error = result.answer || result.error || '失败' }
+    invoke('kb_agent_chat', { data: { query: q, history } }).catch((err) => {
+      console.error('[KB] invoke failed:', err)
+      const msg = session.messages[aiIdx]; msg.isThinking = false
+      msg.error = String(err)
+      isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
+    })
   } catch (e: any) {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
-  } finally {
     isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-    try { unlistenStream(); unlistenThought(); unlistenProgress(); unlistenStatus?.() } catch (e) { console.error('[KB] unlisten failed:', e) }
   }
 }
 

@@ -12,18 +12,30 @@ use tauri::Emitter;
     crate::services::embedding_client::invalidate_embedding_config_cache();
     Ok(json!({"success":true}))
 }
-#[tauri::command] pub async fn kb_agent_chat(app_handle: tauri::AppHandle, data: Value) -> Result<Value, String> {
+#[tauri::command] pub async fn kb_agent_chat(app_handle: tauri::AppHandle, data: Value) -> Result<(), String> {
     let query = data["query"].as_str().unwrap_or("").to_string();
     let max_iter = data["maxIterations"].as_i64().map(|n| n as i32);
     let history: Vec<Value> = data["history"].as_array().map(|a| a.to_vec()).unwrap_or_default();
-    let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, history, Some(app_handle.clone())).await;
-    match &result { Ok(v) => { let _ = app_handle.emit("agent:done", v); if let Some(ans) = v["answer"].as_str() { if !ans.is_empty() { let preview: String = ans.chars().take(100).collect(); println!("[Agent] 响应: {}", preview); } } } Err(e) => eprintln!("[Agent] 错误: {}", e), }
-    result
+    tauri::async_runtime::spawn(async move {
+        let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, history, Some(app_handle.clone())).await;
+        match result {
+            Ok(v) => { let _ = app_handle.emit("agent:done", &v); if let Some(ans) = v["answer"].as_str() { if !ans.is_empty() { let preview: String = ans.chars().take(100).collect(); println!("[Agent] 响应: {}", preview); } } }
+            Err(e) => { eprintln!("[Agent] 错误: {}", e); let _ = app_handle.emit("agent:error", json!({"error": e})); }
+        }
+    });
+    Ok(())
 }
-#[tauri::command] pub async fn kb_chat(app_handle: tauri::AppHandle, data: Value) -> Result<Value, String> {
+#[tauri::command] pub async fn kb_chat(app_handle: tauri::AppHandle, data: Value) -> Result<(), String> {
     let query = data["query"].as_str().unwrap_or("").to_string();
-    if query.is_empty() { return Ok(json!({"success":true,"answer":"请输入问题"})); }
-    crate::services::agent_workflow::agent_chat_workflow(query, None, vec![], Some(app_handle)).await
+    if query.is_empty() { return Err("请输入问题".to_string()); }
+    tauri::async_runtime::spawn(async move {
+        let result = crate::services::agent_workflow::agent_chat_workflow(query, None, vec![], Some(app_handle.clone())).await;
+        match result {
+            Ok(v) => { let _ = app_handle.emit("agent:done", &v); }
+            Err(e) => { let _ = app_handle.emit("agent:error", json!({"error": e})); }
+        }
+    });
+    Ok(())
 }
 #[tauri::command] pub async fn agent_cancel() -> Result<Value, String> {
     crate::services::agent_workflow::cancel_agent();

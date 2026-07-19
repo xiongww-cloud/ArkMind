@@ -65,6 +65,7 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn product_delete(id: String) -> Result<Value, String> {
     database::run("DELETE FROM file_relations WHERE entity_type='product' AND entity_id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     database::run("DELETE FROM tag_mappings WHERE entity_type='products' AND entity_id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
+    crate::services::business_relations::delete_by_source("PRODUCT", &id);
     database::run("DELETE FROM products WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::knowledge_lifecycle::notify_deleted("PRODUCT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, &id, crate::services::object_changed::Action::Deleted);

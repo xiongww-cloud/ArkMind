@@ -16,7 +16,6 @@ pub mod synapse;
 pub mod agent_workflow;
 pub mod source_doc_sync;
 pub mod semantic_builder;
-pub mod cleanup_pipeline;
 pub mod knowledge_lifecycle;
 pub mod push_pipeline;
 pub mod business_relations;

@@ -115,9 +115,9 @@ pub fn get_physical_path(file_id: &str) -> Option<String> {
 
 #[tauri::command] pub async fn file_list(project_id: String) -> Result<Vec<Value>, String> {
     let sql = if project_id.is_empty() {
-        "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id ORDER BY fr.created_at DESC"
+        "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id ORDER BY fr.created_at DESC"
     } else {
-        "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name as name, fr.custom_name as displayName, fr.custom_name as custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='project' AND fr.entity_id=? ORDER BY fr.created_at DESC"
+        "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name as name, fr.custom_name as displayName, fr.custom_name as custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='project' AND fr.entity_id=? ORDER BY fr.created_at DESC"
     };
     if project_id.is_empty() { database::all(sql, &[]).map_err(|e| e.to_string()) } else { database::all(sql, &[json!(project_id)]).map_err(|e| e.to_string()) }
 }
@@ -174,7 +174,7 @@ pub(crate) async fn upload_file_core(
         custom_name.to_string()
     };
     database::run(
-        "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name,parse_status) VALUES(?1,?2,?3,?4,?5,'PENDING')",
+        "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name) VALUES(?1,?2,?3,?4,?5)",
         &[json!(&file_id), json!(&ext), json!(file_size as i64), json!(&hash), json!(&original_name)]
     ).map_err(|e| e.to_string())?;
 
@@ -261,7 +261,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn file_list_by_note(note_id: String) -> Result<Vec<Value>, String> {
     database::all(
-        "SELECT fr.id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='note' AND fr.entity_id=? ORDER BY fr.created_at DESC",
+        "SELECT fr.id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='note' AND fr.entity_id=? ORDER BY fr.created_at DESC",
         &[json!(note_id)]
     ).map_err(|e| e.to_string())
 }
@@ -276,7 +276,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn file_list_by_todo(todo_id: String) -> Result<Vec<Value>, String> {
     database::all(
-        "SELECT fr.id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='todo' AND fr.entity_id=? ORDER BY fr.created_at DESC",
+        "SELECT fr.id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='todo' AND fr.entity_id=? ORDER BY fr.created_at DESC",
         &[json!(todo_id)]
     ).map_err(|e| e.to_string())
 }
@@ -284,12 +284,12 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
     let files = if let Some(q) = query.filter(|q| !q.is_empty()) {
         let like = format!("%{}%", crate::database::escape_like(&q));
         database::all(
-            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 OR fa.file_ext LIKE ?1) ORDER BY fr.created_at DESC LIMIT 50",
+            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 OR fa.file_ext LIKE ?1) ORDER BY fr.created_at DESC LIMIT 50",
             &[json!(like)]
         ).map_err(|e| e.to_string())?
     } else {
         database::all(
-            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' ORDER BY fr.created_at DESC LIMIT 200",
+            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' ORDER BY fr.created_at DESC LIMIT 200",
             &[]
         ).map_err(|e| e.to_string())?
     };
@@ -297,7 +297,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn file_list_all() -> Result<Vec<Value>, String> {
     database::all(
-        "SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fa.created_at, fa.updated_at FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id ORDER BY fr.created_at DESC",
+        "SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id ORDER BY fr.created_at DESC",
         &[]
     ).map_err(|e| e.to_string())
 }
@@ -430,7 +430,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 
 #[tauri::command] pub async fn file_list_by_product(product_id: String) -> Result<Vec<Value>, String> {
     database::all(
-        "SELECT fr.id, fa.file_ext, fa.file_size, fa.content_hash, fa.parse_status, fr.created_at, fa.updated_at, fr.custom_name AS global_name, fr.description AS mapping_type \
+        "SELECT fr.id, fa.file_ext, fa.file_size, fa.content_hash, fr.created_at, fa.updated_at, fr.custom_name AS global_name, fr.description AS mapping_type \
          FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id \
          WHERE fr.entity_type='product' AND fr.entity_id=? ORDER BY fr.created_at DESC",
         &[json!(product_id)]

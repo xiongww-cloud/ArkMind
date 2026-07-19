@@ -177,7 +177,6 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE file_relations ADD COLUMN remark TEXT DEFAULT ''",
         // project-scoped folders
         "ALTER TABLE library_folders ADD COLUMN project_id TEXT DEFAULT NULL",
-        "ALTER TABLE file_assets ADD COLUMN parse_status TEXT DEFAULT 'PENDING'",
         "ALTER TABLE library_folders ADD COLUMN sort_order INTEGER DEFAULT 0",
         "ALTER TABLE file_relations ADD COLUMN file_id TEXT DEFAULT NULL",
         // mapping table timestamps
@@ -188,9 +187,6 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE vendor_partners ADD COLUMN remark TEXT DEFAULT ''",
         // 移除废弃的 products.category 列（存量数据库升级）
         "ALTER TABLE products DROP COLUMN category",
-        // cleanup_queue snapshot columns
-        "ALTER TABLE cleanup_queue ADD COLUMN source_data_id INTEGER DEFAULT NULL",
-        "ALTER TABLE cleanup_queue ADD COLUMN chunk_ids TEXT DEFAULT '[]'",
         "ALTER TABLE ai_sync_queue ADD COLUMN last_content_hash TEXT DEFAULT ''",
         // Object Links
         "CREATE TABLE IF NOT EXISTS object_links(source_id TEXT NOT NULL, target_id TEXT NOT NULL, weight REAL DEFAULT 1.0, last_seen TEXT NOT NULL, PRIMARY KEY(source_id, target_id))",
@@ -482,6 +478,57 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         let _ = conn.execute("ALTER TABLE projects DROP COLUMN customer_contact", []);
         let _ = conn.execute("ALTER TABLE projects DROP COLUMN customer_phone", []);
         println!("[数据库] projects 客户字段已迁移到 partners + project_customer_mapping");
+    }
+
+    // ★ 迁移 file_assets 表：移除 parse_status 字段
+    let has_parse_status: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('file_assets') WHERE name='parse_status'",
+        [], |r| r.get::<_,i64>(0),
+    ).unwrap_or(0) > 0;
+    if has_parse_status {
+        println!("[数据库] 检测到 file_assets.parse_status 字段，正在重建表...");
+        let _ = conn.execute_batch("
+            CREATE TABLE file_assets_new AS SELECT id, file_ext, file_size, content_hash, original_name, created_at, updated_at FROM file_assets;
+            DROP TABLE file_assets;
+            ALTER TABLE file_assets_new RENAME TO file_assets;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_file_assets_content_hash ON file_assets(content_hash);
+        ");
+        println!("[数据库] file_assets 表已重建（移除 parse_status 字段）");
+    }
+
+    // ★ 删除 cleanup_queue 表（功能已合并到 knowledge_push_queue）
+    let has_cleanup_queue: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cleanup_queue'",
+        [], |r| r.get::<_,i64>(0),
+    ).unwrap_or(0) > 0;
+    if has_cleanup_queue {
+        let _ = conn.execute_batch("DROP TABLE IF EXISTS cleanup_queue;");
+        println!("[数据库] cleanup_queue 表已删除");
+    }
+
+    // ★ 创建 file_parse_cache 表（PDF断点续传临时缓存）
+    let _ = conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS file_parse_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT NOT NULL,
+            page_num INTEGER NOT NULL,
+            ocr_text TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            UNIQUE(file_id, page_num)
+        );
+    ");
+
+    // ★ 为 knowledge_push_queue 添加进度字段
+    let has_progress_page: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('knowledge_push_queue') WHERE name='progress_page'",
+        [], |r| r.get::<_,i64>(0),
+    ).unwrap_or(0) > 0;
+    if !has_progress_page {
+        let _ = conn.execute_batch("
+            ALTER TABLE knowledge_push_queue ADD COLUMN progress_page INTEGER DEFAULT 0;
+            ALTER TABLE knowledge_push_queue ADD COLUMN progress_total INTEGER DEFAULT 0;
+        ");
+        println!("[数据库] knowledge_push_queue 已添加进度字段");
     }
 
     Ok(())

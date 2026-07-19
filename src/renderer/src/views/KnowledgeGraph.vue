@@ -165,18 +165,20 @@ onUnmounted(() => {
       <!-- 清理队列调试 -->
       <div v-if="debugData" class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
         <h3 class="text-[12px] font-semibold text-surface-600 mb-3">清理队列状态</h3>
-        <div class="grid grid-cols-2 gap-2 mb-2">
-          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-amber-600">{{ debugData.stats.cleanup_pending }}</div><div class="text-[9px] text-surface-400">待清理</div></div>
-          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-slate-500">{{ debugData.stats.cleanup_done }}</div><div class="text-[9px] text-surface-400">已清理</div></div>
+        <div class="grid grid-cols-3 gap-2 mb-2">
+          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-amber-600">{{ debugData.stats.push_pending }}</div><div class="text-[9px] text-surface-400">待推送</div></div>
+          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-blue-500">{{ debugData.stats.push_processing }}</div><div class="text-[9px] text-surface-400">处理中</div></div>
+          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-red-500">{{ debugData.stats.push_failed }}</div><div class="text-[9px] text-surface-400">失败</div></div>
         </div>
-        <div v-if="debugData.cleanup_queue?.length">
-          <h4 class="text-[10px] text-surface-400 mb-1">cleanup_queue (最近 30 条)</h4>
+        <div v-if="debugData.push_queue?.length">
+          <h4 class="text-[10px] text-surface-400 mb-1">push_queue (最近 30 条)</h4>
           <div class="max-h-[200px] overflow-auto text-[8px] rounded border border-surface-200">
-            <div v-for="r in debugData.cleanup_queue" :key="r.id" class="px-1.5 py-0.5 border-b border-surface-100 flex items-center gap-1"
-              :class="r.status===1?'text-emerald-600':r.status===-1?'text-red-500':'text-amber-600'">
+            <div v-for="r in debugData.push_queue" :key="r.id" class="px-1.5 py-0.5 border-b border-surface-100 flex items-center gap-1"
+              :class="r.status==='failed'?'text-red-500':r.status==='processing'?'text-blue-500':'text-amber-600'">
               <span class="font-mono">{{ r.id }}</span>
               <span>{{ r.source_type }}/{{ r.source_id?.slice(0,8) }}...</span>
-              <span class="ml-auto">{{ r.status===1?'✓':r.status===-1?'✗':'⏳' }}</span>
+              <span class="text-[7px] text-surface-400">{{ r.operation }}</span>
+              <span class="ml-auto">{{ r.status==='failed'?'✗':r.status==='processing'?'⟳':'⏳' }}</span>
             </div>
           </div>
         </div>

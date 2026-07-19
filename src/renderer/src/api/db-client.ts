@@ -11,7 +11,7 @@ export interface SuccessResponse<T = void> { success: boolean; error?: string }
 export interface FetchNotesResponse extends SuccessResponse { notes: NoteRow[] }
 export interface FetchNotebooksResponse extends SuccessResponse { notebooks: NotebookRow[] }
 export interface ProjectRow { id: string; name: string; budget: string|number; description: string; status: string; owner: string; userId: string; displayId: string; created_at: string; updated_at: string; isArchived: boolean; bid_time: string; [key:string]: unknown }
-export interface FileRow { id: string; file_ext: string; file_size: number; parse_status: string; global_name: string; custom_name: string; created_at: string; updated_at: string; [key:string]: unknown }
+export interface FileRow { id: string; file_ext: string; file_size: number; global_name: string; custom_name: string; created_at: string; updated_at: string; [key:string]: unknown }
 export interface ProductRow { id: string; name: string; series_id: string|null; description: string; standard_specs: string; full_specs: string; created_at: string; updated_at: string; [key:string]: unknown }
 export interface ProductSeriesRow { id: string; name: string; parent_id: string|null; category: string; sort_order: number; [key:string]: unknown }
 export interface TodoRow { id: string; title: string; content: string; done: number|boolean; priority: string; due_date: string; repeat: string; project_id: string; project_name: string; created_at: string; [key:string]: unknown }
@@ -416,4 +416,4 @@ export async function projectExport(projectId: string): Promise<ExportResult> { 
 export async function batchExportProjects(projectIds: string[], filePath: string): Promise<ExportResult> { return invoke('projects_batch_export', { projectIds, filePath }) }
 
 // Pipeline Debug
-export async function kbPipelineDebug(): Promise<{success:boolean;stats:PipelineStatus;sync_queue:PipelineSourceItem[];cleanup_queue:PipelineSourceItem[]}> { return invoke('kb_pipeline_debug') }
+export async function kbPipelineDebug(): Promise<{success:boolean;stats:PipelineStatus;sync_queue:PipelineSourceItem[];push_queue:PipelineSourceItem[]}> { return invoke('kb_pipeline_debug') }

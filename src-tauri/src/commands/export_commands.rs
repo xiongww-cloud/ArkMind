@@ -748,9 +748,9 @@ fn import_files(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
         for a in assets {
             let id = a["id"].as_str().unwrap_or("");
             if id.is_empty() { continue; }
-            database::run("INSERT OR REPLACE INTO file_assets(id,file_ext,file_size,content_hash,original_name,parse_status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", &[
+            database::run("INSERT OR REPLACE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
                 json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
-                json!(a["original_name"]), json!(a["parse_status"]), json!(a["created_at"]), json!(a["updated_at"]),
+                json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
             ]).ok();
         }
     }

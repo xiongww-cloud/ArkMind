@@ -1,0 +1,2 @@
+[env]
+PDFIUM_STATIC_LIB_PATH = "D:\\Projects\\ArkMind\\src-tauri\\bin"

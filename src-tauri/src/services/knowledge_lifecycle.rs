@@ -27,55 +27,6 @@ pub fn notify_file_upload(file_id: &str) {
     crate::services::push_pipeline::enqueue_push("FILE", file_id, "file_upload");
 }
 
-/// 文件上传的实际处理逻辑（由 push_worker 调用，不再入队）
-pub fn notify_file_upload_inner(file_id: &str) {
-    // 1. 从 file_assets 获取文件信息
-    let row = match crate::database::get(
-        "SELECT id, file_ext, content_hash, original_name FROM file_assets WHERE id=?1",
-        &[json!(file_id)],
-    ) {
-        Ok(Some(r)) => r,
-        _ => { eprintln!("[记忆库] notify_file_upload_inner: file_assets 中找不到 {}", file_id); return; }
-    };
-    let ext = row["file_ext"].as_str().unwrap_or("");
-    let hash = row["content_hash"].as_str().unwrap_or("");
-
-    // 2. 拼接磁盘路径
-    let path = crate::commands::file_commands::flat_disk_path(hash);
-    if path.is_empty() || !std::path::Path::new(&path).exists() {
-        eprintln!("[记忆库] notify_file_upload_inner: 文件缺失 {}", path);
-        let _ = crate::database::run("UPDATE file_assets SET parse_status='FAILED' WHERE id=?", &[json!(file_id)]);
-        return;
-    }
-
-    // 3. 设置 PROCESSING
-    let _ = crate::database::run("UPDATE file_assets SET parse_status='PROCESSING' WHERE id=?", &[json!(file_id)]);
-
-    // 4. 智能解析
-    let parse_result = crate::services::file_parser::parse_file_smart(&path, ext);
-    if !parse_result.success || parse_result.text.is_empty() {
-        eprintln!("[记忆库] notify_file_upload_inner: 解析失败 {}", file_id);
-        let _ = crate::database::run("UPDATE file_assets SET parse_status='FAILED' WHERE id=?", &[json!(file_id)]);
-        return;
-    }
-
-    // 5. 文本清洗
-    let clean_text = crate::services::file_parser::clean_extracted_text_with_hint(&parse_result.text, ext);
-    if clean_text.trim().is_empty() {
-        eprintln!("[记忆库] notify_file_upload_inner: 清洗后无文本 {}", file_id);
-        let _ = crate::database::run("UPDATE file_assets SET parse_status='FAILED' WHERE id=?", &[json!(file_id)]);
-        return;
-    }
-
-    // 6. 标记完成 + 写入 source_data
-    let _ = crate::database::run(
-        "UPDATE file_assets SET parse_status='COMPLETED', updated_at=datetime('now','localtime') WHERE id=?",
-        &[json!(file_id)],
-    );
-    crate::database::file_sync_to_source_data(file_id, &clean_text);
-    eprintln!("[记忆库] notify_file_upload_inner: 完成 {} ({} 字符)", file_id, clean_text.len());
-}
-
 /// 重置知识管线：清空 chunks + 向量 + LanceDB，重新物化
 pub fn reset_pipeline() {
     eprintln!("[记忆库] reset_pipeline: 重置知识管线");

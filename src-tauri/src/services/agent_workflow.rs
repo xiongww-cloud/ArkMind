@@ -69,17 +69,16 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - ext_tool_manage_reminder: 管理提醒。action=ack(确认提醒，不再显示)，action=unack(取消确认，重新显示)。当用户说"知道了""好的我会处理"时，调用ack确认提醒。
 
 ## 工具选择策略（必须遵守）
-- 搜索与回忆：用户询问「某实体有几个XX」「某实体是什么」-> 使用 ext_tool_search 搜索对象
-- 内容搜索：用户询问「某文档说了什么」「具体内容是什么」-> 使用 ext_tool_search 搜索内容
-- ID回忆：用户需要按ID精确获取对象详情（带回知识上下文）-> 使用 ext_tool_object（传id或ids参数）
+- 搜索对象：用户询问「某实体有几个XX」「某实体是什么」「XX项目/产品的详情」-> 使用 ext_tool_search 搜索对象，返回结果已包含对象基本信息、关联对象（source_id）和 ChunkID
+- 内容搜索：用户询问「某文档说了什么」「关于XX的技术细节」-> 使用 ext_tool_search 搜索内容
+- 结构化查询：用户要求按具体字段过滤、排序、分页（如「投标中的项目」「预算>100万」「未完成的待办」）-> 使用 ext_tool_query
+- 字段/数值比较：需要按数值比较、排序、分页 -> 使用 ext_tool_query
+- ID回忆：用户已经提供了明确ID，或需要按时间范围浏览对象详情 -> 使用 ext_tool_object（传id或ids参数）
 - 时间浏览：用户需要按时间范围浏览对象 -> 使用 ext_tool_object（传start_time/end_time）
-- 字段过滤：用户询问具体字段过滤（如「投标中的项目」「预算>100万」「未完成的待办」）-> 使用 ext_tool_query
-- 数值比较/排序/分页：需要按数值比较、排序、分页 -> 使用 ext_tool_query
 - 管理操作：创建/更新/删除项目、待办、合作伙伴、联系人 -> 使用对应的 manage 工具
 - 记忆管理：记住重要结论 -> ext_tool_memory（action=create）；搜索记忆 -> ext_tool_memory（action=search）
 - 提醒管理：用户确认提醒（如"知道了""好的我会处理"）-> ext_tool_manage_reminder（action=ack, reminder_type, entity_id）
-- 不确定时：先用 ext_tool_search 搜索对象，再用 ext_tool_search 补充内容
-- ⚠️ 重要：每次工具调用后，立即评估返回结果是否已足够回答用户问题。如果已足够，必须直接输出最终答案，禁止再进行额外搜索。只有当返回结果明显不足或不相关时，才进行下一轮搜索。
+- ⚠️ 禁止冗余调用：如果 ext_tool_search 已经返回了某对象 chunk 内容、来源、关联对象，禁止再用 ext_tool_object 或 ext_tool_query 重复获取同一对象。返回结果已足够时直接输出最终答案，禁止再发起额外搜索。
 
 ## 认知决策流程（必须遵守）
 当用户询问已有对象的信息时：
@@ -137,6 +136,12 @@ const AGENT_SYSTEM_PROMPT: &str = r#"你是企业级知识库智能助手。
 - 不确定来源：使用「根据目前的了解」「综合来看」
 
 ⚠️ 这一规则的目的是让用户知道信息的来源和时效性，避免将过时的记忆当作最新事实。
+
+## 回答内容约束（必须遵守）
+
+- 你的思考过程、分析步骤、整理过程、自我评估等只应出现在 reasoning_content 中，**禁止出现在最终回答的 content 里**。
+- 最终回答中禁止包含"数据已经非常完整了""让我整理一下""现在信息充分了""我可以回答了""让我想想"等过程性语句。
+- 禁止在最终回答中先列出草稿或中间结论，再写正式答案。直接输出最终答案。
 
 ## 用户策略（必须严格遵守）
 {{user_policies}}
@@ -268,6 +273,8 @@ impl SessionMemory {
                         "PRODUCT" => "product",
                         "PROJECT" => "project",
                         "NOTE" => "note",
+                        "TODO" => "todo",
+                        "CONTACT" => "contact",
                         _ => parts[0],
                     };
                     let name = tl.split("| source_id: ").next()
@@ -276,17 +283,6 @@ impl SessionMemory {
                         .unwrap_or("");
                     self.update(obj_type, parts[1], name);
                 }
-            }
-        } else {
-            // 旧格式兼容（不含 source_id 的纯 [Object] 行）
-            if let Some(name) = tl.strip_prefix("[Object] Product:").map(|s| s.trim().split('|').next().unwrap_or("").trim()) {
-                self.update("product", name, name);
-            }
-            if let Some(name) = tl.strip_prefix("[Object] Project:").map(|s| s.trim().split('|').next().unwrap_or("").trim()) {
-                self.update("project", name, name);
-            }
-            if let Some(name) = tl.strip_prefix("[Object] File:").map(|s| s.trim().split('|').next().unwrap_or("").trim()) {
-                self.update("file", name, name);
             }
         }
         if let Some(cid) = tl.strip_prefix("ChunkID：").map(|s| s.trim()) {
@@ -586,7 +582,8 @@ fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collection
     let mut scope_ids: Vec<String> = Vec::new();
     let type_prefix = |t: &str| -> Option<&str> {
         match t { "product" => Some("PRODUCT"), "project" => Some("PROJECT"),
-            "file" => Some("FILE"), "note" => Some("NOTE"), "chat" => Some("CHAT"), _ => None }
+            "file" => Some("FILE"), "note" => Some("NOTE"), "todo" => Some("TODO"),
+            "contact" => Some("CONTACT"), "chat" => Some("CHAT"), _ => None }
     };
     // 1. top 5 高分对象
     let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
@@ -685,14 +682,19 @@ fn build_tools_definitions() -> Value {
 
 /// Fallback: parse XML tool calls from content when model does not use function calling format
 fn parse_xml_tool_calls(content: &str) -> Option<Vec<Value>> {
-    // 清理非标准前缀（如 DeepSeek 的 ｜｜DSML｜｜）
-    let cleaned = content.replace("｜｜DSML｜｜", "").replace("‖DSML‖", "").replace("<<DSML>>", "");
+    // 匹配所有 DSML 变体（全角/半角/单双字符/混合/Unicode/闭合标签）
+    // 支持: <｜｜DSML｜｜, <|DSML|, <‖DSML‖, <DSML>, ＜DSML＞, </｜｜DSML｜｜, 等
+    let re = regex::Regex::new(r"(?i)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*").ok()?;
+    let cleaned = re.replace_all(content, "").to_string();
+    
+    // 查找 tool_calls 块
     let tag_start = "tool_calls>";
     let tag_end = "/tool_calls>";
     if !cleaned.contains(tag_start) || !cleaned.contains(tag_end) { return None; }
     let start = cleaned.find(tag_start).map(|i| i + tag_start.len())?;
     let end = cleaned.find(tag_end)?;
     let xml_body = &cleaned[start..end];
+    
     let mut tool_calls = Vec::new();
     let mut remaining = xml_body;
     while let Some(inv_start) = remaining.find("invoke name=\"") {
@@ -726,50 +728,128 @@ fn parse_xml_tool_calls(content: &str) -> Option<Vec<Value>> {
     }
     if tool_calls.is_empty() { None } else { Some(tool_calls) }
 }
-async fn call_llm_with_tools(messages: &[ChatMessage], tools: &Value, _app_handle: &Option<tauri::AppHandle>) -> Result<Value, String> {
+/// ★ 单请求流式调用：一次请求同时完成
+///   - content 逐 token 流式输出到前端（agent:token / agent:start-answer）
+///   - tool_calls delta 按 index 累积（工具调用决策）
+///   - usage 统计（stream_options.include_usage）
+/// 返回 (content, reasoning_content, tool_calls, usage)
+async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
     let (url, api_key, model) = get_api_endpoint();
-    let msgs: Vec<Value> = messages.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect();
-    let body = json!({"model":model,"messages":msgs,"tools":tools,"tool_choice":"auto","temperature":0.3});
+    let msgs: Vec<Value> = messages.iter().map(|m| {
+        let mut v = serde_json::to_value(m).unwrap_or_default();
+        if let Some(obj) = v.as_object_mut() {
+            if let Some(tc) = obj.get("tool_calls") {
+                if tc.as_array().map_or(false, |a| a.is_empty()) { obj.remove("tool_calls"); }
+            }
+        }
+        v
+    }).collect();
+    let mut body = json!({"model":model,"messages":msgs,"temperature":0.3,"stream":true,"stream_options":{"include_usage":true}});
+    if let Some(t) = tools { body["tools"] = t.clone(); body["tool_choice"] = json!("auto"); }
     let mut req = AGENT_HTTP_CLIENT.post(&format!("{}/chat/completions", url)).json(&body);
     if !api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", api_key)); }
+    req = req.header("Accept", "text/event-stream");
+    req = req.timeout(std::time::Duration::from_secs(300)); // 覆盖客户端 30s 默认：reqwest 的 timeout 覆盖整个流式周期
+    let t0 = std::time::Instant::now();
     let resp = req.send().await.map_err(|e| format!("LLM: {e}"))?;
+    eprintln!("[SSE] headers +{}ms status={}", t0.elapsed().as_millis(), resp.status());
     if !resp.status().is_success() { let s = resp.status(); let b = resp.text().await.unwrap_or_default(); return Err(format!("LLM {s}: {b}")); }
-    resp.json().await.map_err(|e| format!("JSON: {e}"))
-}
 
-async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<tauri::AppHandle>) -> Result<String, String> {
-    let (url, api_key, model) = get_api_endpoint();
-    let msgs: Vec<Value> = messages.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect();
-    let body = json!({"model":model,"messages":msgs,"temperature":0.3,"stream":true});
-    let mut req = AGENT_HTTP_CLIENT.post(&format!("{}/chat/completions", url)).json(&body);
-    if !api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", api_key)); }
-    let resp = req.send().await.map_err(|e| format!("LLM: {e}"))?;
-    if !resp.status().is_success() { let s = resp.status(); let b = resp.text().await.unwrap_or_default(); return Err(format!("LLM {s}: {b}")); }
-    let byte_stream = resp.bytes_stream();
-    let mut buffer = String::new();
-    let mut full = String::new();
-    let mut stream = byte_stream;
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| format!("stream: {e}"))?;
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].to_string();
-            buffer = buffer[pos+1..].to_string();
-            if line.is_empty() || line == "data: [DONE]" { continue; }
-            if !line.starts_with("data: ") { continue; }
-            if let Ok(chunk) = serde_json::from_str::<Value>(&line[6..]) {
+    // SSE 解析状态
+    struct SseState {
+        buf: String,
+        full: String,
+        reasoning: String,
+        tca: Vec<(String, String, String)>, // (id, name, arguments)
+        usage: Option<Value>,
+        first: bool,
+        count: u64,
+    }
+    let mut st = SseState { buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(), usage: None, first: true, count: 0 };
+    let mut stream = resp.bytes_stream();
+
+    // 尝试从 buffer 头部提取一个完整的 SSE JSON 并处理；返回 false 表示数据不完整
+    let try_process_one = |st: &mut SseState, app: &Option<tauri::AppHandle>| -> bool {
+        let trimmed_start = st.buf.find("data:").unwrap_or(0);
+        if trimmed_start > 0 { st.buf = st.buf[trimmed_start..].to_string(); }
+        let after_prefix = if st.buf.starts_with("data: ") { 6 } else if st.buf.starts_with("data:") { 5 } else { return false; };
+        let json_part = &st.buf[after_prefix..];
+        let json_end = json_part.find("data:").unwrap_or(json_part.len());
+        let json_str = json_part[..json_end].trim();
+        if json_str.is_empty() { return false; }
+        if json_str.starts_with("[DONE]") { st.buf = st.buf[after_prefix + json_end..].to_string(); return true; }
+        match serde_json::from_str::<Value>(json_str) {
+            Ok(chunk) => {
+                st.buf = st.buf[after_prefix + json_end..].to_string();
+                if chunk["usage"].is_object() { st.usage = Some(chunk["usage"].clone()); }
                 if let Some(choices) = chunk["choices"].as_array() {
                     for c in choices {
-                        if let Some(tok) = c["delta"]["content"].as_str() {
-                            full.push_str(tok);
-                            if let Some(ref h) = app_handle { let _ = h.emit("agent:token", json!({"token": tok})); }
+                        let delta = &c["delta"];
+                        // content → 逐 token 流式输出到前端
+                        if let Some(tok) = delta["content"].as_str() {
+                            st.full.push_str(tok);
+                            st.count += 1;
+                            if st.first || st.count % 20 == 0 { eprintln!("[SSE token] #{} +{}ms {:?}", st.count, t0.elapsed().as_millis(), tok); }
+                            if let Some(ref h) = app {
+                                if st.first {
+                                    let _ = h.emit("agent:start-answer", json!({}));
+                                    st.first = false;
+                                }
+                                let _ = h.emit("agent:token", json!({"token": tok}));
+                            }
+                        }
+                        // reasoning_content → 仅累积（不污染最终回答）
+                        if let Some(rtok) = delta["reasoning_content"].as_str() { st.reasoning.push_str(rtok); }
+                        // tool_calls delta → 按 index 累积
+                        if let Some(tds) = delta["tool_calls"].as_array() {
+                            for td in tds {
+                                let idx = td["index"].as_u64().unwrap_or(0) as usize;
+                                while st.tca.len() <= idx { st.tca.push((String::new(), String::new(), String::new())); }
+                                if let Some(id) = td["id"].as_str() { st.tca[idx].0 = id.to_string(); }
+                                if let Some(name) = td["function"]["name"].as_str() { st.tca[idx].1 = name.to_string(); }
+                                if let Some(args) = td["function"]["arguments"].as_str() { st.tca[idx].2.push_str(args); }
+                            }
                         }
                     }
                 }
+                true
             }
+            Err(_) => false // JSON 不完整，等下一个 chunk
         }
+    };
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = match chunk {
+            Ok(b) => b,
+            Err(e) => { eprintln!("[SSE] stream error +{}ms: {e}", t0.elapsed().as_millis()); return Err(format!("stream: {e}")); }
+        };
+        st.buf.push_str(&String::from_utf8_lossy(&bytes));
+        st.buf = st.buf.replace("\r\n", "\n");
+        while try_process_one(&mut st, &app_handle) {}
     }
-    Ok(full)
+    // 流结束后处理剩余数据
+    while try_process_one(&mut st, &app_handle) {}
+    eprintln!("[SSE] stream end +{}ms tokens={} len={} tool_calls={}", t0.elapsed().as_millis(), st.count, st.full.len(), st.tca.len());
+
+    let tool_calls: Vec<Value> = st.tca.into_iter()
+        .filter(|(id, name, _)| !id.is_empty() || !name.is_empty())
+        .enumerate()
+        .map(|(i, (id, name, arguments))| json!({
+            "id": if id.is_empty() { format!("call_{}", i) } else { id },
+            "type": "function",
+            "function": {"name": name, "arguments": arguments}
+        }))
+        .collect();
+    let reasoning = if st.reasoning.is_empty() { None } else { Some(st.reasoning) };
+    Ok((st.full, reasoning, tool_calls, st.usage))
+}
+
+/// 流式补生成（无工具）：用于强制总结等路径；答案逐 token 输出到前端
+async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<tauri::AppHandle>) -> Result<String, String> {
+    let (content, _, _, _) = call_llm_streaming(messages, None, app_handle).await?;
+    // 过滤 DSML 残留
+    let re_dsml = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*[^\n]*").unwrap();
+    Ok(re_dsml.replace_all(&content, "").to_string())
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -787,11 +867,12 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
         &[json!(source_type), json!(source_id)],
     ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
 
+    eprintln!("[build_chunk_metadata] source_type={}, source_id={}, title={}", source_type, source_id, title);
+
     let mut lines: Vec<String> = Vec::new();
-    if !title.is_empty() {
-        let type_label = match source_type { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", "CHANNEL" => "渠道", "VENDOR" => "供应商", "CONTACT" => "联系人", "CUSTOMER" => "客户", _ => source_type };
-        lines.push(format!("来源：{} · {}", type_label, title));
-    }
+    let type_label = match source_type { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", "CHANNEL" => "渠道", "VENDOR" => "供应商", "CONTACT" => "联系人", "CUSTOMER" => "客户", _ => source_type };
+    let title_display = if title.is_empty() { source_id } else { title.as_str() };
+    lines.push(format!("来源：{} · {} | source_id: {}-{}", type_label, title_display, source_type.to_uppercase(), source_id));
 
     // ── 2. 从 business_relations 查所有关联 ──
     let rels = database::all(
@@ -803,6 +884,8 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
         &[json!(source_type), json!(source_id)],
     ).unwrap_or_default();
 
+    eprintln!("[build_chunk_metadata] rels={}, reverse_rels={}", rels.len(), reverse_rels.len());
+
     // 合并双向关联，去重
     let mut all_rels: Vec<(String, String, String, String)> = rels.into_iter()
         .chain(reverse_rels.into_iter())
@@ -812,25 +895,24 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
     all_rels.sort_by(|a,b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     all_rels.dedup_by(|a,b| a.0 == b.0 && a.1 == b.1);
 
+    eprintln!("[build_chunk_metadata] all_rels after dedup: {}", all_rels.len());
+    for (tt, tid, rt, _) in &all_rels {
+        eprintln!("[build_chunk_metadata]   - {} -> {} ({})", source_type, tt, rt);
+    }
+
     if all_rels.is_empty() {
-        // 无关联时输出占位行
-        let is_self = |t: &str| t.to_uppercase() == source_type;
-        for label in &["项目", "产品", "笔记", "待办", "文件", "渠道", "供应商", "联系人", "客户"] {
-            let type_key = match *label { "项目" => "PROJECT", "产品" => "PRODUCT", "笔记" => "NOTE", "待办" => "TODO", "文件" => "FILE", "渠道" => "CHANNEL", "供应商" => "VENDOR", "联系人" => "CONTACT", "客户" => "CUSTOMER", _ => "" };
-            if !is_self(type_key) { lines.push(format!("{}：无关联{}", label, label)); }
-        }
-        if lines.is_empty() { return String::new(); }
-        return lines.join("\n");
+        // 无关联时只返回标题行
+        return if lines.is_empty() { String::new() } else { lines.join("\n") };
     }
 
     // ── 3. 批量查名称 ──
     let mut name_cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut targets_by_type: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
-    for (tt, tid, _rt, _meta) in &all_rels {
-        targets_by_type.entry(tt.clone()).or_default().push((tid.clone(), _meta.clone()));
+    let mut targets_by_type: std::collections::HashMap<String, Vec<(String, String, String)>> = std::collections::HashMap::new();
+    for (tt, tid, rt, _meta) in &all_rels {
+        targets_by_type.entry(tt.clone()).or_default().push((tid.clone(), rt.clone(), _meta.clone()));
     }
     for (tt, targets) in &targets_by_type {
-        let ids: Vec<String> = targets.iter().map(|(id,_)| id.clone()).collect();
+        let ids: Vec<String> = targets.iter().map(|(id,_,_)| id.clone()).collect();
         if ids.is_empty() { continue; }
         let ph: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
         let params: Vec<serde_json::Value> = ids.iter().map(|id| json!(id)).collect();
@@ -847,11 +929,47 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
         }
     }
 
+    // 关系类型中文映射（按 source_type / target_type / relation_type 方向感知）
+    let relation_label = |st: &str, tt: &str, rt: &str| -> String {
+        match (st, tt, rt) {
+            // PROJECT 作为主体的正向关系
+            ("PROJECT", "PRODUCT", "has_product") | ("PROJECT", "PRODUCT", "belongs_to") | ("PROJECT", "PRODUCT", "uses") => "项目使用".to_string(),
+            ("PROJECT", "FILE", "has_file") | ("PROJECT", "FILE", "belongs_to") => "项目文件".to_string(),
+            ("PROJECT", "CHANNEL", _) => "项目渠道".to_string(),
+            ("PROJECT", "VENDOR", _) => "项目厂商".to_string(),
+            ("PROJECT", "CONTACT", _) => "项目联系人".to_string(),
+            ("PROJECT", "CUSTOMER", _) => "项目客户".to_string(),
+            ("PROJECT", "NOTE", "authored_by") | ("PROJECT", "NOTE", "has_note") | ("PROJECT", "NOTE", "belongs_to") => "项目笔记".to_string(),
+            ("PROJECT", "TODO", "has_todo") | ("PROJECT", "TODO", "belongs_to") => "项目待办".to_string(),
+
+            // 反向关系（target 指向 source）
+            ("PRODUCT", "PROJECT", "has_product") | ("PRODUCT", "PROJECT", "belongs_to") | ("PRODUCT", "PROJECT", "uses") => "用于项目".to_string(),
+            ("FILE", "PROJECT", "has_file") | ("FILE", "PROJECT", "belongs_to") => "项目文件".to_string(),
+            ("CHANNEL", "PROJECT", _) => "渠道归属".to_string(),
+            ("VENDOR", "PROJECT", _) => "厂商归属".to_string(),
+            ("CONTACT", "PROJECT", _) => "项目联系人".to_string(),
+            ("CUSTOMER", "PROJECT", _) => "客户归属".to_string(),
+            ("NOTE", "PROJECT", "authored_by") | ("NOTE", "PROJECT", "has_note") => "项目笔记".to_string(),
+            ("TODO", "PROJECT", "has_todo") => "项目待办".to_string(),
+
+            // FILE 与 PRODUCT 之间
+            ("FILE", "PRODUCT", "has_file") => "产品资料".to_string(),
+            ("PRODUCT", "FILE", "has_file") => "产品资料".to_string(),
+
+            // 通用兜底
+            (_, _, "belongs_to") => "归属于".to_string(),
+            (_, _, "related") => "相关".to_string(),
+            (_, _, "authored_by") => "创建".to_string(),
+            _ => rt.to_string(),
+        }
+    };
+
     // ── 4. 按类型格式化 ──
-    let format_targets = |tt: &str, targets: &[(String, String)]| -> Vec<String> {
-        targets.iter().filter_map(|(tid, meta)| {
+    let format_targets = |tt: &str, targets: &[(String, String, String)]| -> Vec<String> {
+        targets.iter().filter_map(|(tid, rt, meta)| {
             let name = name_cache.get(&format!("{}-{}", tt, tid)).map(|s| s.as_str()).unwrap_or("");
-            if name.is_empty() { return None; }
+            let type_label = match tt { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", "CHANNEL" => "渠道", "VENDOR" => "供应商", "CONTACT" => "联系人", "CUSTOMER" => "客户", _ => tt };
+            let display_name = format!("[{}] {}", type_label, if name.is_empty() { tid.as_str() } else { name });
             let meta_val: Value = serde_json::from_str(meta).unwrap_or(Value::Null);
             let custom = meta_val.get("custom_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
             let mut extra = String::new();
@@ -868,22 +986,22 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
                     if !pname.is_empty() { extra.push_str(&format!(" — {}({})", pname, type_label)); }
                 }
             }
-            Some(format!("· {}{}", name, extra))
+            Some(format!("· {} | 关系：{} | source_id: {}-{}", display_name, relation_label(source_type, tt, rt), tt, tid))
         }).collect()
     };
 
-    for (label, type_key) in &[("项目", "PROJECT"), ("产品", "PRODUCT"), ("笔记", "NOTE"), ("待办", "TODO"), ("文件", "FILE"), ("渠道", "CHANNEL"), ("供应商", "VENDOR"), ("联系人", "CONTACT"), ("客户", "CUSTOMER")] {
+    let mut rel_items: Vec<String> = Vec::new();
+    for (_, type_key) in &[("关联项目", "PROJECT"), ("关联产品", "PRODUCT"), ("关联笔记", "NOTE"), ("关联待办", "TODO"), ("关联文件", "FILE"), ("关联渠道", "CHANNEL"), ("关联供应商", "VENDOR"), ("关联联系人", "CONTACT"), ("关联客户", "CUSTOMER")] {
         if type_key == &source_type { continue; } // 跳过自身类型
         if let Some(targets) = targets_by_type.get(*type_key) {
-            let items = format_targets(type_key, targets);
-            if !items.is_empty() { lines.push(format!("{}：\n{}", label, items.join("\n"))); }
-            else { lines.push(format!("{}：无关联{}", label, label)); }
-        } else {
-            lines.push(format!("{}：无关联{}", label, label));
+            rel_items.extend(format_targets(type_key, targets));
         }
     }
+    if !rel_items.is_empty() {
+        lines.push(format!("关联对象：\n{}", rel_items.join("\n")));
+    }
 
-    if lines.len() <= 1 { return String::new(); } // 只有标题没有关联
+    if lines.is_empty() { return String::new(); }
     lines.join("\n")
 }
 
@@ -1018,23 +1136,43 @@ fn resolve_scope_to_rowids(scope: &[String]) -> std::collections::HashSet<i64> {
 
 /// 执行 search 并同时返回发现的来源列表
 async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std::collections::HashSet<i64>>, visited_sources: &std::collections::HashSet<String>, visited_chunks: &std::collections::HashSet<String>, time_range: Option<(String, String)>, shown_memory_ids: &std::collections::HashSet<String>) -> (String, Vec<String>) {
-    let query = keywords.join(" "); if query.trim().is_empty() { return ("no keywords".into(), vec![]); }
+    if keywords.is_empty() || keywords.join(" ").trim().is_empty() { return ("no keywords".into(), vec![]); }
+
+    // ★ 停用词过滤：避免"项目""产品"等类型词污染 FTS5/Vector 搜索（对象名精确匹配也使用过滤后关键词）
+    let filtered_keywords: Vec<String> = {
+        let stopwords: std::collections::HashSet<&str> = [
+            "项目", "产品", "文件", "客户", "渠道", "厂商", "供应商", "联系人", "笔记", "待办", "任务",
+            "project", "product", "file", "customer", "channel", "vendor", "contact", "note", "todo",
+            "介绍", "详情", "什么", "查询", "检索", "搜索", "一下", "查一下", "的", "是", "和", "或",
+        ].iter().cloned().collect();
+        let f: Vec<String> = keywords.iter().filter(|k| !stopwords.contains(k.as_str().to_lowercase().as_str())).cloned().collect();
+        if f.is_empty() { keywords.to_vec() } else { f }
+    };
+    let keywords = filtered_keywords.as_slice();
+    let query = keywords.join(" ");
+
     let tag_rowids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut obj_head = String::new();
     let mut matched_sources: std::collections::HashSet<(String,String)> = std::collections::HashSet::new();
     if !keywords.is_empty() {
         let like = format!("%{}%", crate::database::escape_like(&keywords.join(" ")));
         if let Ok(rows) = database::all("SELECT id,name,status FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
-            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PROJECT".into(), id.clone())); obj_head.push_str(&format!("[Object] Project: {} | Status: {}\n",r["name"].as_str().unwrap_or(""),r["status"].as_str().unwrap_or(""))); }
+            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PROJECT".into(), id.clone())); obj_head.push_str(&format!("[Object] Project: {} | Status: {} | source_id: PROJECT-{}\n",r["name"].as_str().unwrap_or(""),r["status"].as_str().unwrap_or(""),id)); }
         }
         if let Ok(rows) = database::all("SELECT id,name FROM products WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
-            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PRODUCT".into(), id.clone())); obj_head.push_str(&format!("[Object] Product: {}\n",r["name"].as_str().unwrap_or(""))); }
+            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PRODUCT".into(), id.clone())); obj_head.push_str(&format!("[Object] Product: {} | source_id: PRODUCT-{}\n",r["name"].as_str().unwrap_or(""),id)); }
         }
-        if let Ok(rows) = database::all("SELECT fr.custom_name,fa.id,fa.file_ext FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.custom_name LIKE ?1 ORDER BY LENGTH(fr.custom_name) ASC LIMIT 3",&[json!(&like)]) {
-            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("FILE".into(), id.clone())); obj_head.push_str(&format!("[Object] File: {}{}\n",r["custom_name"].as_str().unwrap_or(""),r["file_ext"].as_str().unwrap_or(""))); }
+        if let Ok(rows) = database::all("SELECT source_id, title FROM source_data WHERE source_type='FILE' AND title LIKE ?1 ORDER BY LENGTH(title) ASC LIMIT 3",&[json!(&like)]) {
+            for r in &rows { let id = r["source_id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("FILE".into(), id.clone())); obj_head.push_str(&format!("[Object] File: {} | source_id: FILE-{}\n",r["title"].as_str().unwrap_or(""),id)); }
         }
-        if let Ok(rows) = database::all("SELECT title FROM notes WHERE title LIKE ?1 ORDER BY LENGTH(title) ASC LIMIT 3",&[json!(&like)]) {
-            for r in &rows { obj_head.push_str(&format!("[Object] Note: {}\n",r["title"].as_str().unwrap_or(""))); }
+        if let Ok(rows) = database::all("SELECT note_id,title FROM notes WHERE title LIKE ?1 ORDER BY LENGTH(title) ASC LIMIT 3",&[json!(&like)]) {
+            for r in &rows { let id = r["note_id"].as_str().unwrap_or("").to_string(); obj_head.push_str(&format!("[Object] Note: {} | source_id: NOTE-{}\n",r["title"].as_str().unwrap_or(""),id)); }
+        }
+        if let Ok(rows) = database::all("SELECT id,title,priority,due_date FROM todos WHERE title LIKE ?1 ORDER BY LENGTH(title) ASC LIMIT 3",&[json!(&like)]) {
+            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); let pri = r["priority"].as_str().unwrap_or(""); let due = r["due_date"].as_str().unwrap_or(""); let extra = if !pri.is_empty() { format!(" | 优先级: {}", pri) } else { String::new() } + &if !due.is_empty() { format!(" | 截止: {}", due) } else { String::new() }; obj_head.push_str(&format!("[Object] Todo: {}{} | source_id: TODO-{}\n",r["title"].as_str().unwrap_or(""),extra,id)); }
+        }
+        if let Ok(rows) = database::all("SELECT id,name,phone,position FROM partner_contacts WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
+            for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); let pos = r["position"].as_str().unwrap_or(""); let extra = if !pos.is_empty() { format!(" | {}", pos) } else { String::new() }; obj_head.push_str(&format!("[Object] Contact: {}{} | source_id: CONTACT-{}\n",r["name"].as_str().unwrap_or(""),extra,id)); }
         }
     }
     if !obj_head.is_empty() { obj_head = format!("--- Related Objects ---\n{}--- Chunks ---\n", obj_head); }
@@ -1211,17 +1349,6 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
                 "TODO" => "TODO",
                 _ => st,
             };
-            if let Ok(Some(title_row)) = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(source_label), json!(sid)]) {
-                let name = title_row["title"].as_str().filter(|t| !t.is_empty()).map(|s| s.to_string()).or_else(|| {
-                    if source_label == "FILE" {
-                        database::get("SELECT custom_name FROM file_relations WHERE file_id=?1 AND custom_name != '' LIMIT 1",&[json!(sid)])
-                            .ok().flatten().and_then(|r| r["custom_name"].as_str().map(|s| s.to_string()))
-                    } else { None }
-                });
-                if let Some(name) = name {
-                    meta.push_str(&format!("\n[{}] {} | source_id: {}-{}", source_label, name, source_label, sid));
-                }
-            }
             let created_at: String = database::get(
                 "SELECT created_at FROM knowledge_chunks WHERE id=?1", &[json!(cr)],
             ).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
@@ -1236,17 +1363,31 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
 
             found_sources.push(format!("{}-{}", st, sid));
 
-            // ★ 关联对象自动进入 workspace
+            // ★ 关联对象自动进入 workspace（统一从 business_relations 查询）
             match st.as_str() {
                 "FILE" => {
-                    for rel_type in &["project", "product", "todo", "note"] {
+                    // 文件关联的实体：双向查询
+                    for rel_type in &["PROJECT", "PRODUCT", "TODO", "NOTE"] {
+                        // 正向：FILE 是 source
                         if let Ok(rows) = database::all(
-                            "SELECT entity_id FROM file_relations WHERE file_id=?1 AND entity_type=?2 AND entity_id!=''",
+                            "SELECT target_id FROM business_relations WHERE source_type='FILE' AND source_id=?1 AND target_type=?2",
                             &[json!(sid.as_str()), json!(rel_type)],
                         ) {
                             for r in &rows {
-                                if let Some(eid) = r["entity_id"].as_str().filter(|s| !s.is_empty()) {
-                                    let dedup = format!("{}-{}", rel_type.to_uppercase(), eid);
+                                if let Some(eid) = r["target_id"].as_str().filter(|s| !s.is_empty()) {
+                                    let dedup = format!("{}-{}", rel_type, eid);
+                                    if !found_sources.iter().any(|s| s == &dedup) { found_sources.push(dedup); }
+                                }
+                            }
+                        }
+                        // 反向：FILE 是 target
+                        if let Ok(rows) = database::all(
+                            "SELECT source_id FROM business_relations WHERE target_type='FILE' AND target_id=?1 AND source_type=?2",
+                            &[json!(sid.as_str()), json!(rel_type)],
+                        ) {
+                            for r in &rows {
+                                if let Some(eid) = r["source_id"].as_str().filter(|s| !s.is_empty()) {
+                                    let dedup = format!("{}-{}", rel_type, eid);
                                     if !found_sources.iter().any(|s| s == &dedup) { found_sources.push(dedup); }
                                 }
                             }
@@ -1254,12 +1395,26 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
                     }
                 }
                 "PROJECT" | "PRODUCT" | "NOTE" | "TODO" => {
+                    // 实体关联的文件：双向查询
+                    // 正向：实体是 source，FILE 是 target
                     if let Ok(rows) = database::all(
-                        "SELECT DISTINCT file_id FROM file_relations WHERE entity_id=?1 AND file_id IS NOT NULL AND file_id!=''",
-                        &[json!(sid.as_str())],
+                        "SELECT target_id FROM business_relations WHERE source_type=?1 AND source_id=?2 AND target_type='FILE'",
+                        &[json!(st), json!(sid.as_str())],
                     ) {
                         for r in &rows {
-                            if let Some(fid) = r["file_id"].as_str().filter(|s| !s.is_empty()) {
+                            if let Some(fid) = r["target_id"].as_str().filter(|s| !s.is_empty()) {
+                                let dedup = format!("FILE-{}", fid);
+                                if !found_sources.iter().any(|s| s == &dedup) { found_sources.push(dedup); }
+                            }
+                        }
+                    }
+                    // 反向：实体是 target，FILE 是 source
+                    if let Ok(rows) = database::all(
+                        "SELECT source_id FROM business_relations WHERE target_type=?1 AND target_id=?2 AND source_type='FILE'",
+                        &[json!(st), json!(sid.as_str())],
+                    ) {
+                        for r in &rows {
+                            if let Some(fid) = r["source_id"].as_str().filter(|s| !s.is_empty()) {
                                 let dedup = format!("FILE-{}", fid);
                                 if !found_sources.iter().any(|s| s == &dedup) { found_sources.push(dedup); }
                             }
@@ -1291,39 +1446,8 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
             (format!("{}{}", obj_head.trim(), horizontal).trim().to_string(), found_sources)
         }
     } else {
-        // ★ Coverage-aware: 检测已命中 source 的未访问热点
-        let mut hotspot_hint = String::new();
-        if !found_sources.is_empty() {
-            let mut hotspots: Vec<(String, i64)> = Vec::new();
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for src in &found_sources {
-                if !seen.insert(src.clone()) { continue; }
-                let parts: Vec<&str> = src.splitn(2, '-').collect();
-                if parts.len() != 2 { continue; }
-                let (st, sid) = (parts[0], parts[1]);
-                if let Ok(Some(row)) = database::get(
-                    "SELECT COUNT(*) as cnt FROM knowledge_chunks kc JOIN source_data sd ON sd.id=kc.source_data_id WHERE sd.source_type=?1 AND sd.source_id=?2 AND kc.chunk_type='parent'",
-                    &[json!(st), json!(sid)]
-                ) {
-                    let total = row["cnt"].as_i64().unwrap_or(0);
-                    if total > 3 {
-                        // 估算已访问数（从 visited_chunks 中匹配该 source 的）
-                        let visited_count = visited_sources.iter().filter(|v| v.starts_with(&format!("{}-{}", st, sid))).count() as i64;
-                        let remaining = total - visited_count;
-                        if remaining > 3 {
-                            let label = format!("{}-{}", st, sid);
-                            hotspots.push((label, remaining));
-                        }
-                    }
-                }
-            }
-            if !hotspots.is_empty() {
-                hotspots.sort_by(|a, b| b.1.cmp(&a.1));
-                let hint: Vec<String> = hotspots.iter().take(4).map(|(name, cnt)| format!("{}({}块)", name, cnt)).collect();
-                hotspot_hint = format!("\n\n🔍 未访问热点: {}", hint.join(" | "));
-            }
-        }
-        (format!("{}{}{}{}", obj_head, out.trim(), horizontal, hotspot_hint).trim().to_string(), found_sources)
+        // 不再输出"未访问热点"提示，避免给 LLM 造成无关噪声
+        (format!("{}{}{}", obj_head, out.trim(), horizontal).trim().to_string(), found_sources)
     }
 }
 
@@ -1420,12 +1544,22 @@ fn execute_traverse(chunk_id: &str, edge_type: &str, radius: usize, visited: &st
         }
         "Related" => {
             let mut out = String::new();
-            for &(ety, name_cn) in &[("product","产品"), ("project","项目")] {
+            for &(ety, name_cn) in &[("PRODUCT","产品"), ("PROJECT","项目")] {
                 let ids: Vec<String> = if target_name.trim().is_empty() {
-                    database::all("SELECT fr.entity_id FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.entity_type=?1 AND fa.id=?2 LIMIT 3",&[json!(ety),json!(&row_sid)]).unwrap_or_default().iter().filter_map(|r2|r2["entity_id"].as_str().map(String::from)).collect()
+                    // 从 business_relations 双向查询关联实体
+                    let mut ids: Vec<String> = database::all("SELECT target_id FROM business_relations WHERE source_type='FILE' AND source_id=?1 AND target_type=?2 LIMIT 3",&[json!(&row_sid),json!(ety)]).unwrap_or_default().iter().filter_map(|r2|r2["target_id"].as_str().map(String::from)).collect();
+                    let reverse_ids: Vec<String> = database::all("SELECT source_id FROM business_relations WHERE target_type='FILE' AND target_id=?1 AND source_type=?2 LIMIT 3",&[json!(&row_sid),json!(ety)]).unwrap_or_default().iter().filter_map(|r2|r2["source_id"].as_str().map(String::from)).collect();
+                    ids.extend(reverse_ids);
+                    ids.dedup();
+                    ids
                 } else {
-                    let tbl = if ety == "product" { "products" } else { "projects" };
-                    database::all(&format!("SELECT id FROM {} WHERE id IN (SELECT fr.entity_id FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.entity_type=?1 AND fa.id=?2) AND name LIKE ?3 LIMIT 3",tbl),&[json!(ety),json!(&row_sid),json!(format!("%{}%",target_name.trim()))]).unwrap_or_default().iter().filter_map(|r2|r2["id"].as_str().map(String::from)).collect()
+                    let tbl = if ety == "PRODUCT" { "products" } else { "projects" };
+                    // 从 business_relations 双向查询，再按名称过滤
+                    let mut ids: Vec<String> = database::all(&format!("SELECT target_id FROM business_relations WHERE source_type='FILE' AND source_id=?1 AND target_type=?2 AND target_id IN (SELECT id FROM {} WHERE name LIKE ?3) LIMIT 3",tbl),&[json!(&row_sid),json!(ety),json!(format!("%{}%",target_name.trim()))]).unwrap_or_default().iter().filter_map(|r2|r2["target_id"].as_str().map(String::from)).collect();
+                    let reverse_ids: Vec<String> = database::all(&format!("SELECT source_id FROM business_relations WHERE target_type='FILE' AND target_id=?1 AND source_type=?2 AND source_id IN (SELECT id FROM {} WHERE name LIKE ?3) LIMIT 3",tbl),&[json!(&row_sid),json!(ety),json!(format!("%{}%",target_name.trim()))]).unwrap_or_default().iter().filter_map(|r2|r2["source_id"].as_str().map(String::from)).collect();
+                    ids.extend(reverse_ids);
+                    ids.dedup();
+                    ids
                 };
                 if ids.is_empty() { continue; }
                 if !out.is_empty() { out.push_str("\n"); }
@@ -1539,7 +1673,7 @@ async fn execute_batch_search(queries: &[Vec<String>], scope_rowids: Option<std:
 }
 
 /// 批量 Recall：并发获取多个对象的完整信息
-async fn execute_batch_recall(ids: &[String]) -> String {
+async fn execute_batch_recall(ids: &[String], visited_chunks: &std::collections::HashSet<String>, visited_sources: &std::collections::HashSet<String>) -> String {
     if ids.is_empty() { return "请提供至少一个对象 ID。".to_string(); }
     let limit = ids.len().min(30);
     let ids = &ids[..limit];
@@ -1549,8 +1683,10 @@ async fn execute_batch_recall(ids: &[String]) -> String {
     let mut handles = Vec::new();
     for id in ids.iter() {
         let id = id.clone();
+        let vc = visited_chunks.clone();
+        let vs = visited_sources.clone();
         handles.push(tokio::spawn(async move {
-            (id.clone(), fetch_parent_chunks(&id, &[]))
+            (id.clone(), fetch_parent_chunks(&id, &[], &vc, &vs))
         }));
     }
     
@@ -1580,6 +1716,27 @@ async fn execute_batch_recall(ids: &[String]) -> String {
     out
 }
 
+/// 解析项目 ID：支持按 ID 或名称查找项目
+fn resolve_project_id(project_id: &str) -> Option<String> {
+    let raw_pid = project_id.trim();
+    let clean_pid = raw_pid.strip_prefix("PROJECT-").unwrap_or(raw_pid);
+    if clean_pid.is_empty() {
+        return None;
+    }
+    // 先按 ID 查找
+    if let Ok(Some(_)) = database::get("SELECT 1 FROM projects WHERE id=?1", &[json!(clean_pid)]) {
+        return Some(clean_pid.to_string());
+    }
+    // 再按名称查找
+    database::get(
+        "SELECT id FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1",
+        &[json!(format!("%{}%", crate::database::escape_like(clean_pid)))],
+    )
+    .ok()
+    .flatten()
+    .and_then(|r| r["id"].as_str().map(String::from))
+}
+
 fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str, due_date: &str, repeat: &str, project_id: &str, done: bool, todo_id: &str) -> String {
     let normalize_pri = |p: &str| -> Option<String> {
         if p.trim().is_empty() { return None; }
@@ -1604,59 +1761,54 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
     match action {
         "create" => {
             if title.trim().is_empty() { return "创建待办需要提供 title。".into(); }
-            let id = uuid::Uuid::new_v4().to_string();
             let p = normalize_pri(priority);
             let d = if due_date.trim().is_empty() { None } else { Some(due_date.trim()) };
             let r = if repeat.trim().is_empty() { None } else { Some(repeat.trim()) };
-            match database::run("INSERT INTO todos(id,title,content,done,priority,due_date,repeat,created_at,updated_at) VALUES(?1,?2,?3,0,?4,?5,?6,datetime('now','localtime'),datetime('now','localtime'))",&[json!(&id),json!(title.trim()),json!(content.trim()),json!(p),json!(d),json!(r)]) {
-                Ok(r) if r.changes > 0 => {
-                    // 关联项目：支持 project_id 或项目名称（去掉 PROJECT- 前缀）
-                    let raw_pid = project_id.trim();
-                    let clean_pid = raw_pid.strip_prefix("PROJECT-").unwrap_or(raw_pid);
-                    if !clean_pid.is_empty() {
-                        eprintln!("[待办] 尝试关联项目: raw='{}', clean='{}'", raw_pid, clean_pid);
-                        let pid = if let Ok(Some(_)) = database::get("SELECT 1 FROM projects WHERE id=?1", &[json!(clean_pid)]) {
-                            eprintln!("[待办] 按ID匹配成功: {}", clean_pid);
-                            clean_pid.to_string()
-                        } else {
-                            // 按名称查找项目
-                            let found = database::get("SELECT id FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1", &[json!(format!("%{}%", crate::database::escape_like(clean_pid)))])
-                                .ok().flatten().and_then(|r| r["id"].as_str().map(String::from)).unwrap_or_default();
-                            eprintln!("[待办] 按名称查找: '{}' → found='{}'", clean_pid, found);
-                            found
-                        };
-                        if !pid.is_empty() {
-                            let r = database::run("INSERT OR IGNORE INTO todo_project_mapping(todo_id,project_id) VALUES(?1,?2)", &[json!(&id), json!(&pid)]);
-                            eprintln!("[待办] 关联结果: todo_id={}, project_id={}, result={:?}", &id, &pid, r.map(|r| r.changes));
-                            crate::services::knowledge_lifecycle::notify_changed("TODO", &id);
-                        } else {
-                            eprintln!("[待办] 未找到匹配项目: '{}'", project_id.trim());
-                        }
+            let pid = resolve_project_id(project_id);
+            let data = json!({
+                "title": title.trim(),
+                "content": content.trim(),
+                "priority": p,
+                "dueDate": d,
+                "repeat": r,
+                "projectId": pid
+            });
+            // 使用 block_on 调用异步函数
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(crate::commands::todo_commands::todos_create(data)) {
+                Ok(result) => {
+                    let todo_id = result["todo"]["id"].as_str().unwrap_or("");
+                    let todo_title = result["todo"]["title"].as_str().unwrap_or(title.trim());
+                    if !todo_id.is_empty() && pid.is_some() {
+                        eprintln!("[待办] 关联项目: todo_id={}, project_id={:?}", todo_id, pid);
                     }
-                    format!("已创建待办：{}", title.trim())
+                    format!("已创建待办：{}", todo_title)
                 },
                 Err(e) => format!("创建待办失败: {}", e),
-                _ => "创建待办失败".into(),
             }
         }
         "update" => {
             let found = find_todo(todo_id, title);
             match found {
                 Some((fid, ftitle)) => {
-                    let mut sets = vec!["updated_at=datetime('now','localtime')".to_string()];
-                    let mut params: Vec<serde_json::Value> = Vec::new();
-                    if !content.trim().is_empty() { sets.push(format!("content=?{}", params.len()+1)); params.push(json!(content.trim())); }
-                    if !priority.trim().is_empty() { sets.push(format!("priority=?{}", params.len()+1)); params.push(json!(normalize_pri(priority).unwrap_or_default())); }
-                    if !due_date.trim().is_empty() { sets.push(format!("due_date=?{}", params.len()+1)); params.push(json!(due_date.trim())); }
-                    if !repeat.trim().is_empty() { sets.push(format!("repeat=?{}", params.len()+1)); params.push(json!(repeat.trim())); }
-                    if done { sets.push(format!("done=?{}", params.len()+1)); params.push(json!(1)); }
-                    if params.is_empty() { return "更新待办需要提供要修改的字段。".into(); }
-                    params.push(json!(&fid));
-                    let sql = format!("UPDATE todos SET {} WHERE id=?", sets.join(", "));
-                    match database::run(&sql, &params) {
-                        Ok(r) if r.changes > 0 => format!("已更新待办「{}」", ftitle),
+                    let mut data = json!({});
+                    if !content.trim().is_empty() { data["content"] = json!(content.trim()); }
+                    if !priority.trim().is_empty() { data["priority"] = json!(normalize_pri(priority).unwrap_or_default()); }
+                    if !due_date.trim().is_empty() { data["dueDate"] = json!(due_date.trim()); }
+                    if !repeat.trim().is_empty() { data["repeat"] = json!(repeat.trim()); }
+                    if done { data["done"] = json!(true); }
+                    // 处理项目关联
+                    if !project_id.trim().is_empty() {
+                        data["projectId"] = json!(resolve_project_id(project_id));
+                    }
+                    if data.as_object().map_or(true, |m| m.is_empty()) {
+                        return "更新待办需要提供要修改的字段。".into();
+                    }
+                    // 使用 block_on 调用异步函数
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    match rt.block_on(crate::commands::todo_commands::todos_update(fid.clone(), data)) {
+                        Ok(_) => format!("已更新待办「{}」", ftitle),
                         Err(e) => format!("更新待办失败: {}", e),
-                        _ => format!("待办「{}」无变更。", ftitle),
                     }
                 }
                 None => "未找到匹配的待办。".into(),
@@ -1666,10 +1818,11 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
             let found = find_todo(todo_id, title);
             match found {
                 Some((fid, ftitle)) => {
-                    match database::run("DELETE FROM todos WHERE id=?1", &[json!(&fid)]) {
-                        Ok(r) if r.changes > 0 => format!("已删除待办「{}」", ftitle),
+                    // 使用 block_on 调用异步函数
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    match rt.block_on(crate::commands::todo_commands::todos_delete(fid)) {
+                        Ok(_) => format!("已删除待办「{}」", ftitle),
                         Err(e) => format!("删除待办失败: {}", e),
-                        _ => format!("待办「{}」删除失败。", ftitle),
                     }
                 }
                 None => "未找到匹配的待办。".into(),
@@ -1882,7 +2035,7 @@ fn resolve_time(s: &str) -> String {
     s.to_string()
 }
 
-fn fetch_parent_chunks(source_id_str: &str, fields: &[String]) -> String {
+fn fetch_parent_chunks(source_id_str: &str, fields: &[String], visited_chunks: &std::collections::HashSet<String>, visited_sources: &std::collections::HashSet<String>) -> String {
     let known_types = ["PROJECT", "PRODUCT", "FILE", "NOTE", "TODO", "CHANNEL", "VENDOR", "CONTACT", "CUSTOMER", "MEMORY", "POLICY"];
     let (ot, oi) = if let Some(dash) = source_id_str.find('-') {
         let prefix = &source_id_str[..dash];
@@ -1938,7 +2091,16 @@ fn fetch_parent_chunks(source_id_str: &str, fields: &[String]) -> String {
 
     eprintln!("[fetch_parent_chunks] sdid={}, type={}", sdid, resolved_type);
     if sdid.is_empty() { return format!("未找到对象: {source_id_str}"); }
-    let chunks: Vec<String> = database::all("SELECT chunk_id, content, chunk_index FROM knowledge_chunks WHERE source_data_id=?1 AND parent_id IS NULL ORDER BY chunk_index LIMIT 3", &[json!(sdid)]).unwrap_or_default().iter().map(|r| {
+
+    // 检查是否已在前文展示过
+    let source_full_id = format!("{}-{}", resolved_type, oi);
+    let rows = database::all("SELECT chunk_id, content, chunk_index FROM knowledge_chunks WHERE source_data_id=?1 AND parent_id IS NULL ORDER BY chunk_index LIMIT 3", &[json!(sdid)]).unwrap_or_default();
+    let chunk_ids: Vec<String> = rows.iter().map(|r| r["chunk_id"].as_str().unwrap_or("").chars().take(8).collect()).collect();
+    if !chunk_ids.is_empty() && chunk_ids.iter().all(|id| visited_chunks.contains(id)) && visited_sources.contains(&source_full_id) {
+        return format!("对象 {} 的内容已在前文展示。", source_id_str);
+    }
+
+    let chunks: Vec<String> = rows.iter().map(|r| {
         let content = r["content"].as_str().unwrap_or("");
         let chunk_id = r["chunk_id"].as_str().unwrap_or("");
         // 安全截断：使用 char_indices 确保不在 UTF-8 字符中间截断
@@ -2031,6 +2193,7 @@ fn extract_citations(text: &str) -> Vec<String> {
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>) -> Result<Value, String> {
+    eprintln!("[Agent] workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
     let max_iters = max_iterations.unwrap_or(8).clamp(2, 20);
     if query.is_empty() { return Ok(json!({"success":true,"answer":"请输入问题。","iterations":0})); }
@@ -2062,6 +2225,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     } else { args_str.to_string() };
                     Some(ToolCall { id: id.to_string(), call_type: "function".into(), function: FunctionCall { name: name.to_string(), arguments: args } })
                 }).collect());
+                let tcs = tcs.filter(|v| !v.is_empty()); // 确保空 Vec 变为 None
                 messages.push(ChatMessage{role:MessageRole::Assistant,content:content.clone(),tool_calls:tcs,tool_call_id:None,name:None,reasoning_content:h["reasoning_content"].as_str().map(String::from)});
                 // 没有 tool_calls 的 content 是最终回答，记录为 observation
                 if let Some(ref text) = content {
@@ -2185,44 +2349,59 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             *content = new_sys;
         }
 
-        let ar = call_llm_with_tools(&messages, &tools, &app_handle).await?;
-        if let Some(u) = ar.get("usage") { prev_pt = pt; pt += u["prompt_tokens"].as_i64().unwrap_or(0); ct += u["completion_tokens"].as_i64().unwrap_or(0); }
-        let choice = ar["choices"].as_array().and_then(|a|a.first()).ok_or("no choices")?;
-        let msg = &choice["message"];
-        let ac = msg["content"].as_str().unwrap_or("");
-        let reasoning = msg["reasoning_content"].as_str().map(String::from);
-        let mut tcs: Option<Vec<Value>> = msg["tool_calls"].as_array().map(|a|a.to_vec());
+        // ★ 单请求流式：content 逐 token 输出到前端，同时累积 tool_calls delta
+        let (ac_owned, reasoning, tcs_streamed, usage) = call_llm_streaming(&messages, Some(&tools), &app_handle).await?;
+        if let Some(u) = usage { prev_pt = pt; pt += u["prompt_tokens"].as_i64().unwrap_or(0); ct += u["completion_tokens"].as_i64().unwrap_or(0); }
+        let ac = ac_owned.as_str();
+        let mut tcs: Option<Vec<Value>> = if tcs_streamed.is_empty() { None } else { Some(tcs_streamed) };
+        let mut cleaned_ac: Option<String> = None; // 清理后的 content（当 XML 解析失败时）
 
         // ★ 兜底：如果 tool_calls 为空但 content 包含 XML 格式工具调用，尝试解析
         if tcs.is_none() || tcs.as_ref().map_or(false, |v| v.is_empty()) {
             if let Some(parsed) = parse_xml_tool_calls(ac) {
                 eprintln!("[LLM检索] 从 content 解析到 XML 工具调用: {:?}", parsed);
                 tcs = Some(parsed);
-            } else {
-                // 记录未解析的情况，便于调试
-                if ac.contains("tool_calls") || ac.contains("invoke") {
-                    eprintln!("[LLM检索] 检测到疑似 XML 工具调用但解析失败，content前200字: {}", &ac[..ac.len().min(200)]);
+            } else if ac.contains("tool_calls") || ac.contains("invoke") {
+                // 解析失败：用正则移除 tool_calls 块，剩余内容作为最终答案
+                eprintln!("[LLM检索] XML工具调用解析失败，尝试清理原始文本");
+                // 匹配所有 DSML 变体的 tool_calls 块（Unicode 感知，含闭合标签）
+                if let Ok(re) = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*tool_calls[^a-zA-Z0-9]*>.*?[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*tool_calls[^a-zA-Z0-9]*>") {
+                    let cleaned = re.replace_all(ac, "").trim().to_string();
+                    if !cleaned.is_empty() {
+                        eprintln!("[LLM检索] 清理后内容长度: {}", cleaned.len());
+                        cleaned_ac = Some(cleaned);
+                    }
                 }
             }
         }
 
-        if !ac.is_empty() { if let Some(ref h) = app_handle { let _ = h.emit("agent:thought", json!({"text": ac})); } }
+        let effective_ac = cleaned_ac.as_deref().unwrap_or(ac);
 
         match tcs {
             None => {
-                let answer = if ac.is_empty() { "未能生成有效回答。" } else { ac };
-                if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": answer})); }
-                if !ac.is_empty() { session.record_observation(ac); let cited = extract_citations(&ac); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } }
+                // ★ 单请求流式：答案已在流式中逐 token 输出，无需再次生成
+                let mut answer = effective_ac.to_string();
+                if answer.trim().is_empty() {
+                    eprintln!("[Agent] 流式内容为空，回退补生成");
+                    answer = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { eprintln!("[Agent] 流式补生成失败: {e}"); format!("未能生成有效回答: {e}") });
+                }
+                // 清理 DSML 残留（流式原文可能含未解析的工具调用标记）
+                let re_dsml = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*[^\n]*").unwrap();
+                answer = re_dsml.replace_all(&answer, "").to_string();
+                if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": &answer})); }
+                if !answer.is_empty() { session.record_observation(&answer); let cited = extract_citations(&answer); eprintln!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } }
                 let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
+                // ★ 工具轮：本轮已流式输出的 interim 内容通知前端归置到思考区
+                if !effective_ac.trim().is_empty() { if let Some(ref h) = app_handle { let _ = h.emit("agent:round-thought", json!({"text": effective_ac})); } }
                 // ★ 预算检查：耗尽时强制回答
                 if budget < 0 {
                     if let Some(ref h) = app_handle {
                         let kw = calls.first().and_then(|tc| tc["function"]["arguments"].as_str().map(|s| s.to_string())).unwrap_or_default();
                         let _ = h.emit("agent:budget-low", json!({"remaining":budget,"cost":search_cost,"next_query":kw}));
                     }
-                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { eprintln!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
@@ -2237,13 +2416,13 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 if oscillation_count >= 3 {
                     eprintln!("[Agent] 检测到状态振荡 ({} 轮无新搜索)，强制终止", oscillation_count);
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("已检测到重复检索，信息可能已足够，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { eprintln!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"oscillation_break":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
                 if iters >= max_iters {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { eprintln!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
@@ -2342,17 +2521,7 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: u
         } else {
             out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}", st, name, st, sid, rel, preview));
         }
-        if !current_neighbors.is_empty() {
-            let mut links_by_type: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-            for nid in &current_neighbors {
-                if let Some(dash) = nid.find('-') {
-                    let nt = &nid[..dash]; let ni = &nid[dash+1..];
-                    links_by_type.entry(nt.to_string()).or_default().push(ni[..ni.len().min(8)].to_string());
-                }
-            }
-            let link_str: Vec<String> = links_by_type.iter().map(|(t, ids)| format!("{}: {}", t, ids.join(", "))).collect();
-            if !link_str.is_empty() { out.push_str(&format!("\n  🔗 {}", link_str.join(" | "))); }
-        }
+        // object_links 仅用于后台边界评分，不输出给 LLM
         out.push_str("\n\n");
         prev_neighbors = Some(current_neighbors);
         prev_ts = Some(ts.to_string());
@@ -2450,20 +2619,7 @@ fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limi
         } else {
             out.push_str(&format!("[{}] {} | source_id: {}-{}\n  {} | {}\n\n", st, name, st, sid, rel, preview));
         }
-        // 显示关联对象（从 object_links 获取）
-        let seed = format!("{}-{}", st, sid);
-        let neighbors = crate::services::synapse::expand_object_links(&[seed], 10);
-        if !neighbors.is_empty() {
-            let mut links_by_type: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-            for (nid, _) in &neighbors {
-                if let Some(dash) = nid.find('-') {
-                    let nt = &nid[..dash]; let ni = &nid[dash+1..];
-                    links_by_type.entry(nt.to_string()).or_default().push(ni[..ni.len().min(8)].to_string());
-                }
-            }
-            let link_str: Vec<String> = links_by_type.iter().map(|(t, ids)| format!("{}: {}", t, ids.join(", "))).collect();
-            if !link_str.is_empty() { out.push_str(&format!("  🔗 {}\n", link_str.join(" | "))); }
-        }
+        // object_links 仅用于后台注意力机制，不输出给 LLM
     }
     if end_pos < total {
         out.push_str(&format!("└─ 还有 {} 条未显示，传 offset={} 继续查看 ─┘", total - end_pos, end_pos));
@@ -2530,48 +2686,20 @@ fn recall_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: usi
             // 判断标记：+新增 *修改 -其他
             let marker = if created == *date { "+" } else if updated == *date { "*" } else { "-" };
             
-            // FILE 类型：从 file_relations 获取 custom_name
+            // FILE 类型：从 source_data 获取文件名
             if st == "FILE" && name.is_empty() {
-                if let Ok(Some(fr)) = database::get(
-                    "SELECT custom_name FROM file_relations WHERE file_id=?1 ORDER BY id LIMIT 1",
+                if let Ok(Some(sd)) = database::get(
+                    "SELECT title FROM source_data WHERE source_type='FILE' AND source_id=?1",
                     &[json!(sid)],
                 ) {
-                    if let Some(cn) = fr["custom_name"].as_str().filter(|s| !s.is_empty()) {
-                        name = cn.to_string();
+                    if let Some(t) = sd["title"].as_str().filter(|s| !s.is_empty()) {
+                        name = t.to_string();
                     }
                 }
             }
             
-            // 查询关联对象
-            let seed = format!("{}-{}", st, sid);
-            let neighbors = crate::services::synapse::expand_object_links(&[seed], 5);
-            
             // 输出主对象
             out.push_str(&format!("{} [{}] {} | source_id: {}-{}\n", marker, st, name, st, sid));
-            
-            // 输出关联对象
-            for (nid, _) in &neighbors {
-                if let Some(dash) = nid.find('-') {
-                    let nst = &nid[..dash];
-                    let nsid = &nid[dash+1..];
-                    // 查询关联对象的名称
-                    let n_name = if nst == "FILE" {
-                        database::get(
-                            "SELECT custom_name FROM file_relations WHERE file_id=?1 ORDER BY id LIMIT 1",
-                            &[json!(nsid)],
-                        ).ok().flatten().and_then(|r| r["custom_name"].as_str().filter(|s| !s.is_empty()).map(String::from))
-                        .unwrap_or_else(|| "未命名文件".to_string())
-                    } else {
-                        database::get(
-                            "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
-                            &[json!(nst.to_uppercase()), json!(nsid)],
-                        ).ok().flatten().and_then(|r| r["title"].as_str().filter(|s| !s.is_empty()).map(String::from))
-                        .unwrap_or_else(|| "未知".to_string())
-                    };
-                    out.push_str(&format!("  └ [{}] {}\n", nst.to_uppercase(), n_name));
-                }
-            }
-            out.push('\n');
         }
         out.push('\n');
         
@@ -2766,10 +2894,11 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             let res = if let Some(ids_arr) = a["ids"].as_array().filter(|arr| !arr.is_empty()) {
                                 // 批量模式：传入 ids 数组
                                 let ids: Vec<String> = ids_arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-                                execute_batch_recall(&ids).await
+                                execute_batch_recall(&ids, &visited_chunks_snapshot, &visited_sources_snapshot
+                                ).await
                             } else if a.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).is_some() {
                                 // 单个模式：传入单个 id
-                                fetch_parent_chunks(a["id"].as_str().unwrap_or(""), &[])
+                                fetch_parent_chunks(a["id"].as_str().unwrap_or(""), &[], &visited_chunks_snapshot, &visited_sources_snapshot)
                             } else {
                                 let q = a["query"].as_str().unwrap_or("");
                                 let t = a["type"].as_str().unwrap_or("");
@@ -2870,22 +2999,23 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let name = a["name"].as_str().unwrap_or("");
                                     if name.is_empty() { "创建项目需要提供 name。".to_string() }
                                     else {
-                                        let id = uuid::Uuid::new_v4().to_string();
                                         let budget = a["budget"].as_f64().unwrap_or(0.0);
                                         let description = a["description"].as_str().unwrap_or("");
                                         let status = a["status"].as_str().unwrap_or("Lead");
                                         let bid_time = if status == "Bidding" { a["bid_time"].as_str().unwrap_or("") } else { "" };
-                                        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                                        match database::run(
-                                            "INSERT INTO projects(id,name,budget,description,status,bid_time,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
-                                            &[json!(id),json!(name),json!(budget),json!(description),json!(status),json!(bid_time),json!(ts)]
-                                        ) {
-                                            Ok(_) => {
-                                                // ★ 同步到 source_data（知识库索引）
-                                                crate::services::source_doc_sync::sync_entity("PROJECT", &id);
-                                                // ★ 触发知识管线
-                                                crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
-                                                format!("已创建项目「{}」(ID: {})", name, id)
+                                        let data = json!({
+                                            "name": name,
+                                            "budget": budget,
+                                            "description": description,
+                                            "status": status,
+                                            "bidTime": bid_time
+                                        });
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::project_commands::project_create(data)) {
+                                            Ok(project) => {
+                                                let pid = project["id"].as_str().unwrap_or("");
+                                                format!("已创建项目「{}」(ID: {})", name, pid)
                                             },
                                             Err(e) => format!("创建项目失败: {}", e),
                                         }
@@ -2896,28 +3026,20 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let project_id = raw_id.strip_prefix("PROJECT-").unwrap_or(raw_id);
                                     if project_id.is_empty() { "更新项目需要提供 project_id。".to_string() }
                                     else {
-                                        let mut sets = Vec::new();
-                                        let mut vals: Vec<serde_json::Value> = Vec::new();
-                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["description"].as_str().filter(|s| !s.is_empty()) { sets.push("description=?"); vals.push(json!(v)); }
-                                        // bid_time 只在投标状态下有效
-                                        let effective_status = a["status"].as_str().unwrap_or("");
-                                        if !effective_status.is_empty() { sets.push("status=?"); vals.push(json!(effective_status)); }
-                                        if effective_status == "Bidding" {
-                                            if let Some(v) = a["bid_time"].as_str().filter(|s| !s.is_empty()) { sets.push("bid_time=?"); vals.push(json!(v)); }
+                                        let mut data = json!({});
+                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { data["name"] = json!(v); }
+                                        if let Some(v) = a["description"].as_str().filter(|s| !s.is_empty()) { data["description"] = json!(v); }
+                                        if let Some(v) = a["status"].as_str().filter(|s| !s.is_empty()) { data["status"] = json!(v); }
+                                        if let Some(v) = a["bid_time"].as_str().filter(|s| !s.is_empty()) { data["bidTime"] = json!(v); }
+                                        if let Some(v) = a["budget"].as_f64().filter(|v| *v > 0.0) { data["budget"] = json!(v); }
+                                        if data.as_object().map_or(true, |m| m.is_empty()) {
+                                            "未提供任何更新字段。".to_string()
                                         } else {
-                                            // 非投标状态：清空 bid_time
-                                            sets.push("bid_time=?"); vals.push(json!(""));
-                                        }
-                                        if a.get("budget").and_then(|v| v.as_f64()).filter(|v| *v > 0.0).is_some() { sets.push("budget=?"); vals.push(json!(a["budget"])); }
-                                        if sets.is_empty() { "未提供任何更新字段。".to_string() }
-                                        else {
-                                            sets.push("updated_at=datetime('now','localtime')");
-                                            vals.push(json!(project_id));
-                                            let sql = format!("UPDATE projects SET {} WHERE id=?", sets.join(","));
-                                            match database::run(&sql, &vals) {
-                                                Ok(r) if r.changes > 0 => format!("已更新项目 {}", project_id),
-                                                _ => format!("项目 {} 未找到或无变更", project_id),
+                                            // 使用 block_on 调用异步函数
+                                            let rt = tokio::runtime::Runtime::new().unwrap();
+                                            match rt.block_on(crate::commands::project_commands::project_update(project_id.to_string(), data)) {
+                                                Ok(_) => format!("已更新项目 {}", project_id),
+                                                Err(e) => format!("更新项目失败: {}", e),
                                             }
                                         }
                                     }
@@ -2927,25 +3049,11 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let project_id = raw_id.strip_prefix("PROJECT-").unwrap_or(raw_id);
                                     if project_id.is_empty() { "删除项目需要提供 project_id。".to_string() }
                                     else {
-                                        // ★ 清理 source_data（即使 projects 表中没有，也要清理孤儿记录）
-                                        crate::services::source_doc_sync::delete_entity_source_doc("PROJECT", project_id);
-                                        // ★ 触发知识管线清理
-                                        crate::services::knowledge_lifecycle::notify_deleted("PROJECT", project_id);
-                                        
-                                        // 清理业务表
-                                        let _ = database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(project_id)]);
-                                        let _ = database::run("DELETE FROM note_project_mapping WHERE project_id=?", &[json!(project_id)]);
-                                        let _ = database::run("DELETE FROM todo_project_mapping WHERE project_id=?", &[json!(project_id)]);
-                                        let _ = database::run("DELETE FROM tag_mappings WHERE entity_type='project' AND entity_id=?", &[json!(project_id)]);
-                                        let _ = database::run("DELETE FROM business_relations WHERE (source_type='PROJECT' AND source_id=?) OR (target_type='PROJECT' AND target_id=?)", &[json!(project_id), json!(project_id)]);
-                                        // 删除 solutions 和关联表
-                                        let _ = database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?))", &[json!(project_id)]);
-                                        let _ = database::run("DELETE FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?)", &[json!(project_id)]);
-                                        let _ = database::run("DELETE FROM solutions WHERE project_id=?", &[json!(project_id)]);
-                                        
-                                        match database::run("DELETE FROM projects WHERE id=?", &[json!(project_id)]) {
-                                            Ok(r) if r.changes > 0 => format!("已删除项目 {} 及其所有关联数据", project_id),
-                                            _ => format!("已清理项目 {} 的索引记录（projects表中无此记录）", project_id),
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::project_commands::project_delete(project_id.to_string())) {
+                                            Ok(_) => format!("已删除项目 {} 及其所有关联数据", project_id),
+                                            Err(e) => format!("删除项目失败: {}", e),
                                         }
                                     }
                                 }
@@ -2961,19 +3069,18 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let name = a["name"].as_str().unwrap_or("");
                                     if ptype.is_empty() || name.is_empty() { "创建合作伙伴需要提供 type 和 name。".to_string() }
                                     else {
-                                        let id = uuid::Uuid::new_v4().to_string();
-                                        let phone = a["phone"].as_str().unwrap_or("");
-                                        let address = a["address"].as_str().unwrap_or("");
-                                        let remark = a["remark"].as_str().unwrap_or("");
-                                        match database::run(
-                                            "INSERT INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'),datetime('now','localtime'))",
-                                            &[json!(id),json!(ptype.to_uppercase()),json!(name),json!(phone),json!(address),json!(remark)]
-                                        ) {
-                                            Ok(_) => {
-                                                // 同步到 source_data
-                                                crate::services::source_doc_sync::sync_entity(&ptype.to_uppercase(), &id);
-                                                // 触发知识管线
-                                                crate::services::knowledge_lifecycle::notify_changed(&ptype.to_uppercase(), &id);
+                                        let data = json!({
+                                            "type": ptype.to_uppercase(),
+                                            "name": name,
+                                            "phone": a["phone"].as_str().unwrap_or(""),
+                                            "company": a["address"].as_str().unwrap_or(""),
+                                            "remark": a["remark"].as_str().unwrap_or("")
+                                        });
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::partner_commands::partner_create(data)) {
+                                            Ok(result) => {
+                                                let id = result["id"].as_str().unwrap_or("");
                                                 format!("已创建{}「{}」(ID: {})", ptype, name, id)
                                             },
                                             Err(e) => format!("创建失败: {}", e),
@@ -2984,20 +3091,19 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let partner_id = a["partner_id"].as_str().unwrap_or("");
                                     if partner_id.is_empty() { "更新需要提供 partner_id。".to_string() }
                                     else {
-                                        let mut sets = Vec::new();
-                                        let mut vals: Vec<serde_json::Value> = Vec::new();
-                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["phone"].as_str().filter(|s| !s.is_empty()) { sets.push("phone=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["address"].as_str().filter(|s| !s.is_empty()) { sets.push("address=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["remark"].as_str().filter(|s| !s.is_empty()) { sets.push("remark=?"); vals.push(json!(v)); }
-                                        if sets.is_empty() { "未提供任何更新字段。".to_string() }
-                                        else {
-                                            sets.push("updated_at=datetime('now','localtime')");
-                                            vals.push(json!(partner_id));
-                                            let sql = format!("UPDATE partners SET {} WHERE id=?", sets.join(","));
-                                            match database::run(&sql, &vals) {
-                                                Ok(r) if r.changes > 0 => format!("已更新合作伙伴 {}", partner_id),
-                                                _ => format!("合作伙伴 {} 未找到或无变更", partner_id),
+                                        let mut data = json!({"id": partner_id});
+                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { data["name"] = json!(v); }
+                                        if let Some(v) = a["phone"].as_str().filter(|s| !s.is_empty()) { data["phone"] = json!(v); }
+                                        if let Some(v) = a["address"].as_str().filter(|s| !s.is_empty()) { data["company"] = json!(v); }
+                                        if let Some(v) = a["remark"].as_str().filter(|s| !s.is_empty()) { data["remark"] = json!(v); }
+                                        if data.as_object().map_or(true, |m| m.len() <= 1) {
+                                            "未提供任何更新字段。".to_string()
+                                        } else {
+                                            // 使用 block_on 调用异步函数
+                                            let rt = tokio::runtime::Runtime::new().unwrap();
+                                            match rt.block_on(crate::commands::partner_commands::partner_update(data)) {
+                                                Ok(_) => format!("已更新合作伙伴 {}", partner_id),
+                                                Err(e) => format!("更新失败: {}", e),
                                             }
                                         }
                                     }
@@ -3006,19 +3112,11 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let partner_id = a["partner_id"].as_str().unwrap_or("");
                                     if partner_id.is_empty() { "删除需要提供 partner_id。".to_string() }
                                     else {
-                                        let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
-                                        let _ = database::run("DELETE FROM partner_contact_mapping WHERE partner_id=?", &[json!(partner_id)]);
-                                        let _ = database::run("DELETE FROM business_relations WHERE (source_id=? AND source_type IN ('CHANNEL','VENDOR','CUSTOMER')) OR (target_id=? AND target_type IN ('CHANNEL','VENDOR','CUSTOMER'))", &[json!(partner_id), json!(partner_id)]);
-                                        match database::run("DELETE FROM partners WHERE id=?", &[json!(partner_id)]) {
-                                            Ok(r) if r.changes > 0 => {
-                                                // 同步到 source_data
-                                                if !ptype.is_empty() {
-                                                    crate::services::source_doc_sync::sync_entity(&ptype.to_uppercase(), partner_id);
-                                                    crate::services::knowledge_lifecycle::notify_changed(&ptype.to_uppercase(), partner_id);
-                                                }
-                                                format!("已删除合作伙伴 {}", partner_id)
-                                            },
-                                            _ => format!("合作伙伴 {} 未找到", partner_id),
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::partner_commands::partner_delete(partner_id.to_string())) {
+                                            Ok(_) => format!("已删除合作伙伴 {}", partner_id),
+                                            Err(e) => format!("删除失败: {}", e),
                                         }
                                     }
                                 }
@@ -3027,22 +3125,18 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let project_id = a["project_id"].as_str().unwrap_or("");
                                     if partner_id.is_empty() || project_id.is_empty() { "关联需要提供 partner_id 和 project_id。".to_string() }
                                     else {
-                                        let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
-                                        if ptype.is_empty() {
-                                            format!("未找到合作伙伴: {}", partner_id)
-                                        } else {
-                                            let meta = serde_json::json!({"selected_contact_id": a["contact_id"].as_str().unwrap_or(""), "remark": a["remark"].as_str().unwrap_or("")});
-                                            crate::services::business_relations::upsert(&ptype.to_uppercase(), partner_id, "PROJECT", project_id, "belongs_to", &meta.to_string());
-                                            // 同步到 source_data
-                                            crate::services::source_doc_sync::sync_entity(&ptype.to_uppercase(), partner_id);
-                                            // 触发知识管线
-                                            crate::services::knowledge_lifecycle::notify_changed(&ptype.to_uppercase(), partner_id);
-                                            // 记录项目动态
-                                            let did = uuid::Uuid::new_v4().to_string();
-                                            let partner_name = database::get("SELECT name FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default();
-                                            database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,'AI Agent')",
-                                                &[json!(&did), json!(project_id), json!(format!("添加了{}「{}」", ptype, partner_name))]).ok();
-                                            format!("已将{}关联到项目", ptype)
+                                        let contact_id = a["contact_id"].as_str().map(|s| s.to_string());
+                                        let remark = a["remark"].as_str().map(|s| s.to_string());
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::partner_commands::partner_link_project(
+                                            partner_id.to_string(),
+                                            project_id.to_string(),
+                                            contact_id,
+                                            remark
+                                        )) {
+                                            Ok(_) => format!("已将合作伙伴关联到项目"),
+                                            Err(e) => format!("关联失败: {}", e),
                                         }
                                     }
                                 }
@@ -3051,20 +3145,14 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let project_id = a["project_id"].as_str().unwrap_or("");
                                     if partner_id.is_empty() || project_id.is_empty() { "取消关联需要提供 partner_id 和 project_id。".to_string() }
                                     else {
-                                        let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
-                                        if ptype.is_empty() {
-                                            format!("未找到合作伙伴: {}", partner_id)
-                                        } else {
-                                            crate::services::business_relations::delete(&ptype.to_uppercase(), partner_id, "PROJECT", project_id, "belongs_to");
-                                            // 同步到 source_data
-                                            crate::services::source_doc_sync::sync_entity(&ptype.to_uppercase(), partner_id);
-                                            // 触发知识管线
-                                            crate::services::knowledge_lifecycle::notify_changed(&ptype.to_uppercase(), partner_id);
-                                            // 记录项目动态
-                                            let did = uuid::Uuid::new_v4().to_string();
-                                            database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator) VALUES(?1,?2,'system',?3,'AI Agent')",
-                                                &[json!(&did), json!(project_id), json!(format!("移除了{}", ptype))]).ok();
-                                            format!("已取消{}与项目的关联", ptype)
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::partner_commands::partner_unlink_project(
+                                            partner_id.to_string(),
+                                            project_id.to_string()
+                                        )) {
+                                            Ok(_) => format!("已取消合作伙伴与项目的关联"),
+                                            Err(e) => format!("取消关联失败: {}", e),
                                         }
                                     }
                                 }
@@ -3079,7 +3167,6 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let name = a["name"].as_str().unwrap_or("");
                                     if name.is_empty() { "创建联系人需要提供 name。".to_string() }
                                     else {
-                                        let id = uuid::Uuid::new_v4().to_string();
                                         let phone = a["phone"].as_str().unwrap_or("");
                                         let email = a["email"].as_str().unwrap_or("");
                                         let position = a["position"].as_str().unwrap_or("");
@@ -3087,34 +3174,26 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         let parent_id = a["parent_id"].as_str().unwrap_or("");
                                         let raw_proj_id = a["project_id"].as_str().unwrap_or("");
                                         let project_id = raw_proj_id.strip_prefix("PROJECT-").unwrap_or(raw_proj_id);
-                                        match database::run(
-                                            "INSERT INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,datetime('now','localtime'))",
-                                            &[json!(id),json!(name),json!(phone),json!(email),json!(position),json!(remark)]
-                                        ) {
-                                            Ok(_) => {
-                                                // ★ 自动关联到合作伙伴（如果有 parent_id）
-                                                if !parent_id.is_empty() {
-                                                    let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(parent_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
-                                                    if !ptype.is_empty() {
-                                                        database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)", &[json!(parent_id), json!(id)]).ok();
-                                                        crate::services::business_relations::upsert("CONTACT", &id, &ptype.to_uppercase(), parent_id, "employed_by", "{}");
-                                                    }
+                                        let data = json!({
+                                            "name": name,
+                                            "phone": phone,
+                                            "email": email,
+                                            "position": position,
+                                            "remark": remark,
+                                            "partnerId": parent_id
+                                        });
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::partner_commands::partner_contact_create(data)) {
+                                            Ok(result) => {
+                                                let id = result["id"].as_str().unwrap_or("");
+                                                // 如果有项目ID，手动关联到项目
+                                                if !project_id.is_empty() && !id.is_empty() {
+                                                    let _ = rt.block_on(crate::commands::partner_commands::contact_link_project(
+                                                        id.to_string(),
+                                                        project_id.to_string()
+                                                    ));
                                                 }
-                                                // ★ 自动关联到项目（如果有 project_id）
-                                                if !project_id.is_empty() {
-                                                    crate::services::business_relations::upsert("CONTACT", &id, "PROJECT", project_id, "belongs_to", "{}");
-                                                    // 如果有父级合作伙伴，也确保合作伙伴关联到项目
-                                                    if !parent_id.is_empty() {
-                                                        let ptype2 = database::get("SELECT type FROM partners WHERE id=?", &[json!(parent_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_default();
-                                                        if !ptype2.is_empty() {
-                                                            crate::services::business_relations::upsert(&ptype2.to_uppercase(), parent_id, "PROJECT", project_id, "belongs_to", "{}");
-                                                        }
-                                                    }
-                                                }
-                                                // 同步到 source_data
-                                                crate::services::source_doc_sync::sync_entity("CONTACT", &id);
-                                                // 触发知识管线
-                                                crate::services::knowledge_lifecycle::notify_changed("CONTACT", &id);
                                                 format!("已创建联系人「{}」(ID: {})", name, id)
                                             },
                                             Err(e) => format!("创建失败: {}", e),
@@ -3125,20 +3204,20 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let contact_id = a["contact_id"].as_str().unwrap_or("");
                                     if contact_id.is_empty() { "更新需要提供 contact_id。".to_string() }
                                     else {
-                                        let mut sets = Vec::new();
-                                        let mut vals: Vec<serde_json::Value> = Vec::new();
-                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { sets.push("name=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["phone"].as_str().filter(|s| !s.is_empty()) { sets.push("phone=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["email"].as_str().filter(|s| !s.is_empty()) { sets.push("email=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["position"].as_str().filter(|s| !s.is_empty()) { sets.push("position=?"); vals.push(json!(v)); }
-                                        if let Some(v) = a["remark"].as_str().filter(|s| !s.is_empty()) { sets.push("remark=?"); vals.push(json!(v)); }
-                                        if sets.is_empty() { "未提供任何更新字段。".to_string() }
-                                        else {
-                                            vals.push(json!(contact_id));
-                                            let sql = format!("UPDATE partner_contacts SET {} WHERE id=?", sets.join(","));
-                                            match database::run(&sql, &vals) {
-                                                Ok(r) if r.changes > 0 => format!("已更新联系人 {}", contact_id),
-                                                _ => format!("联系人 {} 未找到或无变更", contact_id),
+                                        let mut data = json!({"id": contact_id});
+                                        if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { data["name"] = json!(v); }
+                                        if let Some(v) = a["phone"].as_str().filter(|s| !s.is_empty()) { data["phone"] = json!(v); }
+                                        if let Some(v) = a["email"].as_str().filter(|s| !s.is_empty()) { data["email"] = json!(v); }
+                                        if let Some(v) = a["position"].as_str().filter(|s| !s.is_empty()) { data["position"] = json!(v); }
+                                        if let Some(v) = a["remark"].as_str().filter(|s| !s.is_empty()) { data["remark"] = json!(v); }
+                                        if data.as_object().map_or(true, |m| m.len() <= 1) {
+                                            "未提供任何更新字段。".to_string()
+                                        } else {
+                                            // 使用 block_on 调用异步函数
+                                            let rt = tokio::runtime::Runtime::new().unwrap();
+                                            match rt.block_on(crate::commands::partner_commands::partner_contact_update(data)) {
+                                                Ok(_) => format!("已更新联系人 {}", contact_id),
+                                                Err(e) => format!("更新失败: {}", e),
                                             }
                                         }
                                     }
@@ -3147,11 +3226,11 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let contact_id = a["contact_id"].as_str().unwrap_or("");
                                     if contact_id.is_empty() { "删除需要提供 contact_id。".to_string() }
                                     else {
-                                        let _ = database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?", &[json!(contact_id)]);
-                                        let _ = database::run("DELETE FROM business_relations WHERE source_type='CONTACT' AND source_id=?", &[json!(contact_id)]);
-                                        match database::run("DELETE FROM partner_contacts WHERE id=?", &[json!(contact_id)]) {
-                                            Ok(r) if r.changes > 0 => format!("已删除联系人 {}", contact_id),
-                                            _ => format!("联系人 {} 未找到", contact_id),
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::partner_commands::partner_contact_delete(contact_id.to_string())) {
+                                            Ok(_) => format!("已删除联系人 {}", contact_id),
+                                            Err(e) => format!("删除失败: {}", e),
                                         }
                                     }
                                 }
@@ -3160,20 +3239,15 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let project_id = a["project_id"].as_str().unwrap_or("");
                                     if contact_id.is_empty() || project_id.is_empty() { "关联需要提供 contact_id 和 project_id。".to_string() }
                                     else {
-                                        // 1. 创建联系人→项目的直接关联
-                                        crate::services::business_relations::upsert("CONTACT", contact_id, "PROJECT", project_id, "belongs_to", "{}");
-                                        // 2. 查找联系人的父级合作伙伴，确保合作伙伴也关联到项目
-                                        if let Ok(Some(row)) = database::get(
-                                            "SELECT pcm.partner_id, p.type FROM partner_contact_mapping pcm JOIN partners p ON p.id = pcm.partner_id WHERE pcm.contact_id=?1 LIMIT 1",
-                                            &[json!(contact_id)],
-                                        ) {
-                                            let partner_id = row["partner_id"].as_str().unwrap_or("");
-                                            let partner_type = row["type"].as_str().unwrap_or("");
-                                            if !partner_id.is_empty() && !partner_type.is_empty() {
-                                                crate::services::business_relations::upsert(partner_type, partner_id, "PROJECT", project_id, "belongs_to", "{}");
-                                            }
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::partner_commands::contact_link_project(
+                                            contact_id.to_string(),
+                                            project_id.to_string()
+                                        )) {
+                                            Ok(_) => "已将联系人关联到项目".to_string(),
+                                            Err(e) => format!("关联失败: {}", e),
                                         }
-                                        "已将联系人关联到项目".to_string()
                                     }
                                 }
                                 "unlink_project" => {
@@ -3181,8 +3255,15 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let project_id = a["project_id"].as_str().unwrap_or("");
                                     if contact_id.is_empty() || project_id.is_empty() { "取消关联需要提供 contact_id 和 project_id。".to_string() }
                                     else {
-                                        crate::services::business_relations::delete("CONTACT", contact_id, "PROJECT", project_id, "belongs_to");
-                                        "已取消联系人与项目的关联".to_string()
+                                        // 使用 block_on 调用异步函数
+                                        let rt = tokio::runtime::Runtime::new().unwrap();
+                                        match rt.block_on(crate::commands::partner_commands::contact_unlink_project(
+                                            contact_id.to_string(),
+                                            project_id.to_string()
+                                        )) {
+                                            Ok(_) => "已取消联系人与项目的关联".to_string(),
+                                            Err(e) => format!("取消关联失败: {}", e),
+                                        }
                                     }
                                 }
                                 "list" => {
@@ -3362,7 +3443,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
 
                 if !circuit_break_reason.is_empty() {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| format!("总结失败: {e}"));
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { eprintln!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
@@ -3372,7 +3453,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                 budget -= search_cost;
                 search_cost = ((search_cost as f64 * 1.2) as i32).max(1);
             }
-            _ => { let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":format!("根据当前信息：\n\n{}",ac),"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log})); }
+            _ => { let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":format!("根据当前信息：\n\n{}",effective_ac),"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log})); }
         }
     }
 }

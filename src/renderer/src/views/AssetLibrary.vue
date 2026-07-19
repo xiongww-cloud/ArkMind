@@ -13,7 +13,7 @@ import {
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 
 interface Folder { id: string; name: string; node_type: string; allow_children: boolean; file_count: number; parent_id?: string|null; _depth?: number; _hasChildren?: boolean }
-interface AssetFile { id: string; file_ext?: string; file_size: number; parse_status?: string; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_folder?: string|null }
+interface AssetFile { id: string; file_ext?: string; file_size: number; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_folder?: string|null }
 
 const UNCATEGORIZED = '未分类' as const
 

@@ -1,75 +1,599 @@
-//! 数据摄入中台 (Data Ingestion Mid-Platform)
+//! 统一数据中台 (Unified Data Ingestion Mid-Platform)
 //!
-//! 统一摄入所有业务实体到 source_data 表，轮转顺序：
-//!   ① file   → PENDING文件：解析→清洗→落盘→广播
-//!   ② note   → 未摄入笔记：去HTML→清洗→落盘
-//!   ③ product→ 未摄入产品：名称+规格+描述→清洗→落盘
-//!   ④ project→ 未摄入项目：名称+描述→清洗→落盘
+//! 统一从 knowledge_push_queue 表获取待处理任务，处理所有业务对象：
+//!   - operation="change"      → 从业务表读取数据，清洗后写入 source_data
+//!   - operation="file_upload" → 解析文件，清洗后写入 source_data
+//!   - operation="delete"      → 级联删除 source_data → knowledge_chunks → vector_cache → LanceDB
 //!
-//! 后续物化/打标/向量化由知识管线和标签管线各自独立调度。
+//! 支持并发处理，最大并发数 5。
 //!
-//! 日志前缀统一为 "[数据摄入中台]"。
+//! 日志前缀统一为 "[数据中台]"。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
-use tauri::Emitter;
+use serde_json::json;
 
 static INGESTION_RUNNING: AtomicBool = AtomicBool::new(false);
+static ACTIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONCURRENT: usize = 5;
 
-pub fn start(app_handle: tauri::AppHandle) {
+// ═══════════════════════════════════════════════════════════════
+// 启动与主循环
+// ═══════════════════════════════════════════════════════════════
+
+pub fn start(_app_handle: tauri::AppHandle) {
     if INGESTION_RUNNING.swap(true, Ordering::AcqRel) {
-        println!("[数据摄入中台] 已在运行中，忽略重复启动");
+        println!("[数据中台] 已在运行中，忽略重复启动");
         return;
     }
-    println!("╔══════════════════════════════════════════════╗");
-    println!("║        数据摄入中台 v2 启动完成              ║");
-    println!("║  智能路由: 魔数嗅探 + 后缀 + 轮询兜底        ║");
-    println!("║  因果时序: 解析→清洗→落盘→分发→广播         ║");
-    println!("╚══════════════════════════════════════════════╝");
+    println!("[数据中台] v4 启动完成 | 统一入口: knowledge_push_queue | 并发: {} | 支持: change/file_upload/delete", MAX_CONCURRENT);
 
     std::thread::spawn(move || {
-        ingestion_loop(app_handle);
+        ingestion_loop();
     });
 }
 
-fn ingestion_loop(app: tauri::AppHandle) {
-    let mut loop_tick: u64 = 0;
+fn ingestion_loop() {
+    // 冷启动：将崩溃残留的 processing 状态重置为 pending
+    let reset_count = crate::database::run(
+        "UPDATE knowledge_push_queue SET status='pending', retry_count=0, last_error='' WHERE status='processing'",
+        &[],
+    ).map(|r| r.changes).unwrap_or(0);
+    if reset_count > 0 {
+        println!("[数据中台] 冷启动：已重置 {} 个崩溃残留任务", reset_count);
+    }
+
+    // 清理孤立的 file_parse_cache 数据（没有对应任务的缓存）
+    let cache_cleaned = crate::database::run(
+        "DELETE FROM file_parse_cache WHERE file_id NOT IN (
+            SELECT source_id FROM knowledge_push_queue WHERE source_type='FILE'
+        )",
+        &[],
+    ).map(|r| r.changes).unwrap_or(0);
+    if cache_cleaned > 0 {
+        println!("[数据中台] 冷启动：已清理 {} 条孤立缓存", cache_cleaned);
+    }
 
     loop {
-        loop_tick = loop_tick.wrapping_add(1);
         if !INGESTION_RUNNING.load(Ordering::Acquire) {
-            println!("[数据摄入中台] 收到停止信号，退出轮询");
+            println!("[数据中台] 收到停止信号，退出轮询");
             break;
         }
 
-        // 每轮只处理一类实体，轮转顺序：file → note → product → project
-        match loop_tick % 5 {
-            0 => ingest_pending_files(&app),
-            1 => ingest_pending_notes(),
-            2 => ingest_pending_products(),
-            3 => ingest_pending_projects(),
-            4 => ingest_pending_todos(),
-            _ => {}
-        }
+        // 1. 优先处理 knowledge_push_queue 中的待处理任务（非阻塞）
+        process_push_queue_non_blocking();
 
-        // 空闲时每秒检查一次
-        std::thread::sleep(Duration::from_secs(1));
+        // 2. 轮询式补漏（处理历史遗留数据）
+        ingest_pending_notes();
+        ingest_pending_products();
+        ingest_pending_projects();
+        ingest_pending_todos();
+
+        // 空闲时每100ms检查一次（更快响应新任务）
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Shared helpers
+// 核心调度：从 knowledge_push_queue 获取任务（并发处理）
+// ═══════════════════════════════════════════════════════════════
+
+/// 从 knowledge_push_queue 表获取待处理任务并并发执行（非阻塞）
+fn process_push_queue_non_blocking() {
+    // 检查是否还有并发槽位
+    let current_active = ACTIVE_TASKS.load(Ordering::Relaxed);
+    if current_active >= MAX_CONCURRENT {
+        return; // 没有可用槽位，跳过本轮
+    }
+
+    let available_slots = MAX_CONCURRENT - current_active;
+    let tasks = match crate::database::all(
+        &format!(
+            "SELECT id, source_type, source_id, operation, retry_count \
+             FROM knowledge_push_queue \
+             WHERE status='pending' AND (debounce_until IS NULL OR debounce_until <= datetime('now','localtime')) \
+             ORDER BY created_at ASC LIMIT {}",
+            available_slots
+        ),
+        &[],
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[数据中台] ⚠ 查询 knowledge_push_queue 失败: {}", e);
+            return;
+        }
+    };
+
+    if tasks.is_empty() {
+        return;
+    }
+
+    let task_count = tasks.len();
+    println!("[数据中台] 本次处理 {} 条待推送变更（当前活跃 {}/{})", task_count, current_active, MAX_CONCURRENT);
+
+    // 创建线程处理所有任务（不等待完成）
+    for (idx, task) in tasks.into_iter().enumerate() {
+        // 检查并发槽位
+        if ACTIVE_TASKS.load(Ordering::Relaxed) >= MAX_CONCURRENT {
+            println!("[数据中台] 并发槽位已满，剩余任务等待下一轮");
+            break;
+        }
+
+        ACTIVE_TASKS.fetch_add(1, Ordering::SeqCst);
+
+        let source_type = task["source_type"].as_str().unwrap_or("").to_string();
+        let source_id = task["source_id"].as_str().unwrap_or("").to_string();
+        let operation = task["operation"].as_str().unwrap_or("").to_string();
+
+        println!("[数据中台] → 启动任务 {}/{} ({}) [线程 {}/{}]", source_type, source_id, operation, idx + 1, task_count);
+
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            process_task_with_retry(task);
+            let elapsed = start.elapsed().as_millis();
+            ACTIVE_TASKS.fetch_sub(1, Ordering::SeqCst);
+            println!("[数据中台] ← 完成任务 {}/{} (耗时 {}ms) [剩余活跃 {}]", source_type, source_id, elapsed, ACTIVE_TASKS.load(Ordering::Relaxed));
+        });
+    }
+}
+
+/// 处理单个任务（带重试逻辑）
+fn process_task_with_retry(task: serde_json::Value) {
+    let id = task["id"].as_i64().unwrap_or(0);
+    let source_type = task["source_type"].as_str().unwrap_or("").to_string();
+    let source_id = task["source_id"].as_str().unwrap_or("").to_string();
+    let operation = task["operation"].as_str().unwrap_or("").to_string();
+    let retry_count = task["retry_count"].as_i64().unwrap_or(0);
+
+    // 标记 processing
+    let _ = crate::database::run(
+        "UPDATE knowledge_push_queue SET status='processing', updated_at=datetime('now','localtime') WHERE id=?1",
+        &[json!(id)],
+    );
+
+    // 执行对应操作
+    let result = match operation.as_str() {
+        "change" => process_change(&source_type, &source_id),
+        "file_upload" => process_file_upload(&source_id, &source_type, &source_id),
+        "delete" => process_cleanup(&source_type, &source_id),
+        _ => Err(format!("未知操作: {}", operation)),
+    };
+
+    // 处理结果
+    match result {
+        Ok(()) => {
+            // 成功：删除任务
+            let _ = crate::database::run(
+                "DELETE FROM knowledge_push_queue WHERE id=?1",
+                &[json!(id)],
+            );
+            println!("[数据中台] ✓ {}/{} ({})", source_type, source_id, operation);
+        }
+        Err(e) => {
+            // 失败：退回 pending 或标记 failed
+            if retry_count + 1 >= 10 {
+                let _ = crate::database::run(
+                    "UPDATE knowledge_push_queue SET status='failed', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+                    &[json!(retry_count + 1), json!(&e), json!(id)],
+                );
+                eprintln!("[数据中台] ✗ {}/{} 超过最大重试次数: {}", source_type, source_id, e);
+            } else {
+                let _ = crate::database::run(
+                    "UPDATE knowledge_push_queue SET status='pending', debounce_until=datetime('now','localtime','+5 seconds'), retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+                    &[json!(retry_count + 1), json!(&e), json!(id)],
+                );
+                eprintln!("[数据中台] ⚠ {}/{} 重试 {}/10: {}", source_type, source_id, retry_count + 1, e);
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 处理 change 操作：从业务表读取数据，清洗后写入 source_data
+// ═══════════════════════════════════════════════════════════════
+
+fn process_change(source_type: &str, source_id: &str) -> Result<(), String> {
+    crate::services::source_doc_sync::sync_entity(source_type, source_id);
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 处理 file_upload 操作：解析文件，清洗后写入 source_data
+// ═══════════════════════════════════════════════════════════════
+
+fn process_file_upload(file_id: &str, source_type: &str, source_id: &str) -> Result<(), String> {
+    // 从 file_assets 获取文件元数据（不依赖 parse_status）
+    let row = match crate::database::get(
+        "SELECT id, file_ext, file_size, content_hash, original_name FROM file_assets WHERE id=?1",
+        &[json!(file_id)],
+    ) {
+        Ok(Some(r)) => r,
+        Ok(None) => return Err(format!("文件不存在: {}", file_id)),
+        Err(e) => return Err(format!("查询文件失败: {}", e)),
+    };
+
+    // 检查是否是PDF文件，如果是则使用流式处理
+    let ext = row["file_ext"].as_str().unwrap_or("");
+    if ext.eq_ignore_ascii_case("pdf") {
+        return process_pdf_streaming(&row, source_type, source_id);
+    }
+
+    process_single_file(&row, source_type, source_id)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PDF 流式解析：逐页渲染 + OCR，支持断点续传
+// ═══════════════════════════════════════════════════════════════
+
+fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: &str) -> Result<(), String> {
+    use crate::services::file_parser::{get_pdf_page_count, pdfium_render_page, ocr_image_sync, has_real_text, crop_image_uri};
+
+    let file_id = row["id"].as_str().unwrap_or("").to_string();
+    if file_id.is_empty() {
+        return Err("文件ID为空".to_string());
+    }
+
+    // 日志标识：{source_type}/{source_id前8位}
+    let log_tag = format!("{}/{}", source_type, &source_id[..source_id.len().min(8)]);
+
+    let hash = row["content_hash"].as_str().unwrap_or("");
+    let path = if hash.is_empty() {
+        String::new()
+    } else {
+        crate::commands::file_commands::flat_disk_path(hash)
+    };
+
+    // 文件可用性检查
+    if path.is_empty() || !std::path::Path::new(&path).exists() {
+        return Err(format!("文件缺失: {}", path));
+    }
+
+    // 获取PDF总页数
+    let total_pages = get_pdf_page_count(&path)
+        .ok_or("无法获取PDF页数")?;
+
+    println!("[数据中台] {} PDF 流式解析 ({} 页)", log_tag, total_pages);
+
+    // 更新任务进度总数
+    let _ = crate::database::run(
+        "UPDATE knowledge_push_queue SET progress_total=?1, progress_page=0 WHERE source_id=?2 AND source_type=?3",
+        &[json!(total_pages), json!(source_id), json!(source_type)],
+    );
+
+    // 检查视觉模型配置
+    let has_vision = crate::services::file_parser::get_vision_config().is_some();
+    if !has_vision {
+        eprintln!("[数据中台] {} 未配置视觉模型，使用 pdfium 文本提取", log_tag);
+        return process_pdf_text_only(&file_id, &path, total_pages, source_type, source_id);
+    }
+
+    let mut full_text = String::new();
+
+    // 流式处理每一页
+    for page_num in 0..total_pages {
+        // 检查文件是否仍然存在
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("[数据中台] {} 文件已被删除，终止解析（已处理 {} / {} 页）", log_tag, page_num, total_pages);
+            break;
+        }
+
+        // 检查缓存中是否已有该页的OCR结果
+        let cached_text = crate::database::get(
+            "SELECT ocr_text FROM file_parse_cache WHERE file_id=?1 AND page_num=?2",
+            &[json!(&file_id), json!(page_num)],
+        ).ok().flatten().and_then(|r| r["ocr_text"].as_str().map(|s| s.to_string()));
+
+        if let Some(text) = cached_text {
+            // 已解析，使用缓存
+            if has_real_text(&text) {
+                if !full_text.is_empty() {
+                    full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", page_num + 1));
+                }
+                full_text.push_str(&text);
+            }
+            println!("[数据中台] {} 第 {}/{} 页: 使用缓存", log_tag, page_num + 1, total_pages);
+        } else {
+            // 渲染当前页
+            let image_uri = match pdfium_render_page(&path, page_num) {
+                Some(uri) => uri,
+                None => {
+                    eprintln!("[数据中台] {} 第 {}/{} 页渲染失败", log_tag, page_num + 1, total_pages);
+                    continue;
+                }
+            };
+
+            // OCR 当前页
+            let cropped = crop_image_uri(&image_uri, 0.04, 0.04).unwrap_or_else(|| image_uri.clone());
+            let ocr_text = ocr_image_sync(&cropped);
+
+            // 保存到缓存
+            let _ = crate::database::run(
+                "INSERT OR REPLACE INTO file_parse_cache(file_id, page_num, ocr_text) VALUES(?1, ?2, ?3)",
+                &[json!(&file_id), json!(page_num), json!(&ocr_text)],
+            );
+
+            // 更新进度
+            let _ = crate::database::run(
+                "UPDATE knowledge_push_queue SET progress_page=?1 WHERE source_id=?2 AND source_type=?3",
+                &[json!(page_num + 1), json!(source_id), json!(source_type)],
+            );
+
+            if has_real_text(&ocr_text) {
+                if !full_text.is_empty() {
+                    full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", page_num + 1));
+                }
+                full_text.push_str(&ocr_text);
+            }
+
+            println!("[数据中台] {} 第 {}/{} 页: OCR 完成 ({} 字符)", log_tag, page_num + 1, total_pages, ocr_text.len());
+        }
+    }
+
+    if full_text.is_empty() {
+        return Err("PDF 解析结果为空".to_string());
+    }
+
+    // 文本清洗
+    let clean_text = crate::services::file_parser::clean_extracted_text_with_hint(&full_text, "pdf");
+    if clean_text.trim().is_empty() {
+        return Err("清洗后无有效文本".to_string());
+    }
+
+    // 写入 source_data
+    crate::database::file_sync_to_source_data(&file_id, &clean_text);
+
+    // 清理临时缓存
+    let _ = crate::database::run(
+        "DELETE FROM file_parse_cache WHERE file_id=?1",
+        &[json!(&file_id)],
+    );
+
+    println!("[数据中台] {} PDF 流式解析完成 ({} 字符)", log_tag, clean_text.len());
+    Ok(())
+}
+
+/// PDF 纯文本提取（无视觉模型时的回退方案）
+fn process_pdf_text_only(file_id: &str, path: &str, _total_pages: u16, source_type: &str, source_id: &str) -> Result<(), String> {
+    use crate::services::file_parser::try_pdfium_text_per_page;
+
+    // 日志标识：{source_type}/{source_id前8位}
+    let log_tag = format!("{}/{}", source_type, &source_id[..source_id.len().min(8)]);
+
+    let pdfium_pages = try_pdfium_text_per_page(path)
+        .ok_or("pdfium 文本提取失败")?;
+
+    let mut full_text = String::new();
+    for (i, text) in pdfium_pages.iter().enumerate() {
+        if !text.is_empty() {
+            if !full_text.is_empty() {
+                full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1));
+            }
+            full_text.push_str(text);
+        }
+
+        // 更新进度
+        let _ = crate::database::run(
+            "UPDATE knowledge_push_queue SET progress_page=?1 WHERE source_id=?2 AND source_type=?3",
+            &[json!(i + 1), json!(source_id), json!(source_type)],
+        );
+    }
+
+    if full_text.is_empty() {
+        return Err("PDF 文本提取结果为空".to_string());
+    }
+
+    // 文本清洗
+    let clean_text = crate::services::file_parser::clean_extracted_text_with_hint(&full_text, "pdf");
+    if clean_text.trim().is_empty() {
+        return Err("清洗后无有效文本".to_string());
+    }
+
+    // 写入 source_data
+    crate::database::file_sync_to_source_data(file_id, &clean_text);
+
+    // 清理临时缓存
+    let _ = crate::database::run(
+        "DELETE FROM file_parse_cache WHERE file_id=?1",
+        &[json!(file_id)],
+    );
+
+    println!("[数据中台] {} PDF 文本提取完成 ({} 字符)", log_tag, clean_text.len());
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 处理 delete 操作：级联删除 source_data → knowledge_chunks → vector_cache → LanceDB
+// ═══════════════════════════════════════════════════════════════
+
+fn process_cleanup(source_type: &str, source_id: &str) -> Result<(), String> {
+    println!("[数据中台] 开始清理: {}/{}", source_type, source_id);
+
+    // 1. 获取关联的 chunk_ids（用于清理 vector_cache 和 LanceDB）
+    let chunk_ids: Vec<i64> = crate::database::all(
+        "SELECT id FROM knowledge_chunks WHERE source_type=?1 AND source_id=?2",
+        &[json!(source_type), json!(source_id)],
+    )
+    .unwrap_or_default()
+    .iter()
+    .filter_map(|r| r["id"].as_i64())
+    .collect();
+
+    // 2. 清理 knowledge_chunks
+    let _ = crate::database::run(
+        "DELETE FROM knowledge_chunks WHERE source_type=?1 AND source_id=?2",
+        &[json!(source_type), json!(source_id)],
+    );
+
+    // 3. 清理 vector_cache
+    if !chunk_ids.is_empty() {
+        let ph: Vec<String> = chunk_ids.iter().map(|_| "?".to_string()).collect();
+        let params: Vec<serde_json::Value> = chunk_ids.iter().map(|id| json!(id)).collect();
+        let _ = crate::database::run(
+            &format!("DELETE FROM vector_cache WHERE chunk_id IN ({})", ph.join(",")),
+            &params,
+        );
+    }
+
+    // 4. 清理 LanceDB
+    if !chunk_ids.is_empty() {
+        if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
+            if let Some(ref c) = *g {
+                if let Err(e) = c.delete_chunks_by_rowids(&chunk_ids) {
+                    eprintln!("[数据中台] LanceDB 清理失败: {}", e);
+                }
+            }
+        }
+    }
+
+    // 5. 清理 source_data
+    let _ = crate::database::run(
+        "DELETE FROM source_data WHERE source_type=?1 AND source_id=?2",
+        &[json!(source_type), json!(source_id)],
+    );
+
+    // 6. 清理 FTS5 索引
+    let _ = crate::database::run(
+        "DELETE FROM global_search_fts WHERE source_type=?1 AND source_id=?2",
+        &[json!(source_type), json!(source_id)],
+    );
+
+    println!("[数据中台] 清理完成: {}/{}", source_type, source_id);
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 文件解析核心逻辑
+// ═══════════════════════════════════════════════════════════════
+
+fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &str) -> Result<(), String> {
+    let file_id = row["id"].as_str().unwrap_or("").to_string();
+    if file_id.is_empty() {
+        return Err("文件ID为空".to_string());
+    }
+
+    // 日志标识：{source_type}/{source_id前8位}
+    let log_tag = format!("{}/{}", source_type, &source_id[..source_id.len().min(8)]);
+
+    let file_size = row["file_size"].as_i64().unwrap_or(0);
+    let hash = row["content_hash"].as_str().unwrap_or("");
+    let path = if hash.is_empty() {
+        String::new()
+    } else {
+        crate::commands::file_commands::flat_disk_path(hash)
+    };
+    let ext = row["file_ext"].as_str().unwrap_or("").to_string();
+    let size_fmt = if file_size >= 1048576 {
+        format!("{:.1}MB", file_size as f64 / 1048576.0)
+    } else {
+        format!("{}KB", file_size / 1024)
+    };
+
+    println!("[数据摄入中台] {} 开始处理 ({}, {})", log_tag, ext, size_fmt);
+
+    // ── 文件可用性检查 ──
+    if path.is_empty() || !std::path::Path::new(&path).exists() {
+        return Err(format!("文件缺失: {}", path));
+    }
+
+    // ════════════════════════════════════════
+    // ① 智能解析
+    // ════════════════════════════════════════
+    let parse_start = std::time::Instant::now();
+    let parse_result = crate::services::file_parser::parse_file_smart(&path, &ext);
+    let parse_elapsed = parse_start.elapsed().as_millis();
+
+    if !parse_result.success || parse_result.text.is_empty() {
+        return Err(format!("智能解析失败 (耗时 {}ms, 后缀={})", parse_elapsed, ext));
+    }
+    println!(
+        "[数据摄入中台] {} 智能解析完成 → raw_text={} 字符 (耗时 {}ms)",
+        log_tag,
+        parse_result.text.len(),
+        parse_elapsed
+    );
+
+    // ── 解析后中间状态验证：文件可能在解析过程中被删除 ──
+    let file_still_exists: bool = crate::database::get(
+        "SELECT 1 FROM file_assets WHERE id=?1",
+        &[json!(&file_id)],
+    )
+    .ok()
+    .flatten()
+    .is_some();
+    if !file_still_exists {
+        println!("[数据摄入中台] {} 解析完成但文件已被删除，跳过摄入", log_tag);
+        return Ok(());
+    }
+
+    // ════════════════════════════════════════
+    // ② 文本清洗
+    // ════════════════════════════════════════
+    let clean_start = std::time::Instant::now();
+    let clean_text = crate::services::file_parser::clean_extracted_text_with_hint(&parse_result.text, &ext);
+    let clean_elapsed = clean_start.elapsed().as_micros();
+    let reduction = if parse_result.text.len() > 0 {
+        100.0 - (clean_text.len() as f64 / parse_result.text.len() as f64 * 100.0)
+    } else {
+        0.0
+    };
+
+    if clean_text.trim().is_empty() {
+        return Err(format!(
+            "清洗后无有效文本 (原始 {} 字符)",
+            parse_result.text.len()
+        ));
+    }
+    println!(
+        "[数据摄入中台] {} 文本清洗完成 → clean_text={} 字符 (压缩 {:.1}%, 耗时 {}μs)",
+        log_tag,
+        clean_text.len(),
+        reduction,
+        clean_elapsed
+    );
+
+    // ════════════════════════════════════════
+    // ③ 写入 source_data
+    // ════════════════════════════════════════
+    crate::database::file_sync_to_source_data(&file_id, &clean_text);
+
+    // 验证写入是否成功
+    let check = crate::database::get(
+        "SELECT 1 FROM source_data WHERE source_type='FILE' AND source_id=?",
+        &[json!(&file_id)],
+    );
+    if check.is_ok() && check.unwrap().is_some() {
+        println!(
+            "[数据摄入中台] {} 写入 source_data 完成 ({} 字符)",
+            log_tag,
+            clean_text.len()
+        );
+    } else {
+        eprintln!("[数据摄入中台] {} source_data 写入后验证失败!", log_tag);
+    }
+
+    println!(
+        "[数据摄入中台] {} 处理完成 >>> 清洗后 {} 字符",
+        log_tag,
+        clean_text.len()
+    );
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 共享辅助函数
 // ═══════════════════════════════════════════════════════════════
 
 /// 从 product_series 自引用树递归解析目录路径（如 "全闪存存储 / Dorado 系列"）
 fn resolve_series_path(series_id: &str) -> String {
-    if series_id.is_empty() { return String::new(); }
+    if series_id.is_empty() {
+        return String::new();
+    }
     let mut parts: Vec<String> = Vec::new();
     let mut cur: Option<String> = Some(series_id.to_string());
     while let Some(ref sid) = cur.clone() {
         if let Ok(Some(row)) = crate::database::get(
             "SELECT name, parent_id FROM product_series WHERE id=?1",
-            &[serde_json::json!(sid)],
+            &[json!(sid)],
         ) {
             if let Some(name) = row["name"].as_str().filter(|n| !n.is_empty()) {
                 parts.push(name.to_string());
@@ -86,174 +610,7 @@ fn resolve_series_path(series_id: &str) -> String {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// File ingestion
-// ═══════════════════════════════════════════════════════════════
-
-fn ingest_pending_files(app: &tauri::AppHandle) {
-    // 先恢复上次崩溃残留在 PROCESSING 状态的僵尸文件
-    let _ = crate::database::run(
-        "UPDATE file_assets SET parse_status='PENDING' WHERE parse_status='PROCESSING'",
-        &[],
-    );
-
-    let rows = match crate::database::all(
-        "SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash \
-         FROM file_assets fa \
-         WHERE fa.parse_status = 'PENDING' \
-         ORDER BY fa.created_at ASC LIMIT 5",
-        &[],
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[数据摄入中台] ⚠ 查询 PENDING 队列失败: {}", e);
-            return;
-        }
-    };
-
-    if rows.is_empty() { return; }
-
-    let active_files: Vec<String> = rows.iter()
-        .filter_map(|r| r["id"].as_str().map(|s| s.to_string()))
-        .collect();
-    println!("[数据摄入中台] 📥 本次调度 {} 个待处理文件: {:?}", rows.len(), active_files);
-
-    for row in &rows {
-        let file_id = row["id"].as_str().unwrap_or("").to_string();
-        if file_id.is_empty() { continue; }
-
-        // ── 异常兜底：单个文件处理 panic 不影响其他文件 ──
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            process_single_file(app, row)
-        }));
-        match result {
-            Ok(_) => {}
-            Err(e) => {
-                let msg = if let Some(s) = e.downcast_ref::<&str>() { s.to_string() }
-                          else if let Some(s) = e.downcast_ref::<String>() { s.clone() }
-                          else { "未知错误".to_string() };
-                eprintln!("[数据摄入中台] ✗ {} 处理崩溃: {}", file_id, msg);
-                let _ = crate::database::run(
-                    "UPDATE file_assets SET parse_status='FAILED' WHERE id=?",
-                    &[serde_json::json!(&file_id)],
-                );
-                let _ = app.emit("file:parse-status", serde_json::json!({"fileId": &file_id, "status": "failed", "error": msg}));
-            }
-        }
-    }
-}
-
-fn process_single_file(app: &tauri::AppHandle, row: &serde_json::Value) {
-    let file_id = row["id"].as_str().unwrap_or("").to_string();
-    if file_id.is_empty() { return; }
-
-    let file_size = row["file_size"].as_i64().unwrap_or(0);
-    let hash = row["content_hash"].as_str().unwrap_or("");
-    let path = if hash.is_empty() { String::new() } else { crate::commands::file_commands::flat_disk_path(hash) };
-    let ext = row["file_ext"].as_str().unwrap_or("").to_string();
-    let size_fmt = if file_size >= 1048576 { format!("{:.1}MB", file_size as f64 / 1048576.0) } else { format!("{}KB", file_size / 1024) };
-
-    println!("[数据摄入中台] ═══ 开始处理 {} ({}, {}) ═══", file_id, ext, size_fmt);
-
-    // ── 设置 PROCESSING ──
-    let _ = crate::database::run(
-        "UPDATE file_assets SET parse_status='PROCESSING' WHERE id=?",
-        &[serde_json::json!(&file_id)],
-    );
-    let _ = app.emit("file:parse-status", serde_json::json!({"fileId": &file_id, "status": "processing"}));
-    println!("[数据摄入中台] ① 状态 → PROCESSING");
-
-    // ── 文件可用性检查 ──
-    if path.is_empty() || !std::path::Path::new(&path).exists() {
-        println!("[数据摄入中台] ✗ {} 文件缺失: {}", file_id, path);
-        let _ = crate::database::run(
-            "UPDATE file_assets SET parse_status='FAILED' WHERE id=?",
-            &[serde_json::json!(&file_id)],
-        );
-        let _ = app.emit("file:parse-status", serde_json::json!({"fileId": &file_id, "status": "failed", "error": "文件缺失"}));
-        return;
-    }
-
-    // ════════════════════════════════════════
-    // ① 智能解析
-    // ════════════════════════════════════════
-    let parse_start = std::time::Instant::now();
-    let parse_result = crate::services::file_parser::parse_file_smart(&path, &ext);
-    let parse_elapsed = parse_start.elapsed().as_millis();
-
-    if !parse_result.success || parse_result.text.is_empty() {
-        println!("[数据摄入中台] ✗ {} 智能解析失败 (耗时 {}ms, 后缀={})", file_id, parse_elapsed, ext);
-        let _ = crate::database::run(
-            "UPDATE file_assets SET parse_status='FAILED' WHERE id=?",
-            &[serde_json::json!(&file_id)],
-        );
-        let _ = app.emit("file:parse-status", serde_json::json!({"fileId": &file_id, "status": "failed", "error": "解析失败"}));
-        return;
-    }
-    println!("[数据摄入中台] ① 智能解析完成 → raw_text={} 字符 (耗时 {}ms)", parse_result.text.len(), parse_elapsed);
-
-    // ── 解析后中间状态验证：文件可能在解析过程中被删除 ──
-    let file_still_exists: bool = crate::database::get("SELECT 1 FROM file_assets WHERE id=?1", &[serde_json::json!(&file_id)]).ok().flatten().is_some();
-    if !file_still_exists {
-        println!("[数据摄入中台] ✗ {} 解析完成但文件已被删除，跳过摄入", file_id);
-        return;
-    }
-
-    // ════════════════════════════════════════
-    // ② 文本清洗
-    // ════════════════════════════════════════
-    let clean_start = std::time::Instant::now();
-    let clean_text = crate::services::file_parser::clean_extracted_text_with_hint(&parse_result.text, &ext);
-    let clean_elapsed = clean_start.elapsed().as_micros();
-    let reduction = if parse_result.text.len() > 0 {
-        100.0 - (clean_text.len() as f64 / parse_result.text.len() as f64 * 100.0)
-    } else { 0.0 };
-
-    if clean_text.trim().is_empty() {
-        println!("[数据摄入中台] ✗ {} 清洗后无有效文本 (原始 {} 字符)", file_id, parse_result.text.len());
-        let _ = crate::database::run(
-            "UPDATE file_assets SET parse_status='FAILED' WHERE id=?",
-            &[serde_json::json!(&file_id)],
-        );
-        let _ = app.emit("file:parse-status", serde_json::json!({"fileId": &file_id, "status": "failed", "error": "清洗后无文本"}));
-        return;
-    }
-    println!("[数据摄入中台] ② 文本清洗完成 → clean_text={} 字符 (压缩 {:.1}%, 耗时 {}μs)", clean_text.len(), reduction, clean_elapsed);
-
-    // ════════════════════════════════════════
-    // ③ 中台落盘：状态标记 + 写入 source_data
-    // ════════════════════════════════════════
-    let save_result = crate::database::run(
-        "UPDATE file_assets SET parse_status='COMPLETED', updated_at=datetime('now', 'localtime') WHERE id=?",
-        &[serde_json::json!(&file_id)],
-    );
-    if save_result.is_err() {
-        eprintln!("[数据摄入中台] ✗ {} 状态写入失败: {:?}", file_id, save_result.err());
-        let _ = app.emit("file:parse-status", serde_json::json!({"fileId": &file_id, "status": "failed", "error": "数据库写入失败"}));
-        return;
-    }
-    // 写入统一源数据表
-    crate::database::file_sync_to_source_data(&file_id, &clean_text);
-    // 验证写入是否成功
-    let check = crate::database::get(
-        "SELECT 1 FROM source_data WHERE source_type='FILE' AND source_id=?",
-        &[serde_json::json!(&file_id)],
-    );
-    if check.is_ok() && check.unwrap().is_some() {
-        println!("[数据摄入中台] ③ 中台落盘完成 → parse_status='COMPLETED', source_data 已同步 ({} 字符)", clean_text.len());
-    } else {
-        eprintln!("[数据摄入中台] ⚠ source_data 写入后验证失败!");
-    }
-
-    // ════════════════════════════════════════
-    // ④ 状态广播
-    // ════════════════════════════════════════
-    let _ = app.emit("file:parse-status", serde_json::json!({"fileId": &file_id, "status": "completed"}));
-    println!("[数据摄入中台] ④ 状态广播 → completed");
-    println!("[数据摄入中台] ═══ {} 处理完成 >>> 清洗后 {} 字符 ═══", file_id, clean_text.len());
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Note ingestion
+// 轮询式补漏：处理历史遗留数据
 // ═══════════════════════════════════════════════════════════════
 
 /// 摄入笔记：将尚未同步到 source_data 的笔记写入
@@ -266,50 +623,49 @@ fn ingest_pending_notes() {
         &[],
     ) {
         Ok(r) => r,
-        Err(e) => { eprintln!("[数据摄入中台] ⚠ 查询笔记失败: {}", e); return; }
+        Err(e) => {
+            eprintln!("[数据中台] ⚠ 查询笔记失败: {}", e);
+            return;
+        }
     };
-    if rows.is_empty() { return; }
+    if rows.is_empty() {
+        return;
+    }
 
     for row in &rows {
         let note_id = row["note_id"].as_str().unwrap_or("").to_string();
-        if note_id.is_empty() { continue; }
+        if note_id.is_empty() {
+            continue;
+        }
         let title = row["title"].as_str().unwrap_or("").to_string();
         let raw_content = row["content"].as_str().unwrap_or("").to_string();
         // 将 TipTap HTML 转换为 Markdown（保留标题/列表/表格等格式）
         let markdown = crate::services::file_parser::html_to_markdown(&raw_content);
         let clean = crate::services::file_parser::sanitize_chars(&markdown);
-        if clean.trim().is_empty() { continue; }
-
-        const LONG_NOTE_THRESHOLD: usize = 500;
-
-        if clean.chars().count() > LONG_NOTE_THRESHOLD {
-            // 长笔记：保留原文以支持 chunk，入 ai_sync_queue
-            let _ = crate::database::run(
-                "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'NOTE',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='NOTE' AND source_id=?1)",
-                &[serde_json::json!(&note_id), serde_json::json!(&title), serde_json::json!(&clean)],
-            );
-            crate::services::ai_sync::trigger_sync("notes", &note_id);
-            println!("[数据摄入中台] 📝 长笔记 {} 已摄入 ({} 字符)，已入队物化", &note_id[..note_id.len().min(8)], clean.len());
-        } else {
-            // 短笔记：渲染键值对，不入 ai_sync_queue
-            let mut lines = Vec::new();
-            lines.push(format!("title: {}", title));
-            // 取正文前 200 字作为摘要
-            let preview: String = clean.chars().take(200).collect();
-            if !preview.is_empty() { lines.push(format!("content: {}", preview)); }
-            let kv = lines.join("\n");
-            let _ = crate::database::run(
-                "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'NOTE',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='NOTE' AND source_id=?1)",
-                &[serde_json::json!(&note_id), serde_json::json!(&title), serde_json::json!(&kv)],
-            );
-            println!("[数据摄入中台] 📝 短笔记 {} 已摄入 ({} 字符)", &note_id[..note_id.len().min(8)], kv.len());
+        if clean.trim().is_empty() {
+            continue;
         }
+
+        // 构建Markdown格式
+        let mut parts = Vec::new();
+        if !title.is_empty() {
+            parts.push(format!("# {}", title));
+        }
+        parts.push(clean.clone());
+        let md_content = parts.join("\n\n");
+
+        let _ = crate::database::run(
+            "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'NOTE',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='NOTE' AND source_id=?1)",
+            &[json!(&note_id), json!(&title), json!(&md_content)],
+        );
+        crate::services::ai_sync::trigger_sync("notes", &note_id);
+        println!(
+            "[数据中台] 📝 笔记 {} 已摄入 ({} 字符)",
+            &note_id[..note_id.len().min(8)],
+            md_content.len()
+        );
     }
 }
-
-// ═══════════════════════════════════════════════════════════════
-// Product ingestion
-// ═══════════════════════════════════════════════════════════════
 
 /// 摄入产品：将尚未同步到 source_data 的产品写入（名称+指标+规格+描述）
 fn ingest_pending_products() {
@@ -320,13 +676,20 @@ fn ingest_pending_products() {
         &[],
     ) {
         Ok(r) => r,
-        Err(e) => { eprintln!("[数据摄入中台] ⚠ 查询产品失败: {}", e); return; }
+        Err(e) => {
+            eprintln!("[数据中台] ⚠ 查询产品失败: {}", e);
+            return;
+        }
     };
-    if rows.is_empty() { return; }
+    if rows.is_empty() {
+        return;
+    }
 
     for row in &rows {
         let prod_id = row["id"].as_str().unwrap_or("").to_string();
-        if prod_id.is_empty() { continue; }
+        if prod_id.is_empty() {
+            continue;
+        }
         let name = row["name"].as_str().unwrap_or("").to_string();
         let specs = row["standard_specs"].as_str().unwrap_or("").to_string();
         let full = row["full_specs"].as_str().unwrap_or("").to_string();
@@ -334,29 +697,44 @@ fn ingest_pending_products() {
         let series_id = row["series_id"].as_str().unwrap_or("").to_string();
         let path = resolve_series_path(&series_id);
 
-        // 渲染键值对
-        let mut lines = Vec::new();
-        lines.push(format!("name: {}", name));
-        if !desc.is_empty() { lines.push(format!("description: {}", desc)); }
-        if !specs.is_empty() { lines.push(format!("specs: {}", specs)); }
-        if !full.is_empty() { lines.push(format!("full_specs: {}", full)); }
-        if !path.is_empty() { lines.push(format!("path: {}", path)); }
-        let content = lines.join("\n");
+        // 构建Markdown格式
+        let mut parts = Vec::new();
+        if !name.is_empty() {
+            parts.push(format!("# {}", name));
+        }
+        if !desc.is_empty() {
+            parts.push(desc);
+        }
+        let mut specs_lines = Vec::new();
+        if !path.is_empty() {
+            specs_lines.push(format!("系列：{}", path));
+        }
+        if !specs.is_empty() {
+            specs_lines.push(format!("标准规格：{}", specs));
+        }
+        if !full.is_empty() {
+            specs_lines.push(format!("完整规格：{}", full));
+        }
+        if !specs_lines.is_empty() {
+            parts.push(format!("## 技术规格\n{}", specs_lines.join("\n")));
+        }
+        let content = parts.join("\n\n");
 
         let clean = crate::services::file_parser::sanitize_chars(&content);
-        if clean.trim().is_empty() { continue; }
+        if clean.trim().is_empty() {
+            continue;
+        }
         let _ = crate::database::run(
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'PRODUCT',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='PRODUCT' AND source_id=?1)",
-            &[serde_json::json!(&prod_id), serde_json::json!(&name), serde_json::json!(&clean)],
+            &[json!(&prod_id), json!(&name), json!(&clean)],
         );
-        // ★ 不入 ai_sync_queue，结构化数据不走 chunk
-        println!("[数据摄入中台] 📦 产品 {} 已摄入 ({} 字符)", &prod_id[..prod_id.len().min(8)], clean.len());
+        println!(
+            "[数据中台] 📦 产品 {} 已摄入 ({} 字符)",
+            &prod_id[..prod_id.len().min(8)],
+            clean.len()
+        );
     }
 }
-
-// ═══════════════════════════════════════════════════════════════
-// Project ingestion
-// ═══════════════════════════════════════════════════════════════
 
 /// 摄入项目：将尚未同步到 source_data 的项目写入（仅名称+描述）
 fn ingest_pending_projects() {
@@ -367,62 +745,257 @@ fn ingest_pending_projects() {
         &[],
     ) {
         Ok(r) => r,
-        Err(e) => { eprintln!("[数据摄入中台] ⚠ 查询项目失败: {}", e); return; }
+        Err(e) => {
+            eprintln!("[数据中台] ⚠ 查询项目失败: {}", e);
+            return;
+        }
     };
-    if rows.is_empty() { return; }
+    if rows.is_empty() {
+        return;
+    }
 
     for row in &rows {
         let proj_id = row["id"].as_str().unwrap_or("").to_string();
-        if proj_id.is_empty() { continue; }
+        if proj_id.is_empty() {
+            continue;
+        }
         let name = row["name"].as_str().unwrap_or("").to_string();
         let desc = row["description"].as_str().unwrap_or("").to_string();
 
-        // 渲染键值对
-        let mut lines = Vec::new();
-        lines.push(format!("name: {}", name));
-        if !desc.is_empty() { lines.push(format!("description: {}", desc)); }
+        // 构建Markdown格式
+        let mut parts = Vec::new();
+        if !name.is_empty() {
+            parts.push(format!("# {}", name));
+        }
+        if !desc.is_empty() {
+            parts.push(desc);
+        }
         // ★ 同时附上方案产品名称
         if let Ok(rows2) = crate::database::all(
             "SELECT DISTINCT si.product_name FROM solution_items si
              JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final'
              JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 LIMIT 20",
-            &[serde_json::json!(&proj_id)],
+            &[json!(&proj_id)],
         ) {
-            let names: Vec<String> = rows2.iter().filter_map(|r| r["product_name"].as_str().map(String::from)).collect();
-            if !names.is_empty() { lines.push(format!("solution_products: {}", names.join(", "))); }
+            let names: Vec<String> = rows2
+                .iter()
+                .filter_map(|r| r["product_name"].as_str().map(String::from))
+                .collect();
+            if !names.is_empty() {
+                let product_list: Vec<String> = names.iter().map(|n| format!("- {}", n)).collect();
+                parts.push(format!("## 方案产品\n{}", product_list.join("\n")));
+            }
         }
-        let content = lines.join("\n");
+        let content = parts.join("\n\n");
 
         let clean = crate::services::file_parser::sanitize_chars(&content);
-        if clean.trim().is_empty() { continue; }
+        if clean.trim().is_empty() {
+            continue;
+        }
         let _ = crate::database::run(
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'PROJECT',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='PROJECT' AND source_id=?1)",
-            &[serde_json::json!(&proj_id), serde_json::json!(&name), serde_json::json!(&clean)],
+            &[json!(&proj_id), json!(&name), json!(&clean)],
         );
-        // ★ 不入 ai_sync_queue，结构化数据不走 chunk
-        println!("[数据摄入中台] 📁 项目 {} 已摄入 ({} 字符)", &proj_id[..proj_id.len().min(8)], clean.len());
+        println!(
+            "[数据中台] 📁 项目 {} 已摄入 ({} 字符)",
+            &proj_id[..proj_id.len().min(8)],
+            clean.len()
+        );
     }
 }
-
 
 fn ingest_pending_todos() {
     let rows = match crate::database::all(
         "SELECT t.id, t.title, t.content FROM todos t WHERE t.id NOT IN (SELECT source_id FROM source_data WHERE source_type='TODO') AND t.done=0 LIMIT 20",
         &[],
-    ) { Ok(r) => r, Err(e) => { eprintln!("[data ingestion] query todos failed: {}", e); return; } };
-    if rows.is_empty() { return; }
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[数据中台] ⚠ 查询待办失败: {}", e);
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
     for row in &rows {
         let id = row["id"].as_str().unwrap_or("").to_string();
-        if id.is_empty() { continue; }
+        if id.is_empty() {
+            continue;
+        }
         let title = row["title"].as_str().unwrap_or("");
         let raw = row["content"].as_str().unwrap_or("");
         let markdown = crate::services::file_parser::html_to_markdown(&raw);
         let clean = crate::services::file_parser::sanitize_chars(&markdown);
-        if clean.trim().is_empty() { continue; }
+        if clean.trim().is_empty() {
+            continue;
+        }
+
+        // 构建Markdown格式
+        let mut parts = Vec::new();
+        if !title.is_empty() {
+            parts.push(format!("# {}", title));
+        }
+        parts.push(clean.clone());
+        let md_content = parts.join("\n\n");
+
         let _ = crate::database::run(
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'TODO',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='TODO' AND source_id=?1)",
-            &[serde_json::json!(&id), serde_json::json!(title), serde_json::json!(&clean)],
+            &[json!(&id), json!(title), json!(&md_content)],
         );
-        println!("[data ingestion] todo {} ingested ({} chars)", &id[..id.len().min(8)], clean.len());
+        println!(
+            "[数据中台] 📋 待办 {} 已摄入 ({} 字符)",
+            &id[..id.len().min(8)],
+            md_content.len()
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 孤儿数据清理（从 cleanup_pipeline.rs 迁移）
+// ═══════════════════════════════════════════════════════════════
+
+/// 兜底扫描：清理所有孤儿数据
+/// 1. knowledge_chunks 中 source_data 不存在的
+/// 2. vector_cache 中 knowledge_chunks 不存在的
+/// 3. source_data 中业务对象已不存在的
+pub fn cleanup_orphan_source_data() {
+    // 调试：检查数据量
+    let kc_count: i64 = crate::database::get("SELECT COUNT(*) as cnt FROM knowledge_chunks", &[])
+        .ok()
+        .flatten()
+        .and_then(|r| r["cnt"].as_i64())
+        .unwrap_or(0);
+    let sd_count: i64 = crate::database::get("SELECT COUNT(*) as cnt FROM source_data", &[])
+        .ok()
+        .flatten()
+        .and_then(|r| r["cnt"].as_i64())
+        .unwrap_or(0);
+    let vc_count: i64 = crate::database::get("SELECT COUNT(*) as cnt FROM vector_cache", &[])
+        .ok()
+        .flatten()
+        .and_then(|r| r["cnt"].as_i64())
+        .unwrap_or(0);
+    println!(
+        "[数据中台] 孤儿扫描前: knowledge_chunks={}, source_data={}, vector_cache={}",
+        kc_count, sd_count, vc_count
+    );
+
+    // 1. 清理 knowledge_chunks 孤儿（source_data 不存在）
+    let orphan_count: i64 = crate::database::get(
+        "SELECT COUNT(*) as cnt FROM knowledge_chunks kc WHERE NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type=kc.source_type AND sd.source_id=kc.source_id)",
+        &[],
+    )
+    .ok()
+    .flatten()
+    .and_then(|r| r["cnt"].as_i64())
+    .unwrap_or(0);
+    println!(
+        "[数据中台] 发现 {} 条孤儿 knowledge_chunks",
+        orphan_count
+    );
+
+    if orphan_count > 0 {
+        // 先清理 FTS5 索引（避免删除时触发器报错）
+        let _ = crate::database::run(
+            "DELETE FROM kk_chunks_fts WHERE rowid IN (SELECT id FROM knowledge_chunks WHERE NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type=knowledge_chunks.source_type AND sd.source_id=knowledge_chunks.source_id) AND chunk_type='child')",
+            &[],
+        );
+
+        // 删除孤儿 knowledge_chunks
+        match crate::database::run(
+            "DELETE FROM knowledge_chunks WHERE NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type=knowledge_chunks.source_type AND sd.source_id=knowledge_chunks.source_id)",
+            &[],
+        ) {
+            Ok(r) => println!(
+                "[数据中台] 已清理 knowledge_chunks: {} 行",
+                r.changes
+            ),
+            Err(e) => eprintln!("[数据中台] knowledge_chunks 清理失败: {}", e),
+        }
+    }
+
+    // 2. 清理 vector_cache 孤儿（knowledge_chunks 不存在）
+    match crate::database::run(
+        "DELETE FROM vector_cache WHERE chunk_id NOT IN (SELECT id FROM knowledge_chunks)",
+        &[],
+    ) {
+        Ok(r) if r.changes > 0 => println!(
+            "[数据中台] 孤儿 vector_cache 清理: {} 行",
+            r.changes
+        ),
+        _ => {}
+    }
+
+    // 3. 清理 source_data 孤儿（业务对象已不存在）
+    for (source_type, table, id_col) in &[
+        ("NOTE", "notes", "note_id"),
+        ("PRODUCT", "products", "id"),
+        ("PROJECT", "projects", "id"),
+        ("TODO", "todos", "id"),
+        ("FILE", "file_assets", "id"),
+    ] {
+        // 先清理 FTS5 索引
+        let fts_sql = format!(
+            "INSERT INTO global_search_fts(global_search_fts, rowid, source_type, source_id, title, content) \
+             SELECT 'delete', rowid, source_type, source_id, title, content FROM source_data \
+             WHERE source_type='{}' AND source_id NOT IN (SELECT {} FROM {})",
+            source_type, id_col, table
+        );
+        crate::database::run(&fts_sql, &[]).ok();
+        // 清理 source_data
+        let sql = format!(
+            "DELETE FROM source_data WHERE source_type='{}' AND source_id NOT IN (SELECT {} FROM {})",
+            source_type, id_col, table
+        );
+        match crate::database::run(&sql, &[]) {
+            Ok(r) if r.changes > 0 => println!(
+                "[数据中台] 孤儿 source_data 清理 ({}): {} 行",
+                source_type, r.changes
+            ),
+            Err(e) => eprintln!(
+                "[数据中台] 孤儿 source_data 清理失败 ({}): {}",
+                source_type, e
+            ),
+            _ => {}
+        }
+    }
+
+    // 4. 清理 business_relations 孤儿（引用的实体已不存在）
+    let br_orphan_count: i64 = crate::database::get(
+        "SELECT COUNT(*) as cnt FROM business_relations br WHERE \
+         (br.source_type='NOTE' AND br.source_id NOT IN (SELECT note_id FROM notes)) OR \
+         (br.source_type='PRODUCT' AND br.source_id NOT IN (SELECT id FROM products)) OR \
+         (br.source_type='PROJECT' AND br.source_id NOT IN (SELECT id FROM projects)) OR \
+         (br.source_type='TODO' AND br.source_id NOT IN (SELECT id FROM todos)) OR \
+         (br.source_type='FILE' AND br.source_id NOT IN (SELECT id FROM file_assets)) OR \
+         (br.source_type IN ('CHANNEL','VENDOR','CUSTOMER') AND br.source_id NOT IN (SELECT id FROM partners)) OR \
+         (br.source_type='CONTACT' AND br.source_id NOT IN (SELECT id FROM partner_contacts)) OR \
+         (br.target_type='PROJECT' AND br.target_id NOT IN (SELECT id FROM projects))",
+        &[],
+    )
+    .ok()
+    .flatten()
+    .and_then(|r| r["cnt"].as_i64())
+    .unwrap_or(0);
+
+    if br_orphan_count > 0 {
+        println!("[数据中台] 发现 {} 条孤儿 business_relations", br_orphan_count);
+        // 删除孤儿 business_relations
+        match crate::database::run(
+            "DELETE FROM business_relations WHERE \
+             (source_type='NOTE' AND source_id NOT IN (SELECT note_id FROM notes)) OR \
+             (source_type='PRODUCT' AND source_id NOT IN (SELECT id FROM products)) OR \
+             (source_type='PROJECT' AND source_id NOT IN (SELECT id FROM projects)) OR \
+             (source_type='TODO' AND source_id NOT IN (SELECT id FROM todos)) OR \
+             (source_type='FILE' AND source_id NOT IN (SELECT id FROM file_assets)) OR \
+             (source_type IN ('CHANNEL','VENDOR','CUSTOMER') AND source_id NOT IN (SELECT id FROM partners)) OR \
+             (source_type='CONTACT' AND source_id NOT IN (SELECT id FROM partner_contacts)) OR \
+             (target_type='PROJECT' AND target_id NOT IN (SELECT id FROM projects))",
+            &[],
+        ) {
+            Ok(r) => println!("[数据中台] 已清理 business_relations 孤儿: {} 行", r.changes),
+            Err(e) => eprintln!("[数据中台] business_relations 孤儿清理失败: {}", e),
+        }
     }
 }

@@ -92,7 +92,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
         CREATE TABLE IF NOT EXISTS file_assets (
             id TEXT PRIMARY KEY, file_ext TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
-            content_hash TEXT NOT NULL UNIQUE, parse_status TEXT DEFAULT 'PENDING',
+            content_hash TEXT NOT NULL UNIQUE,
             original_name TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
@@ -298,23 +298,23 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             retry_count INTEGER DEFAULT 0,
             last_error TEXT DEFAULT '',
             debounce_until TEXT DEFAULT NULL,
+            progress_page INTEGER DEFAULT 0,
+            progress_total INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
 
-        -- Cleanup pipeline queue: async cascade delete
-        CREATE TABLE IF NOT EXISTS cleanup_queue (
+        -- 临时解析缓存：存储PDF每页OCR结果，支持断点续传
+        CREATE TABLE IF NOT EXISTS file_parse_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_type TEXT NOT NULL,
-            source_id TEXT NOT NULL,
-            status INTEGER DEFAULT 0,
-            retry_count INTEGER DEFAULT 0,
-            last_error TEXT DEFAULT '',
-            source_data_id INTEGER DEFAULT NULL,
-            chunk_ids TEXT DEFAULT '[]',
+            file_id TEXT NOT NULL,
+            page_num INTEGER NOT NULL,
+            ocr_text TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
-            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+            UNIQUE(file_id, page_num)
         );
+
+
     ")?;
     Ok(())
 }

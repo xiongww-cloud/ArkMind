@@ -145,17 +145,10 @@ pub fn run() {
             commands::file_commands::cleanup_preview_links();
             if database::check_license_premium() { upgrade_fts5_triggers_on_startup(); }
 
-            // Start Push Pipeline (业务层 → source_data 推送管线，最早启动)
-            std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                services::push_pipeline::start();
-            });
-
             // Start KnowledgePipeline
             std::thread::spawn(|| {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 services::knowledge_pipeline::start();
-                crate::services::cleanup_pipeline::start();
             });
 
             // Start independent Tag Pipeline (reads from source_data)
@@ -164,10 +157,16 @@ pub fn run() {
                 // services::ai_tag::start();  // 已禁用
             });
 
-            // Start File Ingestion Worker (异步文件解析：智能路由 + 严格时序 + 状态广播)
+            // Start Data Ingestion Mid-Platform (统一数据中台)
+            // 从 knowledge_push_queue 获取任务，处理所有业务对象
             let ingestion_handle = app.handle().clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(4));
+                // 启动时清理孤儿数据
+                println!("[启动] 清理孤儿数据...");
+                services::file_ingestion::cleanup_orphan_source_data();
+                println!("[启动] 孤儿数据清理完成");
+                
+                std::thread::sleep(std::time::Duration::from_secs(1));
                 services::file_ingestion::start(ingestion_handle);
             });
 
