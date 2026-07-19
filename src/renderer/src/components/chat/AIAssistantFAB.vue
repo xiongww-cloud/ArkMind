@@ -536,11 +536,11 @@ onUnmounted(() => {
 }
 
 /* ═══ Markdown ═══ */
-.fab-md :deep(p) { margin: 0.25em 0; font-size: 11px; color: #3a3a3c; line-height: 1.65; }
+.fab-md :deep(p) { margin: 0.25em 0; font-size: 12px; color: #3a3a3c; line-height: 1.65; }
 .fab-md :deep(h1), .fab-md :deep(h2), .fab-md :deep(h3), .fab-md :deep(h4) { color: #1d1d1f; margin: 0.4em 0 0.15em; font-weight: 600; }
 .fab-md :deep(h1) { font-size: 0.85rem; } .fab-md :deep(h2) { font-size: 0.8rem; } .fab-md :deep(h3) { font-size: 0.75rem; } .fab-md :deep(h4) { font-size: 0.7rem; }
 .fab-md :deep(ul), .fab-md :deep(ol) { padding-left: 1.2em; margin: 0.15em 0; }
-.fab-md :deep(li) { font-size: 11px; color: #3a3a3c; margin: 0.05em 0; }
+.fab-md :deep(li) { font-size: 12px; color: #3a3a3c; margin: 0.05em 0; }
 .fab-md :deep(strong) { color: #1d1d1f; font-weight: 600; }
 .fab-md :deep(code) { background: rgba(0,0,0,0.04); color: #e11d48; padding: 0px 3px; border-radius: 3px; font-size: 0.9em; }
 .fab-md :deep(pre) { background: #1d1d1f; color: #f5f5f7; padding: 6px 10px; border-radius: 6px; overflow-x: auto; margin: 0.3em 0; font-size: 10px; }
