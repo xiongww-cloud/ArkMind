@@ -694,7 +694,7 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_query","description":"Structured query for business data with field filtering, sorting, pagination.","parameters":{"type":"object","properties":{"entity":{"type":"string","enum":["project","product","partner","contact","todo","note"],"description":"Entity type to query"},"filters":{"type":"array","items":{"type":"object","properties":{"field":{"type":"string","description":"Field name"},"op":{"type":"string","enum":["=","!=",">","<",">=","<=","LIKE","IN","IS_NULL","IS_NOT_NULL"],"description":"Operator"},"value":{"type":["string","number","boolean","null"],"description":"Filter value"}},"required":["field","op","value"]},"description":"Filter conditions (AND)"},"sort":{"type":"object","properties":{"field":{"type":"string","description":"Sort field"},"order":{"type":"string","enum":["asc","desc"],"description":"Sort direction"}},"description":"Sort"},"limit":{"type":"integer","description":"Max results, default 20, max 100"},"offset":{"type":"integer","description":"Offset, default 0"}},"required":["entity"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_reminder","description":"Manage reminders. action=ack(acknowledge, hide from future reminders), action=unack(cancel acknowledgement, show again).","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["ack","unack"],"description":"ack=confirm reminder, unack=cancel confirmation"},"reminder_type":{"type":"string","enum":["todo_due","todo_today","project_stale","bid_deadline"],"description":"Type of reminder"},"entity_id":{"type":"string","description":"ID of the todo or project"}},"required":["action","reminder_type","entity_id"]}}},
         {"type":"function","function":{"name":"ext_tool_memory","description":"管理记忆. action=create(创建), action=delete(删除), action=search(搜索记忆)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete","search"],"description":"create=创建记忆, delete=删除记忆, search=搜索记忆"},"content":{"type":"string","description":"单条记忆内容（与 items 二选一）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条事实内容数组，一次调用创建多条记忆"},"memory_id":{"type":"string","description":"删除时用"},"replace_ids":{"type":"string","description":"创建时逗号分隔的旧记忆id"},"query":{"type":"string","description":"搜索关键词"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户策略（宪法）。id+content=更新，id+无content=删除，无id+content=新增。查询不需要，系统自动注入prompt。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"策略ID（更新/删除用，如 policy-xxx）"},"content":{"type":"string","description":"策略内容（新增/更新用）"}},"required":[]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户策略（宪法）。id+content=更新，id+无content=删除，无id+content=新增。查询不需要，系统自动注入prompt。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"策略ID（更新/删除用）"},"content":{"type":"string","description":"策略内容（新增/更新用）"}},"required":[]}}},
     ])
 }
 
@@ -2991,15 +2991,25 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             let content = a["content"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                             let res = match (id, content) {
                                 (Some(ref pid), Some(ref c)) => {
-                                    let r = database::run("UPDATE policies SET content=?1, updated_at=datetime('now','localtime') WHERE id=?2", &[json!(c), json!(pid)]);
-                                    match r { Ok(_) => format!("已更新策略：{}", c), Err(e) => format!("更新失败：{}", e) }
+                                    let real_id = pid.strip_prefix("policy-").unwrap_or(pid);
+                                    let r = database::run("UPDATE policies SET content=?1, updated_at=datetime('now','localtime') WHERE id=?2", &[json!(c), json!(real_id)]);
+                                    match r {
+                                        Ok(r) if r.changes > 0 => format!("已更新策略：{}", c),
+                                        Ok(_) => format!("未找到策略 ID：{}", real_id),
+                                        Err(e) => format!("更新失败：{}", e),
+                                    }
                                 }
                                 (Some(ref pid), None) => {
-                                    let r = database::run("DELETE FROM policies WHERE id=?1", &[json!(pid)]);
-                                    match r { Ok(_) => "已删除策略".to_string(), Err(e) => format!("删除失败：{}", e) }
+                                    let real_id = pid.strip_prefix("policy-").unwrap_or(pid);
+                                    let r = database::run("DELETE FROM policies WHERE id=?1", &[json!(real_id)]);
+                                    match r {
+                                        Ok(r) if r.changes > 0 => "已删除策略".to_string(),
+                                        Ok(_) => format!("未找到策略 ID：{}", real_id),
+                                        Err(e) => format!("删除失败：{}", e),
+                                    }
                                 }
                                 (None, Some(ref c)) => {
-                                    let new_id = format!("policy-{}", uuid::Uuid::new_v4());
+                                    let new_id = uuid::Uuid::new_v4().to_string();
                                     let r = database::run("INSERT INTO policies(id,content,updated_at) VALUES(?1,?2,datetime('now','localtime'))", &[json!(&new_id), json!(c)]);
                                     match r { Ok(_) => format!("已记入宪法：{}", c), Err(e) => format!("记录失败：{}", e) }
                                 }
