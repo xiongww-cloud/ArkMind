@@ -885,7 +885,7 @@ async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<ta
 
 /// 从 source_type / source_id 查询所有关联元数据，返回格式化信息块
 /// 数据来源：business_relations（关联关系）+ source_data.title（名称）
-pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
+pub fn build_chunk_metadata(source_type: &str, source_id: &str, with_relations: bool) -> String {
     if source_type.is_empty() || source_id.is_empty() { return String::new(); }
 
     // ── 来源标题（从 source_data.title）──
@@ -894,9 +894,103 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str) -> String {
         &[json!(source_type), json!(source_id)],
     ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
 
+    let mut lines: Vec<String> = Vec::new();
     let type_label = match source_type { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", "CHANNEL" => "渠道", "VENDOR" => "供应商", "CONTACT" => "联系人", "CUSTOMER" => "客户", _ => source_type };
     let title_display = if title.is_empty() { source_id } else { title.as_str() };
-    format!("来源：{} · {} | source_id: {}-{}", type_label, title_display, source_type.to_uppercase(), source_id)
+    lines.push(format!("来源：{} · {} | source_id: {}-{}", type_label, title_display, source_type.to_uppercase(), source_id));
+
+    if !with_relations { return lines.join("\n"); }
+
+    // ── 关联查询（ext_tool_object 按需调用时才执行）──
+    let rels = database::all(
+        "SELECT target_type, target_id, relation_type, metadata FROM business_relations WHERE source_type=?1 AND source_id=?2",
+        &[json!(source_type), json!(source_id)],
+    ).unwrap_or_default();
+    let reverse_rels = database::all(
+        "SELECT source_type as target_type, source_id as target_id, relation_type, metadata FROM business_relations WHERE target_type=?1 AND target_id=?2",
+        &[json!(source_type), json!(source_id)],
+    ).unwrap_or_default();
+
+    let mut all_rels: Vec<(String, String, String, String)> = rels.into_iter()
+        .chain(reverse_rels.into_iter())
+        .filter_map(|r| {
+            Some((r["target_type"].as_str()?.to_string(), r["target_id"].as_str()?.to_string(), r["relation_type"].as_str().unwrap_or("").to_string(), r["metadata"].as_str().unwrap_or("{}").to_string()))
+        }).collect();
+    all_rels.sort_by(|a,b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    all_rels.dedup_by(|a,b| a.0 == b.0 && a.1 == b.1);
+
+    if all_rels.is_empty() { return lines.join("\n"); }
+
+    // 批量查名称
+    let mut name_cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut targets_by_type: std::collections::HashMap<String, Vec<(String, String, String)>> = std::collections::HashMap::new();
+    for (tt, tid, rt, _meta) in &all_rels {
+        targets_by_type.entry(tt.clone()).or_default().push((tid.clone(), rt.clone(), _meta.clone()));
+    }
+    for (tt, targets) in &targets_by_type {
+        let ids: Vec<String> = targets.iter().map(|(id,_,_)| id.clone()).collect();
+        if ids.is_empty() { continue; }
+        let ph: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let params: Vec<serde_json::Value> = ids.iter().map(|id| json!(id)).collect();
+        let type_upper = tt.to_uppercase();
+        let rows = database::all(
+            &format!("SELECT source_id, title FROM source_data WHERE source_type=?1 AND source_id IN ({})", ph.join(",")),
+            &[json!(&type_upper)].iter().chain(params.iter()).cloned().collect::<Vec<_>>().as_slice(),
+        ).unwrap_or_default();
+        for r in &rows {
+            if let (Some(id), Some(t)) = (r["source_id"].as_str(), r["title"].as_str()) {
+                if !t.is_empty() { name_cache.insert(format!("{}-{}", type_upper, id), t.to_string()); }
+            }
+        }
+    }
+
+    let relation_label = |st: &str, tt: &str, rt: &str| -> String {
+        match (st, tt, rt) {
+            ("PROJECT", "PRODUCT", _) => "项目使用".to_string(),
+            ("PROJECT", "FILE", _) => "项目文件".to_string(),
+            ("PROJECT", "CHANNEL", _) => "项目渠道".to_string(),
+            ("PROJECT", "VENDOR", _) => "项目厂商".to_string(),
+            ("PROJECT", "CONTACT", _) => "项目联系人".to_string(),
+            ("PROJECT", "CUSTOMER", _) => "项目客户".to_string(),
+            ("PROJECT", "NOTE", _) => "项目笔记".to_string(),
+            ("PROJECT", "TODO", _) => "项目待办".to_string(),
+            ("PRODUCT", "PROJECT", _) => "用于项目".to_string(),
+            ("FILE", "PROJECT", _) => "项目文件".to_string(),
+            ("CHANNEL", "PROJECT", _) => "渠道归属".to_string(),
+            ("VENDOR", "PROJECT", _) => "厂商归属".to_string(),
+            ("CONTACT", "PROJECT", _) => "项目联系人".to_string(),
+            ("CUSTOMER", "PROJECT", _) => "客户归属".to_string(),
+            ("NOTE", "PROJECT", _) => "项目笔记".to_string(),
+            ("TODO", "PROJECT", _) => "项目待办".to_string(),
+            ("FILE", "PRODUCT", _) | ("PRODUCT", "FILE", _) => "产品资料".to_string(),
+            (_, _, "belongs_to") => "归属于".to_string(),
+            (_, _, "related") => "相关".to_string(),
+            (_, _, "authored_by") => "创建".to_string(),
+            _ => rt.to_string(),
+        }
+    };
+
+    let format_targets = |tt: &str, targets: &[(String, String, String)]| -> Vec<String> {
+        targets.iter().filter_map(|(tid, rt, _meta)| {
+            let name = name_cache.get(&format!("{}-{}", tt, tid)).map(|s| s.as_str()).unwrap_or("");
+            let type_label = match tt { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", "CHANNEL" => "渠道", "VENDOR" => "供应商", "CONTACT" => "联系人", "CUSTOMER" => "客户", _ => tt };
+            let display_name = format!("[{}] {}", type_label, if name.is_empty() { tid.as_str() } else { name });
+            Some(format!("· {} | 关系：{} | source_id: {}-{}", display_name, relation_label(source_type, tt, rt), tt, tid))
+        }).collect()
+    };
+
+    let mut rel_items: Vec<String> = Vec::new();
+    for (_, type_key) in &[("关联项目", "PROJECT"), ("关联产品", "PRODUCT"), ("关联笔记", "NOTE"), ("关联待办", "TODO"), ("关联文件", "FILE"), ("关联渠道", "CHANNEL"), ("关联供应商", "VENDOR"), ("关联联系人", "CONTACT"), ("关联客户", "CUSTOMER")] {
+        if type_key == &source_type { continue; }
+        if let Some(targets) = targets_by_type.get(*type_key) {
+            rel_items.extend(format_targets(type_key, targets));
+        }
+    }
+    if !rel_items.is_empty() {
+        lines.push(format!("关联对象：\n{}", rel_items.join("\n")));
+    }
+
+    lines.join("\n")
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1227,7 +1321,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
         for (idx, (score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)) in non_memory.iter().enumerate() {
             let rrf_tag = &format!("{:.3}", score);
             let boost_tag = if *is_obj_match { "🔥" } else { "" };
-            let mut meta = build_chunk_metadata(st, sid);
+            let mut meta = build_chunk_metadata(st, sid, false);
             if *total_parents > 1 {
                 if !meta.is_empty(){meta.push('\n');}
                 meta.push_str(&format!("父块：{}/{}", chunk_index + 1, total_parents));
@@ -1439,7 +1533,7 @@ fn execute_traverse(chunk_id: &str, edge_type: &str, radius: usize, visited: &st
                 });
             }
             let st = row["source_type"].as_str().unwrap_or(""); let sid = row["source_id"].as_str().unwrap_or(""); let _full_cid = row["chunk_id"].as_str().unwrap_or("");
-            let meta = build_chunk_metadata(&st.to_lowercase(),sid);
+            let meta = build_chunk_metadata(&st.to_lowercase(), sid, false);
             if !meta.is_empty() { out.push_str(&format!("\n\n当前块导航卡：\n{}",meta)); }
             out
         }
@@ -2011,7 +2105,7 @@ fn fetch_parent_chunks(source_id_str: &str, fields: &[String], visited_chunks: &
     let mut full_content = chunks.join("\n");
 
     // 拼接关联对象元数据（从 business_relations 查询）
-    let meta = build_chunk_metadata(&resolved_type, &oi);
+    let meta = build_chunk_metadata(&resolved_type, &oi, true);
     if !meta.is_empty() {
         full_content.push_str(&format!("\n\n{}", meta));
     }

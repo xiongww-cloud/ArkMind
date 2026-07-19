@@ -150,7 +150,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
             let _total_parents: i64 = r["source_data_id"].as_str().map(|sdid| database::get("SELECT COUNT(*) as cnt FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent'", &[serde_json::json!(sdid)]).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0)).unwrap_or(0);
             let _chunk_id = r["chunk_id"].as_str().unwrap_or(""); let _chunk_index = r["chunk_index"].as_i64().unwrap_or(0);
             if let Some(c) = r["content"].as_str() { count += 1; let t: String = c.chars().take(1300).collect();
-                let meta = crate::services::agent_workflow::build_chunk_metadata(st, sid);
+                let meta = crate::services::agent_workflow::build_chunk_metadata(st, sid, false);
                 if meta.is_empty() { output.push_str(&format!("\n\n--- [父块{}|RRF={:.3}] ---\n{}", count, rrf_score, t)); }
                 else { output.push_str(&format!("\n\n--- [父块{}|RRF={:.3}] ---\n{}\n--------\n{}", count, rrf_score, meta, t)); }
             }
