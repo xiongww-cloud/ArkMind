@@ -528,7 +528,7 @@ onUnmounted(() => {
 .fab-bubble-ai {
   background: rgba(255,255,255,0.9);
   border: 1px solid #e5e5ea;
-  border-radius: 16px 16px 16px 4px;
+  border-radius: 4px 16px 16px 16px;
   padding: 2px 12px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
 }
