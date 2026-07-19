@@ -328,9 +328,15 @@ onUnmounted(() => {
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ m.content }}</pre>
             </div>
             <!-- AI -->
-            <div v-else class="fab-bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
-              <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
-              <div v-else class="fab-md" v-html="rendered[m.id] || m.content || '思考中'" />
+            <div v-else class="fab-bubble-ai">
+              <div v-if="m.error" class="text-[12px] text-red-500">{{ m.error }}</div>
+              <div v-else-if="m.thinking && !thinkingProgress && !rendered[m.id]" class="flex items-center gap-1.5 py-1">
+                <span class="thinking-dot" style="animation-delay:0ms"/>
+                <span class="thinking-dot" style="animation-delay:150ms"/>
+                <span class="thinking-dot" style="animation-delay:300ms"/>
+              </div>
+              <div v-else-if="m.thinking && thinkingProgress" class="text-[12px] text-[#3a3a3c] leading-relaxed">{{ thinkingProgress }}</div>
+              <div v-else class="fab-md" v-html="rendered[m.id] || m.content" />
             </div>
           </div>
         </div>
@@ -556,23 +562,14 @@ onUnmounted(() => {
 /* ═══ Animation ═══ */
 @keyframes fade-in { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
 .animate-fade-in { animation: fade-in 0.25s ease-out; }
-@keyframes thinking-shimmer {
-  0%   { background-position: 200% center; }
-  100% { background-position: -200% center; }
+@keyframes thinking-dot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
 }
-.thinking-bubble {
-  position: relative;
-  overflow: hidden;
-}
-.thinking-bubble::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent 30%, rgba(37,99,235,0.08) 50%, transparent 70%);
-  background-size: 200% 100%;
-  animation: thinking-shimmer 1.8s ease-in-out infinite;
-  pointer-events: none;
-  border-radius: inherit;
+.thinking-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #2563eb;
+  animation: thinking-dot 1.2s infinite ease-in-out;
 }
 .fab-panel-enter-active { transition: all 0.25s cubic-bezier(0.16,1,0.3,1); }
 .fab-panel-leave-active { transition: all 0.15s ease; }
