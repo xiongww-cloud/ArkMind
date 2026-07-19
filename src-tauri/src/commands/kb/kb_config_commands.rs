@@ -20,7 +20,14 @@ use tauri::Emitter;
         let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, history, Some(app_handle.clone())).await;
         match result {
             Ok(v) => { let _ = app_handle.emit("agent:done", &v); if let Some(ans) = v["answer"].as_str() { if !ans.is_empty() { let preview: String = ans.chars().take(100).collect(); println!("[Agent] 响应: {}", preview); } } }
-            Err(e) => { eprintln!("[Agent] 错误: {}", e); let _ = app_handle.emit("agent:error", json!({"error": e})); }
+            Err(e) => {
+                if e == "cancelled" {
+                    let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true}));
+                } else {
+                    eprintln!("[Agent] 错误: {}", e);
+                    let _ = app_handle.emit("agent:error", json!({"error": e}));
+                }
+            }
         }
     });
     Ok(())
@@ -32,7 +39,13 @@ use tauri::Emitter;
         let result = crate::services::agent_workflow::agent_chat_workflow(query, None, vec![], Some(app_handle.clone())).await;
         match result {
             Ok(v) => { let _ = app_handle.emit("agent:done", &v); }
-            Err(e) => { let _ = app_handle.emit("agent:error", json!({"error": e})); }
+            Err(e) => {
+                if e == "cancelled" {
+                    let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true}));
+                } else {
+                    let _ = app_handle.emit("agent:error", json!({"error": e}));
+                }
+            }
         }
     });
     Ok(())
