@@ -507,7 +507,7 @@ onUnmounted(() => {
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
-              <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-0.5 shadow-sm" :class="{ 'thinking-bubble': msg.isThinking }">
+              <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 shadow-sm" :class="{ 'thinking-bubble': msg.isThinking }">
                 <div v-if="isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || msg.content || '思考中'"></div>
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || msg.content || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || msg.content || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || msg.content || '思考中'"></div>
               </div>
