@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import AppIcon from '@/components/common/AppIcon.vue'
 
-function formatTime(ts: string) { if (!ts) return ''; const d = new Date(ts); return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }
+function formatTime(ts: string) { if (!ts) return ''; const d = new Date(ts); return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }
 function formatSessionTime(ts: string) {
   if (!ts) return ''
   const d = new Date(ts)
   const now = new Date()
-  const diff = now.getTime() - d.getTime()
-  if (diff < 300000) return '刚刚'
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`
-  if (diff < 172800000) return '昨天'
-  return `${d.getMonth() + 1}/${d.getDate()}`
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today.getTime() - 86400000)
+  const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  if (d >= today) return `今天 ${time}`
+  if (d >= yesterday) return `昨天 ${time}`
+  return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 defineProps<{
   sessions: { id: string; name: string; messages: any[]; createdAt: string; updatedAt?: string }[]
