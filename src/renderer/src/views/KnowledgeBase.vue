@@ -291,15 +291,13 @@ async function handleSendMessage() {
       }
       scrollToBottomIfNear()
     })
-    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { thinkingProgress.value += ev.payload.text; scrollToBottomIfNear() })
+    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => { thinkingProgress.value = ev.payload.text; scrollToBottomIfNear() })
     // ★ 工具轮结束：恢复预设文案，保持呼吸气泡
     const unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
       console.log('[FE] round-thought received')
       streamedContent = ''
       const msg = session.messages[aiIdx]
       msg.isThinking = true
-      msg.content = presetText
-      renderMessageContent(msg.id || '', presetText)
       isRealStreaming.value = false
       scrollToBottomIfNear()
     })

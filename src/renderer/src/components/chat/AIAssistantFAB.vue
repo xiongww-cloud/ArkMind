@@ -181,12 +181,10 @@ async function send() {
       scrollChat()
     })
     unlistenThought = await listen<{ text: string }>('agent:thought', (ev) => {
-      thinkingProgress.value += ev.payload.text; scrollChat()
+      thinkingProgress.value = ev.payload.text; scrollChat()
     })
     const unlistenRoundThought = await listen('agent:round-thought', () => {
       streamedContent = ''
-      aiMsg.content = presetText
-      renderMd(presetText.replace(/~/g, '～')).then(h => { rendered.value[aiMsg.id] = h })
       aiMsg.thinking = true
       isRealStreaming.value = false
       scrollChat()
