@@ -1019,11 +1019,7 @@ onUnmounted(() => {
     <div class="bg-white rounded-2xl border border-surface-200 shadow-sm p-5">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-[13px] font-semibold text-surface-700">运行日志</h2>
-        <div class="flex gap-2">
-          <button @click="refreshLogs" class="px-3 py-1 text-[11px] text-surface-500 hover:text-surface-700 border border-surface-200 rounded-lg hover:bg-surface-50 transition-colors">刷新</button>
-          <button @click="clearAllLogs" class="px-3 py-1 text-[11px] text-red-500 hover:text-red-600 border border-surface-200 rounded-lg hover:bg-red-50 transition-colors">清空</button>
-          <button @click="showLogModal = true" class="px-3 py-1 text-[11px] text-white bg-brand-500 hover:bg-brand-600 rounded-lg transition-colors">查看全部</button>
-        </div>
+        <button @click="showLogModal = true" class="px-3 py-1 text-[11px] text-white bg-brand-500 hover:bg-brand-600 rounded-lg transition-colors">查看全部</button>
       </div>
       <p class="text-[11px] text-surface-400">共 {{ logs.length }} 条日志 · 每 3 秒自动刷新</p>
     </div>
