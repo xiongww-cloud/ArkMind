@@ -67,7 +67,16 @@ function onFabPointerUp() { dragging.value = false }
 const suggestions = ['分析一下当前项目整体进展', '最近有什么值得关注的动态', '帮我梳理一下待办优先级']
 
 function scrollChat() { nextTick(() => { if (chatListRef.value) chatListRef.value.scrollTop = chatListRef.value.scrollHeight }) }
-function fmtTime() { return new Date().toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }
+function fmtTime() {
+  const d = new Date()
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today.getTime() - 86400000)
+  const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  if (d >= today) return `今天 ${time}`
+  if (d >= yesterday) return `昨天 ${time}`
+  return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
 
 function stopTypewriter(msgId: string) {
   const timer = typewriterTimers.get(msgId)

@@ -26,6 +26,17 @@ async function renderMarkdown(text: string): Promise<string> {
 interface ChatMessage { id?: string; role: 'user'|'assistant'; content: string; error?: string; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; isThinking?: boolean; contextDocs?: any[]; workspace?: string; typewriterText?: string; typewriterDone?: boolean; timestamp?: number }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
+function formatChatTime(ts: number) {
+  const d = new Date(ts)
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today.getTime() - 86400000)
+  const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  if (d >= today) return `今天 ${time}`
+  if (d >= yesterday) return `昨天 ${time}`
+  return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
 const rendered = ref<Record<string,string>>({})
 async function renderMessageContent(msgId: string, text: string) {
   if (!text) return
@@ -490,7 +501,7 @@ onUnmounted(() => {
           <div v-if="msg.role === 'user'" class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>
           <div v-else class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
           <div class="min-w-0" :class="msg.role === 'user' ? 'max-w-[65%]' : 'max-w-[75%]'">
-            <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1" :class="msg.role === 'user' ? 'text-right' : ''">{{ msg.timestamp ? new Date(msg.timestamp).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '' }}</div>
+            <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1" :class="msg.role === 'user' ? 'text-right' : ''">{{ msg.timestamp ? formatChatTime(msg.timestamp) : '' }}</div>
             <div v-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
             <div v-else-if="msg.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-2">
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
