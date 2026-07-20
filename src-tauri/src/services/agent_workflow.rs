@@ -156,6 +156,7 @@ content 必须按以下结构组织：
 - 你的思考过程、分析步骤、整理过程、自我评估等只应出现在 reasoning_content 中，**禁止出现在最终回答的 content 里**。
 - 最终回答中禁止包含"数据已经非常完整了""让我整理一下""现在信息充分了""我可以回答了""让我想想"等过程性语句。
 - 禁止在最终回答中先列出草稿或中间结论，再写正式答案。直接输出最终答案。
+- 最终回答中禁止提及工具名称（如 ext_tool_search、ext_tool_object、ext_tool_memory 等），用户不需要知道你用了什么工具。
 
 ## 用户策略（必须严格遵守）
 {{user_policies}}
@@ -2375,10 +2376,9 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
         match tcs {
             None => {
-                // ★ 检测：LLM 是否将工具调用以文本形式输出而非通过 tool_calls 字段
-                let has_tool_pattern = effective_ac.contains("tool_calls")
-                    || effective_ac.contains("ext_tool_")
-                    || effective_ac.contains("<invoke");
+                // ★ 检测：LLM 是否将工具调用以 JSON 或 XML 格式输出（而非通过 tool_calls 字段）
+                let has_tool_pattern = (effective_ac.trim().starts_with('{') && effective_ac.contains("tool_calls"))
+                    || effective_ac.starts_with("<invoke");
                 if has_tool_pattern && tool_text_retry_count < 2 {
                     tool_text_retry_count += 1;
                     log::warn!("[Agent] 检测到 content 中包含工具调用文本 (第{}次)，追加提示重试", tool_text_retry_count);
