@@ -2291,6 +2291,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         .replace("{{user_policies}}", &user_policies)
         .replace("{{session_scratchpad}}", "");
     messages[0].content = Some(empty_sys);
+    let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
 
     loop {
         // ★ 检查停止信号
@@ -2365,6 +2366,20 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
         match tcs {
             None => {
+                // ★ 检测：LLM 是否将工具调用以文本形式输出而非通过 tool_calls 字段
+                let has_tool_pattern = effective_ac.contains("tool_calls")
+                    || effective_ac.contains("ext_tool_")
+                    || effective_ac.contains("<invoke");
+                if has_tool_pattern && tool_text_retry_count < 2 {
+                    tool_text_retry_count += 1;
+                    log::warn!("[Agent] 检测到 content 中包含工具调用文本 (第{}次)，追加提示重试", tool_text_retry_count);
+                    // 将 LLM 的文本输出作为 assistant 消息
+                    messages.push(ChatMessage{role:MessageRole::Assistant, content: Some(effective_ac.to_string()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+                    // 追加系统提示要求使用标准格式
+                    messages.push(ChatMessage{role:MessageRole::User, content: Some("你的回复包含了工具调用文本（如 tool_calls 或 ext_tool_），但没有通过 tool_calls 字段返回。这会导致工具无法被执行。请使用标准的 function calling 格式重新调用工具，不要在 content 中输出工具调用。".into()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+                    continue; // 重新进入循环
+                }
+
                 // ★ 单请求流式：答案已在流式中逐 token 输出，无需再次生成
                 let mut answer = effective_ac.to_string();
                 if answer.trim().is_empty() {
