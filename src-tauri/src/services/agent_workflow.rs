@@ -683,7 +683,7 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人(通讯录). action: create(创建), update(更新), delete(删除), list(查看通讯录), link_project(关联到项目), unlink_project(取消关联)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list","link_project","unlink_project"]},"contact_id":{"type":"string","description":"联系人ID(update/delete/link_project/unlink_project用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"parent_id":{"type":"string","description":"关联的合作伙伴ID(渠道/厂商/客户), 可选"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"},"type":{"type":"string","description":"类型过滤: CHANNEL/VENDOR/CUSTOMER(list用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_query","description":"Structured query for business data with field filtering, sorting, pagination.","parameters":{"type":"object","properties":{"entity":{"type":"string","enum":["project","product","partner","contact","todo","note"],"description":"Entity type to query"},"filters":{"type":"array","items":{"type":"object","properties":{"field":{"type":"string","description":"Field name"},"op":{"type":"string","enum":["=","!=",">","<",">=","<=","LIKE","IN","IS_NULL","IS_NOT_NULL"],"description":"Operator"},"value":{"type":["string","number","boolean","null"],"description":"Filter value"}},"required":["field","op","value"]},"description":"Filter conditions (AND)"},"sort":{"type":"object","properties":{"field":{"type":"string","description":"Sort field"},"order":{"type":"string","enum":["asc","desc"],"description":"Sort direction"}},"description":"Sort"},"limit":{"type":"integer","description":"Max results, default 20, max 100"},"offset":{"type":"integer","description":"Offset, default 0"}},"required":["entity"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_reminder","description":"Manage reminders. action=ack(acknowledge, hide from future reminders), action=unack(cancel acknowledgement, show again).","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["ack","unack"],"description":"ack=confirm reminder, unack=cancel confirmation"},"reminder_type":{"type":"string","enum":["todo_due","todo_today","project_stale","bid_deadline"],"description":"Type of reminder"},"entity_id":{"type":"string","description":"ID of the todo or project"}},"required":["action","reminder_type","entity_id"]}}},
-        {"type":"function","function":{"name":"ext_tool_memory","description":"管理记忆. action=create(创建), action=delete(删除), action=search(搜索记忆)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete","search"],"description":"create=创建记忆, delete=删除记忆, search=搜索记忆"},"content":{"type":"string","description":"单条记忆内容（与 items 二选一）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条事实内容数组，一次调用创建多条记忆"},"memory_id":{"type":"string","description":"删除时用"},"replace_ids":{"type":"string","description":"创建时逗号分隔的旧记忆id"},"query":{"type":"string","description":"搜索关键词"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_memory","description":"管理记忆. action=create(创建), action=delete(删除), action=search(搜索记忆)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete","search"],"description":"create=创建记忆, delete=删除记忆, search=搜索记忆"},"content":{"type":"string","description":"单条记忆内容（与 items 二选一）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条事实内容数组，一次调用创建多条记忆"},"memory_id":{"type":"string","description":"删除时用"},"replace_ids":{"type":"string","description":"创建时逗号分隔的旧记忆id"},"keywords":{"type":"array","items":{"type":"string"},"description":"搜索关键词列表（如 [\"S12700E\",\"交换容量\"]），多个关键词都会匹配"},"query":{"type":"string","description":"搜索关键词（单个）"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户策略（宪法）。id+content=更新，id+无content=删除，无id+content=新增。查询不需要，系统自动注入prompt。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"策略ID（更新/删除用）"},"content":{"type":"string","description":"策略内容（新增/更新用）"}},"required":[]}}},
     ])
 }
@@ -1817,7 +1817,7 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
     }
 }
 
-fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &str, _replace_ids: &str, query: &str, start_time: &str, end_time: &str) -> String {
+fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &str, _replace_ids: &str, query: &str, keywords_json: &str, start_time: &str, end_time: &str) -> String {
     match action {
         "create" => {
             // 优先取 items 数组，否则取 content
@@ -1862,13 +1862,23 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
             let start = start_time.trim();
             let end = end_time.trim();
             
+            // 优先取 keywords 数组，否则按空格拆分 query
+            let search_words: Vec<String> = if !keywords_json.is_empty() {
+                serde_json::from_str::<Vec<String>>(keywords_json).unwrap_or_default()
+            } else if !q.is_empty() {
+                q.split_whitespace().map(String::from).collect()
+            } else {
+                vec![]
+            };
+            
             let mut sql = String::from("SELECT id, content, created_at FROM memories");
             let mut params: Vec<serde_json::Value> = Vec::new();
             let mut param_idx = 1;
             let mut where_clauses: Vec<String> = Vec::new();
             
-            if !q.is_empty() {
-                let fts_query = format!("content:{}", q);
+            if !search_words.is_empty() {
+                // FTS5 搜索：拼接所有关键词
+                let fts_query = search_words.iter().map(|w| format!("content:{}", w)).collect::<Vec<_>>().join(" ");
                 let fts_sql = "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?1 LIMIT 50";
                 if let Ok(fts_rows) = database::all(fts_sql, &[json!(&fts_query)]) {
                     let rowids: Vec<i64> = fts_rows.iter().filter_map(|r| r["rowid"].as_i64()).collect();
@@ -1879,11 +1889,14 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                         param_idx += placeholders.len();
                     }
                 }
+                // LIKE 兜底：每个词都要匹配
                 if where_clauses.is_empty() {
-                    let like = format!("%{}%", crate::database::escape_like(q));
-                    where_clauses.push(format!("content LIKE ?{}", param_idx));
-                    params.push(json!(like));
-                    param_idx += 1;
+                    for w in &search_words {
+                        let like = format!("%{}%", crate::database::escape_like(w));
+                        where_clauses.push(format!("content LIKE ?{}", param_idx));
+                        params.push(json!(like));
+                        param_idx += 1;
+                    }
                 }
             }
             
@@ -2954,6 +2967,11 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             } else {
                                 String::new()
                             };
+                            let keywords_str = if let Some(arr) = a["keywords"].as_array() {
+                                serde_json::to_string(arr).unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
                             let res = ext_tool_memory(
                                 a["action"].as_str().unwrap_or(""),
                                 a["content"].as_str().unwrap_or(""),
@@ -2961,6 +2979,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                 a["memory_id"].as_str().unwrap_or(""),
                                 a["replace_ids"].as_str().unwrap_or(""),
                                 a["query"].as_str().unwrap_or(""),
+                                &keywords_str,
                                 a["start_time"].as_str().unwrap_or(""),
                                 a["end_time"].as_str().unwrap_or(""),
                             );
