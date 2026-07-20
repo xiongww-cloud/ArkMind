@@ -1251,8 +1251,8 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
                 meta.push_str(&time_info);
             }
             let preview: String = content.chars().take(1300).collect();
-            if meta.is_empty() { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}", idx + 1, rrf_tag, boost_tag, preview)); }
-            else { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}\n--------\n{}", idx + 1, rrf_tag, boost_tag, meta, preview)); }
+            if meta.is_empty() { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} [来源：知识库] ---\n{}", idx + 1, rrf_tag, boost_tag, preview)); }
+            else { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} [来源：知识库] ---\n{}\n--------\n{}", idx + 1, rrf_tag, boost_tag, meta, preview)); }
 
             found_sources.push(format!("{}-{}", st, sid));
 
@@ -1836,7 +1836,7 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                         let content = r["content"].as_str().unwrap_or("");
                         let created = r["created_at"].as_str().unwrap_or("");
                         let rel_time = relative_time(created);
-                        out.push_str(&format!("[{}] {}\nsource_id: MEMORY-{}\n{}\n\n", i + 1, rel_time, sid, content));
+                        out.push_str(&format!("[{}][来源：记忆] {}\nsource_id: MEMORY-{}\n{}\n\n", i + 1, rel_time, sid, content));
                     }
                     out
                 }
