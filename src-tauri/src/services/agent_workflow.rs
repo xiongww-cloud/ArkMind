@@ -1168,39 +1168,6 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     }
     if !obj_head.is_empty() { obj_head = format!("--- Related Objects ---\n{}--- Chunks ---\n", obj_head); }
 
-    // ★ MEMORY 搜索：FTS5 MATCH 查询 memories 表
-    let mut memory_candidates: Vec<(f64, String, String, String)> = Vec::new();
-    if !keywords.is_empty() {
-        let fts_q = keywords.iter().map(|k| format!("content:{}", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
-        if let Ok(rows) = database::all(
-            "SELECT m.id, m.content, m.created_at FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid WHERE memories_fts MATCH ?1 ORDER BY bm25(memories_fts) LIMIT 20",
-            &[json!(&fts_q)],
-        ) {
-            for r in &rows {
-                let sid = r["id"].as_str().unwrap_or("");
-                let content = r["content"].as_str().unwrap_or("");
-                let created_at = r["created_at"].as_str().unwrap_or("");
-                if shown_memory_ids.contains(&format!("MEMORY-{}", sid)) { continue; }
-                memory_candidates.push((0.0, sid.to_string(), content.to_string(), created_at.to_string()));
-            }
-        }
-    }
-    // 如果没有关键词，回退到最近更新
-    if memory_candidates.is_empty() {
-        if let Ok(rows) = database::all(
-            "SELECT id, content, created_at FROM memories ORDER BY updated_at DESC LIMIT 20",
-            &[],
-        ) {
-            for r in &rows {
-                let sid = r["id"].as_str().unwrap_or("");
-                let content = r["content"].as_str().unwrap_or("");
-                let created_at = r["created_at"].as_str().unwrap_or("");
-                if shown_memory_ids.contains(&format!("MEMORY-{}", sid)) { continue; }
-                memory_candidates.push((0.0, sid.to_string(), content.to_string(), created_at.to_string()));
-            }
-        }
-    }
-
     // ★ 始终走双路（FTS5 + Vector），不再因 scope 而跳过向量检索
     // ★ 始终走双路（FTS5 + Vector），不再因 scope 而跳过向量检索
 
@@ -1301,23 +1268,10 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     log::info!("[Search] RRF fusion={}, candidates={}, scope_in={}, discovery={}", fused.len(), candidates.len(),
         candidates.iter().filter(|c| c.9).count(), candidates.iter().filter(|c| !c.9).count());
 
-    // ★ 双路结果：非MEMORY top 3（分两区输出）
+    // ★ 双路结果：非MEMORY top 3
     let non_memory: Vec<_> = candidates.iter().filter(|(_, _, st, _, _, _, _, _, _, _, _)| st != "MEMORY").take(3).collect();
 
-    // ── 回忆区：MEMORY 结果（FTS5 搜索 memories_fts）──
-    let mut recall_out = String::new();
-    if !memory_candidates.is_empty() {
-        recall_out.push_str("## 📝 回忆（之前处理过类似问题）");
-        for (idx, (score, sid, content, created_at)) in memory_candidates.iter().take(10).enumerate() {
-            let preview: String = content.chars().take(500).collect();
-            let rel_time = relative_time(created_at);
-            recall_out.push_str(&format!("\n\n[记忆{}] score={:.3} | {}\nsource_id: MEMORY-{}\n{}", idx + 1, score, rel_time, sid, preview));
-            found_sources.push(format!("MEMORY-{}", sid));
-        }
-        recall_out.push_str("\n\n");
-    }
-
-    // ── 知识检索区：非 MEMORY 结果 ──
+    // ── 知识检索区 ──
     let mut search_out = String::new();
     if !non_memory.is_empty() {
         search_out.push_str("## 📄 知识检索");
@@ -1431,8 +1385,8 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
         }
     }
 
-    // 合并回忆区 + 知识检索区
-    let out = format!("{}{}", recall_out, search_out);
+    // 合并知识检索结果
+    let out = search_out;
     let horizontal = execute_horizontal_search(keywords);
     if out.trim().is_empty() {
         if obj_head.is_empty() {
