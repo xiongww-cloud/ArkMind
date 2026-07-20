@@ -1869,13 +1869,13 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
             
             if !q.is_empty() {
                 let fts_query = format!("content:{}", q);
-                let fts_sql = "SELECT id FROM memories_fts WHERE memories_fts MATCH ?1 LIMIT 50";
+                let fts_sql = "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?1 LIMIT 50";
                 if let Ok(fts_rows) = database::all(fts_sql, &[json!(&fts_query)]) {
-                    let ids: Vec<String> = fts_rows.iter().filter_map(|r| r["id"].as_str().map(String::from)).collect();
-                    if !ids.is_empty() {
-                        let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", param_idx + i)).collect();
-                        where_clauses.push(format!("id IN ({})", placeholders.join(",")));
-                        for id in ids { params.push(json!(id)); }
+                    let rowids: Vec<i64> = fts_rows.iter().filter_map(|r| r["rowid"].as_i64()).collect();
+                    if !rowids.is_empty() {
+                        let placeholders: Vec<String> = rowids.iter().enumerate().map(|(i, _)| format!("?{}", param_idx + i)).collect();
+                        where_clauses.push(format!("rowid IN ({})", placeholders.join(",")));
+                        for rid in rowids { params.push(json!(rid)); }
                         param_idx += placeholders.len();
                     }
                 }
