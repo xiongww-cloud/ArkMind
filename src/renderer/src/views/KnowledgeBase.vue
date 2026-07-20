@@ -610,7 +610,7 @@ onUnmounted(() => {
 .markdown-body li { margin: 0.15rem 0; }
 .markdown-body strong { font-weight: 600; color: #1d1d1f; }
 .markdown-body code { background: rgba(0,0,0,0.06); color: #e11d48; padding: 2px 5px; border-radius: 4px; font-size: 0.85em; font-family: 'SF Mono', 'Fira Code', monospace; }
-.markdown-body pre { background: #1d1d1f; color: #f5f5f7; padding: 12px 16px; border-radius: 8px; overflow-x: auto; margin: 10px 0; font-size: 0.8rem; border: 1px solid #2d2d30; }
+.markdown-body pre { background: #f8f9fa; color: #3a3a3c; padding: 12px 16px; border-radius: 8px; overflow-x: auto; margin: 10px 0; font-size: 0.8rem; border: 1px solid #e5e5ea; }
 .markdown-body pre code { background: none; color: inherit; padding: 0; }
 .markdown-body table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e5e5ea; border-radius: 8px; overflow: hidden; margin: 12px 0; font-size: 12px; }
 .markdown-body th { background: #f8f9fa; color: #1d1d1f; font-weight: 600; padding: 8px 12px; border-bottom: 1px solid #e5e5ea; }

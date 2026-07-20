@@ -545,7 +545,7 @@ onUnmounted(() => {
 .fab-md :deep(li) { font-size: 12px; color: #3a3a3c; margin: 0.1em 0; }
 .fab-md :deep(strong) { color: #1d1d1f; font-weight: 600; }
 .fab-md :deep(code) { background: rgba(0,0,0,0.06); color: #e11d48; padding: 1px 4px; border-radius: 3px; font-size: 0.85em; font-family: 'SF Mono', monospace; }
-.fab-md :deep(pre) { background: #1d1d1f; color: #f5f5f7; padding: 8px 12px; border-radius: 6px; overflow-x: auto; margin: 0.5em 0; font-size: 12px; border: 1px solid #2d2d30; }
+.fab-md :deep(pre) { background: #f8f9fa; color: #3a3a3c; padding: 8px 12px; border-radius: 6px; overflow-x: auto; margin: 0.5em 0; font-size: 12px; border: 1px solid #e5e5ea; }
 .fab-md :deep(pre code) { background: none; color: inherit; padding: 0; }
 .fab-md :deep(blockquote) { border-left: 2px solid #2563eb; padding: 6px 10px; margin: 0.5em 0; color: #4a4a4f; background: linear-gradient(135deg, rgba(37,99,235,0.04), rgba(99,102,241,0.02)); border-radius: 0 6px 6px 0; font-style: italic; }
 .fab-md :deep(a) { color: #2563eb; text-decoration: none; }
