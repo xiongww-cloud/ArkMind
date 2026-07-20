@@ -1846,7 +1846,7 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
             if !search_words.is_empty() {
                 // FTS5 搜索：拼接所有关键词
                 let fts_query = search_words.iter().map(|w| format!("content:{}", w)).collect::<Vec<_>>().join(" ");
-                let fts_sql = "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?1 LIMIT 50";
+                let fts_sql = "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?1 ORDER BY bm25(memories_fts) LIMIT 10";
                 if let Ok(fts_rows) = database::all(fts_sql, &[json!(&fts_query)]) {
                     let rowids: Vec<i64> = fts_rows.iter().filter_map(|r| r["rowid"].as_i64()).collect();
                     if !rowids.is_empty() {
@@ -1881,7 +1881,7 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                 sql.push_str(" WHERE ");
                 sql.push_str(&where_clauses.join(" AND "));
             }
-            sql.push_str(" ORDER BY created_at DESC LIMIT 50");
+            sql.push_str(" ORDER BY created_at DESC LIMIT 10");
             
             match database::all(&sql, &params) {
                 Ok(rows) => {
@@ -1894,9 +1894,8 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                         let sid = r["id"].as_str().unwrap_or("");
                         let content = r["content"].as_str().unwrap_or("");
                         let created = r["created_at"].as_str().unwrap_or("");
-                        let preview: String = content.chars().take(200).collect();
                         let rel_time = relative_time(created);
-                        out.push_str(&format!("[{}] {}\nsource_id: MEMORY-{}\n{}\n\n", i + 1, rel_time, sid, preview));
+                        out.push_str(&format!("[{}] {}\nsource_id: MEMORY-{}\n{}\n\n", i + 1, rel_time, sid, content));
                     }
                     out
                 }
