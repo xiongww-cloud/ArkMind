@@ -154,7 +154,6 @@ pub async fn partner_link_project(partner_id: String, project_id: String, contac
             crate::services::business_relations::upsert("CONTACT", cid, "PROJECT", &project_id, "belongs_to", "{}");
         }
     }
-    crate::services::knowledge_lifecycle::notify_changed(&ptype, &partner_id);
     Ok(json!({"success":true}))
 }
 
@@ -176,7 +175,6 @@ pub async fn partner_unlink_project(partner_id: String, project_id: String) -> R
             crate::services::business_relations::delete("CONTACT", &cid, "PROJECT", &project_id, "belongs_to");
         }
     }
-    crate::services::knowledge_lifecycle::notify_changed(&ptype, &partner_id);
     Ok(json!({"success":true}))
 }
 
@@ -266,7 +264,6 @@ pub async fn contact_link_project(contact_id: String, project_id: String) -> Res
 #[tauri::command]
 pub async fn contact_unlink_project(contact_id: String, project_id: String) -> Result<Value, String> {
     crate::services::business_relations::delete("CONTACT", &contact_id, "PROJECT", &project_id, "belongs_to");
-    crate::services::knowledge_lifecycle::notify_changed("CONTACT", &contact_id);
     Ok(json!({"success":true}))
 }
 
