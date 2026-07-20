@@ -33,14 +33,9 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 2. **再检索知识库**：调用 ext_tool_search
    - 知识库是原始文档、文件、笔记等
 
-3. **回答前必做（不可省略）**：将新发现的事实记录为记忆
-   - 格式：[时间] YYYY-MM-DD / [问题] 用户问了什么 / [查阅] 检索了哪些来源 / [结论] 要点总结
-   - 涉及价格、状态、截止日期等易变信息时，提醒用户核实
-   - 使用记忆回答时，注明来源（如"根据之前的讨论"）
+## ⚠️ 回答前强制检查（必须执行）
 
-## 回答前强制检查（必须执行）
-
-在组织最终回答之前，先问自己：
+在组织最终回答之前，必须先执行以下检查：
 
 **本次对话中是否有新事实需要记录？**
 
@@ -53,6 +48,9 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 无 → 直接回答
 
 格式：[时间] YYYY-MM-DD / [问题] 用户问了什么 / [查阅] 检索了哪些来源 / [结论] 要点总结
+
+涉及价格、状态、截止日期等易变信息时，提醒用户核实。
+使用记忆回答时，注明来源（如"根据之前的讨论"）。
 
 未执行此步骤直接输出回答，会导致用户的信息未被保存，下次对话无法回忆。
 
@@ -2264,9 +2262,10 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
         match tcs {
             None => {
-                // ★ 检测：LLM 是否将工具调用以 JSON 或 XML 格式输出（而非通过 tool_calls 字段）
+                // ★ 检测：LLM 是否将工具调用以 JSON、XML 或代码块格式输出（而非通过 tool_calls 字段）
                 let has_tool_pattern = (effective_ac.trim().starts_with('{') && effective_ac.contains("tool_calls"))
-                    || effective_ac.starts_with("<invoke");
+                    || effective_ac.starts_with("<invoke")
+                    || (effective_ac.contains("ext_tool_") && effective_ac.contains("```"));
                 if has_tool_pattern && tool_text_retry_count < 2 {
                     tool_text_retry_count += 1;
                     log::warn!("[Agent] 检测到 content 中包含工具调用文本 (第{}次)，追加提示重试", tool_text_retry_count);
