@@ -781,35 +781,29 @@ pub(crate) fn migrate_memory_policy_to_own_tables(conn: &Connection) {
         let _ = conn.execute("DELETE FROM source_data WHERE source_type='POLICY'", []);
     }
 
-    // 3. 创建 memories FTS5 虚拟表和触发器（如果不存在）
-    let fts_exists: bool = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'")
-        .ok()
-        .and_then(|mut s| s.query_row([], |_| Ok(true)).ok())
-        .unwrap_or(false);
-    if !fts_exists {
-        let _ = conn.execute_batch(
-            "CREATE VIRTUAL TABLE memories_fts USING fts5(
-                content,
-                content='memories', content_rowid='rowid'
-            )"
-        );
-        let _ = conn.execute_batch(
-            "CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-             END;
-             CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
-             END;
-             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
-                INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-             END;"
-        );
-        log::info!("[迁移] memories_fts 虚拟表和触发器已创建");
-    }
+    // 3. 强制重建 memories FTS5 虚拟表和触发器（确保索引与 memories 表同步）
+    let _ = conn.execute("DROP TABLE IF EXISTS memories_fts", []);
+    let _ = conn.execute_batch(
+        "CREATE VIRTUAL TABLE memories_fts USING fts5(
+            content,
+            content='memories', content_rowid='rowid'
+        )"
+    );
+    let _ = conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+            INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+         END;
+         CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+         END;
+         CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+            INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+         END;"
+    );
+    log::info!("[迁移] memories_fts 虚拟表和触发器已重建");
 
-    // 5. 重建 FTS5 索引（外部内容 FTS5 表初始为空，需要 rebuild 才能索引已插入的数据）
+    // 4. 重建 FTS5 索引（外部内容 FTS5 表初始为空，需要 rebuild 才能索引已插入的数据）
     let _ = conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')", []);
 
     // 6. 清理旧 user_policies 表
