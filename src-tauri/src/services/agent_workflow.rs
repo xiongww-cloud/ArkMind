@@ -1726,9 +1726,24 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
     }
 }
 
-fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &str, _replace_ids: &str, query: &str, keywords_json: &str, start_time: &str, end_time: &str) -> String {
+fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &str, replace_ids: &str, query: &str, keywords_json: &str, start_time: &str, end_time: &str) -> String {
     match action {
         "create" => {
+            // 处理 replace_ids - 删除被替换的旧记忆
+            let mut replaced = 0;
+            if !replace_ids.trim().is_empty() {
+                let old_ids: Vec<&str> = replace_ids.split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                for old_id in &old_ids {
+                    let sid = old_id.strip_prefix("MEMORY-").unwrap_or(old_id);
+                    if let Ok(r) = database::run("DELETE FROM memories WHERE id=?1", &[json!(sid)]) {
+                        if r.changes > 0 { replaced += 1; }
+                    }
+                }
+            }
+            
             // 优先取 items 数组，否则取 content
             let contents: Vec<String> = if !items_json.trim().is_empty() {
                 serde_json::from_str::<Vec<String>>(items_json)
@@ -1752,7 +1767,12 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                     if r.changes > 0 { created += 1; }
                 }
             }
-            format!("已记住 {} 条事实", created)
+            
+            if replaced > 0 {
+                format!("已替换 {} 条旧记忆，创建 {} 条新记忆", replaced, created)
+            } else {
+                format!("已记住 {} 条事实", created)
+            }
         }
         "delete" => {
             if !memory_id.trim().is_empty() {
@@ -1823,15 +1843,19 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                 sql.push_str(" WHERE ");
                 sql.push_str(&where_clauses.join(" AND "));
             }
-            sql.push_str(" ORDER BY created_at DESC LIMIT 10");
+            sql.push_str(" ORDER BY created_at DESC LIMIT 20");
+            
+            // 查询总数
+            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM memories", &[])
+                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
             
             match database::all(&sql, &params) {
                 Ok(rows) => {
                     if rows.is_empty() {
-                        return if q.is_empty() { "暂无记忆。".to_string() }
-                               else { format!("未找到匹配「{}」的记忆。", q) };
+                        return if q.is_empty() { format!("暂无记忆。（共 {} 条）", total) }
+                               else { format!("未找到匹配「{}」的记忆。（共 {} 条）", q, total) };
                     }
-                    let mut out = format!("## 记忆列表（共 {} 条）\n\n", rows.len());
+                    let mut out = format!("## 记忆列表（共 {} 条，显示 {} 条）\n\n", total, rows.len());
                     for (i, r) in rows.iter().enumerate() {
                         let sid = r["id"].as_str().unwrap_or("");
                         let content = r["content"].as_str().unwrap_or("");
