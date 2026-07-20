@@ -612,7 +612,7 @@ onUnmounted(() => {
 .markdown-body pre { background: #1d1d1f; color: #f5f5f7; padding: 14px 18px; border-radius: 10px; overflow-x: auto; margin: 0.8rem 0; font-size: 0.8rem; }
 .markdown-body pre code { background: none; color: inherit; padding: 0; }
 .markdown-body table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 12px; }
-.markdown-body th { background: #f5f5f7; color: #1d1d1f; font-weight: 600; padding: 10px 14px; text-align: left; border-bottom: 2px solid rgba(0,0,0,0.06); }
+.markdown-body th { background: #f5f5f7; color: #1d1d1f; font-weight: 600; padding: 10px 14px; border-bottom: 2px solid rgba(0,0,0,0.06); }
 .markdown-body td { padding: 12px 14px; border-bottom: 1px solid rgba(0,0,0,0.04); color: #3a3a3c; }
 .markdown-body blockquote { border-left: 3px solid #2563eb; padding: 6px 14px; margin: 0.6rem 0; color: #6e6e73; background: rgba(107,78,255,0.04); border-radius: 0 6px 6px 0; }
 .markdown-body a { color: #2563eb; }

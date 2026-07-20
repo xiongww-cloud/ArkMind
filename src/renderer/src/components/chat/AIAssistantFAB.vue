@@ -547,7 +547,7 @@ onUnmounted(() => {
 .fab-md :deep(blockquote) { border-left: 2px solid #2563eb; padding: 2px 8px; margin: 0.2em 0; color: #6e6e73; background: rgba(37,99,235,0.03); border-radius: 0 4px 4px 0; }
 .fab-md :deep(a) { color: #2563eb; }
 .fab-md :deep(table) { width: 100%; border-collapse: collapse; margin: 0.3em 0; font-size: 12px; }
-.fab-md :deep(th) { background: #f5f5f7; color: #1d1d1f; font-weight: 600; padding: 4px 6px; text-align: left; border-bottom: 1px solid rgba(0,0,0,0.06); }
+.fab-md :deep(th) { background: #f5f5f7; color: #1d1d1f; font-weight: 600; padding: 4px 6px; border-bottom: 1px solid rgba(0,0,0,0.06); }
 .fab-md :deep(td) { padding: 4px 6px; color: #3a3a3c; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .cursor-blink { animation: blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity: 0; } }
