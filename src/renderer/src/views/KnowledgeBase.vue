@@ -211,7 +211,11 @@ async function confirmDeleteSession(id: string) {
   if (!ok) return
   kbDeleteSession(id).catch(() => {})
   sessions.value = sessions.value.filter(s => s.id !== id)
-  if (currentSessionId.value === id) currentSessionId.value = sessions.value[0]?.id ?? null
+  if (currentSessionId.value === id) {
+    const nextId = sessions.value[0]?.id ?? null
+    if (nextId) await selectSession(nextId)
+    else currentSessionId.value = null
+  }
   sessionDirty.value = true; saveToStorage()
   toast({ message: '会话已删除', type: 'success' })
 }

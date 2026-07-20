@@ -33,6 +33,20 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 2. **再检索知识库**：调用 ext_tool_search
    - 知识库是原始文档、文件、笔记等
 
+## ⚠️ 预算管理（必须遵守）
+
+每次工具调用都会消耗预算：
+- 初始消耗：8分
+- 每次调用后消耗增长20%
+- 预算耗尽时将强制停止检索并回答
+
+**必须遵守的规则**：
+1. 优先使用记忆（ext_tool_memory），减少知识库检索
+2. 避免重复检索相同内容
+3. 信息足够时立即停止检索
+4. 预算不足时直接总结已获取的信息
+5. 单次回答不超过3次工具调用
+
 ## ⚠️ 回答前强制检查（必须执行）
 
 在组织最终回答之前，必须先执行以下检查：
@@ -2154,8 +2168,8 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     let mut tool_log: Vec<Value> = Vec::new();
     let (mut iters, mut pt, mut ct) = (0i32, 0i64, 0i64);
     let mut prev_pt: i64 = 0;
-    let mut budget = 100i32;
-    let mut search_cost = 10i32;
+    let mut budget = 150i32;  // 增加到150分
+    let mut search_cost = 8i32;  // 降低初始消耗到8分
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     // ★ 振荡检测：防止 FOCUS ↔ EXPAND 无限循环
     let mut oscillation_count: usize = 0;
@@ -2198,7 +2212,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             return Ok(json!({"success":true,"answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
         }
         
-        log::info!("预算: {}/{} cost={}", budget, 100i32, search_cost);
+        log::info!("预算: {}/150 cost={}", budget, search_cost);
         if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking"})); }
         // ★ 每轮注意力衰减（Residual 方式：new_score = old_score * 0.95 + gain）
         // gain 在 SessionEffect::UpdateObjectScore 中通过 EMA 完成
@@ -2222,10 +2236,10 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             .replace("{{user_policies}}", &user_policies)
             .replace("{{session_scratchpad}}", &scratchpad);
         let budget_info = if iters == 1 {
-            format!("\n\n## 🧠 思维预算\n- 剩余预算: {}\n- 证据足够就立刻回答，不要浪费预算。", budget)
+            format!("\n\n## 🧠 思维预算\n- 剩余预算: {}/150\n- 本次消耗: {} 分\n- 证据足够就立刻回答，不要浪费预算。", budget, search_cost)
         } else {
             let round_pt = pt - prev_pt;
-            format!("\n\n## 🧠 思维预算\n- 剩余预算: {} | 上下文: {} tokens（本轮 +{}）| 已生成: {} tokens\n- 上下文越大响应越慢且越贵。证据足够就立刻回答，不要浪费预算。", budget, pt, round_pt, ct)
+            format!("\n\n## 🧠 思维预算\n- 剩余预算: {}/150 | 本次消耗: {} 分\n- 上下文: {} tokens（本轮 +{}）| 已生成: {} tokens\n- 上下文越大响应越慢且越贵。证据足够就立刻回答，不要浪费预算。", budget, search_cost, pt, round_pt, ct)
         };
         let new_sys = format!("{}{}", new_sys, budget_info);
         if let Some(ref mut content) = messages[0].content {
@@ -2292,12 +2306,13 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             Some(ref calls) if !calls.is_empty() => {
                 // ★ 工具轮：本轮已流式输出的 interim 内容通知前端归置到思考区
                 if !effective_ac.trim().is_empty() { if let Some(ref h) = app_handle { let _ = h.emit("agent:round-thought", json!({"text": effective_ac})); } }
-                // ★ 预算检查：耗尽时强制回答
-                if budget < 0 {
+                // ★ 预算检查：不足时强制回答（在工具调用之前检查）
+                if budget < search_cost {
                     if let Some(ref h) = app_handle {
                         let kw = calls.first().and_then(|tc| tc["function"]["arguments"].as_str().map(|s| s.to_string())).unwrap_or_default();
                         let _ = h.emit("agent:budget-low", json!({"remaining":budget,"cost":search_cost,"next_query":kw}));
                     }
+                    messages.push(ChatMessage{role:MessageRole::User,content:Some("预算不足，请直接总结已获取的信息。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::info!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
