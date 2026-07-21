@@ -56,13 +56,13 @@ const statusOptions = ['Lead', 'SolutionDesign', 'PoC', 'Bidding', 'Won', 'Order
 
 const statusColors: Record<string, string> = {
   Lead: 'bg-blue-500',
-  SolutionDesign: 'bg-cyan-500',
-  PoC: 'bg-purple-500',
-  Bidding: 'bg-orange-500',
-  Won: 'bg-emerald-500',
-  Ordered: 'bg-indigo-500',
-  Lost: 'bg-red-500',
-  OnHold: 'bg-gray-500'
+  SolutionDesign: 'bg-cyan-300',
+  PoC: 'bg-purple-300',
+  Bidding: 'bg-orange-300',
+  Won: 'bg-emerald-300',
+  Ordered: 'bg-indigo-300',
+  Lost: 'bg-red-300',
+  OnHold: 'bg-gray-300'
 }
 
 const showStatusDropdown = ref(false)
@@ -178,6 +178,25 @@ async function saveBudget() {
 }
 function cancelEditBudget() { isEditingBudget.value = false }
 
+const isEditingExpectedDate = ref(false)
+const expectedDateEditValue = ref('')
+const expectedDateInputRef = ref(null)
+function startEditExpectedDate() { expectedDateEditValue.value = project.value?.expectedOrderDate || project.value?.expected_order_date || ''; isEditingExpectedDate.value = true; nextTick(() => expectedDateInputRef.value?.focus()) }
+async function saveExpectedDate() {
+  const v = expectedDateEditValue.value.trim()
+  if (project.value) {
+    if (v === (project.value.expectedOrderDate || project.value.expected_order_date || '')) { isEditingExpectedDate.value = false; return }
+    project.value.expectedOrderDate = v
+    project.value.expected_order_date = v
+    projectStore.updateProjectInList(projectId.value, { expected_order_date: v })
+    try {
+      await projectStore.updateProject(projectId.value, { expectedOrderDate: v })
+    } catch (e) { console.warn('保存预计下单时间失败', e) }
+  }
+  isEditingExpectedDate.value = false
+}
+function cancelEditExpectedDate() { isEditingExpectedDate.value = false }
+
 const isEditingName = ref(false)
 const nameEditValue = ref('')
 const nameInputRef = ref(null)
@@ -186,6 +205,7 @@ function startEditName() { nameEditValue.value = project.value?.name || ''; isEd
 async function saveName() {
   const v = nameEditValue.value.trim()
   if (v && project.value) {
+    if (v.length > 30) { toast({ message: '项目名称不能超过 30 个字符', type: 'error' }); return }
     if (v === project.value.name) { isEditingName.value = false; return }
     const q = v.toLowerCase()
     const duplicate = projectStore.projects.some((p: any) => p.id !== projectId.value && p.name && p.name.toLowerCase() === q)
@@ -409,7 +429,7 @@ watch(
   <div :class="[props.embedded ? 'flex flex-col h-full' : 'h-full bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden']">
     <div v-if="project" class="flex flex-col h-full overflow-hidden">
     <div v-if="isArchiving" class="w-full bg-amber-50 border border-amber-200 text-amber-600 text-sm py-2 px-4 rounded-md flex items-center">
-      <AppIcon name="spinner" class="mr-2 w-4 h-4 text-amber-500 animate-spin flex-shrink-0" />
+      <AppIcon name="spinner" class="mr-2 w-4 h-4 text-amber-300 animate-spin flex-shrink-0" />
       正在封存文件...
     </div>
 
@@ -462,9 +482,10 @@ watch(
         <div class="bg-white rounded-xl p-6 h-full overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-gray-300">
           <div class="flex items-center gap-4 mb-5 flex-wrap">
             <template v-if="isEditingName">
-              <input ref="nameInputRef" v-model="nameEditValue" type="text"
+              <input ref="nameInputRef" v-model="nameEditValue" type="text" maxlength="30"
                 @blur="saveName" @keyup.enter="saveName" @keyup.escape="cancelEditName"
-                class="text-lg font-semibold text-surface-800 bg-white border border-blue-400 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-200 w-full max-w-md" />
+                class="text-lg font-semibold text-surface-800 bg-white border border-blue-400 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-200 w-full max-w-md pr-12" />
+              <span class="text-[10px] flex-shrink-0 ml-1" :class="nameEditValue.length >= 30 ? 'text-red-400' : 'text-surface-300'">{{ nameEditValue.length }}/30</span>
             </template>
             <template v-else>
               <div class="flex items-center gap-2 group/name">
@@ -476,19 +497,19 @@ watch(
             </template>
             <div v-if="!project.isArchived" ref="statusDropdownRef" class="relative">
               <button @click="toggleStatusDropdown"
-                class="group/stage inline-flex items-center gap-1 cursor-pointer h-6 px-1.5 rounded transition-colors border border-transparent hover:bg-slate-100/50 hover:border-slate-100 outline-none">
+                class="group/stage inline-flex items-center gap-1 cursor-pointer h-6 px-1.5 rounded transition-colors border border-transparent hover:bg-slate-100/30 hover:border-slate-100 outline-none">
                 <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusColors[project.status]" />
                 <span class="text-sm font-medium text-slate-600">{{ statusLabels[project.status] || project.status }}</span>
                 <AppIcon name="chevron-down" class="w-3.5 h-3.5 text-slate-400 transition-transform" :class="showStatusDropdown ? 'rotate-180' : ''" />
                 <span v-if="project.status === 'Bidding'" ref="bidCalendarRef" class="relative flex items-center gap-0.5 group/bid-inline ml-1">
-                  <span @click.stop="startEditBidTime" class="text-xs cursor-pointer" :class="isBidOverdue ? 'text-purple-500 font-medium' : bidDaysRemaining <= 3 ? 'text-red-500 font-medium' : 'text-slate-400'">
+                  <span @click.stop="startEditBidTime" class="text-xs cursor-pointer" :class="isBidOverdue ? 'text-purple-300 font-medium' : bidDaysRemaining <= 3 ? 'text-red-300 font-medium' : 'text-slate-400'">
                     {{ formatBidTime(project.bidTime || project.bid_time) || '点击设置投标时间' }}
                   </span>
                   <button v-if="!project.isArchived" @click.stop="startEditBidTime" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/bid-inline:opacity-100 flex-shrink-0" title="编辑投标时间">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
                   </button>
                   <Transition name="dropdown">
-                    <div v-if="showBidCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/50 p-4 w-[260px]">
+                    <div v-if="showBidCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
                       <div class="flex items-center justify-between mb-3">
                         <button @click="prevMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
                           <AppIcon name="chevron-left" class="w-4 h-4 text-slate-500" />
@@ -518,7 +539,7 @@ watch(
                         </div>
                       </div>
                       <div class="mt-3 pt-3 border-t border-slate-100 flex justify-between">
-                        <button @click="clearBidTime" class="text-[11px] text-slate-400 hover:text-red-500 transition-colors">清除</button>
+                        <button @click="clearBidTime" class="text-[11px] text-slate-400 hover:text-red-300 transition-colors">清除</button>
                         <button @click="closeBidCalendar" class="text-[11px] text-slate-400 hover:text-slate-600 transition-colors">关闭</button>
                       </div>
                     </div>
@@ -548,7 +569,7 @@ watch(
                   @keydown.escape.prevent="cancelDescEdit"
                   @keyup.ctrl.enter="$event.target.blur()"
                   @input="autoResizeDesc"
-                  class="w-full text-sm leading-relaxed text-slate-700 bg-white border border-blue-400 rounded-md px-2 py-1.5 outline-none focus:ring-2 focus:ring-blue-500/10 resize-none placeholder:text-slate-400 min-h-[3.75rem]"
+                  class="w-full text-sm leading-relaxed text-slate-700 bg-white border border-blue-400 rounded-md px-2 py-1.5 outline-none focus:ring-2 focus:ring-blue-300/10 resize-none placeholder:text-slate-400 min-h-[3.75rem]"
                   placeholder="输入项目描述" />
               </div>
             </template>
@@ -572,7 +593,7 @@ watch(
                   <input ref="budgetInputRef" v-model="budgetEditValue" type="text"
                     @blur="saveBudget" @keyup.enter="saveBudget" @keyup.escape="cancelEditBudget"
                     :style="{ width: (budgetEditValue.length + 2) + 'ch' }"
-                    class="text-sm font-normal text-slate-600 bg-transparent border border-transparent rounded px-0.5 py-0 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 placeholder:text-slate-300 min-w-[3ch]" />
+                    class="text-sm font-normal text-slate-600 bg-transparent border border-transparent rounded px-0.5 py-0 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 placeholder:text-slate-500 min-w-[3ch]" />
                 </template>
                 <template v-else>
                   <span class="text-sm font-normal text-slate-600 rounded px-0.5 py-0 border border-transparent">{{ budgetFormatted || '-' }}</span>
@@ -589,6 +610,22 @@ watch(
             <div class="flex flex-col gap-1">
               <p class="text-xs text-slate-400">立项</p>
               <p class="text-sm font-normal text-slate-600">{{ formatDateTime(project.createdAt) }}</p>
+            </div>
+            <div class="group/expectedDate flex flex-col gap-1">
+              <p class="text-xs text-slate-400">预计下单</p>
+              <div class="flex items-center gap-0">
+                <template v-if="isEditingExpectedDate">
+                  <input ref="expectedDateInputRef" v-model="expectedDateEditValue" type="date"
+                    @blur="saveExpectedDate" @keyup.enter="saveExpectedDate" @keyup.escape="cancelEditExpectedDate"
+                    class="text-sm font-normal text-slate-600 bg-transparent border border-transparent rounded px-0.5 py-0 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 min-w-[8ch]" />
+                </template>
+                <template v-else>
+                  <span class="text-sm font-normal text-slate-600 rounded px-0.5 py-0 border border-transparent">{{ (project.expectedOrderDate || project.expected_order_date) || '-' }}</span>
+                  <button v-if="!project.isArchived" @click="startEditExpectedDate" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expectedDate:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
+                    <AppIcon name="edit" class="w-3.5 h-3.5" />
+                  </button>
+                </template>
+              </div>
             </div>
           </div>
 
@@ -620,7 +657,7 @@ watch(
           <div v-if="showEventForm" class="mb-4 p-4 rounded-lg bg-surface-50 border border-surface-200 shrink-0">
             <textarea v-model="newEvent.content" rows="2" class="input-field mb-2" placeholder="发生了什么？例如：完成客户拜访、POC环境部署..." />
             <div class="flex gap-2">
-              <button class="flex items-center gap-1 h-6 px-2 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50" :disabled="isAddingDynamic" @click="addTimelineEvent">{{ isAddingDynamic ? '保存中...' : '保存' }}</button>
+              <button class="flex items-center gap-1 h-6 px-2 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-30" :disabled="isAddingDynamic" @click="addTimelineEvent">{{ isAddingDynamic ? '保存中...' : '保存' }}</button>
               <button class="btn-ghost" @click="showEventForm = false">取消</button>
             </div>
           </div>

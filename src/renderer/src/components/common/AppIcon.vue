@@ -71,6 +71,7 @@ const ICON_MAP = {
   'sort': '<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>',
   'link': '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   'undo': '<path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/>',
+  'refresh': '<path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>',
   'strikethrough': '<path stroke-linecap="round" stroke-linejoin="round" d="M12 12a8.912 8.912 0 01-.318-.079c-1.585-.424-2.344-1.247-2.344-2.171 0-1.357 1.245-2.5 3.162-2.5 1.454 0 2.702.614 3.228 1.5M9.031 4.97A4.56 4.56 0 0112 4.5c2.917 0 5 1.667 5 4 0 1.088-.622 2.059-1.704 2.625M3 12h18"/>',
   'list-ol': '<path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375-5.25h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 17.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z"/>',
   'code-bracket': '<path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/>',

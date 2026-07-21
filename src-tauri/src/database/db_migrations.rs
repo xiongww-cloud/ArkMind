@@ -200,6 +200,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE chat_messages ADD COLUMN metadata TEXT DEFAULT NULL",
         // push_pipeline debounce
         "ALTER TABLE knowledge_push_queue ADD COLUMN debounce_until TEXT DEFAULT NULL",
+        // 预计下单时间
+        "ALTER TABLE projects ADD COLUMN expected_order_date TEXT DEFAULT ''",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);

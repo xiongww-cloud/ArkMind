@@ -14,8 +14,9 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     let budget_val = data["budget"].as_f64()
         .or_else(|| data["budget"].as_str().and_then(|s| s.parse::<f64>().ok()))
         .unwrap_or(0.0);
-    database::run("INSERT INTO projects(id,name,status,description,budget,owner,user_id,bid_time) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-    &[json!(&id),json!(&name),json!(status),json!(&desc),json!(budget_val),json!(data["owner"].as_str().unwrap_or("")),json!(data["userId"].as_str().unwrap_or("")),json!(bid_time)]).map_err(|e| e.to_string())?;
+    let expected_order_date = data["expectedOrderDate"].as_str().unwrap_or("");
+    database::run("INSERT INTO projects(id,name,status,description,budget,owner,user_id,bid_time,expected_order_date) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+    &[json!(&id),json!(&name),json!(status),json!(&desc),json!(budget_val),json!(data["owner"].as_str().unwrap_or("")),json!(data["userId"].as_str().unwrap_or("")),json!(bid_time),json!(expected_order_date)]).map_err(|e| e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &id, crate::services::object_changed::Action::Created);
     database::get("SELECT * FROM projects WHERE id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null))
@@ -42,6 +43,8 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
         String::new()
     };
     if !bid_time_val.is_empty() { fields.push("bid_time=?".into()); values.push(json!(bid_time_val)); }
+    // expected_order_date 预计下单时间
+    if let Some(v) = data["expectedOrderDate"].as_str() { fields.push("expected_order_date=?".into()); values.push(json!(v)); }
     if let Some(_v) = data["budget"].as_f64() { /* already handled via str in loop above */ }
     if fields.is_empty() { return Ok(()); }
     fields.push("updated_at=datetime('now', 'localtime')".into()); values.push(json!(id));
