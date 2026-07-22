@@ -400,9 +400,19 @@ function selectNote(id: string) {
     selectedNoteId.value = id
     editTitle.value = n.title || ''
     isDirty.value = false
-    // 回收站笔记：用 excerpt 作为预览
+    // 回收站笔记：从后端获取完整内容
     if (currentView.value === 'trash') {
-      editContent.value = n.excerpt || ''
+      noteContentLoading.value = true
+      try {
+        const r = await notesV2Get(id)
+        const fullContent = r?.note?.content || ''
+        editContent.value = fullContent
+      } catch (e) {
+        console.error('[Notes] fetch trash note content failed:', e)
+        editContent.value = n.excerpt || ''
+      } finally {
+        noteContentLoading.value = false
+      }
       return
     }
     // 正常笔记：从后端获取完整内容
