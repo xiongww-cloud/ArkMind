@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { toast } from '@/composables/useToast'
+import { dangerConfirm } from '@/composables/useConfirm'
 import {
   fetchPartners, updatePartner, deletePartner, partnerLinkProject, partnerUnlinkProject,
   partnerUpdateRemark, contactsListAll, contactLinkProject, contactUnlinkProject,
@@ -121,6 +122,12 @@ async function addVendor() {
   } catch (e) { console.warn('加载供应商列表失败', e) }
 }
 async function removeVendor(vendorId: string) {
+  const ok = await dangerConfirm({
+    title: '删除供应商',
+    message: '确定将此供应商从项目中移除？',
+    confirmText: '移除'
+  })
+  if (!ok) return
   try {
     await partnerUnlinkProject(vendorId, props.projectId)
     vendors.value = vendors.value.filter(v => v.id !== vendorId)

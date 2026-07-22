@@ -5,6 +5,7 @@ import SelectWithSearch from '@/components/common/SelectWithSearch.vue'
 import { fetchPartners, createPartner, updatePartner, deletePartner, partnerLinkProject, partnerUnlinkProject, partnerUpdateRemark, createPartnerContact, updatePartnerContact, deletePartnerContact, contactLinkProject, contactsListAll } from '@/api/db-client'
 import { useProjectStore } from '@/stores/project'
 import { toast } from '@/composables/useToast'
+import { dangerConfirm } from '@/composables/useConfirm'
 
 const props = withDefaults(defineProps<{
   project: any
@@ -88,6 +89,12 @@ async function confirmCustomerSelect() {
 
 // 删除客户
 async function removeCustomer(customerId: string) {
+  const ok = await dangerConfirm({
+    title: '删除客户',
+    message: '确定将此客户从项目中移除？',
+    confirmText: '移除'
+  })
+  if (!ok) return
   try {
     await partnerUnlinkProject(customerId, props.projectId)
     customers.value = customers.value.filter(c => c.id !== customerId)
@@ -146,6 +153,12 @@ async function confirmContactSelect() {
 }
 
 async function removeCustomerContact(customerId: string, contactId: string) {
+  const ok = await dangerConfirm({
+    title: '删除联系人',
+    message: '确定将此联系人从项目中移除？',
+    confirmText: '移除'
+  })
+  if (!ok) return
   try {
     await contactUnlinkProject(contactId, props.projectId)
     const cd = customers.value.find(c => c.id === customerId)

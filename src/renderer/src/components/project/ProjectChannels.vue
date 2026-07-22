@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { toast } from '@/composables/useToast'
+import { dangerConfirm } from '@/composables/useConfirm'
 import {
   fetchPartners, updatePartner, deletePartner, partnerLinkProject, partnerUnlinkProject,
   partnerUpdateRemark, contactsListAll, contactsListChannels, contactLinkProject, contactUnlinkProject,
@@ -121,6 +122,12 @@ async function addChannel() {
   } catch (e) { console.warn('加载渠道列表失败', e) }
 }
 async function removeChannel(channelId: string) {
+  const ok = await dangerConfirm({
+    title: '删除渠道',
+    message: '确定将此渠道从项目中移除？',
+    confirmText: '移除'
+  })
+  if (!ok) return
   try {
     await partnerUnlinkProject(channelId, props.projectId)
     channels.value = channels.value.filter(c => c.id !== channelId)
