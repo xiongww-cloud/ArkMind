@@ -86,10 +86,6 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             PRIMARY KEY (note_id, project_id)
         );
-        CREATE TABLE IF NOT EXISTS tags (
-            tag_id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT DEFAULT '#6366f1', type TEXT DEFAULT 'general'
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
         CREATE TABLE IF NOT EXISTS file_assets (
             id TEXT PRIMARY KEY, file_ext TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
             content_hash TEXT NOT NULL UNIQUE,
@@ -126,12 +122,6 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_file_rel_entity ON file_relations(entity_type, entity_id);
         -- idx_file_rel_object / idx_file_rel_unique 在 run_migrations(ALTER TABLE ADD object_id)之后创建
 
-        CREATE TABLE IF NOT EXISTS channel_partners (id TEXT PRIMARY KEY, project_id TEXT, name TEXT, phone TEXT, company TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
-        CREATE TABLE IF NOT EXISTS channel_contacts (id TEXT PRIMARY KEY, channel_id TEXT, name TEXT, phone TEXT, email TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
-        CREATE TABLE IF NOT EXISTS vendor_partners (id TEXT PRIMARY KEY, project_id TEXT, name TEXT, phone TEXT, company TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
-        CREATE TABLE IF NOT EXISTS vendor_contacts (id TEXT PRIMARY KEY, vendor_id TEXT, name TEXT, phone TEXT, email TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime')));
-        CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT DEFAULT '', contact_person TEXT DEFAULT '', contact_phone TEXT DEFAULT '', remark TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime')));
-        CREATE TABLE IF NOT EXISTS customer_contacts (id TEXT PRIMARY KEY, customer_id TEXT, name TEXT, phone TEXT, email TEXT, position TEXT, remark TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')));
         -- ★ 统一合作伙伴表（渠道/厂商/客户）
         CREATE TABLE IF NOT EXISTS partners (
             id TEXT PRIMARY KEY,
@@ -175,10 +165,23 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             PRIMARY KEY (project_id, vendor_id)
         );
-        CREATE TABLE IF NOT EXISTS project_customer_mapping (
-            project_id TEXT NOT NULL, customer_id TEXT NOT NULL,
+        -- ★ 统一项目↔合作伙伴映射表（替代上面三张旧表）
+        CREATE TABLE IF NOT EXISTS partner_project_mapping (
+            partner_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            partner_type TEXT NOT NULL,
+            selected_contact_id TEXT DEFAULT NULL,
+            remark TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
-            PRIMARY KEY (project_id, customer_id)
+            PRIMARY KEY (partner_id, project_id)
+        );
+        -- ★ 联系人↔项目映射表（主映射，Partner 通过联系人间接关联项目）
+        CREATE TABLE IF NOT EXISTS contact_project_mapping (
+            contact_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            remark TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (contact_id, project_id)
         );
         -- ★ Project ↔ Product mapping
         CREATE TABLE IF NOT EXISTS project_product_mapping (
@@ -204,7 +207,6 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
 
         -- AI pipeline tables
         CREATE TABLE IF NOT EXISTS ai_sync_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, source_table TEXT NOT NULL, source_id TEXT NOT NULL, is_embedded INTEGER DEFAULT 0, retry_count INTEGER DEFAULT 0, last_dedup_key TEXT DEFAULT '', last_error TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime')), UNIQUE(source_table, source_id));
-        CREATE TABLE IF NOT EXISTS ai_tag_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT NOT NULL, source_id TEXT NOT NULL, status INTEGER DEFAULT 0, tag_type TEXT DEFAULT 'ai_shadow', retry_count INTEGER DEFAULT 0, last_error TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime')), UNIQUE(source_type, source_id));
         -- ★ Event Bus: 对象变更事件溯源
         CREATE TABLE IF NOT EXISTS event_store (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,14 +221,6 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_event_type ON event_store(event_type);
         CREATE INDEX IF NOT EXISTS idx_event_object ON event_store(object_type, object_id);
         CREATE INDEX IF NOT EXISTS idx_event_time ON event_store(created_at);
-
-        -- ★ Unified tag mappings (replaces note/file/product/project_tags_mapping)
-        CREATE TABLE IF NOT EXISTS tag_mappings (
-            entity_type TEXT NOT NULL,
-            entity_id TEXT NOT NULL,
-            tag_id TEXT NOT NULL,
-            PRIMARY KEY (entity_type, entity_id, tag_id)
-        );
 
         CREATE TABLE IF NOT EXISTS chat_sessions (
             id TEXT PRIMARY KEY, title TEXT DEFAULT '',
@@ -283,9 +277,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
 
         -- ★ 大一统全局搜索引擎 (external content on source_data)
         CREATE VIRTUAL TABLE IF NOT EXISTS global_search_fts USING fts5(source_type UNINDEXED, source_id UNINDEXED, title, content, content='source_data', content_rowid='rowid');
-        CREATE TABLE IF NOT EXISTS system_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, notification_type TEXT DEFAULT 'general', project_id TEXT, payload TEXT DEFAULT '{}', is_read INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now', 'localtime')));
         CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now', 'localtime')));
-        CREATE TABLE IF NOT EXISTS user_policies (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now', 'localtime')), is_active INTEGER DEFAULT 1);
         CREATE TABLE IF NOT EXISTS reminder_ack (id INTEGER PRIMARY KEY AUTOINCREMENT, reminder_type TEXT NOT NULL, entity_id TEXT NOT NULL, acked_at TEXT DEFAULT (datetime('now', 'localtime')), UNIQUE(reminder_type, entity_id));
 
         -- Push pipeline queue: business layer -> knowledge base
@@ -329,6 +321,35 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             created_at TEXT DEFAULT (datetime('now','localtime')),
             updated_at TEXT DEFAULT (datetime('now','localtime'))
         );
+
+        -- ★ NOTIFICATIONS 通知表
+        CREATE TABLE IF NOT EXISTS notifications (
+            id            TEXT PRIMARY KEY,
+            type          TEXT NOT NULL,
+            title         TEXT NOT NULL,
+            content       TEXT DEFAULT '',
+            entity_type   TEXT DEFAULT '',
+            entity_id     TEXT DEFAULT '',
+            priority      TEXT DEFAULT 'medium',
+            read          INTEGER DEFAULT 0,
+            source        TEXT DEFAULT 'system',
+            follow_up_of  TEXT DEFAULT '',
+            created_at    TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
+        CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);
+
+        -- ★ NOTIFICATION_CONFIG 通知配置表
+        CREATE TABLE IF NOT EXISTS notification_config (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('enabled','1');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('interval_minutes','60');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('last_check_at','');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_calls','0');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_tokens','0');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_date','');
 
 
     ")?;

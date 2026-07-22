@@ -11,6 +11,7 @@ pub mod partner_commands;
 pub mod export_commands;
 pub mod window_commands;
 pub mod todo_commands;
+pub mod notification_commands;
 
 pub use project_commands::*;
 pub use product_commands::*;
@@ -25,3 +26,4 @@ pub use partner_commands::*;
 pub use export_commands::*;
 pub use window_commands::*;
 pub use todo_commands::*;
+pub use notification_commands::*;

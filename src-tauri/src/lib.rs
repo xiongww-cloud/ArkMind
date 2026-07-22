@@ -178,6 +178,13 @@ pub fn run() {
                 services::file_ingestion::start(ingestion_handle);
             });
 
+            // ★ 启动通知循环：App启动时执行一次后台LLM分析
+            let notify_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                services::notification_loop::run_startup_check(notify_handle);
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -190,12 +197,10 @@ pub fn run() {
             // Products
             commands::product_series_list, commands::product_series_create, commands::product_series_update, commands::product_series_delete, commands::product_series_update_sort_order,
             commands::product_list, commands::product_create, commands::product_update, commands::product_update_sort_orders, commands::product_delete,
-            commands::product_get_tags, commands::product_add_tag_mapping, commands::product_remove_tag_mapping,
             // Files
             commands::file_list, commands::file_upload, commands::file_delete,
             commands::file_open, commands::file_download, commands::file_get_path, commands::file_has_oss_files, commands::file_migrate_files,
             commands::file_update_meta,
-            commands::file_get_tags, commands::file_add_tag_mapping, commands::file_remove_tag_mapping,
             commands::file_list_by_product, commands::file_open_product, commands::file_download_product,
             commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes,
             commands::file_list_global,
@@ -209,9 +214,7 @@ pub fn run() {
             // Notes
             commands::notes_list_all, commands::notes_list_daily, commands::notes_list_by_project, commands::notes_list_orphan, commands::notes_list_trash, commands::notes_list_archive, commands::notes_list_by_notebook, commands::notes_get, commands::notes_get_for_trash,
             commands::notes_create, commands::notes_update, commands::notes_delete, commands::notes_restore, commands::notes_permanent_delete,
-            commands::notes_list_tags, commands::notes_create_tag, commands::notes_search_tags, commands::notes_list_tags_by_type,
-            commands::notes_get_inherited_tags,
-            commands::notes_list_tag_mappings, commands::notes_add_tag_mapping, commands::notes_remove_tag_mapping, commands::notes_count_by_notebook,
+            commands::notes_count_by_notebook,
             // Notebooks
             commands::notebook_list, commands::notebook_create, commands::notebook_update, commands::notebook_delete,
             // Partners (unified)
@@ -248,11 +251,10 @@ pub fn run() {
             commands::kb_fts5_inspector, commands::kb_get_table_chunks, commands::execute_production_rag,
             commands::kb_test_embedding, commands::kb_test_chat,
             commands::ext_tool_search_knowledge_base, commands::ext_tool_get_document_page,
-            commands::ext_tool_find_related_knowledge, commands::ext_tool_search_by_tag,
+            commands::ext_tool_find_related_knowledge,
             commands::ext_tool_get_project_context,
             commands::kb_memory_objects, commands::search_business, commands::search_source_data, commands::lookup_object_names, commands::kb_project_note_ids, commands::kb_memory_parents,
             commands::kb_memory_heatmap, commands::kb_memory_dashboard_stats,
-            commands::kb_pipeline_debug,
             commands::ext_tool_translate_filter, commands::ext_tool_search_filtered,
             // AI sync
             commands::ai_sync_status, commands::ai_sync_trigger, commands::ai_sync_diagnose,
@@ -263,9 +265,6 @@ pub fn run() {
             commands::assets_search, commands::assets_search_fts5, commands::assets_list,
             commands::asset_sync_status, commands::asset_sync_trigger, commands::asset_diagnose,
             commands::asset_get_latest_version, commands::asset_get_parsed_text, commands::asset_rerun_migration,
-            // Tags
-            commands::tag_list, commands::tag_create, commands::tag_update, commands::tag_delete, commands::tag_list_categories, commands::tag_stats,
-            commands::entity_get_tags, commands::entity_add_tag, commands::entity_remove_tag,
             // Settings
             commands::settings_get, commands::settings_update, commands::get_ai_config, commands::update_ai_config, commands::ai_test_provider, commands::ai_test_embedding,
             commands::user_profile, commands::user_profile_update,

@@ -450,13 +450,6 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     // ★ 清理存量孤儿 chunk
     conn.execute("DELETE FROM knowledge_chunks WHERE source_data_id NOT IN (SELECT id FROM source_data)", []).ok();
 
-    // ★ 统一文件标签的 entity_id 为 file_assets.id（修复历史数据中混入 file_relations.id 的问题）
-    conn.execute(
-        "UPDATE tag_mappings SET entity_id = (SELECT fr.file_id FROM file_relations fr WHERE fr.id = tag_mappings.entity_id) \
-         WHERE entity_type='files' AND entity_id IN (SELECT id FROM file_relations)",
-        [],
-    ).ok();
-
     // ★ 迁移 projects 客户字段到 partners + project_customer_mapping，然后删除旧列
     let has_customer_col: bool = conn.query_row(
         "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='customer'",
@@ -536,8 +529,69 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         log::info!("[数据库] knowledge_push_queue 已添加进度字段");
     }
 
+    // ★ 回填 partner_project_mapping（从旧 mapping 表 + business_relations）
+    let ppm_count: i64 = conn.query_row("SELECT COUNT(*) FROM partner_project_mapping", [], |r| r.get(0)).unwrap_or(0);
+    if ppm_count == 0 {
+        // 从旧 project_customer_mapping 回填
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO partner_project_mapping(partner_id, project_id, partner_type, selected_contact_id)
+             SELECT customer_id, project_id, 'CUSTOMER', NULL FROM project_customer_mapping
+             WHERE customer_id IS NOT NULL AND project_id IS NOT NULL"
+        ).ok();
+        // 从旧 project_channel_mapping 回填
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO partner_project_mapping(partner_id, project_id, partner_type, selected_contact_id)
+             SELECT channel_id, project_id, 'CHANNEL', selected_contact_id FROM project_channel_mapping
+             WHERE channel_id IS NOT NULL AND project_id IS NOT NULL"
+        ).ok();
+        // 从旧 project_vendor_mapping 回填
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO partner_project_mapping(partner_id, project_id, partner_type, selected_contact_id)
+             SELECT vendor_id, project_id, 'VENDOR', selected_contact_id FROM project_vendor_mapping
+             WHERE vendor_id IS NOT NULL AND project_id IS NOT NULL"
+        ).ok();
+        // 从 business_relations 回填（补充旧表中没有的数据）
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO partner_project_mapping(partner_id, project_id, partner_type, selected_contact_id, remark)
+             SELECT br.source_id, br.target_id, br.source_type,
+                    COALESCE(json_extract(br.metadata, '$.selected_contact_id'), ''),
+                    COALESCE(json_extract(br.metadata, '$.remark'), '')
+             FROM business_relations br
+             WHERE br.source_type IN ('CHANNEL','VENDOR','CUSTOMER')
+               AND br.target_type = 'PROJECT' AND br.relation_type = 'belongs_to'
+               AND br.source_id IS NOT NULL AND br.target_id IS NOT NULL"
+        ).ok();
+        let filled: i64 = conn.query_row("SELECT COUNT(*) FROM partner_project_mapping", [], |r| r.get(0)).unwrap_or(0);
+        if filled > 0 {
+            log::info!("[数据库] partner_project_mapping 回填完成: {} 条记录", filled);
+        }
+    }
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_ppm_project ON partner_project_mapping(project_id);");
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_ppm_partner ON partner_project_mapping(partner_id);");
+
+    // ★ 回填 contact_project_mapping（从 business_relations 中的 CONTACT → PROJECT 关系）
+    let cpm_count: i64 = conn.query_row("SELECT COUNT(*) FROM contact_project_mapping", [], |r| r.get(0)).unwrap_or(0);
+    if cpm_count == 0 {
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO contact_project_mapping(contact_id, project_id)
+             SELECT br.source_id, br.target_id FROM business_relations br
+             WHERE br.source_type = 'CONTACT' AND br.target_type = 'PROJECT'
+               AND br.relation_type = 'belongs_to'
+               AND br.source_id IS NOT NULL AND br.target_id IS NOT NULL"
+        ).ok();
+        let filled: i64 = conn.query_row("SELECT COUNT(*) FROM contact_project_mapping", [], |r| r.get(0)).unwrap_or(0);
+        if filled > 0 {
+            log::info!("[数据库] contact_project_mapping 回填完成: {} 条记录", filled);
+        }
+    }
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_cpm_project ON contact_project_mapping(project_id);");
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_cpm_contact ON contact_project_mapping(contact_id);");
+
     // ★ 迁移 MEMORY / POLICY 到独立表
     migrate_memory_policy_to_own_tables(conn);
+
+    // ★ 创建 notifications 和 notification_config 表
+    create_notifications_tables(conn);
 
     Ok(())
 }
@@ -597,6 +651,22 @@ pub fn purge_stale_queue_entries() {
         if let Ok(n) = conn.execute(
             &format!("DELETE FROM todos WHERE done=1 AND updated_at < {cutoff}"), []
         ) { if n > 0 { log::info!("[数据库] 清理超过 7 天的已完成待办: {} 条", n); } }
+
+        // ★ 清理已废弃的 ai_tag_queue 及其触发器
+        for t in &["ai_tag_notes_insert", "ai_tag_notes_update", "ai_tag_products_insert", "ai_tag_products_update", "ai_tag_projects_insert", "ai_tag_projects_update", "ai_tag_todos_insert", "ai_tag_todos_update"] {
+            let _ = conn.execute(&format!("DROP TRIGGER IF EXISTS {}", t), []);
+        }
+        let _ = conn.execute("DROP TABLE IF EXISTS ai_tag_queue", []);
+
+        // ★ 清理已废弃的 tags 和 tag_mappings 表
+        let _ = conn.execute("DROP TABLE IF EXISTS tag_mappings", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS tags", []);
+
+        // ★ 清理已废弃的通讯录旧表（已迁移到 partners + partner_project_mapping）
+        for t in &["channel_partners", "channel_contacts", "vendor_partners", "vendor_contacts", "customers", "customer_contacts", "project_customer_mapping", "user_policies", "system_notifications"] {
+            let _ = conn.execute(&format!("DROP TABLE IF EXISTS {}", t), []);
+        }
+
         Ok(())
     }) {
         log::info!("[数据库] 清理过期队列失败: {}", e);
@@ -815,4 +885,45 @@ pub(crate) fn migrate_memory_policy_to_own_tables(conn: &Connection) {
     let _ = conn.execute("DROP TABLE IF EXISTS user_policies", []);
 
     log::info!("[迁移] MEMORY / POLICY 独立表迁移完成");
+}
+
+/// 创建 notifications 和 notification_config 表
+pub(crate) fn create_notifications_tables(conn: &Connection) {
+    let has_notifications: bool = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notifications' LIMIT 1")
+        .ok()
+        .and_then(|mut s| s.query_row([], |_| Ok(true)).ok())
+        .unwrap_or(false);
+    if has_notifications { return; }
+
+    log::info!("[迁移] 创建 notifications 和 notification_config 表...");
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS notifications (
+            id            TEXT PRIMARY KEY,
+            type          TEXT NOT NULL,
+            title         TEXT NOT NULL,
+            content       TEXT DEFAULT '',
+            entity_type   TEXT DEFAULT '',
+            entity_id     TEXT DEFAULT '',
+            priority      TEXT DEFAULT 'medium',
+            read          INTEGER DEFAULT 0,
+            source        TEXT DEFAULT 'system',
+            follow_up_of  TEXT DEFAULT '',
+            created_at    TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
+        CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);
+
+        CREATE TABLE IF NOT EXISTS notification_config (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('enabled','1');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('interval_minutes','60');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('last_check_at','');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_calls','0');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_tokens','0');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_date','');"
+    );
+    log::info!("[迁移] notifications 表创建完成");
 }

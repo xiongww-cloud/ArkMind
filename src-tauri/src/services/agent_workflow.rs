@@ -39,19 +39,14 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 2. **再检索知识库**：调用 ext_tool_search
    - 知识库是原始文档、文件、笔记等
 
-## ⚠️ 预算管理（必须遵守）
+## ⚠️ 预算管理
 
-每次工具调用都会消耗预算：
-- 初始消耗：8分
-- 每次调用后消耗增长20%
-- 预算耗尽时将强制停止检索并回答
+每次工具调用都会消耗预算，系统会在必要时管理搜索轮次。
 
-**必须遵守的规则**：
+**原则**：
 1. 优先使用记忆（ext_tool_memory），减少知识库检索
 2. 避免重复检索相同内容
 3. 信息足够时立即停止检索
-4. 预算不足时直接总结已获取的信息
-5. 单次回答不超过3次工具调用
 
 ## ⚠️ 回答前强制检查（必须执行）
 
@@ -650,9 +645,9 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_manage_partner","description":"管理合作伙伴（渠道/厂商/客户）。action: create(创建), update(更新), delete(删除), link_project(关联到项目), unlink_project(取消关联)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"partner_id":{"type":"string","description":"合作伙伴ID(update/delete/link_project/unlink_project用)"},"type":{"type":"string","description":"类型: CHANNEL/VENDOR/CUSTOMER(create用)"},"name":{"type":"string","description":"名称(create/update用)"},"phone":{"type":"string","description":"电话"},"address":{"type":"string","description":"地址"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人(通讯录). action: create(创建), update(更新), delete(删除), list(查看通讯录), link_project(关联到项目), unlink_project(取消关联)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list","link_project","unlink_project"]},"contact_id":{"type":"string","description":"联系人ID(update/delete/link_project/unlink_project用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"parent_id":{"type":"string","description":"关联的合作伙伴ID(渠道/厂商/客户), 可选"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"},"type":{"type":"string","description":"类型过滤: CHANNEL/VENDOR/CUSTOMER(list用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_query","description":"Structured query for business data with field filtering, sorting, pagination.","parameters":{"type":"object","properties":{"entity":{"type":"string","enum":["project","product","partner","contact","todo","note"],"description":"Entity type to query"},"filters":{"type":"array","items":{"type":"object","properties":{"field":{"type":"string","description":"Field name"},"op":{"type":"string","enum":["=","!=",">","<",">=","<=","LIKE","IN","IS_NULL","IS_NOT_NULL"],"description":"Operator"},"value":{"type":["string","number","boolean","null"],"description":"Filter value"}},"required":["field","op","value"]},"description":"Filter conditions (AND)"},"sort":{"type":"object","properties":{"field":{"type":"string","description":"Sort field"},"order":{"type":"string","enum":["asc","desc"],"description":"Sort direction"}},"description":"Sort"},"limit":{"type":"integer","description":"Max results, default 20, max 100"},"offset":{"type":"integer","description":"Offset, default 0"}},"required":["entity"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_reminder","description":"Manage reminders. action=ack(acknowledge, hide from future reminders), action=unack(cancel acknowledgement, show again).","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["ack","unack"],"description":"ack=confirm reminder, unack=cancel confirmation"},"reminder_type":{"type":"string","enum":["todo_due","todo_today","project_stale","bid_deadline"],"description":"Type of reminder"},"entity_id":{"type":"string","description":"ID of the todo or project"}},"required":["action","reminder_type","entity_id"]}}},
         {"type":"function","function":{"name":"ext_tool_memory","description":"管理记忆. action=create(创建), action=delete(删除), action=search(搜索记忆)","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","delete","search"],"description":"create=创建记忆, delete=删除记忆, search=搜索记忆"},"content":{"type":"string","description":"单条记忆内容（与 items 二选一）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条事实内容数组，一次调用创建多条记忆"},"memory_id":{"type":"string","description":"删除时用"},"replace_ids":{"type":"string","description":"创建时逗号分隔的旧记忆id"},"keywords":{"type":"array","items":{"type":"string"},"description":"搜索关键词列表（如 [\"S12700E\",\"交换容量\"]），多个关键词都会匹配"},"query":{"type":"string","description":"搜索关键词（单个）"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户策略（宪法）。id+content=更新，id+无content=删除，无id+content=新增。查询不需要，系统自动注入prompt。","parameters":{"type":"object","properties":{"id":{"type":"string","description":"策略ID（更新/删除用）"},"content":{"type":"string","description":"策略内容（新增/更新用）"}},"required":[]}}},
+        {"type":"function","function":{"name":"ext_tool_create_notification","description":"创建通知提醒用户关注重要事项。只有在发现真正需要用户关注的洞察时才调用，不要滥用。","parameters":{"type":"object","properties":{"type":{"type":"string","description":"通知类型: todo_due/todo_today/project_stale/bid_deadline/llm_insight"},"title":{"type":"string","description":"通知标题，简短精炼"},"content":{"type":"string","description":"通知详情"},"entity_type":{"type":"string","description":"关联实体类型: todo/project/null"},"entity_id":{"type":"string","description":"关联实体ID"},"priority":{"type":"string","enum":["high","medium","low"],"description":"优先级"},"follow_up_of":{"type":"string","description":"跟进的通知ID"}},"required":["type","title","content"]}}},
     ])
 }
 
@@ -953,98 +948,21 @@ pub fn build_chunk_metadata(source_type: &str, source_id: &str, with_relations: 
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Tag-based pre-filtering
+// Tag-based pre-filtering (已废弃，tags 表已移除)
 // ═══════════════════════════════════════════════════════════════════
 
-/// 从 tag_mappings 查出匹配标签的实体 → source_data → 父块 → 子块 rowid 列表
-pub fn get_child_rowids_by_tag_names(tag_names: &[String]) -> Vec<i64> {
-    if tag_names.is_empty() { return vec![]; }
-
-    // 1. tag_mappings → (entity_type, entity_id)
-    let placeholders = tag_names.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!(
-        "SELECT DISTINCT tm.entity_type, tm.entity_id FROM tag_mappings tm \
-         JOIN tags t ON t.tag_id = tm.tag_id \
-         WHERE t.name IN ({})", placeholders
-    );
-    let params: Vec<serde_json::Value> = tag_names.iter().map(|n| json!(n)).collect();
-    let rows = database::all(&sql, &params).unwrap_or_default();
-    if rows.is_empty() { return vec![]; }
-
-    // 2. 将 entity_type 映射为 source_type（小写复数 → 大写单数）
-    let mut source_pairs: Vec<(String, String)> = Vec::new();
-    for row in &rows {
-        let et = row["entity_type"].as_str().unwrap_or("");
-        let eid = row["entity_id"].as_str().unwrap_or("");
-        if et.is_empty() || eid.is_empty() { continue; }
-        let st = match et {
-            "notes" => "NOTE", "files" => "FILE",
-            "products" => "PRODUCT", "projects" => "PROJECT",
-            _ => continue,
-        };
-        source_pairs.push((st.to_string(), eid.to_string()));
-    }
-    if source_pairs.is_empty() { return vec![]; }
-
-    // 3. source_data.id → 子块 rowid
-    let mut ids = Vec::new();
-    for (st, sid) in &source_pairs {
-        if let Ok(Some(row)) = database::get(
-            "SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",
-            &[json!(st), json!(sid)],
-        ) {
-            if let Some(sdid) = row["id"].as_i64() {
-                ids.push(sdid);
-            }
-        }
-    }
-    if ids.is_empty() { return vec![]; }
-
-    let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    database::all(
-        &format!("SELECT id FROM knowledge_chunks WHERE chunk_type='child' AND parent_id IN (SELECT chunk_id FROM knowledge_chunks WHERE chunk_type='parent' AND source_data_id IN ({}))", ph),
-        &ids.iter().map(|id| json!(id)).collect::<Vec<_>>(),
-    ).unwrap_or_default().iter().filter_map(|r| r["id"].as_i64()).collect()
+/// 标签过滤已废弃，始终返回空
+pub fn get_child_rowids_by_tag_names(_tag_names: &[String]) -> Vec<i64> {
+    vec![]
 }
 
-/// 关键词 + 标签 → 横向检索：从 tags 表硬查询匹配对象，返回对象卡片。
-/// 输出格式与 Object 工具一致（[TYPE] Name | source_id: TYPE-id），自动反哺 Workspace。
-/// 不依赖语义匹配，纯数据库外键级联。
+/// 关键词 → 横向检索：纯数据库外键级联（标签查询已移除）。
 fn execute_horizontal_search(keywords: &[String]) -> String {
     if keywords.is_empty() { return String::new(); }
-    let like = format!("%{}%", crate::database::escape_like(&keywords.join(" ")));
+    let _like = format!("%{}%", crate::database::escape_like(&keywords.join(" ")));
 
-    let mut out = String::new();
-    let mut seen = std::collections::HashSet::new();
-
-    // 1. 标签命中：tags.name LIKE → tag_mappings → source_data
-    if let Ok(rows) = database::all(
-        "SELECT DISTINCT tm.entity_type, tm.entity_id, t.name as tag_name FROM tag_mappings tm \
-         JOIN tags t ON t.tag_id = tm.tag_id WHERE t.name LIKE ?1 LIMIT 15",
-        &[json!(&like)],
-    ) {
-        for r in &rows {
-            let et = r["entity_type"].as_str().unwrap_or("");
-            let eid = r["entity_id"].as_str().unwrap_or("");
-            let tag_name = r["tag_name"].as_str().unwrap_or("");
-            if et.is_empty() || eid.is_empty() { continue; }
-            let st = match et {
-                "notes" => "NOTE", "files" => "FILE",
-                "products" => "PRODUCT", "projects" => "PROJECT",
-                "todos" => "TODO", _ => continue,
-            };
-            let key = format!("{}-{}", st, eid);
-            if !seen.insert(key) { continue; }
-            if let Ok(Some(sd)) = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(eid)]) {
-                let n = sd["title"].as_str().unwrap_or("");
-                out.push_str(&format!("  [{}] {} | source_id: {}-{}\n", st, n, st, eid));
-                out.push_str(&format!("    ↳ 关联原因: 标签「{}」匹配\n", tag_name));
-            }
-        }
-    }
-
-    if out.is_empty() { return String::new(); }
-    format!("\n💡 【横向关联对象】\n{}\n", out.trim())
+    if true { return String::new(); }
+    String::new()
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1483,18 +1401,7 @@ fn execute_traverse(chunk_id: &str, edge_type: &str, radius: usize, visited: &st
             out
         }
         "References" => {
-            let tn = target_name.trim();
-            if tn.is_empty() { return "查找引用需要指定 target_name。".into(); }
-            let tags: Vec<String> = database::all("SELECT DISTINCT t.name FROM tags t WHERE t.name LIKE ?1 LIMIT 5",&[json!(format!("%{}%",tn))]).unwrap_or_default().iter().filter_map(|r|r["name"].as_str().map(String::from)).collect();
-            if tags.is_empty() { return format!("未找到标签「{}」。",tn); }
-            let mut out = format!("引用标签「{}」的其他文档：\n",tags.join("、"));
-            let child_rowids = get_child_rowids_by_tag_names(&tags);
-            if child_rowids.is_empty() { out.push_str("未找到引用。"); return out; }
-            let pi = child_rowids.len(); let ph = child_rowids.iter().map(|_|"?").collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT DISTINCT p.content,p.chunk_id,p.chunk_index FROM knowledge_chunks c JOIN knowledge_chunks p ON p.chunk_id=c.parent_id WHERE c.id IN ({}) AND p.content IS NOT NULL AND NOT (p.chunk_id LIKE ?{}) ORDER BY p.chunk_index LIMIT 5",ph,pi+1);
-            let mut params: Vec<Value> = child_rowids.iter().map(|id|json!(id)).collect(); params.push(json!(format!("{}%",row["chunk_id"].as_str().unwrap_or(""))));
-            if let Ok(rows) = database::all(&sql,&params) { for r2 in &rows { let pc=r2["chunk_id"].as_str().unwrap_or(""); if visited.contains(pc){continue}; let content=r2["content"].as_str().unwrap_or(""); let preview=content.chars().take(200).collect::<String>(); let short=pc.chars().take(8).collect::<String>(); out.push_str(&format!("\n· {}\nChunkID：{}\n",preview.replace('\n'," "),short)); } }
-            out
+            "标签引用功能已废弃（tags 表已移除）。".into()
         }
         _ => format!("不支持的边类型「{}」。支持：continue, related, references。",edge),
     }
@@ -1883,76 +1790,6 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
     }
 }
 
-/// 被动提醒：检查待办到期、项目停滞、投标截止，生成提醒文本注入 LLM 上下文
-fn check_proactive_reminders() -> String {
-    let mut reminders = Vec::new();
-
-    // 1. 24h 内到期的待办（排除已确认的）
-    if let Ok(rows) = database::all(
-        "SELECT t.title, t.due_date, t.id FROM todos t WHERE t.done=0 AND t.due_date IS NOT NULL AND t.due_date <= date('now','+1 day') AND t.due_date >= date('now') AND NOT EXISTS (SELECT 1 FROM reminder_ack WHERE reminder_type='todo_due' AND entity_id=t.id) ORDER BY t.due_date ASC LIMIT 5",
-        &[],
-    ) {
-        if !rows.is_empty() {
-            let items: Vec<String> = rows.iter().map(|r| {
-                let title = r["title"].as_str().unwrap_or("");
-                let due = r["due_date"].as_str().unwrap_or("");
-                format!("• {} (截止: {})", title, due)
-            }).collect();
-            reminders.push(format!("⏰ 待办即将到期：\n{}", items.join("\n")));
-        }
-    }
-
-    // 2. 今天到期的待办（排除已确认的）
-    if let Ok(rows) = database::all(
-        "SELECT t.title, t.id FROM todos t WHERE t.done=0 AND t.due_date=date('now') AND NOT EXISTS (SELECT 1 FROM reminder_ack WHERE reminder_type='todo_today' AND entity_id=t.id) ORDER BY t.due_date ASC LIMIT 5",
-        &[],
-    ) {
-        if !rows.is_empty() {
-            let items: Vec<String> = rows.iter().map(|r| {
-                let title = r["title"].as_str().unwrap_or("");
-                format!("• {}", title)
-            }).collect();
-            reminders.push(format!("🔴 今天到期：\n{}", items.join("\n")));
-        }
-    }
-
-    // 3. 7 天未更新的项目（排除已确认的）
-    if let Ok(rows) = database::all(
-        "SELECT p.name, p.updated_at, p.id FROM projects p WHERE p.updated_at < date('now','-7 days') AND NOT EXISTS (SELECT 1 FROM reminder_ack WHERE reminder_type='project_stale' AND entity_id=p.id) ORDER BY p.updated_at ASC LIMIT 3",
-        &[],
-    ) {
-        if !rows.is_empty() {
-            let items: Vec<String> = rows.iter().map(|r| {
-                let name = r["name"].as_str().unwrap_or("");
-                let updated = r["updated_at"].as_str().unwrap_or("");
-                format!("• {} (最后更新: {})", name, updated)
-            }).collect();
-            reminders.push(format!("📌 项目长期未更新：\n{}", items.join("\n")));
-        }
-    }
-
-    // 4. 3 天内投标截止（排除已确认的）
-    if let Ok(rows) = database::all(
-        "SELECT p.name, p.bid_time, p.id FROM projects p WHERE p.bid_time IS NOT NULL AND p.bid_time != '' AND p.bid_time <= date('now','+3 days') AND p.bid_time >= date('now') AND NOT EXISTS (SELECT 1 FROM reminder_ack WHERE reminder_type='bid_deadline' AND entity_id=p.id) ORDER BY p.bid_time ASC LIMIT 3",
-        &[],
-    ) {
-        if !rows.is_empty() {
-            let items: Vec<String> = rows.iter().map(|r| {
-                let name = r["name"].as_str().unwrap_or("");
-                let bid = r["bid_time"].as_str().unwrap_or("");
-                format!("• {} (投标: {})", name, bid)
-            }).collect();
-            reminders.push(format!("🎯 投标截止临近：\n{}", items.join("\n")));
-        }
-    }
-
-    if reminders.is_empty() {
-        String::new()
-    } else {
-        format!("【系统提醒】\n{}", reminders.join("\n\n"))
-    }
-}
-
 fn resolve_time(s: &str) -> String {
     let s = s.trim();
     if s.is_empty() { return String::new(); }
@@ -2123,7 +1960,7 @@ fn extract_citations(text: &str) -> Vec<String> {
 
 
 #[tauri::command]
-pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>) -> Result<Value, String> {
+pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>, silent: bool) -> Result<Value, String> {
     AGENT_CANCEL.store(false, Ordering::Release);
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
@@ -2186,13 +2023,6 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     // ★ 追加本轮新问题
     messages.push(ChatMessage{role:MessageRole::User,content:Some(query.clone()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
-    // ★ 被动提醒：注入待办到期/项目停滞/投标截止等提醒
-    let reminders = check_proactive_reminders();
-    if !reminders.is_empty() {
-        log::info!("[主动提醒] 注入提醒: {}", &reminders[..reminders.len().min(100)]);
-        messages.push(ChatMessage{role:MessageRole::System,content:Some(format!("{}（你应该在回答中自然地提到这些提醒，但不要让用户觉得你在念清单。如果用户的问题与某个提醒相关，优先关联回答。）", reminders)),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-    }
-
     // ★ 从活跃对象和本轮 query 设置 Focus
     let top_entities: Vec<String> = {
         let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
@@ -2249,7 +2079,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         }
         
         log::info!("预算: {}/150 cost={}", budget, search_cost);
-        if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking"})); }
+        if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking"})); } }
         // ★ 每轮注意力衰减（Residual 方式：new_score = old_score * 0.95 + gain）
         // gain 在 SessionEffect::UpdateObjectScore 中通过 EMA 完成
         // 这里只做衰减，不做加分
@@ -2272,10 +2102,12 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             .replace("{{user_policies}}", &user_policies)
             .replace("{{session_scratchpad}}", &scratchpad);
         let budget_info = if iters == 1 {
-            format!("\n\n## 🧠 思维预算\n- 剩余预算: {}/150\n- 本次消耗: {} 分\n- 证据足够就立刻回答，不要浪费预算。", budget, search_cost)
+            let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
+            format!("\n\n## 🧠 搜索状态\n- 剩余预算: {}/150 — {}\n- 上下文: {} tokens\n- 证据足够就直接回答。", budget, status, pt)
         } else {
             let round_pt = pt - prev_pt;
-            format!("\n\n## 🧠 思维预算\n- 剩余预算: {}/150 | 本次消耗: {} 分\n- 上下文: {} tokens（本轮 +{}）| 已生成: {} tokens\n- 上下文越大响应越慢且越贵。证据足够就立刻回答，不要浪费预算。", budget, search_cost, pt, round_pt, ct)
+            let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
+            format!("\n\n## 🧠 搜索状态\n- 剩余预算: {}/150 — {}\n- 上下文: {} tokens（本轮 +{}）| 已生成: {} tokens\n- 证据足够就直接回答。", budget, status, pt, round_pt, ct)
         };
         let new_sys = format!("{}{}", new_sys, budget_info);
         if let Some(ref mut content) = messages[0].content {
@@ -2335,13 +2167,13 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 // 清理 DSML 残留（流式原文可能含未解析的工具调用标记）
                 let re_dsml = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*[^\n]*").unwrap();
                 answer = re_dsml.replace_all(&answer, "").to_string();
-                if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": &answer})); }
+                if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": &answer})); } }
                 if !answer.is_empty() { session.record_observation(&answer); let cited = extract_citations(&answer); log::info!("[LLM检索] cited_ids(from final): {:?}", cited); if cited.len() >= 2 { crate::services::synapse::update_object_links_weighted(&cited, 1.0); } }
                 let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
                 // ★ 工具轮：本轮已流式输出的 interim 内容通知前端归置到思考区
-                if !effective_ac.trim().is_empty() { if let Some(ref h) = app_handle { let _ = h.emit("agent:round-thought", json!({"text": effective_ac})); } }
+                if !effective_ac.trim().is_empty() { if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:round-thought", json!({"text": effective_ac})); } } }
                 // ★ 预算检查：不足时强制回答（在工具调用之前检查）
                 if budget < search_cost {
                     if let Some(ref h) = app_handle {
@@ -2372,7 +2204,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::info!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
-                    if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
+                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); } }
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
             // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
@@ -3260,22 +3092,32 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             let res = execute_structured_query(&a);
                             (res, vec![])
                         }
-                        "ext_tool_manage_reminder" => {
-                            let action = a["action"].as_str().unwrap_or("");
-                            let rtype = a["reminder_type"].as_str().unwrap_or("");
-                            let eid = a["entity_id"].as_str().unwrap_or("");
-                            let res = match action {
-                                "ack" => {
-                                    let _ = database::run("INSERT OR IGNORE INTO reminder_ack(reminder_type, entity_id) VALUES(?1, ?2)", &[json!(rtype), json!(eid)]);
-                                    format!("已确认提醒: {} ({})", rtype, eid)
-                                }
-                                "unack" => {
-                                    let _ = database::run("DELETE FROM reminder_ack WHERE reminder_type=?1 AND entity_id=?2", &[json!(rtype), json!(eid)]);
-                                    format!("已取消确认: {} ({})", rtype, eid)
-                                }
-                                _ => "未知操作。支持: ack, unack".to_string(),
-                            };
-                            (res, vec![])
+                        "ext_tool_create_notification" => {
+                            let ntype = a["type"].as_str().unwrap_or("llm_insight");
+                            let title = a["title"].as_str().unwrap_or("");
+                            let content = a["content"].as_str().unwrap_or("");
+                            let entity_type = a["entity_type"].as_str().unwrap_or("");
+                            let entity_id = a["entity_id"].as_str().unwrap_or("");
+                            let priority = a["priority"].as_str().unwrap_or("medium");
+                            let follow_up_of = a["follow_up_of"].as_str().unwrap_or("");
+                            // 去重：同类型+同实体24小时内不重复
+                            let is_dup = if !entity_id.is_empty() {
+                                database::get(
+                                    "SELECT id FROM notifications WHERE type=?1 AND entity_id=?2 AND created_at > datetime('now','-1 day')",
+                                    &[json!(ntype), json!(entity_id)]
+                                ).ok().flatten().is_some()
+                            } else { false };
+                            if is_dup {
+                                ("通知已存在，跳过创建".to_string(), vec![])
+                            } else {
+                                let id = uuid::Uuid::new_v4().to_string();
+                                let _ = database::run(
+                                    "INSERT INTO notifications(id,type,title,content,entity_type,entity_id,priority,source,follow_up_of) VALUES(?1,?2,?3,?4,?5,?6,?7,'llm',?8)",
+                                    &[json!(&id), json!(ntype), json!(title), json!(content), json!(entity_type), json!(entity_id), json!(priority), json!(follow_up_of)],
+                                );
+                                if let Some(ref h) = app_handle { let _ = h.emit("notification:new", &id); }
+                                (format!("通知已创建: {}", title), vec![])
+                            }
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
                     };
@@ -3400,7 +3242,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::info!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
-                    if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); }
+                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); } }
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
                 }
 

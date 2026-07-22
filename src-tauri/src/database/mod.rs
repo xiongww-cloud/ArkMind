@@ -71,12 +71,6 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         DROP TRIGGER IF EXISTS sd_project_dynamics_insert;
         DROP TRIGGER IF EXISTS sd_project_dynamics_update;
         DROP TRIGGER IF EXISTS sd_project_dynamics_delete;
-        DROP TRIGGER IF EXISTS sd_channel_partners_insert;
-        DROP TRIGGER IF EXISTS sd_channel_partners_update;
-        DROP TRIGGER IF EXISTS sd_channel_partners_delete;
-        DROP TRIGGER IF EXISTS sd_vendor_partners_insert;
-        DROP TRIGGER IF EXISTS sd_vendor_partners_update;
-        DROP TRIGGER IF EXISTS sd_vendor_partners_delete;
         DROP TRIGGER IF EXISTS sd_files_delete;
         DROP TRIGGER IF EXISTS sd_dynamics_delete;
         DROP TRIGGER IF EXISTS sd_reset_sync_on_update;

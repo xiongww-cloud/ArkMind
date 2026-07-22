@@ -4,6 +4,9 @@ import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { sanitizeHtml } from '@/utils/sanitize'
 import { pickRetrievalPhrase } from '@/utils/chat'
+import { notificationStats, type Notification } from '@/api/notification-client'
+import NotificationBubble from '@/components/notification/NotificationBubble.vue'
+import NotificationPanel from '@/components/notification/NotificationPanel.vue'
 
 async function renderMd(text: string): Promise<string> {
   if (!text) return ''
@@ -35,6 +38,19 @@ const typewriterTimers = new Map<string, ReturnType<typeof setInterval>>()
 // ─── Messages ───────────────────────────────────────────────
 const messages = ref<ChatMessage[]>([])
 const MAX_MESSAGES = 20
+
+// ─── Notifications ──────────────────────────────────────────
+const unreadCount = ref(0)
+const showNotifications = ref(false)
+const latestNotification = ref<Notification | null>(null)
+const showBubble = ref(false)
+
+async function loadNotificationStats() {
+  try {
+    const s = await notificationStats()
+    unreadCount.value = s.unread_count || 0
+  } catch {}
+}
 
 // ─── Drag ────────────────────────────────────────────────────
 const fabY = ref(0)
@@ -243,18 +259,49 @@ async function stopAgent() {
 
 function toggle() {
   if (dragMoved.value) return
+  if (showNotifications.value) {
+    showNotifications.value = false
+    return
+  }
+  if (unreadCount.value > 0) {
+    showNotifications.value = true
+    return
+  }
   open.value = !open.value
   if (open.value) nextTick(() => { scrollChat() })
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────
-onMounted(() => {
+const unlistenNotify = ref<(() => void) | null>(null)
+
+onMounted(async () => {
   initFabY()
+  loadNotificationStats()
+  unlistenNotify.value = await listen<string>('notification:new', async () => {
+    unreadCount.value++
+    const s = await notificationStats().catch(() => null)
+    if (s) unreadCount.value = s.unread_count
+  })
 })
 
 onUnmounted(() => {
   stopAllTypewriters()
+  unlistenNotify.value?.()
 })
+
+function onNotificationPanelClose() {
+  showNotifications.value = false
+  loadNotificationStats()
+}
+
+function onBubbleClose() {
+  showBubble.value = false
+}
+
+function onBubbleClick() {
+  showBubble.value = false
+  showNotifications.value = true
+}
 
 </script>
 
@@ -262,7 +309,11 @@ onUnmounted(() => {
 <div class="fab-root" :style="{ top: fabY + 'px' }">
   <!-- Floating Button -->
   <button @click="toggle" @pointerdown="onFabPointerDown" @pointermove="onFabPointerMove" @pointerup="onFabPointerUp"
-    class="fab-button" :class="{ 'fab-open': open }" title="AI 助手">
+    class="fab-button" :class="{ 'fab-open': open || showNotifications }" title="AI 助手">
+    <!-- Badge -->
+    <span v-if="unreadCount > 0" class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center z-10 shadow-sm">
+      {{ unreadCount > 9 ? '9+' : unreadCount }}
+    </span>
     <!-- Outer glow ring -->
     <span class="fab-glow" />
     <!-- Orbital rings -->
@@ -354,7 +405,18 @@ onUnmounted(() => {
       </div>
     </div>
   </Transition>
+
+  <!-- Notification Panel -->
+  <Transition name="fab-panel">
+    <div v-if="showNotifications" class="fab-panel" :style="{ bottom: (winH - fabY + 8) + 'px' }">
+      <div class="fab-scanline" />
+      <NotificationPanel @close="onNotificationPanelClose" />
+    </div>
+  </Transition>
 </div>
+
+<!-- Notification Bubble -->
+<NotificationBubble v-if="latestNotification && showBubble" :notification="latestNotification" @close="onBubbleClose" @click="onBubbleClick" />
 </template>
 
 <style scoped>

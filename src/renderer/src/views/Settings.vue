@@ -326,6 +326,7 @@ async function loadAiConfig() {
     }
     loadVecConfig(config)
     loadVisionConfig(config)
+    loadNotifyConfig()
   } catch (e) {
     console.warn('Failed to load AI config:', e)
   }
@@ -606,6 +607,36 @@ const showVecModal = ref(false)
 const vecFormError = ref('')
 const vecSavedData = ref<any>(null)
 const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
+
+// ─── Notification Settings ──────────────────────────────────
+import { notificationConfigGet, notificationConfigUpdate, notificationStats } from '@/api/notification-client'
+
+const notifyEnabled = ref(true)
+const notifyInterval = ref(60)
+const notifyStats = ref({ today_calls: 0, today_tokens: 0 })
+
+async function loadNotifyConfig() {
+  try {
+    const r = await notificationConfigGet()
+    if (r.config) {
+      notifyEnabled.value = r.config.enabled !== '0'
+      notifyInterval.value = parseInt(r.config.interval_minutes) || 60
+    }
+  } catch {}
+  try {
+    const s = await notificationStats()
+    notifyStats.value = { today_calls: s.today_calls, today_tokens: s.today_tokens }
+  } catch {}
+}
+
+async function saveNotifyConfig() {
+  try {
+    await notificationConfigUpdate({
+      enabled: notifyEnabled.value ? '1' : '0',
+      interval_minutes: notifyInterval.value.toString(),
+    })
+  } catch {}
+}
 
 function loadVecConfig(config) {
   const e = config?.embedding
@@ -948,6 +979,45 @@ onUnmounted(() => {
           <button v-if="!vecSavedData" @click="openVecModal" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
         </div>
         <p v-if="vecTestResult" class="text-[10px]" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
+      </div>
+    </div>
+
+    <!-- 智能通知 -->
+    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
+      <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0 flex items-center gap-1.5">
+        <AppIcon name="sparkles" size="15" class="text-surface-400" />
+        智能通知
+      </h2>
+      <div class="p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-[12px] font-medium text-surface-700">后台智能分析</p>
+            <p class="text-[10px] text-surface-400">AI 定期分析业务数据，主动提醒关注事项</p>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" v-model="notifyEnabled" class="sr-only peer" @change="saveNotifyConfig">
+            <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
+          </label>
+        </div>
+        <div class="flex items-center justify-between">
+          <p class="text-[12px] font-medium text-surface-700">分析频率</p>
+          <select v-model="notifyInterval" @change="saveNotifyConfig"
+            class="text-[11px] border border-surface-200 rounded-lg px-2 py-1 outline-none focus:border-brand-400">
+            <option :value="30">每30分钟</option>
+            <option :value="60">每1小时</option>
+            <option :value="120">每2小时</option>
+          </select>
+        </div>
+        <div class="bg-surface-50 rounded-xl p-3 space-y-1.5">
+          <div class="flex justify-between text-[11px]">
+            <span class="text-surface-500">今日调用次数</span>
+            <span class="text-surface-700 font-medium">{{ notifyStats.today_calls }}</span>
+          </div>
+          <div class="flex justify-between text-[11px]">
+            <span class="text-surface-500">今日 Token 消耗</span>
+            <span class="text-surface-700 font-medium">{{ notifyStats.today_tokens }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
