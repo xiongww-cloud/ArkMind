@@ -915,7 +915,7 @@ onUnmounted(() => {
         </div>
         <div v-else-if="aii == null || !li[aii] || (!li[aii].productId && !li[aii].model && !li[aii].mergedText && ir)" class="h-full flex items-center justify-center text-gray-400 text-sm">请先为该项指定设备型号。</div>
         <div v-else class="h-full flex flex-col">
-          <textarea v-model="li[aii].mergedText" :readonly="ir" @input="autoEnableSync(aii)" class="flex-1 w-full p-4 border border-gray-200 rounded-xl focus:border-[#007aff] focus:ring-4 focus:ring-blue-500/10 outline-none resize-none text-[13px] text-gray-800 leading-relaxed bg-[#f9f9fb] transition-all" :class="ir ? 'cursor-default select-text' : ''" :placeholder="ir ? '' : '该设备没有参数，请手动输入'"></textarea></div>
+          <textarea v-model="li[aii].mergedText" :readonly="ir" class="flex-1 w-full p-4 border border-gray-200 rounded-xl focus:border-[#007aff] focus:ring-4 focus:ring-blue-500/10 outline-none resize-none text-[13px] text-gray-800 leading-relaxed bg-[#f9f9fb] transition-all" :class="ir ? 'cursor-default select-text' : ''" :placeholder="ir ? '' : '该设备没有参数，请手动输入'"></textarea></div>
       </div>
     </div>
   </div>

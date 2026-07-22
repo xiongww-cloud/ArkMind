@@ -606,7 +606,7 @@ async function handleImportProject() {
 
       <div class="relative w-[200px] flex-shrink-0">
         <AppIcon name="search" class="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-400" />
-        <input v-model="searchInput" type="text" placeholder="搜索名称、描述、客户..." class="w-full h-7 pl-8 pr-3 text-xs text-surface-700 bg-white border border-slate-200 rounded-md outline-none focus:border-slate-400 placeholder:text-surface-400" />
+        <input v-model="searchInput" type="text" placeholder="搜索名称、描述、客户..." class="w-full h-7 pl-8 pr-3 text-xs text-surface-700 bg-white border border-slate-200 rounded-md outline-none focus:border-slate-200 focus:ring-0 placeholder:text-surface-400" />
       </div>
 
       <!-- Status multi-select dropdown -->
