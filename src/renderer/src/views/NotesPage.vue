@@ -748,7 +748,7 @@ const restoreNotebookList = computed(() => {
     <div class="shrink-0 px-3 py-1.5 border-b border-surface-100">
       <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
         <AppIcon name="search" size="12" class="text-surface-400 flex-shrink-0"/>
-        <input v-model="notebookSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索笔记本..."/>
+        <input v-model="notebookSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索笔记、笔记本..."/>
       </div>
     </div>
 

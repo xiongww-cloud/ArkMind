@@ -17,7 +17,7 @@ pub fn init() {
         ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0) > 0;
 
         if !has_unique {
-            log::info!("[business_relations] 检测到表缺少 UNIQUE 约束，正在重建...");
+            log::info!("[业务关联] 检测到表缺少 UNIQUE 约束，正在重建...");
             // 清理重复数据
             cleanup_duplicates();
             // 重建表（保留数据）
@@ -33,7 +33,7 @@ pub fn init() {
                     CREATE UNIQUE INDEX idx_br_unique ON business_relations(source_type, source_id, target_type, target_id, relation_type);
                 ")
             });
-            println!("[business_relations] 表已重建，UNIQUE 约束已添加");
+            println!("[业务关联] 表已重建，UNIQUE 约束已添加");
         }
     } else {
         // 创建新表（带 UNIQUE 约束）
@@ -80,7 +80,7 @@ fn cleanup_duplicates() {
         .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
 
     if before > after {
-        println!("[business_relations] 已清理 {} 条重复数据", before - after);
+        println!("[业务关联] 已清理 {} 条重复数据", before - after);
     }
 }
 
@@ -89,10 +89,10 @@ fn backfill() {
     let count: i64 = database::get("SELECT COUNT(*) as cnt FROM business_relations", &[])
         .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     if count > 0 {
-        log::info!("[business_relations] 已有 {} 条记录，跳过 backfill", count);
+        log::info!("[业务关联] 已有 {} 条记录，跳过 backfill", count);
         return;
     }
-    log::info!("[business_relations] 开始 backfill 业务关联...");
+    log::info!("[业务关联] 开始 backfill 业务关联...");
     let mut total = 0i64;
 
     // 1. file_relations → has_file (FILE → PRODUCT/NOTE/TODO/PROJECT/etc.)
@@ -208,7 +208,7 @@ fn backfill() {
         }
     }
 
-    log::info!("[business_relations] Backfill 完成，共同步 {} 条关联", total);
+    log::info!("[业务关联] Backfill 完成，共同步 {} 条关联", total);
 }
 
 /// Insert or update a business relation (dedup by source+target+type)
@@ -226,7 +226,7 @@ pub fn upsert(
     );
     if let Ok(c) = changes {
         if c.changes > 0 {
-            log::info!("[business_relations] 更新: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
+            log::info!("[业务关联] 更新: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
             return;
         }
     }
@@ -236,7 +236,7 @@ pub fn upsert(
         "INSERT INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,datetime('now','localtime'),datetime('now','localtime'))",
         &[json!(id), json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type), json!(metadata)],
     );
-    log::info!("[business_relations] 新增: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
+    log::info!("[业务关联] 新增: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
 }
 
 /// Delete a specific business relation
@@ -249,7 +249,7 @@ pub fn delete(
         "DELETE FROM business_relations WHERE source_type=? AND source_id=? AND target_type=? AND target_id=? AND relation_type=?",
         &[json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type)],
     );
-    log::info!("[business_relations] 删除: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
+    log::info!("[业务关联] 删除: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
 }
 
 /// Delete all relations where an entity is the source
@@ -258,5 +258,5 @@ pub fn delete_by_source(source_type: &str, source_id: &str) {
         "DELETE FROM business_relations WHERE source_type=? AND source_id=?",
         &[json!(source_type), json!(source_id)],
     );
-    log::info!("[business_relations] 删除所有源关联: {}[{}]", source_type, source_id);
+    log::info!("[业务关联] 删除所有源关联: {}[{}]", source_type, source_id);
 }
