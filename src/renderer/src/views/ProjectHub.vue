@@ -609,7 +609,7 @@ async function handleImportProject() {
             <th @click="toggleSort('name')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none align-middle text-left w-[330px]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
             <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
             <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
-            <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
+            <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
           </tr>
         </thead>
         <tbody class="flex-1 min-h-0 overflow-auto divide-y divide-surface-50">
@@ -660,7 +660,7 @@ async function handleImportProject() {
                 </div>
               </template>
             </td>
-            <td class="px-3 py-2.5 text-surface-400 w-[170px] align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
+            <td class="px-3 py-2.5 text-surface-400 align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
           </tr>
           <!-- Empty state -->
           <tr v-if="filteredProjects.length === 0">
