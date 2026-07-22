@@ -1091,11 +1091,8 @@ onUnmounted(() => {
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="presetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="presetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
-                <button v-for="p in LLM_PRESETS" :key="p.name" @click="selectPreset('llm', p)" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedPreset === p.name ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
-                  <span class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="selectedPreset === p.name ? 'bg-blue-600 border-blue-600' : 'border-slate-300'">
-                    <AppIcon v-if="selectedPreset === p.name" name="check" class="w-2.5 h-2.5 text-white" />
-                  </span>
-                  <span>{{ p.name }}</span>
+                <button v-for="p in LLM_PRESETS" :key="p.name" @click="selectPreset('llm', p)" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedPreset === p.name ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
+                  {{ p.name }}
                 </button>
               </div>
             </div>
@@ -1143,11 +1140,8 @@ onUnmounted(() => {
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="visionPresetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="visionPresetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
-                <button v-for="p in VISION_PRESETS" :key="p.name" @click="selectPreset('vision', p)" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVisionPreset === p.name ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
-                  <span class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="selectedVisionPreset === p.name ? 'bg-blue-600 border-blue-600' : 'border-slate-300'">
-                    <AppIcon v-if="selectedVisionPreset === p.name" name="check" class="w-2.5 h-2.5 text-white" />
-                  </span>
-                  <span>{{ p.name }}</span>
+                <button v-for="p in VISION_PRESETS" :key="p.name" @click="selectPreset('vision', p)" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVisionPreset === p.name ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
+                  {{ p.name }}
                 </button>
               </div>
             </div>
@@ -1195,11 +1189,8 @@ onUnmounted(() => {
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="vecPresetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="vecPresetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
-                <button v-for="p in VEC_PRESETS" :key="p.name" @click="selectPreset('vec', p)" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVecPreset === p.name ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
-                  <span class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="selectedVecPreset === p.name ? 'bg-blue-600 border-blue-600' : 'border-slate-300'">
-                    <AppIcon v-if="selectedVecPreset === p.name" name="check" class="w-2.5 h-2.5 text-white" />
-                  </span>
-                  <span>{{ p.name }}</span>
+                <button v-for="p in VEC_PRESETS" :key="p.name" @click="selectPreset('vec', p)" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVecPreset === p.name ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
+                  {{ p.name }}
                 </button>
               </div>
             </div>
