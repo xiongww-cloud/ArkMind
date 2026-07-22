@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted, nextTick, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter, useRoute } from 'vue-router'
@@ -14,6 +14,10 @@ const projectStore = useProjectStore()
 const authStore = useAuthStore()
 const router = useRouter()
 const route = useRoute()
+
+// ─── Table scroll ────────────────────────────────────────────────
+const tableScrollRef = ref<HTMLElement | null>(null)
+let savedScrollTop = 0
 
 // ─── Filters ─────────────────────────────────────────────────────
 const searchInput = ref('')
@@ -171,7 +175,15 @@ onMounted(() => {
   syncFromBackend()
   loadCustomers()
 })
-onActivated(() => { syncFromBackend() })
+onActivated(() => {
+  syncFromBackend()
+  nextTick(() => {
+    if (tableScrollRef.value) tableScrollRef.value.scrollTop = savedScrollTop
+  })
+})
+onDeactivated(() => {
+  if (tableScrollRef.value) savedScrollTop = tableScrollRef.value.scrollTop
+})
 
 // ─── Status definitions ──────────────────────────────────────────
 const allStatusOptions = ['Lead', 'SolutionDesign', 'PoC', 'Bidding', 'Won', 'Ordered', 'Lost', 'OnHold']
@@ -720,7 +732,7 @@ async function handleImportProject() {
     </table>
 
     <!-- ═══ Table Body ═══ -->
-    <div class="flex-1 min-h-0 overflow-auto">
+    <div ref="tableScrollRef" class="flex-1 min-h-0 overflow-auto">
       <table class="w-full text-xs table-fixed min-w-[770px]">
         <tbody class="divide-y divide-surface-50">
           <tr v-for="project in filteredProjects" :key="project.id"
