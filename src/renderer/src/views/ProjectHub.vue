@@ -601,7 +601,7 @@ async function handleImportProject() {
     </div>
 
     <!-- ═══ Table ═══ -->
-    <div class="card !p-0 overflow-x-auto">
+    <div class="overflow-x-auto">
       <table class="w-full text-xs table-fixed min-w-[700px]">
         <thead>
           <tr class="border-b border-surface-100 bg-surface-50 text-left">

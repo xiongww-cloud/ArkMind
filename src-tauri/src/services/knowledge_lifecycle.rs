@@ -1,6 +1,6 @@
-//! 统一记忆库生命周期接口
+//! 统一知识库生命周期接口
 //!
-//! 业务层通过 lifecycle 接口与记忆库交互，
+//! 业务层通过 lifecycle 接口与知识库交互，
 //! 不直接操作 source_data / knowledge_chunks / LanceDB。
 //!
 //! 知识管线通过 get_changed_since 接口获取需要同步的对象，
@@ -10,26 +10,26 @@ use serde_json::json;
 
 /// 业务对象删除时调用 → 入队等待推送
 pub fn notify_deleted(source_type: &str, source_id: &str) {
-    log::info!("[记忆库] notify_deleted: {}/{}", source_type, source_id);
+    log::info!("[知识库] notify_deleted: {}/{}", source_type, source_id);
     crate::services::push_pipeline::enqueue_push(source_type, source_id, "delete");
 }
 
 /// 业务对象创建/更新时调用 → 入队等待推送
 pub fn notify_changed(source_type: &str, source_id: &str) {
-    log::info!("[记忆库] notify_changed: {}/{}", source_type, source_id);
+    log::info!("[知识库] notify_changed: {}/{}", source_type, source_id);
     crate::services::push_pipeline::enqueue_push(source_type, source_id, "change");
 }
 
 /// 文件上传后调用：入队等待推送
 /// 业务层只需传入 file_id，push_worker 完成剩余工作
 pub fn notify_file_upload(file_id: &str) {
-    log::info!("[记忆库] notify_file_upload: {}", file_id);
+    log::info!("[知识库] notify_file_upload: {}", file_id);
     crate::services::push_pipeline::enqueue_push("FILE", file_id, "file_upload");
 }
 
 /// 重置知识管线：清空 chunks + 向量 + LanceDB，重新物化
 pub fn reset_pipeline() {
-    log::info!("[记忆库] reset_pipeline: 重置知识管线");
+    log::info!("[知识库] reset_pipeline: 重置知识管线");
     // 1. 清空向量
     crate::database::run("DELETE FROM vector_cache", &[]).ok();
     if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
@@ -70,9 +70,9 @@ pub fn cleanup_orphaned_fts5() {
     ).ok();
     let after: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM kk_chunks_fts", [], |r| r.get(0))).unwrap_or(0);
     if before != after {
-        log::info!("[记忆库] FTS5 清理: {} → {} 条 (孤儿删除+缺失补插)", before, after);
+        log::info!("[知识库] FTS5 清理: {} → {} 条 (孤儿删除+缺失补插)", before, after);
     } else {
-        log::info!("[记忆库] FTS5 无需清理 ({} 条)", after);
+        log::info!("[知识库] FTS5 无需清理 ({} 条)", after);
     }
 }
 
