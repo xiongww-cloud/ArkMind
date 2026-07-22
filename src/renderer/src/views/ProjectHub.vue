@@ -601,9 +601,9 @@ async function handleImportProject() {
     </div>
 
     <!-- ═══ Table ═══ -->
-    <div class="flex-1 min-h-0 overflow-auto">
-      <table class="w-full text-xs table-fixed min-w-[700px]">
-        <thead class="sticky top-0 z-10">
+    <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <table class="flex flex-col h-full text-xs table-fixed min-w-[700px]">
+        <thead class="flex-shrink-0">
           <tr class="border-b border-surface-100 bg-surface-50 text-left">
             <th v-if="selectionMode" class="px-3 py-2 w-10 align-middle text-center"></th>
             <th @click="toggleSort('name')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none align-middle text-left w-[330px]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
@@ -612,7 +612,7 @@ async function handleImportProject() {
             <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-surface-50">
+        <tbody class="flex-1 min-h-0 overflow-auto divide-y divide-surface-50">
           <tr v-for="project in filteredProjects" :key="project.id"
             @click="selectionMode ? toggleProjectSelection(project.id) : goToProject(project.id)"
             class="cursor-pointer transition-colors group hover:bg-surface-50"
