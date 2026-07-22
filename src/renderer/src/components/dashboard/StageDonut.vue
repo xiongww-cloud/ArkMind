@@ -9,14 +9,14 @@ const props = defineProps<{
 const chartOptions = computed(() => ({
   chart: {
     type: 'donut' as const,
-    height: 200,
+    height: 220,
     toolbar: { show: false },
     animations: { enabled: false },
   },
   plotOptions: {
     pie: {
       donut: {
-        size: '60%',
+        size: '65%',
         labels: {
           show: true,
           name: { show: true, fontSize: '11px', color: '#64748b' },
@@ -71,7 +71,7 @@ const series = computed(() => props.data.map(d => d.value))
       :options="chartOptions"
       :series="series"
       type="donut"
-      height="200"
+      height="220"
       width="100%"
     />
     <p v-else class="text-[12px] text-surface-300 py-8 text-center">暂无数据</p>

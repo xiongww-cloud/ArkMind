@@ -27,7 +27,9 @@ const {
   todayTodos, priorityDot, priorityStyle,
   deadlines,
   recentNotes,
-  kbTotalChunks, kbHealth, kbByType, kbDailyGrowth,
+  kbTotalChunks, kbByType, kbObjectTotal,
+  kbHotCount, kbColdCount, kbHotRatio, kbColdRatio, kbAvgWeight, kbTagCount,
+  kbDailyGrowth,
   bizOverview,
   formatBudget, goToProject,
 } = useDashboardData()
@@ -96,9 +98,9 @@ const {
       </div>
 
       <!-- ══════════ Row 2: Pipeline Funnel + Stage Donut ══════════ -->
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        <div class="lg:col-span-7 bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
-          <div class="flex items-center justify-between mb-4">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+        <div class="lg:col-span-7 bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between mb-3">
             <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5">
               <AppIcon name="bar-chart" size="15" class="text-surface-400" />
               Pipeline 漏斗
@@ -107,8 +109,8 @@ const {
           </div>
           <PipelineFunnel :stages="pipelineStats" :max-count="maxPipelineCount" />
         </div>
-        <div class="lg:col-span-5 bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
-          <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5 mb-4">
+        <div class="lg:col-span-5 bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
+          <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5 mb-3">
             <AppIcon name="grid" size="15" class="text-surface-400" />
             阶段金额分布
           </h2>
@@ -219,24 +221,50 @@ const {
             </h2>
             <button @click="router.push('/knowledge')" class="text-[11px] text-brand-600 hover:underline">进入</button>
           </div>
-          <div v-if="kbTotalChunks > 0" class="space-y-3">
-            <div class="flex items-center justify-between px-2">
-              <span class="text-[12px] text-surface-500">知识碎片</span>
-              <span class="text-[16px] font-bold text-surface-900">{{ kbTotalChunks.toLocaleString() }}</span>
+          <div v-if="kbTotalChunks > 0" class="space-y-4">
+            <!-- Two stat cards -->
+            <div class="grid grid-cols-2 gap-3">
+              <div class="bg-surface-50 rounded-xl p-3 text-center">
+                <p class="text-[11px] text-surface-400 mb-1">知识碎片</p>
+                <p class="text-[20px] font-bold text-surface-900">{{ kbTotalChunks.toLocaleString() }}</p>
+              </div>
+              <div class="bg-surface-50 rounded-xl p-3 text-center">
+                <p class="text-[11px] text-surface-400 mb-1">关联对象</p>
+                <p class="text-[20px] font-bold text-surface-900">{{ kbObjectTotal.toLocaleString() }}</p>
+              </div>
             </div>
-            <div class="flex items-center justify-between px-2">
-              <span class="text-[12px] text-surface-500">热门碎片</span>
-              <span class="text-[14px] font-semibold text-emerald-600">{{ kbHealth.hot_count || 0 }}</span>
+
+            <!-- Hot/Cold ratio bar -->
+            <div>
+              <div class="flex items-center justify-between mb-1.5">
+                <span class="text-[11px] text-surface-500">冷热分布</span>
+                <span class="text-[10px] text-surface-400">均权 {{ kbAvgWeight }}</span>
+              </div>
+              <div class="w-full h-2 bg-surface-100 rounded-full overflow-hidden flex">
+                <div class="h-full bg-emerald-400 transition-all" :style="{ width: kbHotRatio + '%' }"></div>
+                <div class="h-full bg-surface-300 transition-all" :style="{ width: kbColdRatio + '%' }"></div>
+              </div>
+              <div class="flex items-center justify-between mt-1">
+                <span class="text-[10px] text-emerald-500">热门 {{ kbHotCount }}</span>
+                <span class="text-[10px] text-surface-400">标签 {{ kbTagCount }}</span>
+                <span class="text-[10px] text-surface-400">冷数据 {{ kbColdCount }}</span>
+              </div>
             </div>
-            <div class="flex items-center justify-between px-2">
-              <span class="text-[12px] text-surface-500">冷数据</span>
-              <span class="text-[14px] font-semibold text-surface-500">{{ kbHealth.cold_count || 0 }}</span>
-            </div>
-            <div v-if="kbByType.length" class="border-t border-surface-100 pt-3 space-y-1.5">
-              <div v-for="t in kbByType" :key="t.type"
-                class="flex items-center justify-between px-2">
-                <span class="text-[11px] text-surface-500">{{ t.label }}</span>
-                <span class="text-[11px] font-medium text-surface-600">{{ t.count }}</span>
+
+            <!-- By type with mini bars -->
+            <div v-if="kbByType.length">
+              <p class="text-[11px] text-surface-500 mb-2">碎片类型分布</p>
+              <div class="space-y-2">
+                <div v-for="t in kbByType" :key="t.type" class="group">
+                  <div class="flex items-center justify-between mb-0.5">
+                    <span class="text-[11px] text-surface-600">{{ t.label }}</span>
+                    <span class="text-[10px] text-surface-400">{{ t.count }}</span>
+                  </div>
+                  <div class="w-full h-1.5 bg-surface-100 rounded-full overflow-hidden">
+                    <div class="h-full bg-brand-400 rounded-full transition-all group-hover:bg-brand-500"
+                      :style="{ width: Math.max((t.count / kbByType[0].count) * 100, 4) + '%' }"></div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

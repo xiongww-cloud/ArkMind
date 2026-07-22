@@ -46,7 +46,7 @@ const chartOptions = computed(() => ({
 }))
 
 const series = computed(() => [{
-  name: '新增碎片',
+  name: '累计碎片',
   data: props.data.map(d => d.cnt || 0),
 }])
 </script>

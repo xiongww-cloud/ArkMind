@@ -21,7 +21,7 @@ function barWidth(count: number): string {
 </script>
 
 <template>
-  <div class="space-y-3">
+  <div class="space-y-3.5">
     <div
       v-for="s in stages"
       :key="s.key"
@@ -38,9 +38,9 @@ function barWidth(count: number): string {
           <span class="text-[11px] text-surface-500 font-medium">¥{{ formatBudget(s.budget) }}</span>
         </div>
       </div>
-      <div class="w-full h-5 bg-surface-100 rounded-lg overflow-hidden">
+      <div class="w-full h-2.5 bg-surface-100 rounded-full overflow-hidden">
         <div
-          class="h-full rounded-lg transition-all duration-500 group-hover:brightness-110"
+          class="h-full rounded-full transition-all duration-500 group-hover:brightness-110"
           :style="{ width: barWidth(s.count), backgroundColor: s.color }"
         ></div>
       </div>

@@ -274,7 +274,7 @@ export function useDashboardData() {
   const topCustomers = computed(() => {
     const map = new Map<string, number>()
     allProjects.value.forEach((p: any) => {
-      const name = p.customer_name || p.customerName || ''
+      const name = p.customer_name || p.customerName || p._customerName || p.customer || ''
       if (name && !['Won', 'Ordered', 'Lost', 'Archived'].includes(p.status)) {
         map.set(name, (map.get(name) || 0) + (Number(p.budget) || 0))
       }
@@ -358,7 +358,30 @@ export function useDashboardData() {
     }))
   })
   const kbTotalChunks = computed(() => kbHealth.value.total || 0)
-  const kbDailyGrowth = computed(() => dashboardStats.value?.daily_growth || [])
+  const kbObjectTotal = computed(() => dashboardStats.value?.object_counts?.total || 0)
+  const kbObjectByType = computed(() => {
+    const raw = dashboardStats.value?.object_counts?.by_type || []
+    return raw.map((item: any) => ({
+      type: item.label || '',
+      label: sourceTypeLabel(item.label || ''),
+      count: item.cnt || 0,
+    }))
+  })
+  const kbHotCount = computed(() => kbHealth.value.hot_count || 0)
+  const kbColdCount = computed(() => kbHealth.value.cold_count || 0)
+  const kbHotRatio = computed(() => kbHealth.value.hot_ratio || 0)
+  const kbColdRatio = computed(() => kbHealth.value.cold_ratio || 0)
+  const kbAvgWeight = computed(() => kbHealth.value.avg_weight || 0)
+  const kbTagCount = computed(() => kbHealth.value.tag_count || 0)
+  const kbWeightDist = computed(() => dashboardStats.value?.weight_dist || [])
+  const kbDailyGrowth = computed(() => {
+    const raw: any[] = dashboardStats.value?.daily_growth || []
+    let cumulative = 0
+    return raw.map((item: any) => {
+      cumulative += item.cnt || 0
+      return { label: item.label || '', cnt: cumulative }
+    })
+  })
 
   function sourceTypeLabel(type: string): string {
     const map: Record<string, string> = {
@@ -392,7 +415,9 @@ export function useDashboardData() {
     todayTodos, priorityDot, priorityStyle,
     deadlines,
     recentNotes,
-    kbHealth, kbByType, kbTotalChunks, kbDailyGrowth,
+    kbHealth, kbByType, kbTotalChunks, kbObjectTotal, kbObjectByType,
+    kbHotCount, kbColdCount, kbHotRatio, kbColdRatio, kbAvgWeight, kbTagCount, kbWeightDist,
+    kbDailyGrowth,
     bizOverview,
     allProjects, allTodos, allDynamics, allNotes,
     formatBudget, formatBudgetCompact, timeAgo, goToProject, sourceTypeLabel,
