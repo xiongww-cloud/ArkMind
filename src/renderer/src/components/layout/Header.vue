@@ -449,7 +449,7 @@ onUnmounted(() => {
           @blur="closeSearch"
           type="text"
           placeholder="搜索项目、笔记、产品、文件..."
-          class="w-full h-7 pl-7 pr-3 rounded-lg border border-surface-200 bg-surface-50 text-[12px] text-surface-700 outline-none focus:border-brand-400 focus:bg-white transition-colors placeholder:text-surface-400"
+          class="w-full h-7 pl-7 pr-3 rounded-lg border border-surface-200 bg-transparent text-[12px] text-surface-700 outline-none focus:border-brand-400 focus:bg-white transition-colors placeholder:text-surface-400"
         />
         <div v-if="searchOpen && (searchResults.length > 0 || searchLoading)"
           class="absolute top-full left-1/2 -translate-x-1/2 mt-1 z-[50] bg-white rounded-lg shadow-lg border border-surface-200 max-h-[400px] overflow-y-auto w-[480px]">
