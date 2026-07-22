@@ -9,7 +9,7 @@ const props = defineProps<{
 const chartOptions = computed(() => ({
   chart: {
     type: 'area' as const,
-    height: 200,
+    height: 180,
     toolbar: { show: false },
     sparkline: { enabled: false },
     animations: { enabled: false },
@@ -58,7 +58,7 @@ const series = computed(() => [{
       :options="chartOptions"
       :series="series"
       type="area"
-      height="200"
+      height="180"
     />
     <p v-else class="text-[12px] text-surface-300 py-8 text-center">暂无增长数据</p>
   </div>
