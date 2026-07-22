@@ -8,6 +8,12 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
+
+/// 在已有的 Tokio runtime 中阻塞执行异步函数，避免创建新 runtime 导致 panic
+fn block_on_async<F: std::future::Future>(f: F) -> F::Output {
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::block_in_place(|| handle.block_on(f))
+}
 use tauri::Emitter;
 use futures::StreamExt;
 
@@ -653,9 +659,9 @@ fn build_tools_definitions() -> Value {
 
 /// Fallback: parse XML tool calls from content when model does not use function calling format
 fn parse_xml_tool_calls(content: &str) -> Option<Vec<Value>> {
-    // 匹配所有 DSML 变体（全角/半角/单双字符/混合/Unicode/闭合标签）
-    // 支持: <｜｜DSML｜｜, <|DSML|, <‖DSML‖, <DSML>, ＜DSML＞, </｜｜DSML｜｜, 等
-    let re = regex::Regex::new(r"(?i)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*").ok()?;
+    // 先清理 DSML 标记（支持全角/半角/Unicode 变体），只移除标记本身，保留标签名和内容
+    // 匹配: <｜｜DSML｜｜, <|DSML|, <‖DSML‖, <DSML>, </｜｜DSML｜｜, 等
+    let re = regex::Regex::new(r"(?i)[<|＜]/?[\|｜]*DSML[\|｜]*[>|＞]").ok()?;
     let cleaned = re.replace_all(content, "").to_string();
     
     // 查找 tool_calls 块
@@ -1675,8 +1681,7 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
                 "projectId": pid
             });
             // 使用 block_on 调用异步函数
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(crate::commands::todo_commands::todos_create(data)) {
+            match block_on_async(crate::commands::todo_commands::todos_create(data)) {
                 Ok(result) => {
                     let todo_id = result["todo"]["id"].as_str().unwrap_or("");
                     let todo_title = result["todo"]["title"].as_str().unwrap_or(title.trim());
@@ -1706,8 +1711,7 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
                         return "更新待办需要提供要修改的字段。".into();
                     }
                     // 使用 block_on 调用异步函数
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    match rt.block_on(crate::commands::todo_commands::todos_update(fid.clone(), data)) {
+                    match block_on_async(crate::commands::todo_commands::todos_update(fid.clone(), data)) {
                         Ok(_) => format!("已更新待办「{}」", ftitle),
                         Err(e) => format!("更新待办失败: {}", e),
                     }
@@ -1720,8 +1724,7 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
             match found {
                 Some((fid, ftitle)) => {
                     // 使用 block_on 调用异步函数
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    match rt.block_on(crate::commands::todo_commands::todos_delete(fid)) {
+                    match block_on_async(crate::commands::todo_commands::todos_delete(fid)) {
                         Ok(_) => format!("已删除待办「{}」", ftitle),
                         Err(e) => format!("删除待办失败: {}", e),
                     }
@@ -2975,8 +2978,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             "bidTime": bid_time
                                         });
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::project_commands::project_create(data)) {
+                                        match block_on_async(crate::commands::project_commands::project_create(data)) {
                                             Ok(project) => {
                                                 let pid = project["id"].as_str().unwrap_or("");
                                                 format!("已创建项目「{}」(ID: {})", name, pid)
@@ -3000,8 +3002,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             "未提供任何更新字段。".to_string()
                                         } else {
                                             // 使用 block_on 调用异步函数
-                                            let rt = tokio::runtime::Runtime::new().unwrap();
-                                            match rt.block_on(crate::commands::project_commands::project_update(project_id.to_string(), data)) {
+                                            match block_on_async(crate::commands::project_commands::project_update(project_id.to_string(), data)) {
                                                 Ok(_) => format!("已更新项目 {}", project_id),
                                                 Err(e) => format!("更新项目失败: {}", e),
                                             }
@@ -3014,8 +3015,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if project_id.is_empty() { "删除项目需要提供 project_id。".to_string() }
                                     else {
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::project_commands::project_delete(project_id.to_string())) {
+                                        match block_on_async(crate::commands::project_commands::project_delete(project_id.to_string())) {
                                             Ok(_) => format!("已删除项目 {} 及其所有关联数据", project_id),
                                             Err(e) => format!("删除项目失败: {}", e),
                                         }
@@ -3041,8 +3041,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             "remark": a["remark"].as_str().unwrap_or("")
                                         });
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::partner_commands::partner_create(data)) {
+                                        match block_on_async(crate::commands::partner_commands::partner_create(data)) {
                                             Ok(result) => {
                                                 let id = result["id"].as_str().unwrap_or("");
                                                 format!("已创建{}「{}」(ID: {})", ptype, name, id)
@@ -3064,8 +3063,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             "未提供任何更新字段。".to_string()
                                         } else {
                                             // 使用 block_on 调用异步函数
-                                            let rt = tokio::runtime::Runtime::new().unwrap();
-                                            match rt.block_on(crate::commands::partner_commands::partner_update(data)) {
+                                            match block_on_async(crate::commands::partner_commands::partner_update(data)) {
                                                 Ok(_) => format!("已更新合作伙伴 {}", partner_id),
                                                 Err(e) => format!("更新失败: {}", e),
                                             }
@@ -3077,8 +3075,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if partner_id.is_empty() { "删除需要提供 partner_id。".to_string() }
                                     else {
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::partner_commands::partner_delete(partner_id.to_string())) {
+                                        match block_on_async(crate::commands::partner_commands::partner_delete(partner_id.to_string())) {
                                             Ok(_) => format!("已删除合作伙伴 {}", partner_id),
                                             Err(e) => format!("删除失败: {}", e),
                                         }
@@ -3092,8 +3089,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         let contact_id = a["contact_id"].as_str().map(|s| s.to_string());
                                         let remark = a["remark"].as_str().map(|s| s.to_string());
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::partner_commands::partner_link_project(
+                                        match block_on_async(crate::commands::partner_commands::partner_link_project(
                                             partner_id.to_string(),
                                             project_id.to_string(),
                                             contact_id,
@@ -3110,8 +3106,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if partner_id.is_empty() || project_id.is_empty() { "取消关联需要提供 partner_id 和 project_id。".to_string() }
                                     else {
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::partner_commands::partner_unlink_project(
+                                        match block_on_async(crate::commands::partner_commands::partner_unlink_project(
                                             partner_id.to_string(),
                                             project_id.to_string()
                                         )) {
@@ -3147,13 +3142,12 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             "partnerId": parent_id
                                         });
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::partner_commands::partner_contact_create(data)) {
+                                        match block_on_async(crate::commands::partner_commands::partner_contact_create(data)) {
                                             Ok(result) => {
                                                 let id = result["id"].as_str().unwrap_or("");
                                                 // 如果有项目ID，手动关联到项目
                                                 if !project_id.is_empty() && !id.is_empty() {
-                                                    let _ = rt.block_on(crate::commands::partner_commands::contact_link_project(
+                                                    let _ = block_on_async(crate::commands::partner_commands::contact_link_project(
                                                         id.to_string(),
                                                         project_id.to_string()
                                                     ));
@@ -3178,8 +3172,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             "未提供任何更新字段。".to_string()
                                         } else {
                                             // 使用 block_on 调用异步函数
-                                            let rt = tokio::runtime::Runtime::new().unwrap();
-                                            match rt.block_on(crate::commands::partner_commands::partner_contact_update(data)) {
+                                            match block_on_async(crate::commands::partner_commands::partner_contact_update(data)) {
                                                 Ok(_) => format!("已更新联系人 {}", contact_id),
                                                 Err(e) => format!("更新失败: {}", e),
                                             }
@@ -3191,8 +3184,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if contact_id.is_empty() { "删除需要提供 contact_id。".to_string() }
                                     else {
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::partner_commands::partner_contact_delete(contact_id.to_string())) {
+                                        match block_on_async(crate::commands::partner_commands::partner_contact_delete(contact_id.to_string())) {
                                             Ok(_) => format!("已删除联系人 {}", contact_id),
                                             Err(e) => format!("删除失败: {}", e),
                                         }
@@ -3204,8 +3196,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if contact_id.is_empty() || project_id.is_empty() { "关联需要提供 contact_id 和 project_id。".to_string() }
                                     else {
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::partner_commands::contact_link_project(
+                                        match block_on_async(crate::commands::partner_commands::contact_link_project(
                                             contact_id.to_string(),
                                             project_id.to_string()
                                         )) {
@@ -3220,8 +3211,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     if contact_id.is_empty() || project_id.is_empty() { "取消关联需要提供 contact_id 和 project_id。".to_string() }
                                     else {
                                         // 使用 block_on 调用异步函数
-                                        let rt = tokio::runtime::Runtime::new().unwrap();
-                                        match rt.block_on(crate::commands::partner_commands::contact_unlink_project(
+                                        match block_on_async(crate::commands::partner_commands::contact_unlink_project(
                                             contact_id.to_string(),
                                             project_id.to_string()
                                         )) {

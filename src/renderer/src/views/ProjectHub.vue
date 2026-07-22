@@ -124,7 +124,6 @@ async function syncFromBackend() {
         match._customerName = r.customer_name || ''
         match.createdAt = r.created_at || match.createdAt
         match.updatedAt = r.updated_at || null
-        match.isArchived = r.status === 'Archived'
         match.bidTime = r.bid_time || ''
         match.expectedOrderDate = r.expected_order_date || ''
         idMap[match.id] = r.id
@@ -138,7 +137,6 @@ async function syncFromBackend() {
           _customerName: r.customer_name || '',
           createdAt: r.created_at || new Date().toISOString().slice(0, 10),
           updatedAt: r.updated_at || null,
-          isArchived: r.status === 'Archived',
           bidTime: r.bid_time || '',
           expectedOrderDate: r.expected_order_date || '',
           timeline: [], configurations: [], plans: [],
@@ -362,6 +360,58 @@ function formatBudget(raw) { if (!raw || raw === 0) return '-'; return '¥' + ra
 function formatBidTime(raw) { if (!raw) return '-'; return formatDateTime(raw) }
 function goToProject(id) { router.push(`/projects/${id}`) }
 
+// ─── Inline Edit ────────────────────────────────────────────────
+const editingField = ref<{ projectId: string; field: 'name' | 'budget' | 'status' } | null>(null)
+const editValue = ref('')
+const statusMenuProjectId = ref<string | null>(null)
+const statusMenuRect = ref<DOMRect | null>(null)
+
+function startEditName(project) {
+  editingField.value = { projectId: project.id, field: 'name' }
+  editValue.value = project.name || ''
+  statusMenuProjectId.value = null
+}
+function startEditBudget(project) {
+  editingField.value = { projectId: project.id, field: 'budget' }
+  editValue.value = String(project.budget || '')
+  statusMenuProjectId.value = null
+}
+function cancelEdit() {
+  editingField.value = null
+  editValue.value = ''
+}
+async function saveEdit(project) {
+  if (!editingField.value || editingField.value.projectId !== project.id) return
+  const field = editingField.value.field
+  const v = editValue.value.trim()
+  if (field === 'name') {
+    if (!v) { cancelEdit(); return }
+    if (v.length > 30) { toast.error('项目名称不能超过 30 个字符'); return }
+    if (v === project.name) { cancelEdit(); return }
+    const q = v.toLowerCase()
+    const duplicate = projectStore.projects.some((p: any) => p.id !== project.id && p.name && p.name.toLowerCase() === q)
+    if (duplicate) { toast.error('已存在同名项目'); return }
+    project.name = v
+    projectStore.updateProjectInList(project.id, { name: v })
+    try { await projectStore.updateProject(project.id, { name: v }) } catch (e) { console.warn(e) }
+  } else if (field === 'budget') {
+    const clean = v.replace(/[^0-9.]/g, '') || '0'
+    if (clean === String(project.budget || '')) { cancelEdit(); return }
+    project.budget = clean
+    projectStore.updateProjectInList(project.id, { budget: clean })
+    try { await projectStore.updateProject(project.id, { budget: clean }) } catch (e) { console.warn(e) }
+  }
+  editingField.value = null
+  editValue.value = ''
+}
+async function changeStatus(project, status) {
+  statusMenuProjectId.value = null
+  if (!status || project.status === status) return
+  project.status = status
+  projectStore.updateProjectInList(project.id, { status })
+  try { await projectStore.updateProject(project.id, { status }) } catch (e) { console.warn(e) }
+}
+
 function toggleSort(field) {
   if (sortField.value === field) { sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc' }
   else { sortField.value = field; sortOrder.value = 'desc' }
@@ -545,14 +595,13 @@ async function handleImportProject() {
         <template v-if="selectionMode">
           <span class="text-blue-600 font-medium">已选 {{ selectedProjectIds.size }} 个项目</span>
         </template>
-        <span v-if="archivedView" class="text-slate-300">归档视图 · </span>
         <span>{{ filteredProjects.length }} 个项目</span>
         <span>总计 ¥{{ footerSummary.totalBudget }}万</span>
       </div>
     </div>
 
     <!-- ═══ Table ═══ -->
-    <div class="card overflow-hidden !p-0 overflow-x-auto">
+    <div class="card !p-0 overflow-x-auto">
       <table class="w-full text-xs table-fixed min-w-[700px]">
         <thead>
           <tr class="border-b border-surface-100 bg-surface-50 text-left">
@@ -566,33 +615,51 @@ async function handleImportProject() {
         <tbody class="divide-y divide-surface-50">
           <tr v-for="project in filteredProjects" :key="project.id"
             @click="selectionMode ? toggleProjectSelection(project.id) : goToProject(project.id)"
-            class="cursor-pointer transition-colors group"
-            :class="[
-              project.isArchived ? 'bg-slate-50/50 opacity-70' : 'hover:bg-surface-50',
-              selectionMode && isProjectSelected(project.id) ? 'bg-blue-50/50 ring-1 ring-inset ring-blue-300' : ''
-            ]">
+            class="cursor-pointer transition-colors group hover:bg-surface-50"
+            :class="selectionMode && isProjectSelected(project.id) ? 'bg-blue-50/50 ring-1 ring-inset ring-blue-300' : ''">
             <td v-if="selectionMode" class="px-3 py-2.5 w-10 align-middle text-center">
               <div class="w-4 h-4 rounded border flex items-center justify-center mx-auto" :class="isProjectSelected(project.id) ? 'bg-blue-600 border-blue-600' : 'border-slate-300 bg-white'">
                 <AppIcon v-if="isProjectSelected(project.id)" name="check" class="w-2.5 h-2.5 text-white" />
               </div>
             </td>
             <td class="px-3 py-2.5 align-middle text-left w-[330px]">
-              <div class="flex items-center gap-2 overflow-hidden">
-                <span class="font-medium text-surface-800 truncate">{{ project.name }}</span>
-                <span v-if="project.isArchived" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-300 flex-shrink-0">归档</span>
-              </div>
+              <template v-if="editingField?.projectId === project.id && editingField.field === 'name'">
+                <input v-model="editValue" type="text" maxlength="30" @blur="saveEdit(project)" @keyup.enter="saveEdit(project)" @keyup.escape="cancelEdit"
+                  class="w-full text-xs font-medium text-surface-800 bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200" autofocus />
+              </template>
+              <template v-else>
+                <div class="flex items-center gap-1 group/name">
+                  <span class="font-medium text-surface-800 truncate">{{ project.name }}</span>
+                  <button @click.stop="startEditName(project)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100 flex-shrink-0" title="编辑名称">
+                    <AppIcon name="edit" class="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              </template>
             </td>
             <td class="px-3 py-2.5 w-[120px] align-middle whitespace-nowrap text-left">
-              <span v-if="project.isArchived" class="inline-flex items-center gap-1">
-                <span class="w-2 h-2 rounded-full flex-shrink-0 bg-slate-400" />
-                <span class="text-slate-400">已归档</span>
-              </span>
-              <span v-else class="inline-flex items-center gap-1">
-                <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusDotColors[project.status] || 'bg-gray-400'" />
-                <span :class="statusBadgeClass(project.status)">{{ statusLabels[project.status] || project.status }}</span>
-              </span>
+              <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) statusMenuProjectId = null }">
+                <button ref="statusBtnRefs" @click.stop="statusMenuProjectId = statusMenuProjectId === project.id ? null : project.id; statusMenuRect = $event.target.getBoundingClientRect()"
+                  class="inline-flex items-center gap-1 cursor-pointer rounded px-1 py-0.5 hover:bg-slate-50 transition-colors">
+                  <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusDotColors[project.status] || 'bg-gray-400'" />
+                  <span class="text-xs" :class="statusBadgeClass(project.status)">{{ statusLabels[project.status] || project.status }}</span>
+                  <AppIcon name="chevron-down" class="w-2.5 h-2.5 text-slate-400 transition-transform" :class="statusMenuProjectId === project.id ? 'rotate-180' : ''" />
+                </button>
+              </div>
             </td>
-            <td class="px-3 py-2.5 text-surface-600 w-[110px] align-middle text-left">{{ formatBudget(project.budget) }}</td>
+            <td class="px-3 py-2.5 text-surface-600 w-[110px] align-middle text-left">
+              <template v-if="editingField?.projectId === project.id && editingField.field === 'budget'">
+                <input v-model="editValue" type="text" @blur="saveEdit(project)" @keyup.enter="saveEdit(project)" @keyup.escape="cancelEdit"
+                  class="w-20 text-xs text-surface-600 bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200" autofocus />
+              </template>
+              <template v-else>
+                <div class="flex items-center gap-1 group/budget">
+                  <span>{{ formatBudget(project.budget) }}</span>
+                  <button @click.stop="startEditBudget(project)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/budget:opacity-100 flex-shrink-0" title="编辑金额">
+                    <AppIcon name="edit" class="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              </template>
+            </td>
             <td class="px-3 py-2.5 text-surface-400 w-[170px] align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
           </tr>
           <!-- Empty state -->
@@ -604,6 +671,20 @@ async function handleImportProject() {
         </tbody>
       </table>
     </div>
+
+    <Teleport to="body">
+      <div v-if="statusMenuProjectId && statusMenuRect"
+        :style="{ position: 'fixed', top: statusMenuRect.bottom + 4 + 'px', left: statusMenuRect.left + 'px', zIndex: 9999 }"
+        class="min-w-[110px] bg-white rounded-lg shadow-lg border border-slate-100 py-1"
+        @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) statusMenuProjectId = null }">
+        <button v-for="s in allStatusOptions" :key="s" @click.stop="changeStatus(filteredProjects.find(p => p.id === statusMenuProjectId), s)"
+          class="w-full flex items-center gap-1.5 px-2.5 py-1 text-[11px] transition-colors text-left"
+          :class="filteredProjects.find(p => p.id === statusMenuProjectId)?.status === s ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
+          <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusDotColors[s]" />
+          <span>{{ statusLabels[s] }}</span>
+        </button>
+      </div>
+    </Teleport>
 
     </div> <!-- close inner div -->
 

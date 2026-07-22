@@ -69,7 +69,6 @@ const showStatusDropdown = ref(false)
 const statusDropdownRef = ref(null)
 const showMoreMenu = ref(false)
 const moreMenuRef = ref(null)
-const isArchiving = ref(false)
 
 function toggleStatusDropdown() { showStatusDropdown.value = !showStatusDropdown.value }
 const bidDaysRemaining = computed(() => {
@@ -128,21 +127,6 @@ async function handleDeleteProject() {
   await projectStore.deleteProject(projectId.value)
   await router.replace({ name: 'Projects' })
   toast.success('项目已永久删除')
-}
-async function handleArchiveProject() {
-  showMoreMenu.value = false
-  const ok = await dangerConfirm({
-    title: '归档项目',
-    message: '确定归档该项目？归档后项目将进入只读模式，不可再修改配置。',
-    confirmText: '归档'
-  })
-  if (!ok) return
-  isArchiving.value = true
-  try {
-    await projectStore.archiveProject(projectId.value)
-  } finally {
-    isArchiving.value = false
-  }
 }
 function handleClickOutside(e: MouseEvent) {
   if (statusDropdownRef.value && !statusDropdownRef.value.contains(e.target)) showStatusDropdown.value = false
@@ -428,15 +412,6 @@ watch(
 <template>
   <div :class="[props.embedded ? 'flex flex-col h-full' : 'h-full bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden']">
     <div v-if="project" class="flex flex-col h-full overflow-hidden">
-    <div v-if="isArchiving" class="w-full bg-amber-50 border border-amber-200 text-amber-600 text-sm py-2 px-4 rounded-md flex items-center">
-      <AppIcon name="spinner" class="mr-2 w-4 h-4 text-amber-300 animate-spin flex-shrink-0" />
-      正在封存文件...
-    </div>
-
-    <div v-if="project.isArchived && !isArchiving" class="w-full bg-slate-50 border border-slate-200 text-slate-500 text-sm py-2 px-4 rounded-md flex items-center">
-      <AppIcon name="lock" class="mr-2 w-4 h-4 text-slate-400 flex-shrink-0" />
-      此项目已归档，处于只读模式。仅支持查看和下载文件。
-    </div>
 
     <div :class="['sticky top-0 z-10 bg-surface-50 pt-1.5 px-3', props.embedded ? '' : 'border-b border-slate-200']">
       <div class="flex items-center justify-between">
@@ -453,7 +428,7 @@ watch(
             </button>
           </nav>
         </div>
-        <div v-if="!project.isArchived" ref="moreMenuRef" class="relative flex-shrink-0">
+        <div ref="moreMenuRef" class="relative flex-shrink-0">
           <button @click="toggleMoreMenu" class="btn-ghost !p-1">
             <AppIcon name="more-horizontal" class="h-4 w-4 text-slate-400" />
           </button>
@@ -462,10 +437,6 @@ watch(
               <button @click="handleExportProject" class="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-left transition-colors hover:bg-slate-50 text-slate-600">
                 <AppIcon name="download" class="w-3.5 h-3.5 flex-shrink-0" />
                 <span>导出项目</span>
-              </button>
-              <button v-if="(project.status === 'Won' || project.status === 'Ordered') && !project.isArchived" @click="handleArchiveProject" class="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-left transition-colors hover:bg-slate-50 text-slate-600">
-                <AppIcon name="archive" class="w-3.5 h-3.5 flex-shrink-0" />
-                <span>归档项目</span>
               </button>
               <button @click="handleDeleteProject" class="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-left transition-colors hover:bg-red-50 text-red-600">
                 <AppIcon name="trash" class="w-3.5 h-3.5 flex-shrink-0" />
@@ -490,12 +461,12 @@ watch(
             <template v-else>
               <div class="flex items-center gap-2 group/name">
                 <h2 class="text-lg font-semibold text-surface-800 border border-transparent rounded-lg px-2 py-1">{{ project.name }}</h2>
-                <button v-if="!project.isArchived" @click="startEditName" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100" title="编辑项目名称">
+                <button @click="startEditName" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100" title="编辑项目名称">
                   <AppIcon name="edit" class="w-4 h-4" />
                 </button>
               </div>
             </template>
-            <div v-if="!project.isArchived" ref="statusDropdownRef" class="relative">
+            <div ref="statusDropdownRef" class="relative">
               <button @click="toggleStatusDropdown"
                 class="group/stage inline-flex items-center gap-1 cursor-pointer h-6 px-1.5 rounded transition-colors border border-transparent hover:bg-slate-100/30 hover:border-slate-100 outline-none">
                 <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusColors[project.status]" />
@@ -505,7 +476,7 @@ watch(
                   <span @click.stop="startEditBidTime" class="text-xs cursor-pointer" :class="isBidOverdue ? 'text-purple-300 font-medium' : bidDaysRemaining <= 3 ? 'text-red-300 font-medium' : 'text-slate-400'">
                     {{ formatBidTime(project.bidTime || project.bid_time) || '点击设置投标时间' }}
                   </span>
-                  <button v-if="!project.isArchived" @click.stop="startEditBidTime" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/bid-inline:opacity-100 flex-shrink-0" title="编辑投标时间">
+                  <button @click.stop="startEditBidTime" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/bid-inline:opacity-100 flex-shrink-0" title="编辑投标时间">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
                   </button>
                   <Transition name="dropdown">
@@ -574,10 +545,7 @@ watch(
               </div>
             </template>
             <template v-else>
-              <p v-if="project.isArchived" class="text-sm leading-relaxed rounded px-2 py-1.5 border border-transparent min-h-[3.75rem] whitespace-pre-wrap" :class="project.description ? 'text-slate-700' : 'text-slate-400 italic'">
-                {{ project.description || '暂未添加项目描述' }}
-              </p>
-              <p v-else @click="startEditDesc" class="text-sm leading-relaxed cursor-text rounded px-2 py-1.5 border border-transparent min-h-[3.75rem] whitespace-pre-wrap hover:bg-gray-100/60 transition-colors" :class="project.description ? 'text-slate-700' : 'text-slate-400 italic'">
+              <p @click="startEditDesc" class="text-sm leading-relaxed cursor-text rounded px-2 py-1.5 border border-transparent min-h-[3.75rem] whitespace-pre-wrap hover:bg-gray-100/60 transition-colors" :class="project.description ? 'text-slate-700' : 'text-slate-400 italic'">
                 {{ project.description || '暂未添加项目描述...' }}
               </p>
             </template>
@@ -597,7 +565,7 @@ watch(
                 </template>
                 <template v-else>
                   <span class="text-sm font-normal text-slate-600 rounded px-0.5 py-0 border border-transparent">{{ budgetFormatted || '-' }}</span>
-                  <button v-if="!project.isArchived" @click="startEditBudget" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/budget:opacity-100 flex items-center justify-center" title="编辑金额">
+                  <button @click="startEditBudget" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/budget:opacity-100 flex items-center justify-center" title="编辑金额">
                     <AppIcon name="edit" class="w-3.5 h-3.5" />
                   </button>
                 </template>
@@ -621,7 +589,7 @@ watch(
                 </template>
                 <template v-else>
                   <span class="text-sm font-normal text-slate-600 rounded px-0.5 py-0 border border-transparent">{{ (project.expectedOrderDate || project.expected_order_date) || '-' }}</span>
-                  <button v-if="!project.isArchived" @click="startEditExpectedDate" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expectedDate:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
+                  <button @click="startEditExpectedDate" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expectedDate:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
                     <AppIcon name="edit" class="w-3.5 h-3.5" />
                   </button>
                 </template>
@@ -629,7 +597,7 @@ watch(
             </div>
           </div>
 
-          <ProjectDetailCustomer :project="project" :is-archived="project.isArchived" :project-id="projectId" @update="handleCustomerUpdate" />
+          <ProjectDetailCustomer :project="project" :project-id="projectId" @update="handleCustomerUpdate" />
 
           <ProjectChannels :project="project" :project-id="projectId" @update="dynamics = projectStore.getProjectDynamics(projectId)" />
 
