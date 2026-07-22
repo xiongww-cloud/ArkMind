@@ -2,8 +2,12 @@ use rusqlite::{Connection, Result as SqliteResult};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use base64::Engine;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static DB: Lazy<Mutex<Option<Connection>>> = Lazy::new(|| Mutex::new(None));
+static LAST_CHECKPOINT: AtomicI64 = AtomicI64::new(0);
+const CHECKPOINT_INTERVAL_SECS: i64 = 30;
 
 pub fn db_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("arkmind.db")
@@ -67,6 +71,20 @@ pub(crate) fn run(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<R
 }
 
 pub(crate) fn save() -> rusqlite::Result<()> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let last = LAST_CHECKPOINT.load(Ordering::Relaxed);
+    if now - last < CHECKPOINT_INTERVAL_SECS {
+        return Ok(());
+    }
+    LAST_CHECKPOINT.store(now, Ordering::Relaxed);
+    with_db(|conn| conn.pragma_update(None, "wal_checkpoint", "TRUNCATE"))
+}
+
+pub(crate) fn save_forced() -> rusqlite::Result<()> {
+    LAST_CHECKPOINT.store(
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64,
+        Ordering::Relaxed,
+    );
     with_db(|conn| conn.pragma_update(None, "wal_checkpoint", "TRUNCATE"))
 }
 
