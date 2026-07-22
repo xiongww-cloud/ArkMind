@@ -213,40 +213,40 @@ const {
       <!-- ══════════ Row 5: Knowledge Base ══════════ -->
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
         <!-- KB Health -->
-        <div class="lg:col-span-5 bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
-          <div class="flex items-center justify-between mb-3">
+        <div class="lg:col-span-5 bg-white rounded-2xl border border-surface-200 px-5 py-6 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center justify-between mb-5">
             <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5">
               <AppIcon name="sparkles" size="15" class="text-surface-400" />
               知识库概览
             </h2>
             <button @click="router.push('/knowledge')" class="text-[11px] text-brand-600 hover:underline">进入</button>
           </div>
-          <div v-if="kbTotalChunks > 0" class="space-y-3">
+          <div v-if="kbTotalChunks > 0" class="space-y-5">
             <!-- Two stat cards -->
-            <div class="grid grid-cols-2 gap-2">
-              <div class="bg-surface-50 rounded-xl p-2.5 text-center">
-                <p class="text-[10px] text-surface-400 mb-0.5">知识碎片</p>
-                <p class="text-[18px] font-bold text-surface-900">{{ kbTotalChunks.toLocaleString() }}</p>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="bg-surface-50 rounded-xl p-3 text-center">
+                <p class="text-[11px] text-surface-400 mb-1">知识碎片</p>
+                <p class="text-[20px] font-bold text-surface-900">{{ kbTotalChunks.toLocaleString() }}</p>
               </div>
-              <div class="bg-surface-50 rounded-xl p-2.5 text-center">
-                <p class="text-[10px] text-surface-400 mb-0.5">关联对象</p>
-                <p class="text-[18px] font-bold text-surface-900">{{ kbObjectTotal.toLocaleString() }}</p>
+              <div class="bg-surface-50 rounded-xl p-3 text-center">
+                <p class="text-[11px] text-surface-400 mb-1">关联对象</p>
+                <p class="text-[20px] font-bold text-surface-900">{{ kbObjectTotal.toLocaleString() }}</p>
               </div>
             </div>
 
             <!-- Hot/Cold ratio bar -->
             <div>
-              <div class="flex items-center justify-between mb-1">
-                <span class="text-[11px] text-surface-500">冷热分布</span>
-                <span class="text-[10px] text-surface-400">均权 {{ kbAvgWeight }}</span>
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-[12px] text-surface-500">冷热分布</span>
+                <span class="text-[11px] text-surface-400">均权 {{ kbAvgWeight }}</span>
               </div>
-              <div class="w-full h-2 bg-surface-100 rounded-full overflow-hidden flex">
+              <div class="w-full h-2.5 bg-surface-100 rounded-full overflow-hidden flex">
                 <div class="h-full bg-emerald-400 transition-all" :style="{ width: kbHotRatio + '%' }"></div>
                 <div class="h-full bg-surface-300 transition-all" :style="{ width: kbColdRatio + '%' }"></div>
               </div>
-              <div class="flex items-center justify-between mt-1">
-                <span class="text-[10px] text-emerald-500">热门 {{ kbHotCount }}</span>
-                <span class="text-[10px] text-surface-400">冷数据 {{ kbColdCount }}</span>
+              <div class="flex items-center justify-between mt-2">
+                <span class="text-[11px] text-emerald-500">热门 {{ kbHotCount }}</span>
+                <span class="text-[11px] text-surface-400">冷数据 {{ kbColdCount }}</span>
               </div>
             </div>
 
@@ -255,8 +255,8 @@ const {
         </div>
 
         <!-- Activity Heatmap -->
-        <div class="lg:col-span-7 bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
-          <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5 mb-3">
+        <div class="lg:col-span-7 bg-white rounded-2xl border border-surface-200 px-5 py-6 shadow-sm hover:shadow-md transition-shadow">
+          <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5 mb-5">
             <AppIcon name="sparkles" size="15" class="text-surface-400" />
             知识增长趋势
           </h2>
