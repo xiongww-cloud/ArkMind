@@ -315,7 +315,7 @@ onUnmounted(() => editor.value?.destroy())
               </span>
               <button v-if="todo.dueDate" @click.stop="clearDate" class="w-3.5 h-3.5 flex items-center justify-center rounded-full text-surface-400 hover:text-red-400 ml-0.5 relative z-20"><svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg></button>
             </button>
-            <div v-if="datePickerOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100" @click.stop>
+            <div v-if="datePickerOpen" class="absolute top-full left-0 mt-1 z-50" @click.stop>
               <CalendarPicker
                 :modelValue="dateInput"
                 :repeatValue="todo.repeat"

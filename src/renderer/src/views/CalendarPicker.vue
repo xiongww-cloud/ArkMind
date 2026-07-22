@@ -89,76 +89,78 @@ onMounted(() => { cursor.value = d(props.modelValue) })
 </script>
 
 <template>
-  <div class="w-[230px] p-3 select-none">
-    <div class="flex items-center justify-between mb-2">
-      <span class="text-[12px] font-medium text-surface-700">{{ monthLabel }}</span>
+  <div class="w-[260px] p-4 select-none bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30">
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-sm font-medium text-slate-700">{{ monthLabel }}</span>
       <div class="flex items-center gap-0.5">
-        <button @click="prevMonth" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:bg-surface-100 hover:text-surface-600 transition-colors">
-          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M15 19l-7-7 7-7"/></svg>
+        <button @click="prevMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
+          <svg class="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M15 19l-7-7 7-7"/></svg>
         </button>
-        <button @click="nextMonth" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:bg-surface-100 hover:text-surface-600 transition-colors">
-          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+        <button @click="nextMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
+          <svg class="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         </button>
       </div>
     </div>
 
-    <div class="grid grid-cols-7 gap-0.5 mb-1">
-      <div v-for="w in WEEKDAYS" :key="w" class="text-center text-[10px] font-medium text-surface-400 py-1">{{ w }}</div>
+    <div class="grid grid-cols-7 mb-1">
+      <div v-for="w in WEEKDAYS" :key="w" class="text-center text-[11px] text-slate-400 py-1">{{ w }}</div>
     </div>
 
     <div class="grid grid-cols-7 gap-0.5 mb-2">
-      <div
-        v-for="cell in days" :key="cell.key"
-        class="flex items-center justify-center h-7 text-[11px] rounded transition-colors"
-        :class="{
-          'text-surface-200': !cell.isCurrentMonth,
-          'text-surface-700 hover:bg-surface-100 cursor-pointer': cell.isCurrentMonth && !cell.isToday && !(cell.day === selectedDay && cell.isCurrentMonth),
-          'bg-brand-600 text-white font-medium shadow-sm': cell.day === selectedDay && cell.isCurrentMonth,
-          'text-brand-600 font-semibold ring-1 ring-brand-300 rounded': cell.isToday && !(cell.day === selectedDay && cell.isCurrentMonth),
-        }"
-        @click="cell.isCurrentMonth && cell.day ? selectDay(cell.day) : null"
-      >{{ cell.day || '' }}</div>
+      <div v-for="cell in days" :key="cell.key" class="aspect-square flex items-center justify-center">
+        <button
+          v-if="cell.day"
+          @click="selectDay(cell.day)"
+          class="w-8 h-8 rounded-full text-xs transition-colors"
+          :class="{
+            'bg-blue-600 text-white font-medium': cell.day === selectedDay && cell.isCurrentMonth,
+            'text-blue-600 font-medium hover:bg-blue-50': cell.isToday && !(cell.day === selectedDay && cell.isCurrentMonth),
+            'text-slate-600 hover:bg-slate-100': cell.isCurrentMonth && !cell.isToday && !(cell.day === selectedDay && cell.isCurrentMonth),
+            'text-slate-300': !cell.isCurrentMonth,
+          }"
+        >{{ cell.day }}</button>
+      </div>
     </div>
 
-    <div class="border-t border-surface-100 pt-2 space-y-2">
+    <div class="mt-3 pt-3 border-t border-slate-100 space-y-2">
       <!-- Repeat -->
       <div class="flex items-center gap-1">
-        <span class="text-[10px] font-medium text-surface-400 w-[28px] shrink-0">重复</span>
+        <span class="text-[11px] text-slate-400 w-[28px] shrink-0">重复</span>
         <div class="flex gap-1 flex-1">
           <button v-for="ri in REPEAT_ITEMS" :key="ri.value" @click.stop="selectRepeat(ri.value)"
-            class="flex-1 h-6 text-[10px] rounded transition-colors"
-            :class="localRepeat === ri.value ? 'bg-brand-600 text-white font-medium shadow-sm' : 'text-surface-500 hover:bg-surface-100 border border-surface-200'"
+            class="flex-1 h-6 text-[11px] rounded transition-colors"
+            :class="localRepeat === ri.value ? 'bg-blue-600 text-white font-medium shadow-sm' : 'text-slate-500 hover:bg-slate-100 border border-slate-200'"
           >{{ ri.label }}</button>
         </div>
       </div>
       <!-- Time -->
       <div class="relative">
         <div class="flex items-center gap-2">
-          <span class="text-[10px] font-medium text-surface-400 w-[28px]">时间</span>
+          <span class="text-[11px] text-slate-400 w-[28px]">时间</span>
           <input
             :value="timeInput"
             @input="parseTimeInput(($event.target as HTMLInputElement).value)"
             @focus="timeOpen = true"
             @click.stop="timeOpen = true"
-            class="w-[62px] border border-surface-200 rounded px-2 py-1 text-[11px] text-center font-mono outline-none focus:border-brand-400"
+            class="w-[62px] border border-slate-200 rounded px-2 py-1 text-[11px] text-center font-mono outline-none focus:border-blue-400"
             placeholder="HH:MM"
             type="text"
             maxlength="5"
           />
-          <button @click="confirmDateTime" :disabled="!selectedDay" class="flex-1 px-3 py-1 text-[10px] bg-brand-600 text-white rounded hover:bg-brand-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">确认</button>
+          <button @click="confirmDateTime" :disabled="!selectedDay" class="flex-1 px-3 py-1 text-[11px] bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">确认</button>
         </div>
-        <div v-if="timeOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 p-2 w-[180px]" @click.stop>
+        <div v-if="timeOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-slate-100 p-2 w-[180px]" @click.stop>
           <div class="flex gap-2">
             <div class="flex-1">
-              <div class="text-[9px] font-medium text-surface-400 mb-1 text-center">时</div>
+              <div class="text-[10px] text-slate-400 mb-1 text-center">时</div>
               <div class="max-h-[120px] overflow-y-auto space-y-0.5">
-                <button v-for="h in HOURS" :key="h" @click="selectHour(h)" class="w-full py-0.5 rounded text-[10px] text-center transition-colors" :class="selectedHour === h ? 'bg-brand-600 text-white font-medium' : 'text-surface-600 hover:bg-surface-100'">{{ String(h).padStart(2,'0') }}</button>
+                <button v-for="h in HOURS" :key="h" @click="selectHour(h)" class="w-full py-0.5 rounded text-[11px] text-center transition-colors" :class="selectedHour === h ? 'bg-blue-600 text-white font-medium' : 'text-slate-600 hover:bg-slate-100'">{{ String(h).padStart(2,'0') }}</button>
               </div>
             </div>
             <div class="flex-1">
-              <div class="text-[9px] font-medium text-surface-400 mb-1 text-center">分</div>
+              <div class="text-[10px] text-slate-400 mb-1 text-center">分</div>
               <div class="max-h-[120px] overflow-y-auto space-y-0.5">
-                <button v-for="mn in MINUTES" :key="mn" @click="selectMinute(mn)" class="w-full py-0.5 rounded text-[10px] text-center transition-colors" :class="selectedMinute === mn ? 'bg-brand-600 text-white font-medium' : 'text-surface-600 hover:bg-surface-100'">{{ String(mn).padStart(2,'0') }}</button>
+                <button v-for="mn in MINUTES" :key="mn" @click="selectMinute(mn)" class="w-full py-0.5 rounded text-[11px] text-center transition-colors" :class="selectedMinute === mn ? 'bg-blue-600 text-white font-medium' : 'text-slate-600 hover:bg-slate-100'">{{ String(mn).padStart(2,'0') }}</button>
               </div>
             </div>
           </div>
