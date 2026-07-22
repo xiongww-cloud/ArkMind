@@ -333,7 +333,7 @@ async function loadAiConfig() {
 
 function openAddProvider() {
   editingProvider.value = null
-  providerForm.value = { apiKey: '', baseUrl: 'https://api.openai.com/v1', modelName: '' }
+  providerForm.value = { apiKey: '', baseUrl: '', modelName: '' }
   providerFormError.value = ''
   selectedPreset.value = ''
   showProviderModal.value = true
@@ -478,7 +478,7 @@ function loadVisionConfig(config) {
 
 function openAddVision() {
   editingVision.value = null
-  visionForm.value = { apiKey: '', baseUrl: 'https://api.openai.com/v1', modelName: '', apiFormat: 'openai', prompt: '' }
+  visionForm.value = { apiKey: '', baseUrl: '', modelName: '', apiFormat: 'openai', prompt: '' }
   visionFormError.value = ''
   selectedVisionPreset.value = ''
   showVisionModal.value = true
@@ -625,7 +625,7 @@ function openVecModal() {
   if (vecSavedData.value) {
     vecForm.value = { ...vecSavedData.value }
   } else {
-    vecForm.value = { baseUrl: 'https://api.openai.com/v1', apiKey: '', modelName: 'text-embedding-3-small' }
+    vecForm.value = { baseUrl: '', apiKey: '', modelName: '' }
   }
   vecFormError.value = ''
   vecTestResult.value = ''
@@ -1105,7 +1105,7 @@ onUnmounted(() => {
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
-              <input v-model="providerForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="https://api.openai.com/v1" />
+              <input v-model="providerForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="支持 Open AI 接口协议" />
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">API Key</label>
@@ -1158,7 +1158,7 @@ onUnmounted(() => {
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
-              <input v-model="visionForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" />
+              <input v-model="visionForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="支持 Open AI 接口协议" />
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">API Key</label>
@@ -1211,7 +1211,7 @@ onUnmounted(() => {
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
-              <input v-model="vecForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="https://api.openai.com/v1" />
+              <input v-model="vecForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="支持 Open AI 接口协议" />
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">API Key</label>
