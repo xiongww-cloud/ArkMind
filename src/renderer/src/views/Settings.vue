@@ -244,11 +244,11 @@ interface PresetModel { name: string; baseUrl: string; modelName: string; websit
 const LLM_PRESETS: PresetModel[] = [
   { name: '深度求索 DeepSeek V4 Pro', baseUrl: 'https://api.deepseek.com/v1', modelName: 'deepseek-v4-pro', website: 'https://platform.deepseek.com' },
   { name: '深度求索 DeepSeek V4 Flash', baseUrl: 'https://api.deepseek.com/v1', modelName: 'deepseek-v4-flash', website: 'https://platform.deepseek.com' },
-  { name: '小米 MiMo V2.5 Pro', baseUrl: 'https://api.xiaomi.com/v1', modelName: 'mimo-v2.5-pro', website: 'https://platform.xiaomimimo.com/console/balance' },
-  { name: '小米 MiMo V2.5', baseUrl: 'https://api.xiaomi.com/v1', modelName: 'mimo-v2.5', website: 'https://platform.xiaomimimo.com/console/balance' },
+  { name: '小米 MiMo V2.5 Pro', baseUrl: 'https://api.xiaomimimo.com/v1', modelName: 'mimo-v2.5-pro', website: 'https://platform.xiaomimimo.com/console/balance' },
+  { name: '小米 MiMo V2.5', baseUrl: 'https://api.xiaomimimo.com/v1', modelName: 'mimo-v2.5', website: 'https://platform.xiaomimimo.com/console/balance' },
 ]
 const VISION_PRESETS: PresetModel[] = [
-  { name: '小米 MiMo V2.5', baseUrl: 'https://api.xiaomi.com/v1', modelName: 'mimo-v2.5', website: 'https://platform.xiaomimimo.com/console/balance' },
+  { name: '小米 MiMo V2.5', baseUrl: 'https://api.xiaomimimo.com/v1', modelName: 'mimo-v2.5', website: 'https://platform.xiaomimimo.com/console/balance' },
   { name: '阿里通义千问 Qwen3.5 Flash', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', modelName: 'qwen3.5-flash', website: 'https://platform.qianwenai.com/home' },
 ]
 const VEC_PRESETS: PresetModel[] = [
@@ -1129,15 +1129,9 @@ onUnmounted(() => {
             <div v-if="selectedVisionPreset">
               <a :href="VISION_PRESETS.find(p => p.name === selectedVisionPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
             </div>
-            <div class="grid grid-cols-2 gap-2">
-              <div>
-                <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
-                <input v-model="visionForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" />
-              </div>
-              <div>
-                <label class="block text-[10px] font-medium text-surface-400 mb-1">API Format</label>
-                <select v-model="visionForm.apiFormat" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white"><option value="openai">OpenAI</option><option value="dashscope">DashScope</option></select>
-              </div>
+            <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
+              <input v-model="visionForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" />
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">API Key</label>
