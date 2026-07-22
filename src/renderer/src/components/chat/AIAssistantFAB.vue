@@ -291,6 +291,7 @@ onUnmounted(() => {
 
 function onNotificationPanelClose() {
   showNotifications.value = false
+  open.value = true
   loadNotificationStats()
 }
 
