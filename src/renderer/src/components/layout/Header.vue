@@ -140,15 +140,13 @@ function selectSearchResult(obj: {source_type:string;source_id:string;title:stri
   const t = map[obj.source_type]
   if (t) { navigateTo(t, obj.source_id) }
   else if (obj.source_type === 'FILE') { invoke('file_open', { versionId: obj.source_id }).catch(() => {}) }
-  else if (obj.source_type === 'PARTNER' || obj.source_type === 'CONTACT') { router.push('/contacts') }
 }
 
-const typeLabelMap: Record<string,string> = { FILE:'文件', NOTE:'笔记', PRODUCT:'产品', PROJECT:'项目', TODO:'待办', PARTNER:'合作伙伴', CONTACT:'联系人' }
+const typeLabelMap: Record<string,string> = { FILE:'文件', NOTE:'笔记', PRODUCT:'产品', PROJECT:'项目', TODO:'待办' }
 const typeBadgeMap: Record<string,string> = {
   FILE:'bg-blue-50 text-blue-600', NOTE:'bg-amber-50 text-amber-600',
   PRODUCT:'bg-emerald-50 text-emerald-600', PROJECT:'bg-violet-50 text-violet-600',
-  TODO:'bg-slate-100 text-slate-500', PARTNER:'bg-pink-50 text-pink-600',
-  CONTACT:'bg-cyan-50 text-cyan-600',
+  TODO:'bg-slate-100 text-slate-500',
 }
 
 // ═══════════════════════════════════════════════════════════════════

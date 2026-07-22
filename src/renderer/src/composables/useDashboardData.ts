@@ -43,8 +43,8 @@ export function useDashboardData() {
         kbProjectNoteIds(),
         kbDashboardStats(),
         customerList(),
-        fetchChannels(),
-        fetchVendors(),
+        fetchChannels(''),
+        fetchVendors(''),
       ])
       if (p.status === 'fulfilled') allProjects.value = Array.isArray(p.value) ? p.value : projectStore.projects
       else allProjects.value = projectStore.projects
@@ -162,10 +162,10 @@ export function useDashboardData() {
 
   // ─── KPI: Monthly won (current vs last) ────────────────────────
   const wonThisMonth = computed(() =>
-    allProjects.value.filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || p.updatedAt || '') === thisMonthKey)
+    allProjects.value.filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || '') === thisMonthKey)
   )
   const wonLastMonth = computed(() =>
-    allProjects.value.filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || p.updatedAt || '') === lastMonthKey)
+    allProjects.value.filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || '') === lastMonthKey)
   )
   const wonThisMonthCount = computed(() => wonThisMonth.value.length)
   const wonThisMonthBudget = computed(() =>
@@ -265,7 +265,7 @@ export function useDashboardData() {
   const trendWonBudget = computed(() =>
     trendMonths.value.map(month =>
       allProjects.value
-        .filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || p.updatedAt || '') === month)
+        .filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || '') === month)
         .reduce((s: number, p: any) => s + (Number(p.budget) || 0), 0)
     )
   )
@@ -352,13 +352,13 @@ export function useDashboardData() {
   const kbByType = computed(() => {
     const raw = dashboardStats.value?.by_type || []
     return raw.map((item: any) => ({
-      type: item.source_type || item.type,
-      label: sourceTypeLabel(item.source_type || item.type),
+      type: item.label || item.source_type || item.type || '',
+      label: sourceTypeLabel(item.label || item.source_type || item.type || ''),
       count: item.cnt || item.count || 0,
     }))
   })
   const kbTotalChunks = computed(() => kbHealth.value.total || 0)
-  const kbActivityHeatmap = computed(() => dashboardStats.value?.activity_heatmap || [])
+  const kbDailyGrowth = computed(() => dashboardStats.value?.daily_growth || [])
 
   function sourceTypeLabel(type: string): string {
     const map: Record<string, string> = {
@@ -392,7 +392,7 @@ export function useDashboardData() {
     todayTodos, priorityDot, priorityStyle,
     deadlines,
     recentNotes,
-    kbHealth, kbByType, kbTotalChunks, kbActivityHeatmap,
+    kbHealth, kbByType, kbTotalChunks, kbDailyGrowth,
     bizOverview,
     allProjects, allTodos, allDynamics, allNotes,
     formatBudget, formatBudgetCompact, timeAgo, goToProject, sourceTypeLabel,

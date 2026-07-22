@@ -8,7 +8,7 @@ import PipelineFunnel from '@/components/dashboard/PipelineFunnel.vue'
 import StageDonut from '@/components/dashboard/StageDonut.vue'
 import TrendChart from '@/components/dashboard/TrendChart.vue'
 import TopCustomers from '@/components/dashboard/TopCustomers.vue'
-import ActivityHeatmap from '@/components/dashboard/ActivityHeatmap.vue'
+import KnowledgeGrowth from '@/components/dashboard/KnowledgeGrowth.vue'
 
 const router = useRouter()
 const { navigateTo } = useNavigation()
@@ -27,7 +27,7 @@ const {
   todayTodos, priorityDot, priorityStyle,
   deadlines,
   recentNotes,
-  kbTotalChunks, kbHealth, kbByType, kbActivityHeatmap,
+  kbTotalChunks, kbHealth, kbByType, kbDailyGrowth,
   bizOverview,
   formatBudget, goToProject,
 } = useDashboardData()
@@ -246,10 +246,10 @@ const {
         <!-- Activity Heatmap -->
         <div class="lg:col-span-7 bg-white rounded-2xl border border-surface-200 p-5 shadow-sm hover:shadow-md transition-shadow">
           <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5 mb-4">
-            <AppIcon name="table" size="15" class="text-surface-400" />
-            30 天活跃热力图
+            <AppIcon name="sparkles" size="15" class="text-surface-400" />
+            知识增长趋势
           </h2>
-          <ActivityHeatmap :heatmap="kbActivityHeatmap" />
+          <KnowledgeGrowth :data="kbDailyGrowth" />
         </div>
       </div>
 

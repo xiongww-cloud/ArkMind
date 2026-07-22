@@ -149,27 +149,6 @@ pub async fn search_business(query: String) -> Result<Value, String> {
             }
         }
     }
-    // partners (渠道/厂商/客户)
-    if let Ok(rows) = database::all("SELECT id, type, name FROM partners WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
-        for r in &rows {
-            let id = r["id"].as_str().unwrap_or("").to_string();
-            let name = r["name"].as_str().unwrap_or("").to_string();
-            let st = r["type"].as_str().unwrap_or("PARTNER");
-            if seen.insert(format!("PARTNER-{}", id)) {
-                objects.push(json!({"source_type":"PARTNER","source_id":id,"title":name,"partner_type":st}));
-            }
-        }
-    }
-    // partner_contacts (联系人)
-    if let Ok(rows) = database::all("SELECT id, name FROM partner_contacts WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
-        for r in &rows {
-            let id = r["id"].as_str().unwrap_or("").to_string();
-            let name = r["name"].as_str().unwrap_or("").to_string();
-            if seen.insert(format!("CONTACT-{}", id)) {
-                objects.push(json!({"source_type":"CONTACT","source_id":id,"title":name}));
-            }
-        }
-    }
     Ok(json!({"success":true,"objects":objects}))
 }
 
