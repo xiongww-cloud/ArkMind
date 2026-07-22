@@ -1091,6 +1091,10 @@ onUnmounted(() => {
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="presetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="presetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
+                <button @click="selectPreset('llm', { name: '', baseUrl: 'https://api.openai.com/v1', modelName: '', website: '' })" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedPreset === '' ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
+                  自定义
+                </button>
+                <div class="border-t border-slate-100 my-1"></div>
                 <button v-for="p in LLM_PRESETS" :key="p.name" @click="selectPreset('llm', p)" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedPreset === p.name ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
                   {{ p.name }}
                 </button>
@@ -1140,6 +1144,10 @@ onUnmounted(() => {
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="visionPresetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="visionPresetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
+                <button @click="selectPreset('vision', { name: '', baseUrl: 'https://api.openai.com/v1', modelName: '', website: '' })" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVisionPreset === '' ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
+                  自定义
+                </button>
+                <div class="border-t border-slate-100 my-1"></div>
                 <button v-for="p in VISION_PRESETS" :key="p.name" @click="selectPreset('vision', p)" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVisionPreset === p.name ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
                   {{ p.name }}
                 </button>
@@ -1189,6 +1197,10 @@ onUnmounted(() => {
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="vecPresetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="vecPresetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
+                <button @click="selectPreset('vec', { name: '', baseUrl: 'https://api.openai.com/v1', modelName: '', website: '' })" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVecPreset === '' ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
+                  自定义
+                </button>
+                <div class="border-t border-slate-100 my-1"></div>
                 <button v-for="p in VEC_PRESETS" :key="p.name" @click="selectPreset('vec', p)" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVecPreset === p.name ? 'text-blue-600 bg-blue-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
                   {{ p.name }}
                 </button>
