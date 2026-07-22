@@ -27,7 +27,7 @@ const {
   todayTodos, priorityDot, priorityStyle,
   deadlines,
   recentNotes,
-  kbTotalChunks, kbByType, kbObjectTotal,
+  kbTotalChunks, kbObjectTotal,
   kbHotCount, kbColdCount, kbHotRatio, kbColdRatio, kbAvgWeight, kbTagCount,
   kbDailyGrowth,
   bizOverview,
@@ -251,22 +251,6 @@ const {
               </div>
             </div>
 
-            <!-- By type with mini bars - top 5 only -->
-            <div v-if="kbByType.length">
-              <p class="text-[11px] text-surface-500 mb-1.5">碎片类型分布</p>
-              <div class="space-y-1.5">
-                <div v-for="t in kbByType.slice(0, 5)" :key="t.type" class="group">
-                  <div class="flex items-center justify-between mb-0.5">
-                    <span class="text-[11px] text-surface-600">{{ t.label }}</span>
-                    <span class="text-[10px] text-surface-400">{{ t.count }}</span>
-                  </div>
-                  <div class="w-full h-1.5 bg-surface-100 rounded-full overflow-hidden">
-                    <div class="h-full bg-brand-400 rounded-full transition-all group-hover:bg-brand-500"
-                      :style="{ width: Math.max((t.count / kbByType[0].count) * 100, 4) + '%' }"></div>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
           <p v-else class="text-[12px] text-surface-300 py-6 text-center">暂无数据</p>
         </div>
