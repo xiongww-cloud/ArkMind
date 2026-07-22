@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useNavigation } from '@/composables/useNavigation'
+import { STATUS_LABELS, STATUS_BADGE_COLORS } from '@/composables/useProjectStatus'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { fetchProjects, fetchTodos, fetchAllDynamics, fetchNotes, kbDashboardStats, kbProjectNoteIds } from '@/api/db-client'
 import VueApexCharts from 'vue3-apexcharts'
@@ -51,17 +52,8 @@ onMounted(loadData)
 onActivated(loadData)
 
 // ─── Status labels & colors ─────────────────────────────────────────
-const statusLabels: Record<string,string> = {
-  Lead: '线索', SolutionDesign: '方案报价', PoC: '测试',
-  Bidding: '投标', Won: '中标', Ordered: '下单', Lost: '丢单', OnHold: '搁置'
-}
-
-const statusColor: Record<string,string> = {
-  Lead: 'bg-slate-100 text-slate-600', SolutionDesign: 'bg-cyan-50 text-cyan-600',
-  PoC: 'bg-blue-50 text-blue-600', Quotation: 'bg-indigo-50 text-indigo-600',
-  Bidding: 'bg-amber-50 text-amber-700', Won: 'bg-emerald-50 text-emerald-600',
-  Ordered: 'bg-violet-50 text-violet-600', Lost: 'bg-red-50 text-red-500', OnHold: 'bg-gray-100 text-gray-500'
-}
+const statusLabels = STATUS_LABELS
+const statusColor = STATUS_BADGE_COLORS
 
 // ─── Header stats ───────────────────────────────────────────────────
 const activeProjectCount = computed(() =>

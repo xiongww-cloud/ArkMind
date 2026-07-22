@@ -1,22 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useProjectStore } from '@/stores/project'
+import { STATUS_LABELS, STATUS_DOT_COLORS } from '@/composables/useProjectStatus'
 
 const props = defineProps<{ id: string }>()
 
 const store = useProjectStore()
 const project = computed(() => store.getProjectById(props.id) as any)
 
-const statusLabels: Record<string, string> = {
-  Lead: '线索', SolutionDesign: '方案报价', PoC: '测试',
-  Quotation: '投标', Bidding: '中标', Won: '中标', Ordered: '下单',
-  Lost: '丢单', OnHold: '搁置'
-}
-const statusColors: Record<string, string> = {
-  Lead: 'bg-blue-500', SolutionDesign: 'bg-cyan-500', PoC: 'bg-purple-500',
-  Quotation: 'bg-amber-500', Bidding: 'bg-orange-500', Won: 'bg-emerald-500', Ordered: 'bg-indigo-500',
-  Lost: 'bg-red-500', OnHold: 'bg-gray-500'
-}
+const statusLabels = STATUS_LABELS
+const statusColors = STATUS_DOT_COLORS
 </script>
 
 <template>

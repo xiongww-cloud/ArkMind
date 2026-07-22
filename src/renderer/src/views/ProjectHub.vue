@@ -7,6 +7,7 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import SelectWithSearch from '@/components/common/SelectWithSearch.vue'
 import { formatDateTime } from '@/utils/time'
 import { toast } from '@/composables/useToast'
+import { STATUS_OPTIONS, STATUS_LABELS, STATUS_DOT_COLORS, statusBadgeClass } from '@/composables/useProjectStatus'
 
 import { fetchProjects, customerList, customerLinkProject } from '@/api/db-client'
 
@@ -186,17 +187,9 @@ onDeactivated(() => {
 })
 
 // ─── Status definitions ──────────────────────────────────────────
-const allStatusOptions = ['Lead', 'SolutionDesign', 'PoC', 'Bidding', 'Won', 'Ordered', 'Lost', 'OnHold']
-
-const statusDotColors = {
-  Lead: 'bg-blue-300', SolutionDesign: 'bg-cyan-300', PoC: 'bg-purple-300',
-  Bidding: 'bg-orange-300', Won: 'bg-emerald-300', Ordered: 'bg-indigo-300',
-  Lost: 'bg-red-300', OnHold: 'bg-gray-400'
-}
-const statusLabels = {
-  Lead: '线索', SolutionDesign: '方案报价', PoC: '测试', Bidding: '投标',
-  Won: '中标', Ordered: '下单', Lost: '丢单', OnHold: '搁置'
-}
+const allStatusOptions = STATUS_OPTIONS
+const statusDotColors = STATUS_DOT_COLORS
+const statusLabels = STATUS_LABELS
 
 // ─── Filter options ──────────────────────────────────────────────
 const timeFilterLabels = { all: '全部时间', today: '今天', week: '最近 7 天', month: '最近 30 天', quarter: '最近 90 天' }
@@ -472,7 +465,6 @@ const footerSummary = computed(() => {
 })
 
 // ─── Helpers ─────────────────────────────────────────────────────
-const statusBadgeClass = (status) => `badge badge-${(status || 'Lead').toLowerCase()}`
 function formatBudget(raw) { if (!raw || raw === 0) return '-'; return '¥' + raw + '万' }
 function formatBidTime(raw) { if (!raw) return '-'; return formatDateTime(raw) }
 function goToProject(id) { router.push(`/projects/${id}`) }

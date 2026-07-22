@@ -6,6 +6,7 @@ import { useSelectionStore } from '@/stores/selection'
 import { useAuthStore } from '@/stores/auth'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
+import { STATUS_OPTIONS, STATUS_LABELS, STATUS_DOT_COLORS } from '@/composables/useProjectStatus'
 import { formatDateTime } from '@/utils/time'
 import Timeline from '@/components/project/Timeline.vue'
 import FileManager from '@/components/project/FileManager.vue'
@@ -41,29 +42,9 @@ const tabs = [
   { id: 'overview', label: '日志', icon: 'clock' }
 ]
 
-const statusLabels: Record<string, string> = {
-  Lead: '线索',
-  SolutionDesign: '方案报价',
-  PoC: '测试',
-  Bidding: '投标',
-  Won: '中标',
-  Ordered: '下单',
-  Lost: '丢单',
-  OnHold: '搁置'
-}
-
-const statusOptions = ['Lead', 'SolutionDesign', 'PoC', 'Bidding', 'Won', 'Ordered', 'Lost', 'OnHold']
-
-const statusColors: Record<string, string> = {
-  Lead: 'bg-blue-500',
-  SolutionDesign: 'bg-cyan-300',
-  PoC: 'bg-purple-300',
-  Bidding: 'bg-orange-300',
-  Won: 'bg-emerald-300',
-  Ordered: 'bg-indigo-300',
-  Lost: 'bg-red-300',
-  OnHold: 'bg-gray-300'
-}
+const statusLabels = STATUS_LABELS
+const statusOptions = STATUS_OPTIONS
+const statusColors = STATUS_DOT_COLORS
 
 const showStatusDropdown = ref(false)
 const statusDropdownRef = ref(null)
