@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationMarkAllRead, notificationDelete } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationDelete } from '@/api/notification-client'
 import type { Notification } from '@/api/notification-client'
 
 const props = defineProps<{
@@ -29,6 +29,8 @@ async function loadNotifications() {
   }
 }
 
+defineExpose({ reload: loadNotifications })
+
 onMounted(loadNotifications)
 watch(() => props.visible, (val) => { if (val) loadNotifications() })
 
@@ -40,11 +42,6 @@ async function markRead(id: string) {
   await notificationMarkRead(id)
   const n = notifications.value.find(n => n.id === id)
   if (n) n.read = 1
-}
-
-async function markAllRead() {
-  await notificationMarkAllRead()
-  notifications.value.forEach(n => n.read = 1)
 }
 
 async function removeNotification(id: string) {
@@ -95,19 +92,6 @@ const priorityDot: Record<string, string> = {
 
 <template>
   <div class="flex flex-col h-full">
-    <!-- Header -->
-    <div class="flex items-center justify-between px-4 py-3 border-b border-surface-100">
-      <div class="flex items-center gap-2">
-        <button @click="emit('close')" class="text-surface-500 hover:text-surface-700 transition-colors" title="返回">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M15.75 19.5L8.25 12l7.5-7.5"/>
-          </svg>
-        </button>
-        <h3 class="text-[13px] font-semibold text-surface-700">通知中心</h3>
-      </div>
-      <button @click="markAllRead" class="text-[11px] text-brand-600 hover:underline">全部已读</button>
-    </div>
-
     <!-- List -->
     <div class="flex-1 overflow-y-auto">
       <div v-if="loading" class="p-6 text-center text-[12px] text-surface-400">加载中...</div>

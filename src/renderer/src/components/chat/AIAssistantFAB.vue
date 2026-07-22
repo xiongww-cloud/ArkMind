@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { sanitizeHtml } from '@/utils/sanitize'
 import { pickRetrievalPhrase } from '@/utils/chat'
-import { notificationStats, type Notification } from '@/api/notification-client'
+import { notificationStats, notificationMarkAllRead, type Notification } from '@/api/notification-client'
 import NotificationBubble from '@/components/notification/NotificationBubble.vue'
 import NotificationPanel from '@/components/notification/NotificationPanel.vue'
 
@@ -300,6 +300,11 @@ function onBubbleClick() {
   showNotifications.value = true
 }
 
+async function handleMarkAllRead() {
+  await notificationMarkAllRead()
+  unreadCount.value = 0
+}
+
 </script>
 
 <template>
@@ -341,6 +346,7 @@ function onBubbleClick() {
               <svg class="w-3.5 h-3.5 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.75 19.5L8.25 12l7.5-7.5"/></svg>
             </button>
             <span class="text-[11px] font-medium text-[#3a3a3c]">通知中心</span>
+            <button @click="handleMarkAllRead" class="text-[10px] text-[#2563eb] hover:underline ml-1">全部已读</button>
           </div>
           <button @click="showNotifications = false; open = false" class="p-1 rounded-lg hover:bg-white/30 transition-colors" title="关闭">
             <svg class="w-3 h-3 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
