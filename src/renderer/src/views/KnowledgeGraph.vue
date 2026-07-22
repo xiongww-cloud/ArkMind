@@ -32,7 +32,7 @@ const growthChart = computed(() => {
   const cutoffStr = cutoff.toISOString().slice(0, 10)
   const filtered = d.filter((x: any) => (x.label || '') >= cutoffStr)
   const data = filtered.length > 0 ? filtered : d.slice(-growthDays.value)
-  return { series: [{ name: '通用', data: data.map((x: any) => x.cnt) }], categories: data.map((x: any) => (x.label || '').slice(5)) }
+  return { series: [{ name: '碎片数', data: data.map((x: any) => x.cnt) }], categories: data.map((x: any) => (x.label || '').slice(5)) }
 })
 const byTypeChart = computed(() => {
   if (!stats.value?.by_type?.length) return null
@@ -105,10 +105,10 @@ onUnmounted(() => {
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
       </div>
-      <!-- 管线进度 -->
+      <!-- 知识管线 -->
       <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
         <div class="flex items-center gap-2 mb-4">
-          <h3 class="text-[12px] font-semibold text-surface-600">管线进度</h3>
+          <h3 class="text-[12px] font-semibold text-surface-600">知识管线</h3>
           <span class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-50 text-emerald-600' : 'bg-surface-50 text-surface-400'">
             <span class="w-1.5 h-1.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-500 animate-pulse' : 'bg-surface-300'"></span>
             {{ pipelineRunning ? '运行中' : '空闲' }}

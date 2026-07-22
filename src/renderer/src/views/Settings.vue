@@ -238,6 +238,36 @@ const showAiHelpModal = ref(false)
 const aiProviders = ref([])
 const activeProviderId = ref(null) // system default (saved)
 const pendingDefaultId = ref(null) // local radio selection before save
+
+// ─── Preset Models ────────────────────────────────────────────────────
+interface PresetModel { name: string; baseUrl: string; modelName: string; website: string }
+const LLM_PRESETS: PresetModel[] = [
+  { name: '深度求索 DeepSeek V4 Pro', baseUrl: 'https://api.deepseek.com/v1', modelName: 'deepseek-v4-pro', website: 'https://platform.deepseek.com' },
+  { name: '深度求索 DeepSeek V4 Flash', baseUrl: 'https://api.deepseek.com/v1', modelName: 'deepseek-v4-flash', website: 'https://platform.deepseek.com' },
+  { name: '小米 MiMo V2.5 Pro', baseUrl: 'https://api.xiaomi.com/v1', modelName: 'mimo-v2.5-pro', website: 'https://platform.xiaomimimo.com/console/balance' },
+  { name: '小米 MiMo V2.5', baseUrl: 'https://api.xiaomi.com/v1', modelName: 'mimo-v2.5', website: 'https://platform.xiaomimimo.com/console/balance' },
+]
+const VISION_PRESETS: PresetModel[] = [
+  { name: '小米 MiMo V2.5', baseUrl: 'https://api.xiaomi.com/v1', modelName: 'mimo-v2.5', website: 'https://platform.xiaomimimo.com/console/balance' },
+  { name: '阿里通义千问 Qwen3.5 Flash', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', modelName: 'qwen3.5-flash', website: 'https://platform.qianwenai.com/home' },
+]
+const VEC_PRESETS: PresetModel[] = [
+  { name: '硅基流动 BAAI/bge-m3', baseUrl: 'https://api.siliconflow.cn/v1', modelName: 'BAAI/bge-m3', website: 'https://siliconflow.cn' },
+  { name: '阿里通义千问 Qwen3.7 Text Embedding', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', modelName: 'qwen3.7-text-embedding', website: 'https://platform.qianwenai.com/home' },
+]
+const selectedPreset = ref('')
+const selectedVisionPreset = ref('')
+const selectedVecPreset = ref('')
+
+function applyPreset(type: 'llm' | 'vision' | 'vec') {
+  const presets = type === 'llm' ? LLM_PRESETS : type === 'vision' ? VISION_PRESETS : VEC_PRESETS
+  const preset = presets.find(p => p.name === (type === 'llm' ? selectedPreset.value : type === 'vision' ? selectedVisionPreset.value : selectedVecPreset.value))
+  if (!preset) return
+  if (type === 'llm') { providerForm.value.baseUrl = preset.baseUrl; providerForm.value.modelName = preset.modelName }
+  else if (type === 'vision') { visionForm.value.baseUrl = preset.baseUrl; visionForm.value.modelName = preset.modelName }
+  else { vecForm.value.baseUrl = preset.baseUrl; vecForm.value.modelName = preset.modelName }
+}
+
 // Modal state for add/edit provider
 const showProviderModal = ref(false)
 const editingProvider = ref(null)
@@ -296,6 +326,7 @@ function openAddProvider() {
   editingProvider.value = null
   providerForm.value = { apiKey: '', baseUrl: 'https://api.openai.com/v1', modelName: '' }
   providerFormError.value = ''
+  selectedPreset.value = ''
   showProviderModal.value = true
 }
 
@@ -440,6 +471,7 @@ function openAddVision() {
   editingVision.value = null
   visionForm.value = { apiKey: '', baseUrl: 'https://api.openai.com/v1', modelName: '', apiFormat: 'openai', prompt: '' }
   visionFormError.value = ''
+  selectedVisionPreset.value = ''
   showVisionModal.value = true
 }
 
@@ -588,6 +620,7 @@ function openVecModal() {
   }
   vecFormError.value = ''
   vecTestResult.value = ''
+  selectedVecPreset.value = ''
   showVecModal.value = true
 }
 
@@ -1043,6 +1076,16 @@ onUnmounted(() => {
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingProvider ? '编辑模型' : '添加模型' }}</h3>
           <div class="space-y-3">
             <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
+              <select v-model="selectedPreset" @change="applyPreset('llm')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400">
+                <option value="">选择预设模型...</option>
+                <option v-for="p in LLM_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
+              </select>
+            </div>
+            <div v-if="selectedPreset">
+              <a :href="LLM_PRESETS.find(p => p.name === selectedPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
+            </div>
+            <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
               <input v-model="providerForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="https://api.openai.com/v1" />
             </div>
@@ -1076,6 +1119,16 @@ onUnmounted(() => {
         <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingVision ? '编辑 视觉模型' : '添加 视觉模型' }}</h3>
           <div class="space-y-3">
+            <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
+              <select v-model="selectedVisionPreset" @change="applyPreset('vision')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400">
+                <option value="">选择预设模型...</option>
+                <option v-for="p in VISION_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
+              </select>
+            </div>
+            <div v-if="selectedVisionPreset">
+              <a :href="VISION_PRESETS.find(p => p.name === selectedVisionPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
+            </div>
             <div class="grid grid-cols-2 gap-2">
               <div>
                 <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
@@ -1116,6 +1169,16 @@ onUnmounted(() => {
         <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">向量模型配置</h3>
           <div class="space-y-3">
+            <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
+              <select v-model="selectedVecPreset" @change="applyPreset('vec')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400">
+                <option value="">选择预设模型...</option>
+                <option v-for="p in VEC_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
+              </select>
+            </div>
+            <div v-if="selectedVecPreset">
+              <a :href="VEC_PRESETS.find(p => p.name === selectedVecPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
+            </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
               <input v-model="vecForm.baseUrl" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="https://api.openai.com/v1" />
