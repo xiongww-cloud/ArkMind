@@ -54,15 +54,15 @@ pub fn sync_entity(source_type: &str, source_id: &str) {
         "VENDOR" => extract_vendor(source_id),
         "CUSTOMER" => extract_customer(source_id),
         _ => {
-            log::info!("[source_doc_sync] 未知 source_type: {}", source_type);
+            log::info!("[源文档同步] 未知 source_type: {}", source_type);
             return;
         }
     };
     if content.trim().is_empty() {
-        log::info!("[source_doc_sync] 内容为空，跳过: {}/{}", source_type, source_id);
+        log::info!("[源文档同步] 内容为空，跳过: {}/{}", source_type, source_id);
         return;
     }
-    log::info!("[source_doc_sync] 同步: {}/{} ({})", source_type, source_id, title);
+    log::info!("[源文档同步] 同步: {}/{} ({})", source_type, source_id, title);
     sync_entity_to_source_docs(source_type, source_id, &title, &content);
 }
 
