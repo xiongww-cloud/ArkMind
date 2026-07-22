@@ -6,6 +6,7 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { useUploadProgress } from '@/composables/useUploadProgress'
+import { fmtDate, formatSize, fileDisplayName, fileTypeColor } from '@/utils/format'
 import { fetchProjects, fetchTodos, fetchFiles, createTodo as apiCreateTodo, updateTodo as apiUpdateTodo, deleteTodo as apiDeleteTodo, toggleTodo as apiToggleTodo, previewFile, uploadFile, deleteFileFromDomain, fetchFilesByTodo, fetchFileTree } from '@/api/db-client'
 import TodoDetail from './TodoDetail.vue'
 
@@ -509,7 +510,7 @@ function isOverdue(t: Todo): boolean {
             </button>
             <div v-if="projFilesExpanded.has(group.folderId)" class="ml-3 space-y-0.5 mt-0.5">
               <div v-for="f in group.files" :key="f.id" class="group relative flex items-center py-1 px-1.5 rounded hover:bg-white hover:shadow-sm transition-all">
-                <div class="w-6 h-6 flex items-center justify-center rounded font-bold text-[7px] tracking-wider shrink-0 select-none" :class="fileTypeClass(f.file_ext || '')">{{ (f.file_ext || 'file').toUpperCase() }}</div>
+                <div class="w-6 h-6 flex items-center justify-center rounded font-bold text-[7px] tracking-wider shrink-0 select-none" :class="fileTypeColor(f.file_ext || '')">{{ (f.file_ext || 'file').toUpperCase() }}</div>
                 <div class="ml-1.5 flex-1 min-w-0 flex items-center gap-1">
                   <p class="text-[10px] font-medium text-surface-700 truncate leading-tight cursor-pointer hover:text-blue-600 flex-1 min-w-0" :title="fileDisplayName(f)" @click="previewAttachment(f.id)">{{ fileDisplayName(f) }}</p>
                   <button @click.stop="insertAttachmentToEditor(f)" class="shrink-0 w-4.5 h-4.5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="插入到待办"><AppIcon name="file-plus" size="12"/></button>
@@ -537,7 +538,7 @@ function isOverdue(t: Todo): boolean {
           :class="editingFileId === f.id ? 'cursor-default' : ''"
         >
           <!-- Type badge -->
-          <div class="w-9 h-9 flex items-center justify-center rounded-lg font-bold text-[8px] tracking-wider shrink-0 select-none" :class="fileTypeClass(f.file_ext || '')">{{ (f.file_ext || 'file').toUpperCase() }}</div>
+          <div class="w-9 h-9 flex items-center justify-center rounded-lg font-bold text-[8px] tracking-wider shrink-0 select-none" :class="fileTypeColor(f.file_ext || '')">{{ (f.file_ext || 'file').toUpperCase() }}</div>
           <!-- File info -->
           <div class="ml-2.5 flex-1 min-w-0 pr-16">
             <template v-if="editingFileId === f.id">
@@ -554,7 +555,7 @@ function isOverdue(t: Todo): boolean {
             <template v-else>
               <p class="text-[11px] font-medium text-gray-700 truncate leading-tight cursor-pointer hover:text-blue-600 transition-colors" :title="fileDisplayName(f)" @click="previewAttachment(f.id)">{{ fileDisplayName(f) }}</p>
             </template>
-            <p class="text-[9px] text-gray-400 mt-0.5">{{ formatTodoFileSize(f.file_size) }} · {{ (f.mapped_at || f.updated_at || f.created_at || '').slice(0,16) }}</p>
+            <p class="text-[9px] text-gray-400 mt-0.5">{{ formatSize(f.file_size) }} · {{ (f.mapped_at || f.updated_at || f.created_at || '').slice(0,16) }}</p>
           </div>
           <!-- Action buttons -->
           <div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 bg-gradient-to-l from-white via-white pl-4">
