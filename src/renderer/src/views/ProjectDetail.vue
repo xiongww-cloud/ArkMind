@@ -132,6 +132,7 @@ function handleClickOutside(e: MouseEvent) {
   if (statusDropdownRef.value && !statusDropdownRef.value.contains(e.target)) showStatusDropdown.value = false
   if (moreMenuRef.value && !moreMenuRef.value.contains(e.target)) showMoreMenu.value = false
   if (bidCalendarRef.value && !bidCalendarRef.value.contains(e.target)) showBidCalendar.value = false
+  if (expectedCalendarRef.value && !expectedCalendarRef.value.contains(e.target)) showExpectedCalendar.value = false
 }
 
 const isEditingBudget = ref(false)
@@ -165,6 +166,11 @@ function cancelEditBudget() { isEditingBudget.value = false }
 const isEditingExpectedDate = ref(false)
 const expectedDateEditValue = ref('')
 const expectedDateInputRef = ref(null)
+
+const showExpectedCalendar = ref(false)
+const expectedCalendarRef = ref(null)
+const expectedCalendarYear = ref(new Date().getFullYear())
+const expectedCalendarMonth = ref(new Date().getMonth())
 function startEditExpectedDate() { expectedDateEditValue.value = project.value?.expectedOrderDate || project.value?.expected_order_date || ''; isEditingExpectedDate.value = true; nextTick(() => expectedDateInputRef.value?.focus()) }
 async function saveExpectedDate() {
   const v = expectedDateEditValue.value.trim()
@@ -180,6 +186,81 @@ async function saveExpectedDate() {
   isEditingExpectedDate.value = false
 }
 function cancelEditExpectedDate() { isEditingExpectedDate.value = false }
+
+function startEditExpectedDateCalendar() {
+  const raw = (project.value?.expectedOrderDate || project.value?.expected_order_date || '')
+  if (raw) {
+    const d = new Date(raw)
+    if (!isNaN(d.getTime())) {
+      expectedCalendarYear.value = d.getFullYear()
+      expectedCalendarMonth.value = d.getMonth()
+    }
+  } else {
+    const now = new Date()
+    expectedCalendarYear.value = now.getFullYear()
+    expectedCalendarMonth.value = now.getMonth()
+  }
+  showExpectedCalendar.value = !showExpectedCalendar.value
+}
+
+function prevExpectedMonth() {
+  if (expectedCalendarMonth.value === 0) { expectedCalendarMonth.value = 11; expectedCalendarYear.value-- }
+  else { expectedCalendarMonth.value-- }
+}
+
+function nextExpectedMonth() {
+  if (expectedCalendarMonth.value === 11) { expectedCalendarMonth.value = 0; expectedCalendarYear.value++ }
+  else { expectedCalendarMonth.value++ }
+}
+
+const expectedCalendarDays = computed(() => {
+  const year = expectedCalendarYear.value
+  const month = expectedCalendarMonth.value
+  const firstDay = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const days = []
+  for (let i = 0; i < firstDay; i++) days.push(null)
+  for (let d = 1; d <= daysInMonth; d++) days.push(d)
+  return days
+})
+
+function isSelectedExpectedDay(day: number) {
+  const y = expectedCalendarYear.value
+  const m = String(expectedCalendarMonth.value + 1).padStart(2, '0')
+  const d = String(day).padStart(2, '0')
+  return (project.value?.expectedOrderDate || project.value?.expected_order_date || '').startsWith(`${y}-${m}-${d}`)
+}
+
+function closeExpectedCalendar() { showExpectedCalendar.value = false }
+
+async function selectExpectedDay(day: number) {
+  const y = expectedCalendarYear.value
+  const m = String(expectedCalendarMonth.value + 1).padStart(2, '0')
+  const d = String(day).padStart(2, '0')
+  const displayTime = `${y}-${m}-${d}`
+  showExpectedCalendar.value = false
+  if (project.value) {
+    project.value.expectedOrderDate = displayTime
+    project.value.expected_order_date = displayTime
+  }
+  projectStore.updateProjectInList(projectId.value, { expected_order_date: displayTime })
+  try {
+    await projectStore.updateProject(projectId.value, { expected_order_date: displayTime })
+  } catch (e) { console.warn('保存预计下单时间失败', e) }
+}
+
+async function clearExpectedDate() {
+  showExpectedCalendar.value = false
+  const displayTime = ''
+  if (project.value) {
+    project.value.expectedOrderDate = displayTime
+    project.value.expected_order_date = displayTime
+  }
+  projectStore.updateProjectInList(projectId.value, { expected_order_date: '' })
+  try {
+    await projectStore.updateProject(projectId.value, { expected_order_date: '' })
+  } catch (e) { console.warn('清除预计下单时间失败', e) }
+}
 
 const isEditingName = ref(false)
 const nameEditValue = ref('')
@@ -552,7 +633,7 @@ watch(
           </div>
 
           <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">基本信息</h3>
-          <div class="grid grid-cols-3 gap-x-4">
+          <div class="grid grid-cols-4 gap-x-4">
             <div class="group/budget flex flex-col gap-1">
               <p class="text-xs text-slate-400">预计金额</p>
               <div class="flex items-center gap-0">
@@ -571,6 +652,55 @@ watch(
                 </template>
               </div>
             </div>
+            <div class="group/expectedDate flex flex-col gap-1">
+              <p class="text-xs text-slate-400">预计下单</p>
+              <div class="flex items-center gap-0">
+                <span ref="expectedCalendarRef" class="relative flex items-center gap-0.5 group/expected-inline">
+                  <span @click.stop="startEditExpectedDateCalendar" class="text-sm font-normal text-slate-600 rounded px-0.5 py-0 border border-transparent cursor-pointer">
+                    {{ (project.expectedOrderDate || project.expected_order_date) || '-' }}
+                  </span>
+                  <button @click.stop="startEditExpectedDateCalendar" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expectedDate:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
+                    <AppIcon name="edit" class="w-3.5 h-3.5" />
+                  </button>
+                  <Transition name="dropdown">
+                    <div v-if="showExpectedCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
+                      <div class="flex items-center justify-between mb-3">
+                        <button @click="prevExpectedMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
+                          <AppIcon name="chevron-left" class="w-4 h-4 text-slate-500" />
+                        </button>
+                        <span class="text-sm font-medium text-slate-700">{{ expectedCalendarYear }} 年 {{ expectedCalendarMonth + 1 }} 月</span>
+                        <button @click="nextExpectedMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
+                          <AppIcon name="chevron-right" class="w-4 h-4 text-slate-500" />
+                        </button>
+                      </div>
+                      <div class="grid grid-cols-7 mb-1">
+                        <span v-for="w in ['日','一','二','三','四','五','六']" :key="w" class="text-center text-[11px] text-slate-400 py-1">{{ w }}</span>
+                      </div>
+                      <div class="grid grid-cols-7 gap-0.5">
+                        <div v-for="(day, idx) in expectedCalendarDays" :key="idx" class="aspect-square flex items-center justify-center">
+                          <button
+                            v-if="day !== null"
+                            @click="selectExpectedDay(day)"
+                            class="w-8 h-8 rounded-full text-xs transition-colors"
+                            :class="[
+                              isSelectedExpectedDay(day)
+                                ? 'bg-blue-600 text-white font-medium'
+                                : todayStr === (expectedCalendarYear + '-' + String(expectedCalendarMonth + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0'))
+                                  ? 'text-blue-600 font-medium hover:bg-blue-50'
+                                  : 'text-slate-600 hover:bg-slate-100'
+                            ]"
+                          >{{ day }}</button>
+                        </div>
+                      </div>
+                      <div class="mt-3 pt-3 border-t border-slate-100 flex justify-between">
+                        <button @click="clearExpectedDate" class="text-[11px] text-slate-400 hover:text-red-300 transition-colors">清除</button>
+                        <button @click="closeExpectedCalendar" class="text-[11px] text-slate-400 hover:text-slate-600 transition-colors">关闭</button>
+                      </div>
+                    </div>
+                  </Transition>
+                </span>
+              </div>
+            </div>
             <div class="flex flex-col gap-1">
               <p class="text-xs text-slate-400">更新</p>
               <p class="text-sm font-normal text-slate-600">{{ formatDateTime(project.updatedAt || project.createdAt) }}</p>
@@ -578,22 +708,6 @@ watch(
             <div class="flex flex-col gap-1">
               <p class="text-xs text-slate-400">立项</p>
               <p class="text-sm font-normal text-slate-600">{{ formatDateTime(project.createdAt) }}</p>
-            </div>
-            <div class="group/expectedDate flex flex-col gap-1">
-              <p class="text-xs text-slate-400">预计下单</p>
-              <div class="flex items-center gap-0">
-                <template v-if="isEditingExpectedDate">
-                  <input ref="expectedDateInputRef" v-model="expectedDateEditValue" type="date"
-                    @blur="saveExpectedDate" @keyup.enter="saveExpectedDate" @keyup.escape="cancelEditExpectedDate"
-                    class="text-sm font-normal text-slate-600 bg-transparent border border-transparent rounded px-0.5 py-0 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 min-w-[8ch]" />
-                </template>
-                <template v-else>
-                  <span class="text-sm font-normal text-slate-600 rounded px-0.5 py-0 border border-transparent">{{ (project.expectedOrderDate || project.expected_order_date) || '-' }}</span>
-                  <button @click="startEditExpectedDate" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expectedDate:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
-                    <AppIcon name="edit" class="w-3.5 h-3.5" />
-                  </button>
-                </template>
-              </div>
             </div>
           </div>
 
