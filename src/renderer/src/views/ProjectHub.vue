@@ -724,7 +724,7 @@ async function handleImportProject() {
     </div>
 
     <!-- ═══ Table Header ═══ -->
-    <table class="w-full text-xs table-fixed min-w-[820px]">
+    <table class="w-full text-xs table-fixed min-w-[770px]">
       <thead>
         <tr class="border-b border-surface-100 bg-surface-50 text-left">
           <th v-if="selectionMode" class="px-3 py-2 w-10 align-middle text-center"></th>
@@ -732,7 +732,7 @@ async function handleImportProject() {
           <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
           <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
           <th @click="toggleSort('expected_order_date')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">预计下单 <span class="ml-0.5 opacity-60">{{ sortIcon('expected_order_date') }}</span></th>
-          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
+          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
           <th class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide select-none w-[60px] align-middle text-center">操作</th>
         </tr>
       </thead>
@@ -740,7 +740,7 @@ async function handleImportProject() {
 
     <!-- ═══ Table Body ═══ -->
     <div class="flex-1 min-h-0 overflow-auto">
-      <table class="w-full text-xs table-fixed min-w-[820px]">
+      <table class="w-full text-xs table-fixed min-w-[770px]">
         <tbody class="divide-y divide-surface-50">
           <tr v-for="project in filteredProjects" :key="project.id"
             @click="selectionMode ? toggleProjectSelection(project.id) : goToProject(project.id)"
@@ -833,7 +833,7 @@ async function handleImportProject() {
                 </div>
               </span>
             </td>
-            <td class="px-3 py-2.5 text-surface-400 w-[170px] align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
+            <td class="px-3 py-2.5 text-surface-400 w-[120px] align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
             <td class="px-3 py-2.5 w-[60px] align-middle text-center" @click.stop>
               <button @click.stop="deleteProject(project)" class="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100" title="删除项目">
                 <AppIcon name="trash" class="w-3.5 h-3.5" />
