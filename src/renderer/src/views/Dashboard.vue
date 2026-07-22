@@ -28,7 +28,7 @@ const {
   deadlines,
   recentNotes,
   kbTotalChunks, kbObjectTotal,
-  kbHotCount, kbColdCount, kbHotRatio, kbColdRatio, kbAvgWeight, kbTagCount,
+  kbHotCount, kbColdCount, kbHotRatio, kbColdRatio, kbAvgWeight,
   kbDailyGrowth,
   bizOverview,
   formatBudget, goToProject,
@@ -246,7 +246,6 @@ const {
               </div>
               <div class="flex items-center justify-between mt-1">
                 <span class="text-[10px] text-emerald-500">热门 {{ kbHotCount }}</span>
-                <span class="text-[10px] text-surface-400">标签 {{ kbTagCount }}</span>
                 <span class="text-[10px] text-surface-400">冷数据 {{ kbColdCount }}</span>
               </div>
             </div>
