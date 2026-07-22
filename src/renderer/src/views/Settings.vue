@@ -832,7 +832,7 @@ onUnmounted(() => {
           @click="aiTab = tab"
           class="px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px"
           :class="aiTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-400 hover:text-surface-600'">
-          {{ {llm:'对话模型',vision:'视觉模型',vector:'向量模型'}[tab] }}
+          {{ {llm:'语言模型',vision:'视觉模型',vector:'向量模型'}[tab] }}
         </button>
       </div>
 
