@@ -406,7 +406,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
     </div>
     <div class="shrink-0 px-3 py-1.5 border-b border-surface-100">
       <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
-        <AppIcon name="search" size="12" class="text-surface-400"/><input v-model="seriesSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索目录和产品..."/>
+        <AppIcon name="search" size="12" class="text-surface-400"/><input v-model="seriesSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300 border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索目录和产品..."/>
       </div>
     </div>
     <div class="flex-1" style="overflow-y:auto;overflow-x:clip">
@@ -566,7 +566,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
         <!-- Associated products — collapsible tree -->
         <div><p class="text-[10px] text-surface-400 uppercase tracking-wider mb-2">关联产品</p>
           <div class="border border-surface-200 rounded-lg h-[240px] overflow-y-auto">
-            <div class="px-3 py-2 border-b border-surface-100"><div class="flex items-center gap-1.5 bg-surface-50 rounded-lg px-2.5 py-1"><AppIcon name="search" size="12" class="text-surface-400"/><input v-model="materialSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索产品..."/></div></div>
+            <div class="px-3 py-2 border-b border-surface-100"><div class="flex items-center gap-1.5 bg-surface-50 rounded-lg px-2.5 py-1"><AppIcon name="search" size="12" class="text-surface-400"/><input v-model="materialSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300 border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索产品..."/></div></div>
             <div class="p-2">
               <template v-for="s in modalTree" :key="'mdl-'+s.id">
                 <div class="flex items-center gap-1.5 w-full px-2 py-1 text-xs cursor-pointer rounded hover:bg-surface-50" @click="toggleModalSeries(s.id)" :style="{ paddingLeft: `${8 + (s._depth||0) * 16}px` }">

@@ -214,7 +214,7 @@ onMounted(loadAll)
         <div class="flex items-center gap-1.5 px-3 py-2 border-b border-surface-100 shrink-0">
           <div class="flex items-center gap-1.5 flex-1 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
             <AppIcon name="search" size="12" class="text-surface-400"/>
-            <input v-model="searchQuery" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索名称..."/>
+            <input v-model="searchQuery" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300 border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索名称..."/>
           </div>
         </div>
         <div class="flex-1 overflow-y-auto">
@@ -256,7 +256,7 @@ onMounted(loadAll)
             <div class="flex items-center gap-1.5">
               <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
                 <AppIcon name="search" size="12" class="text-surface-400"/>
-                <input v-model="contactSearch" type="text" class="w-[120px] bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索联系人..."/>
+                <input v-model="contactSearch" type="text" class="w-[120px] bg-transparent text-[11px] outline-none placeholder-surface-300 border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索联系人..."/>
               </div>
               <button @click="deleteEntity(selectedEntity)" class="flex items-center gap-1 px-2 py-1 text-[10px] rounded border border-red-200 text-red-500 hover:bg-red-50 transition-colors">
                 <AppIcon name="trash" size="10" /> 删除

@@ -948,7 +948,7 @@ onUnmounted(() => {
           <div class="flex items-center mb-5">
             <div class="relative flex-1">
               <AppIcon name="search" class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
-              <input v-model="ms.sq" type="text" placeholder="搜索指标名称或参数要求..." class="w-full pl-9 pr-8 py-2 text-[13px] bg-white border border-gray-200 rounded-lg outline-none focus:border-[#007aff] focus:ring-1 focus:ring-blue-500 shadow-sm"/>
+              <input v-model="ms.sq" type="text" placeholder="搜索指标名称或参数要求..." class="w-full pl-9 pr-8 py-2 text-[13px] bg-white border border-gray-200 rounded-lg outline-none focus:border-brand-400 transition-colors shadow-sm"/>
               <button v-if="ms.sq" @click="ms.sq = ''" class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"><AppIcon name="x" class="w-3 h-3" /></button>
             </div>
           </div>

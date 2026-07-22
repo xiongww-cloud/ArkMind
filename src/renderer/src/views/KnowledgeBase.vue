@@ -556,7 +556,7 @@ onUnmounted(() => {
           <h3 class="text-[13px] font-semibold text-[#1d1d1f]">保存到笔记本</h3>
           <button @click="notebookPickerOpen = false" class="w-7 h-7 flex items-center justify-center rounded-lg text-[#86868b] hover:text-[#2563eb]">✕</button>
         </div>
-        <div class="px-4 py-2"><input v-model="notebookSearch" class="w-full border border-[#e5e5ea] rounded-lg px-3 py-2 text-[12px] outline-none focus:border-[#2563eb]/40" placeholder="搜索笔记本..." /></div>
+        <div class="px-4 py-2"><input v-model="notebookSearch" class="w-full border border-surface-200 rounded-lg px-3 py-2 text-[12px] outline-none focus:border-brand-400 transition-colors" placeholder="搜索笔记本..." /></div>
         <div class="flex-1 overflow-y-auto px-4 py-2 max-h-[300px] space-y-1">
           <button v-for="nb in filteredNotebooks" :key="nb.id" @click="saveToNotebook(nb.id)" class="w-full flex items-center gap-2 px-3 py-2.5 text-[12px] text-left rounded-xl transition-colors text-[#3a3a3c] hover:bg-[#f0f0f5]">
             <svg class="w-4 h-4 text-[#86868b] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
