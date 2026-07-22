@@ -437,6 +437,9 @@ const filteredProjects = computed(() => {
       va = (a.name || '').toLowerCase()
       vb = (b.name || '').toLowerCase()
       return va.localeCompare(vb) * mul
+    } else if (sortField.value === 'expected_order_date') {
+      va = a.expectedOrderDate || a.expected_order_date || ''
+      vb = b.expectedOrderDate || b.expected_order_date || ''
     } else {
       va = a[sortField.value] || a.createdAt || ''
       vb = b[sortField.value] || b.createdAt || ''
@@ -711,7 +714,7 @@ async function handleImportProject() {
           <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
           <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
           <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
-          <th class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide select-none w-[120px] align-middle text-left">预计下单</th>
+          <th @click="toggleSort('expected_order_date')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">预计下单 <span class="ml-0.5 opacity-60">{{ sortIcon('expected_order_date') }}</span></th>
         </tr>
       </thead>
     </table>
