@@ -259,7 +259,9 @@ async function stopAgent() {
 
 function toggle() {
   if (dragMoved.value) return
-  if (showNotifications.value) {
+  const isOpen = open.value || showNotifications.value
+  if (isOpen) {
+    open.value = false
     showNotifications.value = false
     return
   }
@@ -267,8 +269,8 @@ function toggle() {
     showNotifications.value = true
     return
   }
-  open.value = !open.value
-  if (open.value) nextTick(() => { scrollChat() })
+  open.value = true
+  nextTick(() => { scrollChat() })
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────
@@ -288,12 +290,6 @@ onUnmounted(() => {
   stopAllTypewriters()
   unlistenNotify.value?.()
 })
-
-function onNotificationPanelClose() {
-  showNotifications.value = false
-  open.value = true
-  loadNotificationStats()
-}
 
 function onBubbleClose() {
   showBubble.value = false
@@ -332,89 +328,106 @@ function onBubbleClick() {
 
   <!-- Chat Panel -->
   <Transition name="fab-panel">
-    <div v-if="open" class="fab-panel" :style="{ bottom: (winH - fabY + 8) + 'px' }">
+    <div v-if="open || showNotifications" class="fab-panel" :style="{ bottom: (winH - fabY + 8) + 'px' }">
       <!-- Scanline -->
       <div class="fab-scanline" />
 
       <!-- Title Bar -->
       <div class="flex items-center justify-between px-3 py-1.5 border-b border-white/20 bg-white/20 backdrop-blur">
-        <div class="flex items-center gap-2">
-          <svg class="w-3.5 h-3.5 text-[#2563eb] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
-          <span class="text-[11px] font-medium text-[#3a3a3c]">AI 助手</span>
-          <button @click="open = false; showNotifications = true" class="relative p-0.5 rounded hover:bg-[#2563eb]/10 transition-colors" title="通知中心">
-            <svg class="w-4 h-4 text-[#86868b] hover:text-[#2563eb] transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
-            <span v-if="unreadCount > 0" class="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center leading-none">{{ unreadCount > 9 ? '9+' : unreadCount }}</span>
+        <!-- 通知中心模式 -->
+        <template v-if="showNotifications">
+          <div class="flex items-center gap-2">
+            <button @click="showNotifications = false" class="p-0.5 rounded hover:bg-white/30 transition-colors" title="返回">
+              <svg class="w-3.5 h-3.5 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.75 19.5L8.25 12l7.5-7.5"/></svg>
+            </button>
+            <span class="text-[11px] font-medium text-[#3a3a3c]">通知中心</span>
+          </div>
+          <button @click="showNotifications = false; open = false" class="p-1 rounded-lg hover:bg-white/30 transition-colors" title="关闭">
+            <svg class="w-3 h-3 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
-        </div>
-        <button @click="open = false" class="p-1 rounded-lg hover:bg-white/30 transition-colors" title="关闭">
-          <svg class="w-3 h-3 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
-        </button>
+        </template>
+        <!-- 聊天模式 -->
+        <template v-else>
+          <div class="flex items-center gap-2">
+            <svg class="w-3.5 h-3.5 text-[#2563eb] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+            <span class="text-[11px] font-medium text-[#3a3a3c]">AI 助手</span>
+            <button @click="showNotifications = true" class="relative p-0.5 rounded hover:bg-[#2563eb]/10 transition-colors" title="通知中心">
+              <svg class="w-4 h-4 text-[#86868b] hover:text-[#2563eb] transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
+              <span v-if="unreadCount > 0" class="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center leading-none">{{ unreadCount > 9 ? '9+' : unreadCount }}</span>
+            </button>
+          </div>
+          <button @click="open = false" class="p-1 rounded-lg hover:bg-white/30 transition-colors" title="关闭">
+            <svg class="w-3 h-3 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </template>
       </div>
 
-      <!-- Messages -->
-      <div ref="chatListRef" class="fab-panel__body">
-        <!-- Empty -->
-        <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full px-5 py-6 text-center">
-          <div class="w-14 h-14 mb-3 rounded-2xl bg-gradient-to-br from-[#2563eb]/10 to-[#93c5fd]/10 flex items-center justify-center ring-1 ring-[#2563eb]/10">
-            <svg class="w-7 h-7 text-[#2563eb]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-              <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/>
-            </svg>
-          </div>
-          <h3 class="text-[14px] font-semibold text-[#1d1d1f] mb-1">AI 知识助手</h3>
-          <p class="text-[11px] text-[#86868b] mb-4 leading-relaxed">基于你的知识库回答问题</p>
-          <div class="grid grid-cols-1 gap-1.5 w-full max-w-[300px]">
-            <div v-for="(s, i) in suggestions" :key="i" @click="inputText = s; send()"
-              class="bg-white border border-[#e5e5ea] rounded-xl px-3 py-2 text-left cursor-pointer hover:border-[#2563eb]/30 hover:shadow-sm transition-all duration-200">
-              <div class="text-[10px] text-[#2563eb] font-medium mb-0.5">建议 {{ i + 1 }}</div>
-              <div class="text-[12px] text-[#3a3a3c] leading-relaxed">{{ s }}</div>
-            </div>
-          </div>
-        </div>
+      <!-- ═══ 通知中心内容 ═══ -->
+      <div v-if="showNotifications" class="fab-panel__body">
+        <NotificationPanel :visible="showNotifications" @close="showNotifications = false" />
+      </div>
 
+      <!-- ═══ 聊天内容 ═══ -->
+      <template v-else>
         <!-- Messages -->
-        <div v-for="m in messages" :key="m.id" class="flex gap-2 items-start animate-fade-in mb-2.5"
-          :class="m.role === 'user' ? 'flex-row-reverse' : ''">
-          <div v-if="m.role === 'user'" class="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>
-          <div v-else class="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
-          <div class="min-w-0" :class="m.role === 'user' ? 'max-w-[70%]' : 'max-w-[80%]'">
-            <div class="text-[10px] text-[#c7c7cc] mb-0.5 px-0.5" :class="m.role === 'user' ? 'text-right' : ''">{{ fmtTime() }}</div>
-            <!-- User -->
-            <div v-if="m.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-1.5">
-              <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ m.content }}</pre>
+        <div ref="chatListRef" class="fab-panel__body">
+          <!-- Empty -->
+          <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full px-5 py-6 text-center">
+            <div class="w-14 h-14 mb-3 rounded-2xl bg-gradient-to-br from-[#2563eb]/10 to-[#93c5fd]/10 flex items-center justify-center ring-1 ring-[#2563eb]/10">
+              <svg class="w-7 h-7 text-[#2563eb]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/>
+              </svg>
             </div>
-            <!-- AI -->
-            <div v-else class="fab-bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
-              <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
-              <div v-else class="fab-md" v-html="rendered[m.id] || m.content || '思考中'" />
+            <h3 class="text-[14px] font-semibold text-[#1d1d1f] mb-1">AI 知识助手</h3>
+            <p class="text-[11px] text-[#86868b] mb-4 leading-relaxed">基于你的知识库回答问题</p>
+            <div class="grid grid-cols-1 gap-1.5 w-full max-w-[300px]">
+              <div v-for="(s, i) in suggestions" :key="i" @click="inputText = s; send()"
+                class="bg-white border border-[#e5e5ea] rounded-xl px-3 py-2 text-left cursor-pointer hover:border-[#2563eb]/30 hover:shadow-sm transition-all duration-200">
+                <div class="text-[10px] text-[#2563eb] font-medium mb-0.5">建议 {{ i + 1 }}</div>
+                <div class="text-[12px] text-[#3a3a3c] leading-relaxed">{{ s }}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Messages -->
+          <div v-for="m in messages" :key="m.id" class="flex gap-2 items-start animate-fade-in mb-2.5"
+            :class="m.role === 'user' ? 'flex-row-reverse' : ''">
+            <div v-if="m.role === 'user'" class="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>
+            <div v-else class="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
+            <div class="min-w-0" :class="m.role === 'user' ? 'max-w-[70%]' : 'max-w-[80%]'">
+              <div class="text-[10px] text-[#c7c7cc] mb-0.5 px-0.5" :class="m.role === 'user' ? 'text-right' : ''">{{ fmtTime() }}</div>
+              <!-- User -->
+              <div v-if="m.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-1.5">
+                <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ m.content }}</pre>
+              </div>
+              <!-- AI -->
+              <div v-else class="fab-bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
+                <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
+                <div v-else class="fab-md" v-html="rendered[m.id] || m.content || '思考中'" />
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- Input -->
-      <div class="fab-panel__foot">
-        <div class="fab-input-wrap">
-          <textarea v-model="inputText" rows="1" placeholder="向 AI 提问..." class="fab-input"
-            @keydown.enter.exact.prevent="send"
-            @input="(e: any) => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 56) + 'px' }" />
-          <button v-if="isChatting" @click="stopAgent"
-            class="w-7 h-7 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors flex-shrink-0" title="停止">
-            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-          </button>
-          <button v-else @click="send" :disabled="!inputText.trim()"
-            class="fab-send" :class="{ 'fab-send--on': inputText.trim() }">
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
-          </button>
+        <!-- Input -->
+        <div class="fab-panel__foot">
+          <div class="fab-input-wrap">
+            <textarea v-model="inputText" rows="1" placeholder="向 AI 提问..." class="fab-input"
+              @keydown.enter.exact.prevent="send"
+              @input="(e: any) => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 56) + 'px' }" />
+            <button v-if="isChatting" @click="stopAgent"
+              class="w-7 h-7 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors flex-shrink-0" title="停止">
+              <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+            </button>
+            <button v-else @click="send" :disabled="!inputText.trim()"
+              class="fab-send" :class="{ 'fab-send--on': inputText.trim() }">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
+            </button>
+          </div>
         </div>
-      </div>
+      </template>
     </div>
   </Transition>
-
-  <!-- Notification Panel -->
-  <div v-if="showNotifications" class="fab-panel" :style="{ bottom: (winH - fabY + 8) + 'px' }">
-    <div class="fab-scanline" />
-    <NotificationPanel :visible="showNotifications" @close="onNotificationPanelClose" />
-  </div>
 </div>
 
 <!-- Notification Bubble -->
