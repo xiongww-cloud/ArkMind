@@ -258,6 +258,15 @@ const VEC_PRESETS: PresetModel[] = [
 const selectedPreset = ref('')
 const selectedVisionPreset = ref('')
 const selectedVecPreset = ref('')
+const presetDropdownOpen = ref(false)
+const visionPresetDropdownOpen = ref(false)
+const vecPresetDropdownOpen = ref(false)
+
+function selectPreset(type: 'llm' | 'vision' | 'vec', preset: PresetModel) {
+  if (type === 'llm') { selectedPreset.value = preset.name; providerForm.value.baseUrl = preset.baseUrl; providerForm.value.modelName = preset.modelName; presetDropdownOpen.value = false }
+  else if (type === 'vision') { selectedVisionPreset.value = preset.name; visionForm.value.baseUrl = preset.baseUrl; visionForm.value.modelName = preset.modelName; visionPresetDropdownOpen.value = false }
+  else { selectedVecPreset.value = preset.name; vecForm.value.baseUrl = preset.baseUrl; vecForm.value.modelName = preset.modelName; vecPresetDropdownOpen.value = false }
+}
 
 function applyPreset(type: 'llm' | 'vision' | 'vec') {
   const presets = type === 'llm' ? LLM_PRESETS : type === 'vision' ? VISION_PRESETS : VEC_PRESETS
@@ -1075,12 +1084,20 @@ onUnmounted(() => {
         <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingProvider ? '编辑模型' : '添加模型' }}</h3>
           <div class="space-y-3">
-            <div>
+            <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) presetDropdownOpen = false }">
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
-              <select v-model="selectedPreset" @change="applyPreset('llm')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white">
-                <option value="">选择预设模型...</option>
-                <option v-for="p in LLM_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
-              </select>
+              <button @click="presetDropdownOpen = !presetDropdownOpen" class="w-full flex items-center justify-between h-8 bg-white border border-slate-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors" :class="selectedPreset ? 'text-slate-700' : 'text-slate-400'">
+                <span>{{ selectedPreset || '选择预设模型...' }}</span>
+                <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="presetDropdownOpen ? 'rotate-180' : ''" />
+              </button>
+              <div v-if="presetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
+                <button v-for="p in LLM_PRESETS" :key="p.name" @click="selectPreset('llm', p)" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedPreset === p.name ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
+                  <span class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="selectedPreset === p.name ? 'bg-blue-600 border-blue-600' : 'border-slate-300'">
+                    <AppIcon v-if="selectedPreset === p.name" name="check" class="w-2.5 h-2.5 text-white" />
+                  </span>
+                  <span>{{ p.name }}</span>
+                </button>
+              </div>
             </div>
             <div v-if="selectedPreset">
               <a :href="LLM_PRESETS.find(p => p.name === selectedPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
@@ -1119,12 +1136,20 @@ onUnmounted(() => {
         <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingVision ? '编辑 视觉模型' : '添加 视觉模型' }}</h3>
           <div class="space-y-3">
-            <div>
+            <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) visionPresetDropdownOpen = false }">
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
-              <select v-model="selectedVisionPreset" @change="applyPreset('vision')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white">
-                <option value="">选择预设模型...</option>
-                <option v-for="p in VISION_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
-              </select>
+              <button @click="visionPresetDropdownOpen = !visionPresetDropdownOpen" class="w-full flex items-center justify-between h-8 bg-white border border-slate-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors" :class="selectedVisionPreset ? 'text-slate-700' : 'text-slate-400'">
+                <span>{{ selectedVisionPreset || '选择预设模型...' }}</span>
+                <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="visionPresetDropdownOpen ? 'rotate-180' : ''" />
+              </button>
+              <div v-if="visionPresetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
+                <button v-for="p in VISION_PRESETS" :key="p.name" @click="selectPreset('vision', p)" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVisionPreset === p.name ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
+                  <span class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="selectedVisionPreset === p.name ? 'bg-blue-600 border-blue-600' : 'border-slate-300'">
+                    <AppIcon v-if="selectedVisionPreset === p.name" name="check" class="w-2.5 h-2.5 text-white" />
+                  </span>
+                  <span>{{ p.name }}</span>
+                </button>
+              </div>
             </div>
             <div v-if="selectedVisionPreset">
               <a :href="VISION_PRESETS.find(p => p.name === selectedVisionPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
@@ -1163,12 +1188,20 @@ onUnmounted(() => {
         <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">向量模型配置</h3>
           <div class="space-y-3">
-            <div>
+            <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) vecPresetDropdownOpen = false }">
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
-              <select v-model="selectedVecPreset" @change="applyPreset('vec')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white">
-                <option value="">选择预设模型...</option>
-                <option v-for="p in VEC_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
-              </select>
+              <button @click="vecPresetDropdownOpen = !vecPresetDropdownOpen" class="w-full flex items-center justify-between h-8 bg-white border border-slate-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors" :class="selectedVecPreset ? 'text-slate-700' : 'text-slate-400'">
+                <span>{{ selectedVecPreset || '选择预设模型...' }}</span>
+                <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="vecPresetDropdownOpen ? 'rotate-180' : ''" />
+              </button>
+              <div v-if="vecPresetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
+                <button v-for="p in VEC_PRESETS" :key="p.name" @click="selectPreset('vec', p)" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left transition-colors" :class="selectedVecPreset === p.name ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
+                  <span class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="selectedVecPreset === p.name ? 'bg-blue-600 border-blue-600' : 'border-slate-300'">
+                    <AppIcon v-if="selectedVecPreset === p.name" name="check" class="w-2.5 h-2.5 text-white" />
+                  </span>
+                  <span>{{ p.name }}</span>
+                </button>
+              </div>
             </div>
             <div v-if="selectedVecPreset">
               <a :href="VEC_PRESETS.find(p => p.name === selectedVecPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
