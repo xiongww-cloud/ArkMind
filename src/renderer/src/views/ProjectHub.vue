@@ -416,7 +416,7 @@ function toggleSort(field) {
   if (sortField.value === field) { sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc' }
   else { sortField.value = field; sortOrder.value = 'desc' }
 }
-function sortIcon(field) { if (sortField.value !== field) return ''; return sortOrder.value === 'desc' ? '↓' : '↑' }
+function sortIcon(field) { if (sortField.value !== field) return '↕'; return sortOrder.value === 'desc' ? '↓' : '↑' }
 
 // ─── Create project ──────────────────────────────────────────────
 const projectForm = ref({ name: '', budget: 0, description: '', status: 'Lead', bidTime: '', customerId: '' })
@@ -605,10 +605,10 @@ async function handleImportProject() {
       <thead>
         <tr class="border-b border-surface-100 bg-surface-50 text-left">
           <th v-if="selectionMode" class="px-3 py-2 w-10 align-middle text-center"></th>
-          <th @click="toggleSort('name')" class="pl-5 pr-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none align-middle text-left w-[330px]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
-          <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
-          <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
-          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
+          <th @click="toggleSort('name')" class="pl-5 pr-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none align-middle text-left w-[330px]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
+          <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
+          <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
+          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
         </tr>
       </thead>
     </table>
