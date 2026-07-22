@@ -334,10 +334,6 @@ function onBubbleClick() {
     <div v-if="open" class="fab-panel" :style="{ bottom: (winH - fabY + 8) + 'px' }">
       <!-- Scanline -->
       <div class="fab-scanline" />
-      <!-- Close button -->
-      <button @click="open = false" class="fab-panel__close">
-        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
-      </button>
 
       <!-- Title Bar -->
       <div class="flex items-center justify-between px-3 py-1.5 border-b border-white/20 bg-white/20 backdrop-blur">
@@ -345,10 +341,15 @@ function onBubbleClick() {
           <svg class="w-3.5 h-3.5 text-[#2563eb] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
           <span class="text-[11px] font-medium text-[#3a3a3c]">AI 助手</span>
         </div>
-        <button @click="open = false; showNotifications = true" class="relative p-1 rounded-lg hover:bg-white/30 transition-colors" title="通知中心">
-          <svg class="w-3.5 h-3.5 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
-          <span v-if="unreadCount > 0" class="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-red-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center leading-none">{{ unreadCount > 9 ? '9+' : unreadCount }}</span>
-        </button>
+        <div class="flex items-center gap-0.5">
+          <button @click="open = false; showNotifications = true" class="relative p-1 rounded-lg hover:bg-white/30 transition-colors" title="通知中心">
+            <svg class="w-3.5 h-3.5 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/></svg>
+            <span v-if="unreadCount > 0" class="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-red-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center leading-none">{{ unreadCount > 9 ? '9+' : unreadCount }}</span>
+          </button>
+          <button @click="open = false" class="p-1 rounded-lg hover:bg-white/30 transition-colors" title="关闭">
+            <svg class="w-3 h-3 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
       </div>
 
       <!-- Messages -->
