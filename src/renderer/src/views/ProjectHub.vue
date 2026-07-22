@@ -601,7 +601,7 @@ async function handleImportProject() {
     </div>
 
     <!-- ═══ Table Header ═══ -->
-    <table class="w-full text-xs table-fixed min-w-[700px]">
+    <table class="w-full text-xs table-fixed min-w-[700px] mb-2">
       <thead>
         <tr class="border-b border-surface-100 bg-surface-50 text-left">
           <th v-if="selectionMode" class="px-3 py-2 w-10 align-middle text-center"></th>
