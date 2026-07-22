@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { useUploadProgress } from '@/composables/useUploadProgress'
+import { useResizablePanels } from '@/composables/useResizablePanels'
 import AppIcon from '@/components/common/AppIcon.vue'
 import {
   fetchFileTree, listGlobalFiles,
@@ -29,16 +30,7 @@ const allFiles = ref<AssetFile[]>([])
 const rootFileCount = ref(0)
 
 // ─── Layout ──────────────────────────────────────────────────────────
-const sidebarWidth = ref(220); const listWidth = ref(260)
-const isResizing = ref<'sidebar'|'list'|null>(null)
-const resizeStartX = ref(0); const resizeStartW = ref(0)
-function onResizeStart(side: 'sidebar'|'list', e: MouseEvent) {
-  isResizing.value = side; resizeStartX.value = e.clientX
-  resizeStartW.value = side === 'sidebar' ? sidebarWidth.value : listWidth.value
-  document.addEventListener('mousemove', onResizeMove); document.addEventListener('mouseup', onResizeEnd)
-}
-function onResizeMove(e: MouseEvent) { if (!isResizing.value) return; const w = Math.max(140, Math.min(500, resizeStartW.value + e.clientX - resizeStartX.value)); if (isResizing.value === 'sidebar') sidebarWidth.value = w; else listWidth.value = w }
-function onResizeEnd() { isResizing.value = null; document.removeEventListener('mousemove', onResizeMove); document.removeEventListener('mouseup', onResizeEnd) }
+const { sidebarWidth, listWidth, isResizing, onResizeStart } = useResizablePanels()
 
 // ─── Tree (参考 ProductCenter buildTree) ─────────────────────────────────
 const collapsedFolders = ref<Set<string>>(new Set())

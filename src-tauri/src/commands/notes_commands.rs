@@ -2,26 +2,64 @@
 use crate::database;
 use serde_json::{json, Value};
 
+const NOTE_META_COLS: &str = "n.note_id, n.title, substr(n.content,1,300) AS excerpt, n.is_daily, n.notebook_id, n.updated_at, n.created_at, n.deleted_at";
+
 #[tauri::command]
 pub async fn notes_list_all() -> Result<Value, String> {
-    let notes = database::all("SELECT n.*, GROUP_CONCAT(npm.project_id) as project_ids FROM notes n LEFT JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE n.deleted_at IS NULL GROUP BY n.note_id ORDER BY n.updated_at DESC",&[]).map_err(|e|e.to_string())?;
+    let notes = database::all(&format!(
+        "SELECT {}, GROUP_CONCAT(npm.project_id) as project_ids FROM notes n LEFT JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE n.deleted_at IS NULL GROUP BY n.note_id ORDER BY n.updated_at DESC",
+        NOTE_META_COLS
+    ),&[]).map_err(|e|e.to_string())?;
     Ok(json!({"success":true,"notes":notes}))
 }
 #[tauri::command] pub async fn notes_list_daily() -> Result<Value, String> {
-    let notes = database::all("SELECT * FROM notes WHERE is_daily=1 AND deleted_at IS NULL ORDER BY updated_at DESC",&[]).map_err(|e|e.to_string())?;
+    let notes = database::all(&format!(
+        "SELECT {} FROM notes n WHERE n.is_daily=1 AND n.deleted_at IS NULL ORDER BY n.updated_at DESC",
+        NOTE_META_COLS
+    ),&[]).map_err(|e|e.to_string())?;
     Ok(json!({"success":true,"notes":notes}))
 }
 #[tauri::command] pub async fn notes_list_by_project(project_id: String) -> Result<Value, String> {
-    let notes = database::all("SELECT n.* FROM notes n INNER JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE npm.project_id=? AND n.deleted_at IS NULL ORDER BY n.updated_at DESC",&[json!(project_id)]).map_err(|e|e.to_string())?;
+    let notes = database::all(&format!(
+        "SELECT {} FROM notes n INNER JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE npm.project_id=? AND n.deleted_at IS NULL ORDER BY n.updated_at DESC",
+        NOTE_META_COLS
+    ),&[json!(project_id)]).map_err(|e|e.to_string())?;
     Ok(json!({"success":true,"notes":notes}))
 }
 #[tauri::command] pub async fn notes_list_orphan() -> Result<Value, String> {
-    let notes = database::all("SELECT n.* FROM notes n LEFT JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE npm.project_id IS NULL AND n.is_daily=0 AND n.deleted_at IS NULL ORDER BY n.updated_at DESC",&[]).map_err(|e|e.to_string())?;
+    let notes = database::all(&format!(
+        "SELECT {} FROM notes n LEFT JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE npm.project_id IS NULL AND n.is_daily=0 AND n.deleted_at IS NULL ORDER BY n.updated_at DESC",
+        NOTE_META_COLS
+    ),&[]).map_err(|e|e.to_string())?;
     Ok(json!({"success":true,"notes":notes}))
 }
 #[tauri::command] pub async fn notes_list_trash() -> Result<Value, String> {
-    let notes = database::all("SELECT n.* FROM notes n WHERE n.deleted_at IS NOT NULL ORDER BY n.deleted_at DESC",&[]).map_err(|e|e.to_string())?;
+    let notes = database::all(&format!(
+        "SELECT {} FROM notes n WHERE n.deleted_at IS NULL ORDER BY n.deleted_at DESC",
+        NOTE_META_COLS
+    ),&[]).map_err(|e|e.to_string())?;
     Ok(json!({"success":true,"notes":notes}))
+}
+#[tauri::command] pub async fn notes_list_by_notebook(notebook_id: String) -> Result<Value, String> {
+    let notes = database::all(&format!(
+        "SELECT {} FROM notes n WHERE n.notebook_id=? AND n.is_daily=0 AND n.deleted_at IS NULL ORDER BY n.updated_at DESC",
+        NOTE_META_COLS
+    ),&[json!(notebook_id)]).map_err(|e|e.to_string())?;
+    Ok(json!({"success":true,"notes":notes}))
+}
+#[tauri::command] pub async fn notes_get(note_id: String) -> Result<Value, String> {
+    let note = database::get(
+        "SELECT note_id, title, content, is_daily, notebook_id, updated_at, created_at FROM notes WHERE note_id=?",
+        &[json!(note_id)],
+    ).map_err(|e|e.to_string())?;
+    Ok(json!({"success":true,"note":note}))
+}
+#[tauri::command] pub async fn notes_get_for_trash(note_id: String) -> Result<Value, String> {
+    let note = database::get(
+        "SELECT note_id, title, substr(content,1,300) AS excerpt, is_daily, deleted_at FROM notes WHERE note_id=? AND deleted_at IS NOT NULL",
+        &[json!(note_id)],
+    ).map_err(|e|e.to_string())?;
+    Ok(json!({"success":true,"note":note}))
 }
 #[tauri::command]
 pub async fn notes_create(data: Value) -> Result<Value, String> {
@@ -98,7 +136,10 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn notes_list_archive() -> Result<Value, String> {
-    let notes = database::all("SELECT n.* FROM notes n LEFT JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE npm.project_id IS NULL AND n.is_daily=0 AND n.notebook_id IS NULL AND n.deleted_at IS NULL ORDER BY n.updated_at DESC",&[]).map_err(|e|e.to_string())?;
+    let notes = database::all(&format!(
+        "SELECT {} FROM notes n LEFT JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE npm.project_id IS NULL AND n.is_daily=0 AND n.notebook_id IS NULL AND n.deleted_at IS NULL ORDER BY n.updated_at DESC",
+        NOTE_META_COLS
+    ),&[]).map_err(|e|e.to_string())?;
     Ok(json!({"success":true,"notes":notes}))
 }
 #[tauri::command] pub async fn notes_permanent_delete(note_id: String) -> Result<Value, String> {

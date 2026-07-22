@@ -214,6 +214,9 @@ export const notesV2ListAll = fetchNotes
 export const notesV2ListDaily = fetchDailyNotes
 export const notesV2ListByProject = fetchProjectNotes
 export const notesV2ListOrphan = fetchOrphanNotes
+export async function notesV2ListByNotebook(notebookId: string): Promise<FetchNotesResponse> { return invoke('notes_list_by_notebook', { notebookId }) }
+export async function notesV2Get(noteId: string): Promise<{success:boolean; note:any}> { return invoke('notes_get', { noteId }) }
+export async function notesV2GetForTrash(noteId: string): Promise<{success:boolean; note:any}> { return invoke('notes_get_for_trash', { noteId }) }
 export async function notesV2Create(data: unknown): Promise<{noteId:string}> { return invoke('notes_create', { data }) }
 export async function notesV2Update(data: unknown): Promise<void> { return invoke('notes_update', { data }) }
 export async function notesV2Delete(noteId: string): Promise<void> { return invoke('notes_delete', { noteId }) }

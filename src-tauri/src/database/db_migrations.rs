@@ -330,6 +330,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     // ★ 删除所有废弃表
     conn.execute_batch("DROP TABLE IF EXISTS entity_mentions; DROP TABLE IF EXISTS entities; DROP TABLE IF EXISTS documents_parent; DROP TABLE IF EXISTS file_notes_mapping; DROP TABLE IF EXISTS file_library_mapping; DROP TABLE IF EXISTS file_project_mapping; DROP TABLE IF EXISTS file_product_mapping; DROP TABLE IF EXISTS file_todos_mapping; DROP TABLE IF EXISTS file_objects; DROP TABLE IF EXISTS file_versions").ok();
     let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at);");
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_is_daily ON notes(is_daily);");
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_notebook_id ON notes(notebook_id);");
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at);");
 
     // ★ knowledge_chunks 重构：改为 chunk_type 显式区分父子，
     //    新增 source_data_id 指向 source_data，删除 source_doc_id / file_id。

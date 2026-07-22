@@ -207,7 +207,7 @@ pub fn run() {
             commands::file_list_all, commands::file_move_to_folder,
             commands::file_unlink_from_product, commands::file_get_product_associations, commands::file_update_product_associations,
             // Notes
-            commands::notes_list_all, commands::notes_list_daily, commands::notes_list_by_project, commands::notes_list_orphan, commands::notes_list_trash, commands::notes_list_archive,
+            commands::notes_list_all, commands::notes_list_daily, commands::notes_list_by_project, commands::notes_list_orphan, commands::notes_list_trash, commands::notes_list_archive, commands::notes_list_by_notebook, commands::notes_get, commands::notes_get_for_trash,
             commands::notes_create, commands::notes_update, commands::notes_delete, commands::notes_restore, commands::notes_permanent_delete,
             commands::notes_list_tags, commands::notes_create_tag, commands::notes_search_tags, commands::notes_list_tags_by_type,
             commands::notes_get_inherited_tags,

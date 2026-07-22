@@ -8,6 +8,7 @@ import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, getMaterialAssociations, updateMaterialAssociations, updateFileMeta } from '@/api/db-client'
 import { useUploadProgress } from '@/composables/useUploadProgress'
+import { useResizablePanels } from '@/composables/useResizablePanels'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { formatDateTime } from '@/utils/time'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -17,14 +18,7 @@ const route = useRoute()
 const selectionStore = useSelectionStore()
 
 // ─── Layout ──────────────────────────────────────────────────────────
-const sidebarWidth = ref(220); const listWidth = ref(260)
-const isResizing = ref<'sidebar'|'list'|null>(null); const resizeStartX = ref(0); const resizeStartW = ref(0)
-function onResizeStart(side: 'sidebar'|'list', e: MouseEvent) {
-  isResizing.value = side; resizeStartX.value = e.clientX; resizeStartW.value = side === 'sidebar' ? sidebarWidth.value : listWidth.value
-  document.addEventListener('mousemove', onResizeMove); document.addEventListener('mouseup', onResizeEnd)
-}
-function onResizeMove(e: MouseEvent) { if (!isResizing.value) return; const w = Math.max(140, Math.min(500, resizeStartW.value + e.clientX - resizeStartX.value)); if (isResizing.value === 'sidebar') sidebarWidth.value = w; else listWidth.value = w }
-function onResizeEnd() { isResizing.value = null; document.removeEventListener('mousemove', onResizeMove); document.removeEventListener('mouseup', onResizeEnd) }
+const { sidebarWidth, listWidth, isResizing, onResizeStart } = useResizablePanels()
 
 const seriesSearch = ref(''); const selectedSeriesId = ref<string|null>(null)
 const editingSeriesId = ref<string|null>(null); const seriesEditName = ref('')

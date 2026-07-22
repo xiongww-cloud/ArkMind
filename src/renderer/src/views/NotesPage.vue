@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useRoute } from 'vue-router'
 import { useSelectionStore } from '@/stores/selection'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
-import ProjectDetail from '@/views/ProjectDetail.vue'
+const ProjectDetail = defineAsyncComponent(() => import('@/views/ProjectDetail.vue'))
 import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
 import AttachmentPanel from '@/components/notes/AttachmentPanel.vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import { Node } from '@tiptap/core'
 import { getTiptapExtensions } from '@/composables/useTiptapConfig'
+import { useResizablePanels } from '@/composables/useResizablePanels'
 import {
   notesV2ListAll, notesV2ListDaily, notesV2ListOrphan, notesV2ListTrash, notesV2ListArchive,
+  notesV2ListByNotebook, notesV2Get, notesV2GetForTrash,
   notesV2Create, notesV2Update, notesV2Delete, notesV2Restore, notesV2PermanentDelete,
   fetchNotebooks, createNotebook, updateNotebook, deleteNotebook,
   countNotesByNotebook,
@@ -24,7 +26,7 @@ import { useUploadProgress } from '@/composables/useUploadProgress'
 import { sanitizeHtmlSync } from '@/utils/sanitize'
 
 type ViewType = 'daily'|'orphan'|'notebook'|'trash'
-interface Note { note_id:string; id:string; title:string; content:string; is_daily:number; notebook_id?:string; deleted_at?:string; updated_at:string; created_at:string; tags?:any[] }
+interface Note { note_id:string; id:string; title:string; excerpt:string; content?:string; is_daily:number; notebook_id?:string; deleted_at?:string; updated_at:string; created_at:string; tags?:any[] }
 interface Notebook { id:string; name:string; color:string; parentId?:string|null }
 interface Project { id:string; name:string }
 
@@ -42,6 +44,7 @@ const editTitle = ref('')
 const editContent = ref('')
 const lastSavedSnapshot = ref('')
 const isDirty = ref(false)
+const noteContentLoading = ref(false)
 const notebookSearch = ref('')
 const searchQuery = ref('')
 
@@ -204,32 +207,7 @@ const isRestoring = ref(false)
 const selectedTrashNoteId = ref<string|null>(null)
 const trashNotePreview = computed(() => trashNotes.value.find(n => n.note_id === selectedTrashNoteId.value) || null)
 // Column widths (resizable)
-const sidebarWidth = ref(220)
-const listWidth = ref(260)
-const isResizing = ref<'sidebar'|'list'|null>(null)
-const resizeStartX = ref(0)
-const resizeStartW = ref(0)
-
-function onResizeStart(side: 'sidebar'|'list', e: MouseEvent|TouchEvent) {
-  isResizing.value = side
-  resizeStartX.value = (e as MouseEvent).clientX || (e as TouchEvent).touches[0].clientX
-  resizeStartW.value = side === 'sidebar' ? sidebarWidth.value : listWidth.value
-  document.addEventListener('mousemove', onResizeMove)
-  document.addEventListener('mouseup', onResizeEnd)
-}
-function onResizeMove(e: MouseEvent) {
-  if (!isResizing.value) return
-  const dx = e.clientX - resizeStartX.value
-  const newW = Math.max(140, Math.min(500, resizeStartW.value + dx))
-  if (isResizing.value === 'sidebar') sidebarWidth.value = newW
-  else listWidth.value = newW
-}
-function onResizeEnd() {
-  isResizing.value = null
-  document.removeEventListener('mousemove', onResizeMove)
-  document.removeEventListener('mouseup', onResizeEnd)
-}
-onUnmounted(() => { document.removeEventListener('mousemove', onResizeMove); document.removeEventListener('mouseup', onResizeEnd) })
+const { sidebarWidth, listWidth, isResizing, onResizeStart } = useResizablePanels()
 
 // ─── Data loading ──────────────────────────────────────────────────
 async function loadNotes() {
@@ -237,13 +215,12 @@ async function loadNotes() {
     let r:any
     switch (currentView.value) {
       case 'daily': r = await notesV2ListDaily(); break
-      case 'notebook': if (selectedNotebookId.value) { r = await notesV2ListAll(); } else { notes.value=[]; return }; break
+      case 'notebook': if (selectedNotebookId.value) { r = await notesV2ListByNotebook(selectedNotebookId.value); } else { notes.value=[]; return }; break
       case 'orphan': r = await notesV2ListOrphan(); break
       case 'trash': r = await notesV2ListTrash(); trashNotes.value = (r?.notes||[]).map((n:any)=>({...n,id:n.note_id,note_id:n.note_id})); return
       default: r = await notesV2ListAll()
     }
     notes.value = (r?.notes||[]).map((n:any)=>({...n,id:n.note_id,note_id:n.note_id}))
-    if (currentView.value==='notebook' && selectedNotebookId.value) notes.value = notes.value.filter((n:any)=>n.notebook_id===selectedNotebookId.value && !n.is_daily)
   } catch { notes.value = [] }
 }
 async function loadAll() { await Promise.all([loadNotes(), loadNotebooks(), loadProjects()]) }
@@ -306,20 +283,21 @@ async function ensureDailyNote() {
   } else {
     await createDailyNote()
   }
-  // ★ 唯一一处自动删除：清除非今日的空闪记
-  for (const n of notes.value) {
-    if (n.is_daily && n.title !== today && !(n.content || '').replace(/<[^>]*>/g, '').trim()) {
-      try { await notesV2PermanentDelete(n.note_id) } catch (e) { console.error('[Notes] auto-delete daily note failed:', e) }
-    }
+  // ★ 唯一处自动删除：清除非今日的空闪记（用 excerpt 判断，避免拉取全文）
+  const emptyOldDaily = notes.value.filter(n =>
+    n.is_daily && n.title !== today && !(n.excerpt || '').replace(/<[^>]*>/g, '').trim()
+  )
+  if (emptyOldDaily.length) {
+    await Promise.all(emptyOldDaily.map(n => notesV2PermanentDelete(n.note_id).catch(e => console.error('[Notes] auto-delete daily note failed:', e))))
+    notes.value = notes.value.filter(n => !emptyOldDaily.some(e => e.note_id === n.note_id))
   }
-  notes.value = notes.value.filter(n => !(n.is_daily && n.title !== today && !(n.content || '').replace(/<[^>]*>/g, '').trim()))
 }
 
 async function createDailyNote() {
   const today = getLocalDateStr()
   try {
     const r: any = await notesV2Create({ title: today, content: '', isDaily: true })
-    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: today, content: '', is_daily: 1, notebook_id: null, updated_at: new Date().toISOString(), created_at: new Date().toISOString(), tags: [] }
+    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: today, excerpt: '', is_daily: 1, notebook_id: null, updated_at: new Date().toISOString(), created_at: new Date().toISOString(), tags: [] }
     notes.value.unshift(newNote)
     selectNote(newNote.note_id)
     dailyNoteCreated = true
@@ -366,7 +344,7 @@ const notebookTree = computed(() => {
 const displayedNotes = computed(() => {
   let result = currentView.value === 'trash' ? trashNotes.value : notes.value
   const q = notebookSearch.value.toLowerCase().trim()
-  if (q) result = result.filter(n => n.title.toLowerCase().includes(q) || (n.content||'').toLowerCase().includes(q))
+  if (q) result = result.filter(n => n.title.toLowerCase().includes(q) || (n.excerpt||'').toLowerCase().includes(q))
   if (currentView.value === 'daily') result = [...result].sort((a,b) => (b.created_at||'').localeCompare(a.created_at||''))
   else result = [...result].sort((a,b) => (b.updated_at||'').localeCompare(a.updated_at||''))
   return result
@@ -395,10 +373,10 @@ async function doSave() {
   if (snapshot === lastSavedSnapshot.value) return  // 内容未变，跳过
   await notesV2Update({ noteId: selectedNoteId.value, title: editTitle.value, content: editContent.value })
   lastSavedSnapshot.value = snapshot
-  // ★ Update local note card immediately
+  // ★ Update local note card immediately (excerpt = truncated content)
   const idx = notes.value.findIndex(n => n.note_id === selectedNoteId.value || n.id === selectedNoteId.value)
   if (idx !== -1) {
-    notes.value[idx] = { ...notes.value[idx], title: editTitle.value, content: editContent.value, updated_at: new Date().toISOString() }
+    notes.value[idx] = { ...notes.value[idx], title: editTitle.value, excerpt: editContent.value.replace(/<[^>]*>/g,'').slice(0,300), updated_at: new Date().toISOString() }
   }
   isDirty.value = false
 }
@@ -415,20 +393,29 @@ function selectNotebook(nid: string) {
   loadAll()
 }
 function selectNote(id: string) {
-  saveBeforeSwitch().then(() => {
-    // Find note in active list (notes or trashNotes)
+  saveBeforeSwitch().then(async () => {
     const src = currentView.value === 'trash' ? trashNotes.value : notes.value
     const n = src.find(x => x.note_id === id || x.id === id)
     if (!n) return
     selectedNoteId.value = id
     editTitle.value = n.title || ''
-    editContent.value = n.content || ''
     isDirty.value = false
-    if (currentView.value !== 'trash') {
-      nextTick(() => {
-        editor.value?.commands.setContent(n.content || '', false)
-        editor.value?.commands.focus()
-      })
+    if (currentView.value === 'trash') return
+    // 从后端获取完整内容
+    noteContentLoading.value = true
+    try {
+      const r = await notesV2Get(id)
+      const fullContent = r?.note?.content || ''
+      editContent.value = fullContent
+      lastSavedSnapshot.value = JSON.stringify({ title: n.title || '', content: fullContent })
+      await nextTick()
+      editor.value?.commands.setContent(fullContent, false)
+      editor.value?.commands.focus()
+    } catch (e) {
+      console.error('[Notes] fetch note content failed:', e)
+      editContent.value = ''
+    } finally {
+      noteContentLoading.value = false
     }
   })
 }
@@ -449,7 +436,7 @@ async function createNote() {
   if (currentView.value === 'notebook' && selectedNotebookId.value) payload.notebookId = selectedNotebookId.value
   try {
     const r: any = await notesV2Create(payload)
-    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', content: '', is_daily: payload.isDaily ? 1 : 0, notebook_id: payload.notebookId || null, updated_at: new Date().toISOString(), created_at: new Date().toISOString(), tags: [] }
+    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', excerpt: '', is_daily: payload.isDaily ? 1 : 0, notebook_id: payload.notebookId || null, updated_at: new Date().toISOString(), created_at: new Date().toISOString(), tags: [] }
     notes.value.unshift(newNote)
     selectedNoteId.value = newNote.note_id
     editTitle.value = ''; editContent.value = ''; isDirty.value = false
@@ -811,7 +798,7 @@ const restoreNotebookList = computed(() => {
         <div v-if="selectedNoteId===(note.note_id||note.id)" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
         <div class="flex-1 min-w-0">
           <p class="text-[12px] font-medium text-surface-800 truncate">{{ currentView==='daily' ? (note.title||(note.created_at||'').slice(0,10)) : (note.title||'未命名笔记') }}</p>
-          <p class="text-[10px] text-surface-400 line-clamp-1 mt-0.5">{{ (note.content||'').replace(/<[^>]*>/g,'').slice(0,40) || '暂无内容' }}</p>
+          <p class="text-[10px] text-surface-400 line-clamp-1 mt-0.5">{{ (note.excerpt||'').replace(/<[^>]*>/g,'').slice(0,40) || '暂无内容' }}</p>
           <p class="text-[9px] text-surface-300 mt-0.5">{{ formatNoteTime(note.updated_at || note.created_at || '') }}</p>
         </div>
         <button @click.stop="deleteNote(note.note_id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"><AppIcon name="trash" size="13"/></button>
