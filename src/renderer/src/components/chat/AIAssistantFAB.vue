@@ -411,12 +411,10 @@ function onBubbleClick() {
   </Transition>
 
   <!-- Notification Panel -->
-  <Transition name="fab-panel">
-    <div v-if="showNotifications" class="fab-panel" :style="{ bottom: (winH - fabY + 8) + 'px' }">
-      <div class="fab-scanline" />
-      <NotificationPanel :visible="showNotifications" @close="onNotificationPanelClose" />
-    </div>
-  </Transition>
+  <div v-if="showNotifications" class="fab-panel" :style="{ bottom: (winH - fabY + 8) + 'px' }">
+    <div class="fab-scanline" />
+    <NotificationPanel :visible="showNotifications" @close="onNotificationPanelClose" />
+  </div>
 </div>
 
 <!-- Notification Bubble -->
