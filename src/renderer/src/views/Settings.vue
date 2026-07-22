@@ -497,7 +497,7 @@ async function confirmVisionForm() {
 }
 
 async function removeVision(provider: any) {
-  const ok = await dangerConfirm({ title: '删除模型', message: `确定删除 OCR 模型「${provider.modelName}」？`, confirmText: '删除' })
+  const ok = await dangerConfirm({ title: '删除模型', message: `确定删除 视觉模型「${provider.modelName}」？`, confirmText: '删除' })
   if (!ok) return
   visionProviders.value = visionProviders.value.filter((p: any) => p.id !== provider.id)
   if (visionActiveId.value === provider.id) { visionActiveId.value = visionProviders.value[0]?.id || null }
@@ -832,7 +832,7 @@ onUnmounted(() => {
           @click="aiTab = tab"
           class="px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px"
           :class="aiTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-400 hover:text-surface-600'">
-          {{ {llm:'对话模型',vision:'OCR 模型',vector:'向量模型'}[tab] }}
+          {{ {llm:'对话模型',vision:'视觉模型',vector:'向量模型'}[tab] }}
         </button>
       </div>
 
@@ -863,7 +863,7 @@ onUnmounted(() => {
 
       <!-- Vision Tab -->
       <div v-show="aiTab === 'vision'" class="p-5 space-y-3">
-        <p class="text-[10px] text-surface-400">用于图片/PDF OCR 解析的视觉模型</p>
+        <p class="text-[10px] text-surface-400">用于图片/PDF 视觉解析的模型</p>
         <div v-for="p in visionProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="visionActiveId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
           <input type="radio" :value="p.id" :checked="visionPendingId === p.id" @change="visionPendingId = p.id" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
           <div class="flex-1 min-w-0">
@@ -1074,7 +1074,7 @@ onUnmounted(() => {
     <Transition name="modal-fade">
       <div v-if="showVisionModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeVisionModal">
         <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] p-6">
-          <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingVision ? '编辑 OCR 模型' : '添加 OCR 模型' }}</h3>
+          <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingVision ? '编辑 视觉模型' : '添加 视觉模型' }}</h3>
           <div class="space-y-3">
             <div class="grid grid-cols-2 gap-2">
               <div>
@@ -1201,8 +1201,8 @@ onUnmounted(() => {
               <p class="text-surface-500 mb-2">A: 检查是否设置了默认模型（点击模型前的单选按钮并保存）。</p>
               <p class="font-medium text-surface-600 mb-0.5">Q: 向量化失败怎么办？</p>
               <p class="text-surface-500 mb-2">A: 确认向量模型配置正确，检查 API Key 是否有 embedding 权限。更换模型后需要清除知识库重新向量化。</p>
-              <p class="font-medium text-surface-600 mb-0.5">Q: OCR 解析不准确？</p>
-              <p class="text-surface-500 mb-2">A: 确认 OCR 模型配置正确。对于中文文档，推荐使用通义千问视觉模型。</p>
+              <p class="font-medium text-surface-600 mb-0.5">Q: 视觉解析不准确？</p>
+              <p class="text-surface-500 mb-2">A: 确认视觉模型配置正确。对于中文文档，推荐使用通义千问视觉模型。</p>
             </div>
           </div>
         </div>
