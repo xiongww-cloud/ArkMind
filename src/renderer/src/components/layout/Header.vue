@@ -140,13 +140,15 @@ function selectSearchResult(obj: {source_type:string;source_id:string;title:stri
   const t = map[obj.source_type]
   if (t) { navigateTo(t, obj.source_id) }
   else if (obj.source_type === 'FILE') { invoke('file_open', { versionId: obj.source_id }).catch(() => {}) }
+  else if (obj.source_type === 'PARTNER' || obj.source_type === 'CONTACT') { router.push('/contacts') }
 }
 
-const typeLabelMap: Record<string,string> = { FILE:'文件', NOTE:'笔记', PRODUCT:'产品', PROJECT:'项目', TODO:'待办' }
+const typeLabelMap: Record<string,string> = { FILE:'文件', NOTE:'笔记', PRODUCT:'产品', PROJECT:'项目', TODO:'待办', PARTNER:'合作伙伴', CONTACT:'联系人' }
 const typeBadgeMap: Record<string,string> = {
   FILE:'bg-blue-50 text-blue-600', NOTE:'bg-amber-50 text-amber-600',
   PRODUCT:'bg-emerald-50 text-emerald-600', PROJECT:'bg-violet-50 text-violet-600',
-  TODO:'bg-slate-100 text-slate-500',
+  TODO:'bg-slate-100 text-slate-500', PARTNER:'bg-pink-50 text-pink-600',
+  CONTACT:'bg-cyan-50 text-cyan-600',
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -449,7 +451,7 @@ onUnmounted(() => {
           placeholder="搜索项目、笔记、产品、文件..."
           class="w-full h-7 pl-7 pr-3 rounded-lg border border-surface-200 bg-transparent text-[12px] text-surface-700 outline-none focus:border-brand-400 focus:bg-white transition-colors placeholder:text-surface-400"
         />
-        <div v-if="searchOpen && (searchResults.length > 0 || searchLoading)"
+        <div v-if="searchOpen && searchQuery.trim()"
           class="absolute top-full left-1/2 -translate-x-1/2 mt-1 z-[50] bg-white rounded-lg shadow-lg border border-surface-200 max-h-[400px] overflow-y-auto w-[480px]">
           <!-- Filter buttons -->
           <div class="flex flex-wrap gap-1.5 px-3 pt-2.5 pb-2 border-b border-surface-100">
@@ -466,7 +468,7 @@ onUnmounted(() => {
             </button>
           </div>
           <div v-if="searchLoading" class="px-3 py-4 text-center text-[11px] text-surface-400">搜索中...</div>
-          <div v-else-if="filteredResults.length === 0" class="px-3 py-4 text-center text-[11px] text-surface-400">无匹配结果</div>
+          <div v-else-if="filteredResults.length === 0" class="px-3 py-4 text-center text-[11px] text-surface-400">未搜索到相关内容</div>
           <div v-else>
             <div v-for="obj in filteredResults" :key="obj.source_type + obj.source_id"
               @mousedown.prevent="selectSearchResult(obj)"
