@@ -490,10 +490,10 @@ async function handleImportProject() {
 
 <template>
   <div class="h-full bg-white rounded-xl border border-surface-200 shadow-sm overflow-y-auto">
-    <div class="p-4 space-y-3">
+    <div class="py-4 space-y-3">
 
     <!-- ═══ Filter Bar ═══ -->
-    <div class="flex flex-wrap items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2 px-4">
       <button class="btn-primary flex-shrink-0" @click="openCreate">
         <AppIcon name="plus-thin" class="w-3.5 h-3.5" />
         新建项目
@@ -590,7 +590,7 @@ async function handleImportProject() {
     </div>
 
     <!-- ═══ Bottom Status Bar ═══ -->
-    <div class="flex items-center justify-between text-xs text-surface-400 px-1">
+    <div class="flex items-center justify-between text-xs text-surface-400 px-4">
       <div class="flex items-center gap-2">
         <template v-if="selectionMode">
           <span class="text-blue-600 font-medium">已选 {{ selectedProjectIds.size }} 个项目</span>
