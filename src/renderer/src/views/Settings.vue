@@ -1087,7 +1087,7 @@ onUnmounted(() => {
             <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) presetDropdownOpen = false }">
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
               <button @click="presetDropdownOpen = !presetDropdownOpen" class="w-full flex items-center justify-between h-8 bg-white border border-slate-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors" :class="selectedPreset ? 'text-slate-700' : 'text-slate-400'">
-                <span>{{ selectedPreset || '选择预设模型...' }}</span>
+                <span>{{ selectedPreset || '自定义' }}</span>
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="presetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="presetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
@@ -1140,7 +1140,7 @@ onUnmounted(() => {
             <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) visionPresetDropdownOpen = false }">
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
               <button @click="visionPresetDropdownOpen = !visionPresetDropdownOpen" class="w-full flex items-center justify-between h-8 bg-white border border-slate-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors" :class="selectedVisionPreset ? 'text-slate-700' : 'text-slate-400'">
-                <span>{{ selectedVisionPreset || '选择预设模型...' }}</span>
+                <span>{{ selectedVisionPreset || '自定义' }}</span>
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="visionPresetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="visionPresetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
@@ -1193,7 +1193,7 @@ onUnmounted(() => {
             <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) vecPresetDropdownOpen = false }">
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
               <button @click="vecPresetDropdownOpen = !vecPresetDropdownOpen" class="w-full flex items-center justify-between h-8 bg-white border border-slate-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors" :class="selectedVecPreset ? 'text-slate-700' : 'text-slate-400'">
-                <span>{{ selectedVecPreset || '选择预设模型...' }}</span>
+                <span>{{ selectedVecPreset || '自定义' }}</span>
                 <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="vecPresetDropdownOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="vecPresetDropdownOpen" class="absolute top-full left-0 mt-1 z-50 w-full min-w-[200px] bg-white rounded-lg shadow-lg border border-slate-100 py-1 max-h-[200px] overflow-y-auto">
