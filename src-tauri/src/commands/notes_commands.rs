@@ -35,7 +35,7 @@ pub async fn notes_list_all() -> Result<Value, String> {
 }
 #[tauri::command] pub async fn notes_list_trash() -> Result<Value, String> {
     let notes = database::all(&format!(
-        "SELECT {} FROM notes n WHERE n.deleted_at IS NULL ORDER BY n.deleted_at DESC",
+        "SELECT {} FROM notes n WHERE n.deleted_at IS NOT NULL ORDER BY n.deleted_at DESC",
         NOTE_META_COLS
     ),&[]).map_err(|e|e.to_string())?;
     Ok(json!({"success":true,"notes":notes}))
