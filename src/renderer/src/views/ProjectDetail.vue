@@ -560,8 +560,7 @@ watch(
                   <button @click.stop="startEditBidTime" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/bid-inline:opacity-100 flex-shrink-0" title="编辑投标时间">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
                   </button>
-                  <Transition name="dropdown">
-                    <div v-if="showBidCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
+                  <div v-if="showBidCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
                       <div class="flex items-center justify-between mb-3">
                         <button @click="prevMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
                           <AppIcon name="chevron-left" class="w-4 h-4 text-slate-500" />
@@ -595,7 +594,6 @@ watch(
                         <button @click="closeBidCalendar" class="text-[11px] text-slate-400 hover:text-slate-600 transition-colors">关闭</button>
                       </div>
                     </div>
-                  </Transition>
                 </span>
               </button>
               <Transition name="dropdown">
@@ -662,8 +660,7 @@ watch(
                   <button @click.stop="startEditExpectedDateCalendar" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expectedDate:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
                     <AppIcon name="edit" class="w-3.5 h-3.5" />
                   </button>
-                  <Transition name="dropdown">
-                    <div v-if="showExpectedCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
+                  <div v-if="showExpectedCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
                       <div class="flex items-center justify-between mb-3">
                         <button @click="prevExpectedMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
                           <AppIcon name="chevron-left" class="w-4 h-4 text-slate-500" />
@@ -697,7 +694,6 @@ watch(
                         <button @click="closeExpectedCalendar" class="text-[11px] text-slate-400 hover:text-slate-600 transition-colors">关闭</button>
                       </div>
                     </div>
-                  </Transition>
                 </span>
               </div>
             </div>
