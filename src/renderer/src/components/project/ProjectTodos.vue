@@ -82,6 +82,10 @@ async function removeProjectTodo(todoId: string) {
 async function handleTodoUpdate(todoId: string, data: Record<string, any>) {
   try {
     await updateTodo(todoId, data)
+    const idx = projectTodos.value.findIndex(t => t.id === todoId)
+    if (idx !== -1) {
+      projectTodos.value[idx] = { ...projectTodos.value[idx], ...data }
+    }
   } catch (e) { console.warn('更新待办失败', e) }
 }
 

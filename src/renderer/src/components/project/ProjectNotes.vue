@@ -6,7 +6,7 @@ import { useProjectStore } from '@/stores/project'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { formatDateTime } from '@/utils/time'
-import { fetchProjectNotes, createNote, updateNote, deleteNote, fetchProjects } from '@/api/db-client'
+import { fetchProjectNotes, createNote, updateNote, deleteNote, fetchProjects, notesV2Get } from '@/api/db-client'
 import AppIcon from '@/components/common/AppIcon.vue'
 import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
 import ProjectFilePanel from '@/components/project/ProjectFilePanel.vue'
@@ -20,6 +20,7 @@ const projectNotes = ref<any[]>([])
 const selectedNoteId = ref<string | null>(null)
 const selectedNote = computed(() => projectNotes.value.find(n => n.note_id === selectedNoteId.value))
 const editingNoteTitle = ref('')
+const lastSavedContent = ref('')
 
 watch(selectedNote, (note) => { editingNoteTitle.value = note?.title || '' })
 
@@ -43,7 +44,7 @@ async function addProjectNote() {
   try {
     const backendId = await projectStore.syncProjectToBackend(props.projectId)
     const r: any = await createNote({ title: '', content: '', isDaily: false, projectIds: [backendId] })
-    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', content: '',
+    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', excerpt: '',
       updated_at: new Date().toISOString(), created_at: new Date().toISOString() }
     projectNotes.value.unshift(newNote)
     selectedNoteId.value = newNote.note_id
@@ -130,17 +131,28 @@ function debouncedNoteSave(html: string) {
   noteSaveTimer = setTimeout(() => saveNoteContent(html), 3000)
 }
 
-watch(selectedNote, (note) => {
+watch(selectedNote, async (note) => {
   editingNoteTitle.value = note?.title || ''
-  nextTick(() => { noteEditor.value?.commands.setContent(note?.content || '', false) })
+  if (!note) return
+  try {
+    const r = await notesV2Get(note.note_id)
+    const fullContent = r?.note?.content || ''
+    lastSavedContent.value = fullContent
+    nextTick(() => { noteEditor.value?.commands.setContent(fullContent, false) })
+  } catch { nextTick(() => { noteEditor.value?.commands.setContent('', false) }) }
 })
 
 async function saveNoteContent(html?: string) {
   const content = html ?? noteEditor.value?.getHTML() ?? ''
-  if (!selectedNote.value || content === selectedNote.value.content) return
+  if (!selectedNote.value || content === lastSavedContent.value) return
   try {
     await updateNote({ noteId: selectedNote.value.note_id, content })
-    selectedNote.value.content = content
+    lastSavedContent.value = content
+    // Update local excerpt
+    const idx = projectNotes.value.findIndex(n => n.note_id === selectedNote.value?.note_id)
+    if (idx !== -1) {
+      projectNotes.value[idx] = { ...projectNotes.value[idx], excerpt: content.replace(/<[^>]*>/g,'').slice(0,300) }
+    }
   } catch (e) { console.warn('保存笔记内容失败', e) }
 }
 
@@ -160,7 +172,7 @@ function noteExecFormat(cmd: string, val?: string) {
     case 'horizontalRule': ed.setHorizontalRule().run(); break
     case 'formatBlock': if (val === 'p') ed.setParagraph().run(); break
     case 'heading': if (val) ed.toggleHeading({ level: val as any }).run(); break
-    case 'align': if (val) ed.setTextAlign(val as any); alignLabel.value = val === 'right' ? '右对齐' : val === 'center' ? '居中' : '左对齐'; break
+    case 'align': if (val) ed.setTextAlign(val as any).run(); alignLabel.value = val === 'right' ? '右对齐' : val === 'center' ? '居中' : '左对齐'; break
     case 'insertTable': ed.insertTable({ rows: tableRows.value, cols: tableCols.value, withHeaderRow: true }).run(); tableMenuOpen.value = false; break
     case 'addColumnBefore': ed.addColumnBefore().run(); break
     case 'addColumnAfter': ed.addColumnAfter().run(); break
@@ -207,7 +219,7 @@ defineExpose({ closeNotePopups })
           <div v-if="selectedNoteId === note.note_id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
           <div class="flex-1 min-w-0">
             <p class="text-[12px] font-medium text-surface-800 truncate">{{ note.title || '未命名笔记' }}</p>
-            <p class="text-[10px] text-surface-400 line-clamp-1 mt-0.5">{{ (note.content || '').replace(/<[^>]*>/g,'').slice(0,40) || '暂无内容' }}</p>
+            <p class="text-[10px] text-surface-400 line-clamp-1 mt-0.5">{{ (note.excerpt || '').replace(/<[^>]*>/g,'').slice(0,40) || '暂无内容' }}</p>
             <p class="text-[9px] text-surface-300 mt-0.5">{{ formatDateTime(note.updated_at || note.created_at || '') }}</p>
           </div>
           <button @click.stop="removeProjectNote(note.note_id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"><AppIcon name="trash" size="13"/></button>
