@@ -659,9 +659,10 @@ fn build_tools_definitions() -> Value {
 
 /// Fallback: parse XML tool calls from content when model does not use function calling format
 fn parse_xml_tool_calls(content: &str) -> Option<Vec<Value>> {
-    // 先清理 DSML 标记（支持全角/半角/Unicode 变体），只移除标记本身，保留标签名和内容
-    // 匹配: <｜｜DSML｜｜, <|DSML|, <‖DSML‖, <DSML>, </｜｜DSML｜｜, 等
-    let re = regex::Regex::new(r"(?i)[<|＜]/?[\|｜]*DSML[\|｜]*[>|＞]").ok()?;
+    // 先清理 DSML 标记（支持全角/半角/Unicode 变体），只移除标记本身，保留标签名和闭合斜杠
+    // 匹配: ｜｜DSML｜｜, |DSML|, ‖DSML‖, DSML（管道符号+DSML）
+    // 不匹配: <, >, / 等括号和斜杠
+    let re = regex::Regex::new(r"(?i)[|｜‖]*DSML[|｜‖]*").ok()?;
     let cleaned = re.replace_all(content, "").to_string();
     
     // 查找 tool_calls 块
