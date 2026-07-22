@@ -103,7 +103,7 @@ function handleClickOutside(e: MouseEvent) {
           <div class="mb-4">
             <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
               <AppIcon name="search" size="12" class="text-surface-400"/>
-              <input v-model="searchQuery" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300 border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索公司名称..."/>
+              <input v-model="searchQuery" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索公司名称..."/>
             </div>
           </div>
 
@@ -136,7 +136,7 @@ function handleClickOutside(e: MouseEvent) {
             <div class="mb-3">
               <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
                 <AppIcon name="search" size="12" class="text-surface-400"/>
-                <input v-model="searchQuery" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300 border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索联系人..."/>
+                <input v-model="searchQuery" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索联系人..."/>
               </div>
             </div>
 

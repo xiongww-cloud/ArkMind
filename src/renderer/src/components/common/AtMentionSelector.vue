@@ -268,7 +268,7 @@ defineExpose({ open, updatePosition })
           <div class="px-3 py-2 border-b border-surface-100 shrink-0">
             <div class="flex items-center gap-1.5 bg-surface-50 rounded-lg px-2.5 py-1.5">
               <AppIcon name="search" size="12" class="text-surface-400 flex-shrink-0"/>
-              <input v-model="atSearch" type="text" class="flex-1 bg-transparent text-xs outline-none border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索..." @keydown.escape="onClose"/>
+              <input v-model="atSearch" type="text" class="flex-1 bg-transparent text-xs outline-none" placeholder="搜索..." @keydown.escape="onClose"/>
             </div>
           </div>
           <!-- List -->

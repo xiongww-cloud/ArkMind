@@ -435,7 +435,7 @@ function getFileColor(fileName) {
       <div class="flex items-center gap-1.5">
         <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
           <AppIcon name="search" size="12" class="text-surface-400"/>
-          <input v-model="searchQuery" type="text"           class="w-[120px] bg-transparent text-[11px] outline-none placeholder-surface-300 border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索文件名..."/>
+          <input v-model="searchQuery" type="text" class="w-[120px] bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索文件名..."/>
         </div>
         <button v-if="!isArchived" @click="showUploadForm = true" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors"><AppIcon name="plus" size="10" stroke="2.5"/>上传文件</button>
       </div>

@@ -748,7 +748,7 @@ const restoreNotebookList = computed(() => {
     <div class="shrink-0 px-3 py-1.5 border-b border-surface-100">
       <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
         <AppIcon name="search" size="12" class="text-surface-400 flex-shrink-0"/>
-        <input v-model="notebookSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300 border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索笔记本..."/>
+        <input v-model="notebookSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索笔记本..."/>
       </div>
     </div>
 
@@ -1014,7 +1014,7 @@ const restoreNotebookList = computed(() => {
     <h3 class="text-sm font-semibold text-surface-800">选择目标笔记本</h3>
     <button @click="restoreDialogOpen=false" class="w-7 h-7 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600">✕</button>
   </div>
-  <div class="px-4 py-2 border-b border-surface-100"><div class="flex items-center gap-2 bg-surface-50 rounded-lg px-3 py-2"><AppIcon name="search" size="13" class="text-surface-400"/><input v-model="restoreSearchQuery" type="text" class="flex-1 bg-transparent text-xs outline-none border border-surface-200 rounded px-2 focus:border-brand-400 transition-colors" placeholder="搜索笔记本..."/></div></div>
+  <div class="px-4 py-2 border-b border-surface-100"><div class="flex items-center gap-2 bg-surface-50 rounded-lg px-3 py-2"><AppIcon name="search" size="13" class="text-surface-400"/><input v-model="restoreSearchQuery" type="text" class="flex-1 bg-transparent text-xs outline-none" placeholder="搜索笔记本..."/></div></div>
   <div class="flex-1 overflow-y-auto p-3 space-y-1">
     <button v-for="nb in restoreNotebookList" :key="nb.id" @click="selectedRestoreTarget=nb.id" class="w-full flex items-center gap-2 px-3 py-2 text-xs rounded-lg transition-colors" :class="selectedRestoreTarget===nb.id?'bg-brand-50 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
       <AppIcon name="folder" size="12"/><span class="truncate">{{nb.name}}</span>

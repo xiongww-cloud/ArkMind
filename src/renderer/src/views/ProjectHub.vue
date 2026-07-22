@@ -606,12 +606,12 @@ async function handleImportProject() {
 
       <div class="relative w-[200px] flex-shrink-0">
         <AppIcon name="search" class="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-400" />
-        <input v-model="searchInput" type="text" placeholder="搜索名称、描述、客户..." class="input-field h-7 !py-0.5 pl-8 text-xs" />
+        <input v-model="searchInput" type="text" placeholder="搜索名称、描述、客户..." class="w-full h-7 pl-8 pr-3 text-xs text-surface-700 bg-white border border-slate-200 rounded-md outline-none focus:border-slate-400 placeholder:text-surface-400" />
       </div>
 
       <!-- Status multi-select dropdown -->
       <div class="relative flex-shrink-0" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) statusDropdownOpen = false }">
-        <button @click="statusDropdownOpen = !statusDropdownOpen; closeAllDropdowns('status')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none hover:border-slate-500 transition-colors" :class="selectedStatuses.size > 0 ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
+        <button @click="statusDropdownOpen = !statusDropdownOpen; closeAllDropdowns('status')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none transition-colors" :class="selectedStatuses.size > 0 ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
           <span>{{ selectedStatuses.size > 0 ? `已选 ${selectedStatuses.size} 项` : '全部阶段' }}</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="statusDropdownOpen ? 'rotate-180' : ''" />
         </button>
@@ -635,7 +635,7 @@ async function handleImportProject() {
 
       <!-- Budget filter -->
       <div class="relative flex-shrink-0" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) budgetDropdownOpen = false }">
-        <button @click="budgetDropdownOpen = !budgetDropdownOpen; closeAllDropdowns('budget')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none hover:border-slate-500 transition-colors" :class="budgetFilter !== 'all' ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
+        <button @click="budgetDropdownOpen = !budgetDropdownOpen; closeAllDropdowns('budget')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none transition-colors" :class="budgetFilter !== 'all' ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
           <span>{{ budgetOptions[budgetFilter] }}</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="budgetDropdownOpen ? 'rotate-180' : ''" />
         </button>
@@ -648,7 +648,7 @@ async function handleImportProject() {
 
       <!-- Time filter -->
       <div class="relative flex-shrink-0" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) timeDropdownOpen = false }">
-        <button @click="timeDropdownOpen = !timeDropdownOpen; closeAllDropdowns('time')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none hover:border-slate-500 transition-colors" :class="timeFilter !== 'all' ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
+        <button @click="timeDropdownOpen = !timeDropdownOpen; closeAllDropdowns('time')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none transition-colors" :class="timeFilter !== 'all' ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
           <span>{{ timeFilterLabels[timeFilter] }}</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="timeDropdownOpen ? 'rotate-180' : ''" />
         </button>
@@ -661,7 +661,7 @@ async function handleImportProject() {
 
       <!-- Quarter filter -->
       <div class="relative flex-shrink-0" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) quarterDropdownOpen = false }">
-        <button @click="quarterDropdownOpen = !quarterDropdownOpen; closeAllDropdowns('quarter')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none hover:border-slate-500 transition-colors" :class="selectedQuarter ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
+        <button @click="quarterDropdownOpen = !quarterDropdownOpen; closeAllDropdowns('quarter')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none transition-colors" :class="selectedQuarter ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
           <span>{{ selectedQuarter ? quarterLabel : '预计下单' }}</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="quarterDropdownOpen ? 'rotate-180' : ''" />
         </button>
