@@ -785,6 +785,8 @@ async function openFolderPicker() {
 // ─── Logs ────────────────────────────────────────────────────────────────
 const logs = ref<any[]>([])
 const showLogModal = ref(false)
+const logModalRef = ref<HTMLElement | null>(null)
+function openLogModal() { showLogModal.value = true; nextTick(() => { if (logModalRef.value) logModalRef.value.scrollTop = logModalRef.value.scrollHeight }) }
 let logTimer: ReturnType<typeof setInterval> | null = null
 
 async function refreshLogs() {
@@ -1019,7 +1021,7 @@ onUnmounted(() => {
     <div class="bg-white rounded-2xl border border-surface-200 shadow-sm p-5">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-[13px] font-semibold text-surface-700">运行日志</h2>
-        <button @click="showLogModal = true" class="h-6 px-3 text-[11px] rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">查看</button>
+        <button @click="openLogModal" class="h-6 px-3 text-[11px] rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">查看</button>
       </div>
       <p class="text-[11px] text-surface-400">共 {{ logs.length }} 条日志 · 每 3 秒自动刷新</p>
     </div>
@@ -1219,7 +1221,7 @@ onUnmounted(() => {
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
             </button>
           </div>
-          <div class="flex-1 overflow-y-auto p-4 font-mono text-[10px] leading-relaxed">
+          <div ref="logModalRef" class="flex-1 overflow-y-auto p-4 font-mono text-[10px] leading-relaxed">
             <div v-if="logs.length === 0" class="text-surface-400 text-center py-8">暂无日志</div>
             <div v-for="(log, i) in logs" :key="i" class="flex gap-2 mb-0.5 hover:bg-surface-50 px-1 rounded">
               <span class="text-surface-400 whitespace-nowrap">{{ log.timestamp }}</span>
