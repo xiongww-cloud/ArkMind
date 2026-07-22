@@ -7,6 +7,7 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import SelectWithSearch from '@/components/common/SelectWithSearch.vue'
 import { formatDateTime } from '@/utils/time'
 import { toast } from '@/composables/useToast'
+import { dangerConfirm } from '@/composables/useConfirm'
 
 import { fetchProjects, customerList, customerLinkProject } from '@/api/db-client'
 
@@ -459,6 +460,23 @@ const footerSummary = computed(() => {
   }
 })
 
+// ─── Delete project ──────────────────────────────────────────────
+async function deleteProject(project: any) {
+  const ok = await dangerConfirm({
+    title: '删除项目',
+    message: `确定要删除项目「${project.name}」吗？此操作不可撤销。`,
+    confirmText: '删除'
+  })
+  if (!ok) return
+  try {
+    await projectStore.deleteProject(project.id)
+    toast({ message: '项目已删除', type: 'success' })
+  } catch (e) {
+    console.warn('删除项目失败', e)
+    toast({ message: '删除失败', type: 'error' })
+  }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────
 const statusBadgeClass = (status) => `badge badge-${(status || 'Lead').toLowerCase()}`
 function formatBudget(raw) { if (!raw || raw === 0) return '-'; return '¥' + raw + '万' }
@@ -713,8 +731,9 @@ async function handleImportProject() {
           <th @click="toggleSort('name')" class="pl-5 pr-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none align-middle text-left w-[330px]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
           <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
           <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
-          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
           <th @click="toggleSort('expected_order_date')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">预计下单 <span class="ml-0.5 opacity-60">{{ sortIcon('expected_order_date') }}</span></th>
+          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
+          <th class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide select-none w-[60px] align-middle text-center">操作</th>
         </tr>
       </thead>
     </table>
@@ -770,7 +789,6 @@ async function handleImportProject() {
                 </div>
               </template>
             </td>
-            <td class="px-3 py-2.5 text-surface-400 w-[170px] align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
             <td class="px-3 py-2.5 w-[120px] align-middle whitespace-nowrap text-left" @click.stop>
               <span ref="expectedDateCalendarRef" class="relative inline-flex items-center gap-0.5 group/expected-inline">
                 <span @click.stop="startEditExpectedDateCalendar(project, $event)" class="text-xs text-surface-600 rounded px-1 py-0.5 border border-transparent cursor-pointer hover:bg-slate-50 transition-colors">
@@ -815,10 +833,16 @@ async function handleImportProject() {
                 </div>
               </span>
             </td>
+            <td class="px-3 py-2.5 text-surface-400 w-[170px] align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
+            <td class="px-3 py-2.5 w-[60px] align-middle text-center" @click.stop>
+              <button @click.stop="deleteProject(project)" class="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100" title="删除项目">
+                <AppIcon name="trash" class="w-3.5 h-3.5" />
+              </button>
+            </td>
           </tr>
           <!-- Empty state -->
           <tr v-if="filteredProjects.length === 0">
-            <td :colspan="selectionMode ? 7 : 6" class="text-center py-4 text-surface-400 text-xs min-w-full">
+            <td :colspan="selectionMode ? 8 : 7" class="text-center py-4 text-surface-400 text-xs min-w-full">
               无项目
             </td>
           </tr>
