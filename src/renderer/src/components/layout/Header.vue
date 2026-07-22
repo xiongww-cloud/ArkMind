@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { useSelectionStore } from '@/stores/selection'
 import { useNavigation } from '@/composables/useNavigation'
-import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Delete, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData, lookupObjectNames } from '@/api/db-client'
+import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Get, notesV2Delete, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData, lookupObjectNames } from '@/api/db-client'
 import { toast } from '@/composables/useToast'
 
 defineProps({})
@@ -277,11 +277,9 @@ async function saveQuickNote() {
     const block = `<p><br></p>\n<blockquote class="is-flash"><p style="color:#94a3b8;font-size:11px;margin-bottom:4px"><span class="time-tag">${nowTime}</span></p><p>${text.replace(/\n/g, '<br>')}</p></blockquote>`
 
     if (todayNoteId.value) {
-      // Append new block to existing content
-      const r: any = await notesV2ListDaily()
-      const notes = r?.notes || []
-      const existing = notes.find((n: any) => n.note_id === todayNoteId.value)
-      const oldContent = existing?.content || ''
+      // Fetch full content before appending
+      const existingR: any = await notesV2Get(todayNoteId.value)
+      const oldContent = existingR?.note?.content || ''
       const newContent = oldContent ? `${block}${oldContent}` : `${block}`
       await notesV2Update({ noteId: todayNoteId.value, title: today, content: newContent })
     } else {

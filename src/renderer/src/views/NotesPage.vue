@@ -400,8 +400,12 @@ function selectNote(id: string) {
     selectedNoteId.value = id
     editTitle.value = n.title || ''
     isDirty.value = false
-    if (currentView.value === 'trash') return
-    // 从后端获取完整内容
+    // 回收站笔记：用 excerpt 作为预览
+    if (currentView.value === 'trash') {
+      editContent.value = n.excerpt || ''
+      return
+    }
+    // 正常笔记：从后端获取完整内容
     noteContentLoading.value = true
     try {
       const r = await notesV2Get(id)

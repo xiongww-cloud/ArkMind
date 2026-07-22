@@ -146,13 +146,13 @@ const deadlines = computed(() => {
 // ─── Recent notes ───────────────────────────────────────────────────
 const recentNotes = computed(() => {
   return [...allNotes.value]
-    .filter((n: any) => !n.is_daily && !projectNoteIds.value.has(n.note_id) && n.content && n.content.replace(/<[^>]*>/g, '').trim())
+    .filter((n: any) => !n.is_daily && !projectNoteIds.value.has(n.note_id) && n.excerpt && n.excerpt.replace(/<[^>]*>/g, '').trim())
     .sort((a: any, b: any) => (b.updated_at || '').localeCompare(a.updated_at || ''))
     .slice(0, 6)
     .map((n: any) => ({
       id: n.note_id,
       title: n.title || '未命名',
-      preview: n.content.replace(/<[^>]*>/g, '').slice(0, 80),
+      preview: n.excerpt.replace(/<[^>]*>/g, '').slice(0, 80),
       updated: n.updated_at ? n.updated_at.slice(0, 10) : '',
     }))
 })
