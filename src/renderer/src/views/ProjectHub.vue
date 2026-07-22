@@ -600,19 +600,23 @@ async function handleImportProject() {
       </div>
     </div>
 
-    <!-- ═══ Table ═══ -->
-    <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
-      <table class="flex flex-col h-full w-full text-xs table-fixed">
-        <thead class="flex-shrink-0">
-          <tr class="border-b border-surface-100 bg-surface-50 text-left">
-            <th v-if="selectionMode" class="px-3 py-2 w-10 align-middle text-center"></th>
-            <th @click="toggleSort('name')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none align-middle text-left w-[45%]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
-            <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[15%] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
-            <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[15%] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
-            <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[25%] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
-          </tr>
-        </thead>
-        <tbody class="flex-1 min-h-0 overflow-auto divide-y divide-surface-50">
+    <!-- ═══ Table Header ═══ -->
+    <table class="w-full text-xs table-fixed min-w-[700px]">
+      <thead>
+        <tr class="border-b border-surface-100 bg-surface-50 text-left">
+          <th v-if="selectionMode" class="px-3 py-2 w-10 align-middle text-center"></th>
+          <th @click="toggleSort('name')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none align-middle text-left w-[330px]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
+          <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
+          <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
+          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:text-surface-600 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
+        </tr>
+      </thead>
+    </table>
+
+    <!-- ═══ Table Body ═══ -->
+    <div class="flex-1 min-h-0 overflow-auto">
+      <table class="w-full text-xs table-fixed min-w-[700px]">
+        <tbody class="divide-y divide-surface-50">
           <tr v-for="project in filteredProjects" :key="project.id"
             @click="selectionMode ? toggleProjectSelection(project.id) : goToProject(project.id)"
             class="cursor-pointer transition-colors group hover:bg-surface-50"
@@ -622,7 +626,7 @@ async function handleImportProject() {
                 <AppIcon v-if="isProjectSelected(project.id)" name="check" class="w-2.5 h-2.5 text-white" />
               </div>
             </td>
-            <td class="px-3 py-2.5 align-middle text-left w-[45%]">
+            <td class="px-3 py-2.5 align-middle text-left w-[330px]">
               <template v-if="editingField?.projectId === project.id && editingField.field === 'name'">
                 <input v-model="editValue" type="text" maxlength="30" @blur="saveEdit(project)" @keyup.enter="saveEdit(project)" @keyup.escape="cancelEdit"
                   class="w-full text-xs font-medium text-surface-800 bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200" autofocus />
@@ -636,7 +640,7 @@ async function handleImportProject() {
                 </div>
               </template>
             </td>
-            <td class="px-3 py-2.5 w-[15%] align-middle whitespace-nowrap text-left">
+            <td class="px-3 py-2.5 w-[120px] align-middle whitespace-nowrap text-left">
               <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) statusMenuProjectId = null }">
                 <button ref="statusBtnRefs" @click.stop="statusMenuProjectId = statusMenuProjectId === project.id ? null : project.id; statusMenuRect = $event.target.getBoundingClientRect()"
                   class="inline-flex items-center gap-1 cursor-pointer rounded px-1 py-0.5 hover:bg-slate-50 transition-colors">
@@ -646,7 +650,7 @@ async function handleImportProject() {
                 </button>
               </div>
             </td>
-            <td class="px-3 py-2.5 text-surface-600 w-[15%] align-middle text-left">
+            <td class="px-3 py-2.5 text-surface-600 w-[110px] align-middle text-left">
               <template v-if="editingField?.projectId === project.id && editingField.field === 'budget'">
                 <input v-model="editValue" type="text" @blur="saveEdit(project)" @keyup.enter="saveEdit(project)" @keyup.escape="cancelEdit"
                   class="w-20 text-xs text-surface-600 bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200" autofocus />
@@ -660,7 +664,7 @@ async function handleImportProject() {
                 </div>
               </template>
             </td>
-            <td class="px-3 py-2.5 text-surface-400 align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
+            <td class="px-3 py-2.5 text-surface-400 w-[170px] align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
           </tr>
           <!-- Empty state -->
           <tr v-if="filteredProjects.length === 0">
