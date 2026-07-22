@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { notificationList, notificationMarkRead, notificationMarkAllRead, notificationDelete } from '@/api/notification-client'
 import type { Notification } from '@/api/notification-client'
+
+const props = defineProps<{
+  visible?: boolean
+}>()
 
 const emit = defineEmits<{
   close: []
@@ -26,6 +30,7 @@ async function loadNotifications() {
 }
 
 onMounted(loadNotifications)
+watch(() => props.visible, (val) => { if (val) loadNotifications() })
 
 function toggleExpand(id: string) {
   expandedId.value = expandedId.value === id ? null : id
@@ -92,15 +97,15 @@ const priorityDot: Record<string, string> = {
   <div class="flex flex-col h-full">
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-3 border-b border-surface-100">
-      <h3 class="text-[13px] font-semibold text-surface-700">通知中心</h3>
       <div class="flex items-center gap-2">
-        <button @click="markAllRead" class="text-[11px] text-brand-600 hover:underline">全部已读</button>
-        <button @click="emit('close')" class="text-surface-400 hover:text-surface-600">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M18 6L6 18M6 6l12 12"/>
+        <button @click="emit('close')" class="text-surface-500 hover:text-surface-700 transition-colors" title="返回">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15.75 19.5L8.25 12l7.5-7.5"/>
           </svg>
         </button>
+        <h3 class="text-[13px] font-semibold text-surface-700">通知中心</h3>
       </div>
+      <button @click="markAllRead" class="text-[11px] text-brand-600 hover:underline">全部已读</button>
     </div>
 
     <!-- List -->
