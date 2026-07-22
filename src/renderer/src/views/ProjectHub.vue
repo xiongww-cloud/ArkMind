@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onUnmounted, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter, useRoute } from 'vue-router'
@@ -196,6 +196,108 @@ function closeAllDropdowns(except?: 'status' | 'budget' | 'time' | 'quarter') {
   if (except !== 'time') timeDropdownOpen.value = false
   if (except !== 'quarter') quarterDropdownOpen.value = false
 }
+
+// ─── Expected Date Calendar ──────────────────────────────────────
+const showExpectedDateCalendar = ref(false)
+const expectedDateCalendarRef = ref(null)
+const expectedDateCalendarYear = ref(new Date().getFullYear())
+const expectedDateCalendarMonth = ref(new Date().getMonth())
+const expectedDateCalendarProjectId = ref('')
+const todayStr = computed(() => {
+  const now = new Date()
+  return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
+})
+
+function startEditExpectedDateCalendar(project: any, e: MouseEvent) {
+  e.stopPropagation()
+  const raw = (project.expectedOrderDate || project.expected_order_date || '')
+  if (raw) {
+    const d = new Date(raw)
+    if (!isNaN(d.getTime())) {
+      expectedDateCalendarYear.value = d.getFullYear()
+      expectedDateCalendarMonth.value = d.getMonth()
+    }
+  } else {
+    const now = new Date()
+    expectedDateCalendarYear.value = now.getFullYear()
+    expectedDateCalendarMonth.value = now.getMonth()
+  }
+  expectedDateCalendarProjectId.value = project.id
+  showExpectedDateCalendar.value = true
+}
+
+function prevExpectedDateMonth() {
+  if (expectedDateCalendarMonth.value === 0) { expectedDateCalendarMonth.value = 11; expectedDateCalendarYear.value-- }
+  else { expectedDateCalendarMonth.value-- }
+}
+
+function nextExpectedDateMonth() {
+  if (expectedDateCalendarMonth.value === 11) { expectedDateCalendarMonth.value = 0; expectedDateCalendarYear.value++ }
+  else { expectedDateCalendarMonth.value++ }
+}
+
+const expectedDateCalendarDays = computed(() => {
+  const year = expectedDateCalendarYear.value
+  const month = expectedDateCalendarMonth.value
+  const firstDay = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const days = []
+  for (let i = 0; i < firstDay; i++) days.push(null)
+  for (let d = 1; d <= daysInMonth; d++) days.push(d)
+  return days
+})
+
+function getSelectedProject() {
+  return filteredProjects.value.find(p => p.id === expectedDateCalendarProjectId.value)
+}
+
+function isSelectedExpectedDay(day: number) {
+  const project = getSelectedProject()
+  if (!project) return false
+  const y = expectedDateCalendarYear.value
+  const m = String(expectedDateCalendarMonth.value + 1).padStart(2, '0')
+  const d = String(day).padStart(2, '0')
+  return (project.expectedOrderDate || project.expected_order_date || '').startsWith(`${y}-${m}-${d}`)
+}
+
+function closeExpectedDateCalendar() { showExpectedDateCalendar.value = false }
+
+async function selectExpectedDay(day: number) {
+  const project = getSelectedProject()
+  if (!project) return
+  const y = expectedDateCalendarYear.value
+  const m = String(expectedDateCalendarMonth.value + 1).padStart(2, '0')
+  const d = String(day).padStart(2, '0')
+  const displayTime = `${y}-${m}-${d}`
+  showExpectedDateCalendar.value = false
+  project.expectedOrderDate = displayTime
+  project.expected_order_date = displayTime
+  projectStore.updateProjectInList(project.id, { expected_order_date: displayTime })
+  try {
+    await projectStore.updateProject(project.id, { expected_order_date: displayTime })
+  } catch (e) { console.warn('保存预计下单时间失败', e) }
+}
+
+async function clearExpectedDate() {
+  const project = getSelectedProject()
+  if (!project) return
+  showExpectedDateCalendar.value = false
+  project.expectedOrderDate = ''
+  project.expected_order_date = ''
+  projectStore.updateProjectInList(project.id, { expected_order_date: '' })
+  try {
+    await projectStore.updateProject(project.id, { expected_order_date: '' })
+  } catch (e) { console.warn('清除预计下单时间失败', e) }
+}
+
+function handleClickOutside(e: MouseEvent) {
+  if (expectedDateCalendarRef.value && !expectedDateCalendarRef.value.contains(e.target)) {
+    showExpectedDateCalendar.value = false
+  }
+}
+
+onMounted(() => { document.addEventListener('click', handleClickOutside) })
+onUnmounted(() => { document.removeEventListener('click', handleClickOutside) })
 
 function toggleStatus(status) {
   const next = new Set(selectedStatuses.value)
@@ -601,7 +703,7 @@ async function handleImportProject() {
     </div>
 
     <!-- ═══ Table Header ═══ -->
-    <table class="w-full text-xs table-fixed min-w-[700px]">
+    <table class="w-full text-xs table-fixed min-w-[820px]">
       <thead>
         <tr class="border-b border-surface-100 bg-surface-50 text-left">
           <th v-if="selectionMode" class="px-3 py-2 w-10 align-middle text-center"></th>
@@ -609,13 +711,14 @@ async function handleImportProject() {
           <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
           <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
           <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[170px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
+          <th class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide select-none w-[120px] align-middle text-left">预计下单</th>
         </tr>
       </thead>
     </table>
 
     <!-- ═══ Table Body ═══ -->
     <div class="flex-1 min-h-0 overflow-auto">
-      <table class="w-full text-xs table-fixed min-w-[700px]">
+      <table class="w-full text-xs table-fixed min-w-[820px]">
         <tbody class="divide-y divide-surface-50">
           <tr v-for="project in filteredProjects" :key="project.id"
             @click="selectionMode ? toggleProjectSelection(project.id) : goToProject(project.id)"
@@ -665,10 +768,54 @@ async function handleImportProject() {
               </template>
             </td>
             <td class="px-3 py-2.5 text-surface-400 w-[170px] align-middle whitespace-nowrap text-left">{{ formatDateTime(project.updatedAt || project.createdAt) }}</td>
+            <td class="px-3 py-2.5 w-[120px] align-middle whitespace-nowrap text-left" @click.stop>
+              <span ref="expectedDateCalendarRef" class="relative inline-flex items-center gap-0.5 group/expected-inline">
+                <span @click.stop="startEditExpectedDateCalendar(project, $event)" class="text-xs text-surface-600 rounded px-1 py-0.5 border border-transparent cursor-pointer hover:bg-slate-50 transition-colors">
+                  {{ (project.expectedOrderDate || project.expected_order_date) || '-' }}
+                </span>
+                <button @click.stop="startEditExpectedDateCalendar(project, $event)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expected-inline:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
+                  <AppIcon name="edit" class="w-2.5 h-2.5" />
+                </button>
+                <div v-if="showExpectedDateCalendar && expectedDateCalendarProjectId === project.id" @click.stop class="absolute top-full left-0 mt-1 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
+                  <div class="flex items-center justify-between mb-3">
+                    <button @click="prevExpectedDateMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
+                      <AppIcon name="chevron-left" class="w-4 h-4 text-slate-500" />
+                    </button>
+                    <span class="text-sm font-medium text-slate-700">{{ expectedDateCalendarYear }} 年 {{ expectedDateCalendarMonth + 1 }} 月</span>
+                    <button @click="nextExpectedDateMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
+                      <AppIcon name="chevron-right" class="w-4 h-4 text-slate-500" />
+                    </button>
+                  </div>
+                  <div class="grid grid-cols-7 mb-1">
+                    <span v-for="w in ['日','一','二','三','四','五','六']" :key="w" class="text-center text-[11px] text-slate-400 py-1">{{ w }}</span>
+                  </div>
+                  <div class="grid grid-cols-7 gap-0.5">
+                    <div v-for="(day, idx) in expectedDateCalendarDays" :key="idx" class="aspect-square flex items-center justify-center">
+                      <button
+                        v-if="day !== null"
+                        @click="selectExpectedDay(day)"
+                        class="w-8 h-8 rounded-full text-xs transition-colors"
+                        :class="[
+                          isSelectedExpectedDay(day)
+                            ? 'bg-blue-600 text-white font-medium'
+                            : todayStr === (expectedDateCalendarYear + '-' + String(expectedDateCalendarMonth + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0'))
+                              ? 'text-blue-600 font-medium hover:bg-blue-50'
+                              : 'text-slate-600 hover:bg-slate-100'
+                        ]"
+                      >{{ day }}</button>
+                    </div>
+                  </div>
+                  <div class="mt-3 pt-3 border-t border-slate-100 flex justify-between">
+                    <button @click="clearExpectedDate" class="text-[11px] text-slate-400 hover:text-red-300 transition-colors">清除</button>
+                    <button @click="closeExpectedDateCalendar" class="text-[11px] text-slate-400 hover:text-slate-600 transition-colors">关闭</button>
+                  </div>
+                </div>
+              </span>
+            </td>
           </tr>
           <!-- Empty state -->
           <tr v-if="filteredProjects.length === 0">
-            <td :colspan="selectionMode ? 6 : 5" class="text-center py-4 text-surface-400 text-xs min-w-full">
+            <td :colspan="selectionMode ? 7 : 6" class="text-center py-4 text-surface-400 text-xs min-w-full">
               无项目
             </td>
           </tr>
