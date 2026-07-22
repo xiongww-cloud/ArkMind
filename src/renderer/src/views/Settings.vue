@@ -1077,7 +1077,7 @@ onUnmounted(() => {
           <div class="space-y-3">
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
-              <select v-model="selectedPreset" @change="applyPreset('llm')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400">
+              <select v-model="selectedPreset" @change="applyPreset('llm')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white">
                 <option value="">选择预设模型...</option>
                 <option v-for="p in LLM_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
               </select>
@@ -1121,7 +1121,7 @@ onUnmounted(() => {
           <div class="space-y-3">
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
-              <select v-model="selectedVisionPreset" @change="applyPreset('vision')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400">
+              <select v-model="selectedVisionPreset" @change="applyPreset('vision')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white">
                 <option value="">选择预设模型...</option>
                 <option v-for="p in VISION_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
               </select>
@@ -1171,7 +1171,7 @@ onUnmounted(() => {
           <div class="space-y-3">
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">预设模型</label>
-              <select v-model="selectedVecPreset" @change="applyPreset('vec')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400">
+              <select v-model="selectedVecPreset" @change="applyPreset('vec')" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white">
                 <option value="">选择预设模型...</option>
                 <option v-for="p in VEC_PRESETS" :key="p.name" :value="p.name">{{ p.name }}</option>
               </select>
