@@ -489,8 +489,8 @@ async function handleImportProject() {
 </script>
 
 <template>
-  <div class="h-full bg-white rounded-xl border border-surface-200 shadow-sm overflow-y-auto">
-    <div class="py-4 space-y-3">
+  <div class="h-full bg-white rounded-xl border border-surface-200 shadow-sm flex flex-col overflow-hidden">
+    <div class="flex flex-col h-full py-4 space-y-3">
 
     <!-- ═══ Filter Bar ═══ -->
     <div class="flex flex-wrap items-center gap-2 px-4">
@@ -601,7 +601,7 @@ async function handleImportProject() {
     </div>
 
     <!-- ═══ Table ═══ -->
-    <div class="overflow-x-auto">
+    <div class="flex-1 min-h-0 overflow-auto">
       <table class="w-full text-xs table-fixed min-w-[700px]">
         <thead>
           <tr class="border-b border-surface-100 bg-surface-50 text-left">
