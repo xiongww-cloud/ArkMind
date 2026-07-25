@@ -1,5 +1,6 @@
 use crate::database;
 use serde_json::json;
+use tauri::Emitter;
 
 /// App 启动时执行一次后台 LLM 分析，生成通知
 pub fn run_startup_check(app_handle: tauri::AppHandle) {
@@ -24,11 +25,12 @@ pub fn run_startup_check(app_handle: tauri::AppHandle) {
          当前业务快照：\n{}\n\n\
          最近通知：\n{}\n\n\
          请分析以上数据，发现需要用户关注的事项。\n\
-         以下情况请调用 ext_tool_create_notification 创建通知：\n\
+         以下情况请调用 ext_tool_manage_notification 创建通知：\n\
          - 待办即将到期（24小时内）\n\
          - 项目停滞超过7天\n\
          - 投标截止临近（3天内）\n\
          - 发现业务数据中的重要趋势或异常\n\
+         通知 content 请使用 Markdown 格式（**加粗**、- 列表、> 引用等），让内容结构清晰。\n\
          如有跟进之前通知的事项，请设置 follow_up_of 为对应通知ID。\n\
          如果没有新发现，回复\"暂无新发现\"。",
         context, recent
@@ -42,19 +44,23 @@ pub fn run_startup_check(app_handle: tauri::AppHandle) {
             vec![],
             Some(app_handle.clone()),
             true,  // silent=true，不发 UI event
+            None,  // 不使用 session 缓存
         ).await;
 
         match result {
             Ok(v) => {
                 let answer = v["answer"].as_str().unwrap_or("");
                 let iters = v["iterations"].as_i64().unwrap_or(0);
-                log::info!("[通知循环] 分析完成，迭代{}次，回复: {}", iters,
-                    &answer[..answer.len().min(100)]);
+                let preview: String = answer.chars().take(100).collect();
+                log::info!("[通知循环] 分析完成，迭代{}次，回复: {}", iters, preview);
             }
             Err(e) => {
                 log::error!("[通知循环] 分析失败: {}", e);
             }
         }
+
+        // 通知循环结束，通知前端恢复 mascot 状态
+        let _ = app_handle.emit("agent:done", serde_json::json!({}));
 
         // 更新统计
         update_call_stats();

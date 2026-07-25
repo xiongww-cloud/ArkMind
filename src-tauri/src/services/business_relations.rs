@@ -58,9 +58,6 @@ pub fn init() {
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_br_target ON business_relations(target_type, target_id)", &[]);
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_br_type ON business_relations(relation_type)", &[]);
     let _ = database::run("CREATE INDEX IF NOT EXISTS idx_br_updated ON business_relations(updated_at)", &[]);
-
-    // Backfill existing business relations
-    backfill();
 }
 
 /// 清理重复数据（保留 id 最小的记录）
@@ -84,15 +81,11 @@ fn cleanup_duplicates() {
     }
 }
 
-/// One-time backfill: sync all existing business layer relations into business_relations table
+/// Incremental sync: sync all business layer relations into business_relations table
+/// upsert handles dedup, so full sync is safe to run every time
+#[allow(dead_code)]
 fn backfill() {
-    let count: i64 = database::get("SELECT COUNT(*) as cnt FROM business_relations", &[])
-        .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-    if count > 0 {
-        log::info!("[业务关联] 已有 {} 条记录，跳过 backfill", count);
-        return;
-    }
-    log::info!("[业务关联] 开始 backfill 业务关联...");
+    log::info!("[业务关联] 开始同步业务关联...");
     let mut total = 0i64;
 
     // 1. file_relations → has_file (FILE → PRODUCT/NOTE/TODO/PROJECT/etc.)
@@ -152,58 +145,31 @@ fn backfill() {
         }
     }
 
-    // 5. channel_partners → belongs_to (CHANNEL → PROJECT)
+    // 5. partner_project_mapping → partner_of (PARTNER ↔ PROJECT)
+    if let Ok(rows_full) = database::all(
+        "SELECT partner_id, partner_type, project_id FROM partner_project_mapping WHERE project_id IS NOT NULL AND project_id != ''",
+        &[]
+    ) {
+        for r in &rows_full {
+                let partner_id = r["partner_id"].as_str().unwrap_or("");
+                let ptype = r["partner_type"].as_str().unwrap_or("").to_uppercase();
+                let project_id = r["project_id"].as_str().unwrap_or("");
+                if partner_id.is_empty() || project_id.is_empty() || ptype.is_empty() { continue; }
+                upsert(&ptype, partner_id, "PROJECT", project_id, "partner_of", "{}");
+                total += 1;
+            }
+    }
+
+    // 6. contact_project_mapping → contact_of (CONTACT ↔ PROJECT)
     if let Ok(rows) = database::all(
-        "SELECT id, project_id FROM channel_partners WHERE project_id IS NOT NULL AND project_id != ''",
+        "SELECT contact_id, project_id FROM contact_project_mapping WHERE project_id IS NOT NULL AND project_id != ''",
         &[]
     ) {
         for r in &rows {
-            let cid = r["id"].as_str().unwrap_or("");
+            let cid = r["contact_id"].as_str().unwrap_or("");
             let pid = r["project_id"].as_str().unwrap_or("");
             if cid.is_empty() || pid.is_empty() { continue; }
-            upsert("CHANNEL", cid, "PROJECT", pid, "belongs_to", "{}");
-            total += 1;
-        }
-    }
-
-    // 6. vendor_partners → belongs_to (VENDOR → PROJECT)
-    if let Ok(rows) = database::all(
-        "SELECT id, project_id FROM vendor_partners WHERE project_id IS NOT NULL AND project_id != ''",
-        &[]
-    ) {
-        for r in &rows {
-            let vid = r["id"].as_str().unwrap_or("");
-            let pid = r["project_id"].as_str().unwrap_or("");
-            if vid.is_empty() || pid.is_empty() { continue; }
-            upsert("VENDOR", vid, "PROJECT", pid, "belongs_to", "{}");
-            total += 1;
-        }
-    }
-
-    // 7. channel_contacts → employed_by (CONTACT → CHANNEL)
-    if let Ok(rows) = database::all(
-        "SELECT id, channel_id FROM channel_contacts WHERE channel_id IS NOT NULL AND channel_id != ''",
-        &[]
-    ) {
-        for r in &rows {
-            let cid = r["id"].as_str().unwrap_or("");
-            let chid = r["channel_id"].as_str().unwrap_or("");
-            if cid.is_empty() || chid.is_empty() { continue; }
-            upsert("CONTACT", cid, "CHANNEL", chid, "employed_by", "{}");
-            total += 1;
-        }
-    }
-
-    // 8. vendor_contacts → employed_by (CONTACT → VENDOR)
-    if let Ok(rows) = database::all(
-        "SELECT id, vendor_id FROM vendor_contacts WHERE vendor_id IS NOT NULL AND vendor_id != ''",
-        &[]
-    ) {
-        for r in &rows {
-            let cid = r["id"].as_str().unwrap_or("");
-            let vid = r["vendor_id"].as_str().unwrap_or("");
-            if cid.is_empty() || vid.is_empty() { continue; }
-            upsert("CONTACT", cid, "VENDOR", vid, "employed_by", "{}");
+            upsert("CONTACT", cid, "PROJECT", pid, "contact_of", "{}");
             total += 1;
         }
     }
