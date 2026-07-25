@@ -80,6 +80,7 @@ pub(crate) fn save() -> rusqlite::Result<()> {
     with_db(|conn| conn.pragma_update(None, "wal_checkpoint", "TRUNCATE"))
 }
 
+#[allow(dead_code)]
 pub(crate) fn save_forced() -> rusqlite::Result<()> {
     LAST_CHECKPOINT.store(
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64,

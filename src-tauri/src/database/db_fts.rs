@@ -76,7 +76,6 @@ pub(crate) fn init_source_data_fts_triggers(conn: &Connection) -> rusqlite::Resu
          DROP TRIGGER IF EXISTS sd_fts_update;
          DROP TRIGGER IF EXISTS sd_fts_delete;
          DROP TRIGGER IF EXISTS sd_chunks_delete;
-         DROP TRIGGER IF EXISTS sd_tag_trigger;
 
          -- ★ AFTER INSERT: 将新行加入 FTS5 倒排索引。
          -- SQLite 根据 rowid 从 source_data 读取 title/content 并分词。
@@ -85,10 +84,6 @@ pub(crate) fn init_source_data_fts_triggers(conn: &Connection) -> rusqlite::Resu
              INSERT INTO global_search_fts(rowid, source_type, source_id, title, content)
              VALUES (new.rowid, new.source_type, new.source_id, new.title, new.content);
          END;
-
-         -- sd_tag_trigger: handled by Rust pipeline
-
-         
 
          -- ★ AFTER UPDATE: 先删旧、再插新，保证索引与 source_data 一致。
          -- 注意：本次使用 INSERT OR REPLACE 写 source_data 时，SQLite 将其分解为

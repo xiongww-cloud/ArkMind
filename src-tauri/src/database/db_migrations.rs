@@ -188,8 +188,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         // 移除废弃的 products.category 列（存量数据库升级）
         "ALTER TABLE products DROP COLUMN category",
         "ALTER TABLE ai_sync_queue ADD COLUMN last_content_hash TEXT DEFAULT ''",
-        // Object Links
-        "CREATE TABLE IF NOT EXISTS object_links(source_id TEXT NOT NULL, target_id TEXT NOT NULL, weight REAL DEFAULT 1.0, last_seen TEXT NOT NULL, PRIMARY KEY(source_id, target_id))",
+        // Object Links (已废弃，见 docs/object_links.md)
+        "DROP TABLE IF EXISTS object_links",
         // Synapse evolution fields — lazy decay on child chunks
         "ALTER TABLE knowledge_chunks ADD COLUMN base_weight REAL DEFAULT 1.0",
         "ALTER TABLE knowledge_chunks ADD COLUMN last_access_at INTEGER DEFAULT NULL",
@@ -202,6 +202,10 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE knowledge_push_queue ADD COLUMN debounce_until TEXT DEFAULT NULL",
         // 预计下单时间
         "ALTER TABLE projects ADD COLUMN expected_order_date TEXT DEFAULT ''",
+        // session state: SessionMemory JSON 缓存到 chat_sessions
+        "ALTER TABLE chat_sessions ADD COLUMN session_state TEXT DEFAULT NULL",
+        // 清理旧的 session_cache 表（如果存在）
+        "DROP TABLE IF EXISTS session_cache",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
