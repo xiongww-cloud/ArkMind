@@ -801,8 +801,8 @@ pub fn html_to_markdown(html: &str) -> String {
                 "li" => {
                     if !is_close {
                         // 检测是 ul 还是 ol
-                        let start = html.char_indices().nth(i.saturating_sub(50)).map(|(idx, _)| idx).unwrap_or(0);
-                        let parent_list = html[start..i].to_lowercase();
+                        let start_char = i.saturating_sub(50);
+                        let parent_list: String = chars[start_char..i].iter().collect::<String>().to_lowercase();
                         if parent_list.contains("<ol") {
                             out.push_str("1. ");
                         } else {

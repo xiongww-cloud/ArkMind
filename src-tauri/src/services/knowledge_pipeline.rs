@@ -47,7 +47,7 @@ pub fn start() {
             .enable_all()
             .build().expect("[知识管线] tokio 运行时创建失败");
         rt.block_on(async {
-            tokio::join!(sync_loop(), embed_loop(), tag_loop());
+            tokio::join!(sync_loop(), embed_loop());
         });
     });
 }
@@ -191,14 +191,6 @@ async fn embed_loop() {
         } else {
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
-    }
-}
-
-/// 标签循环：每 10 分钟处理一次
-async fn tag_loop() {
-    loop {
-        if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
-        tokio::time::sleep(Duration::from_secs(600)).await;
     }
 }
 

@@ -1,45 +1,23 @@
-//! RAG Interceptor — 检索标签/领域 → file_id 数组翻译器
+//! RAG Interceptor — 检索领域 → file_id 数组翻译器
 //!
-//! 当大模型发起带业务标签或领域限制的搜索时，此模块充当"翻译官"：
-//!  1. 接收标签字符串或领域类型
-//!  2. 查 SQLite 映射表（tags / projects / products / library）
+//! 当大模型发起带业务领域限制的搜索时，此模块充当"翻译官"：
+//!  1. 接收领域类型
+//!  2. 查 SQLite 映射表（projects / products / library）
 //!  3. 输出 file_id 数组，供 FTS5 / LanceDB 执行 WHERE file_id IN (...) 过滤
-//!
-//! 绝对不把业务标签文本直接丢给检索引擎——只有转换后的 file_id 数组进入底层。
 
 use crate::database;
 use serde_json::{json, Value};
 
-/// 将标签/领域过滤器翻译为 file_id 列表
+/// 将领域过滤器翻译为 file_id 列表
 /// domain: "all" | "library" | "project" | "product"
-/// tag_names: 标签名称数组
 /// project_ids / product_ids: 具体实体 ID 数组
 pub fn translate_to_file_ids(
     domain: &str,
-    tag_names: &[String],
+    _tag_names: &[String],
     project_ids: &[String],
     product_ids: &[String],
 ) -> Vec<String> {
     let mut file_ids: Vec<String> = Vec::new();
-
-    // ── 1. 标签翻译 ──
-    if !tag_names.is_empty() {
-        let placeholders: Vec<String> = (0..tag_names.len()).map(|_| "?".to_string()).collect();
-        let sql = format!(
-            "SELECT DISTINCT tm.entity_id AS file_id FROM tag_mappings tm \
-             INNER JOIN tags t ON t.tag_id = tm.tag_id \
-             WHERE tm.entity_type='files' AND t.name IN ({})",
-            placeholders.join(",")
-        );
-        let params: Vec<Value> = tag_names.iter().map(|t| json!(t)).collect();
-        if let Ok(rows) = database::all(&sql, &params) {
-            for r in &rows {
-                if let Some(id) = r["file_id"].as_str() {
-                    file_ids.push(id.to_string());
-                }
-            }
-        }
-    }
 
     // ── 2. 领域翻译 ──
     match domain {

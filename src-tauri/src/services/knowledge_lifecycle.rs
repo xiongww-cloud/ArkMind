@@ -113,5 +113,14 @@ fn restore_fts_triggers() {
     let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_update", &[]);
     let _ = crate::database::run("CREATE TRIGGER kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks WHEN new.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content); END", &[]);
     let _ = crate::database::run("CREATE TRIGGER kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks WHEN old.chunk_type='child' OR new.chunk_type='child' BEGIN DELETE FROM kk_chunks_fts WHERE rowid = old.rowid; INSERT INTO kk_chunks_fts(rowid, doc_title, content) SELECT new.rowid, new.doc_title, new.content WHERE new.chunk_type='child'; END", &[]);
+    // 清理已废弃的 ai_tag 触发器（ai_tag 管线已移除，这些触发器只会产生无消费者的数据）
+    for t in &["ai_tag_notes_insert", "ai_tag_notes_update", "ai_tag_products_insert", "ai_tag_products_update", "ai_tag_projects_insert", "ai_tag_projects_update", "ai_tag_todos_insert", "ai_tag_todos_update"] {
+        let _ = crate::database::run(&format!("DROP TRIGGER IF EXISTS {}", t), &[]);
+    }
+    let _ = crate::database::run("DELETE FROM ai_tag_queue", &[]);
+    // 清理已废弃的 tags 和 tag_mappings 表
+    let _ = crate::database::run("DROP TABLE IF EXISTS tag_mappings", &[]);
+    let _ = crate::database::run("DROP TABLE IF EXISTS tags", &[]);
+    log::info!("[知识库] 已清理废弃 ai_tag 触发器和 tag/tags 表");
     let _ = crate::database::with_db(|c| { c.pragma_update(None, "foreign_keys", "ON").ok(); Ok(()) });
 }

@@ -736,10 +736,12 @@ fn ingest_pending_products() {
     }
 }
 
-/// 摄入项目：将尚未同步到 source_data 的项目写入（仅名称+描述）
+/// 摄入项目：将尚未同步到 source_data 的项目写入
 fn ingest_pending_projects() {
     let rows = match crate::database::all(
-        "SELECT p.id, p.name, COALESCE(p.description,'') as description FROM projects p \
+        "SELECT p.id, p.name, COALESCE(p.description,'') as description, \
+         p.status, p.owner, p.budget, p.bid_time, p.expected_order_date \
+         FROM projects p \
          WHERE p.id NOT IN (SELECT source_id FROM source_data WHERE source_type='PROJECT') \
          LIMIT 20",
         &[],
@@ -767,23 +769,29 @@ fn ingest_pending_projects() {
         if !name.is_empty() {
             parts.push(format!("# {}", name));
         }
+        // 结构化输出业务字段
+        let mut meta = Vec::new();
+        if let Some(s) = row["status"].as_str().filter(|s| !s.is_empty()) { meta.push(format!("阶段：{}", s)); }
+        if let Some(o) = row["owner"].as_str().filter(|o| !o.is_empty()) { meta.push(format!("负责人：{}", o)); }
+        if let Some(b) = row["budget"].as_f64().filter(|b| *b > 0.0) { meta.push(format!("金额：¥{}万", b)); }
+        if let Some(bt) = row["bid_time"].as_str().filter(|s| !s.is_empty()) { meta.push(format!("投标时间：{}", bt)); }
+        if let Some(eo) = row["expected_order_date"].as_str().filter(|s| !s.is_empty()) { meta.push(format!("预计下单：{}", eo)); }
+        if !meta.is_empty() { parts.push(meta.join(" | ")); }
         if !desc.is_empty() {
             parts.push(desc);
         }
-        // ★ 同时附上方案产品名称
-        if let Ok(rows2) = crate::database::all(
-            "SELECT DISTINCT si.product_name FROM solution_items si
-             JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final'
-             JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 LIMIT 20",
+        // 项目动态：倒序 + 限制 20 条
+        if let Ok(dynamics) = crate::database::all(
+            "SELECT content, created_at FROM project_dynamics WHERE project_id=?1 AND content != '' ORDER BY created_at DESC LIMIT 20",
             &[json!(&proj_id)],
         ) {
-            let names: Vec<String> = rows2
-                .iter()
-                .filter_map(|r| r["product_name"].as_str().map(String::from))
-                .collect();
-            if !names.is_empty() {
-                let product_list: Vec<String> = names.iter().map(|n| format!("- {}", n)).collect();
-                parts.push(format!("## 方案产品\n{}", product_list.join("\n")));
+            let dyn_str: Vec<String> = dynamics.iter().filter_map(|d| {
+                let c = d["content"].as_str().unwrap_or("");
+                let dt = d["created_at"].as_str().unwrap_or("");
+                if !c.is_empty() { Some(format!("- {} ({})", c, dt)) } else { None }
+            }).collect();
+            if !dyn_str.is_empty() {
+                parts.push(format!("## 项目动态\n{}", dyn_str.join("\n")));
             }
         }
         let content = parts.join("\n\n");

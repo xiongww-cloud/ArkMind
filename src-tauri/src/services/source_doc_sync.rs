@@ -125,7 +125,7 @@ fn extract_product(product_id: &str) -> (String, String) {
 
 fn extract_project(project_id: &str) -> (String, String) {
     let row = match crate::database::get(
-        "SELECT name, description, status, owner, budget, bid_time FROM projects WHERE id=?1",
+        "SELECT name, description, status, owner, budget, bid_time, expected_order_date FROM projects WHERE id=?1",
         &[serde_json::json!(project_id)],
     ) {
         Ok(Some(r)) => r,
@@ -136,26 +136,23 @@ fn extract_project(project_id: &str) -> (String, String) {
     if !title.is_empty() {
         parts.push(format!("# {}", title));
     }
+    // 结构化输出业务字段
+    let mut meta = Vec::new();
+    if let Some(s) = row["status"].as_str().filter(|s| !s.is_empty()) { meta.push(format!("阶段：{}", s)); }
+    if let Some(o) = row["owner"].as_str().filter(|o| !o.is_empty()) { meta.push(format!("负责人：{}", o)); }
+    if let Some(b) = row["budget"].as_f64().filter(|b| *b > 0.0) { meta.push(format!("金额：¥{}万", b)); }
+    if let Some(bt) = row["bid_time"].as_str().filter(|s| !s.is_empty()) { meta.push(format!("投标时间：{}", bt)); }
+    if let Some(eo) = row["expected_order_date"].as_str().filter(|s| !s.is_empty()) { meta.push(format!("预计下单：{}", eo)); }
+    if !meta.is_empty() { parts.push(meta.join(" | ")); }
     if let Some(d) = row["description"].as_str().filter(|d| !d.is_empty()) {
         parts.push(d.to_string());
     }
-    // 解决方案产品
-    if let Ok(Some(sols)) = crate::database::get(
-        "SELECT GROUP_CONCAT(DISTINCT si.product_name) as products FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id AND sv.status='final' JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 AND COALESCE(si.product_name,'')!=''",
-        &[serde_json::json!(project_id)]
-    ) {
-        if let Some(products) = sols["products"].as_str().filter(|p| !p.is_empty()) {
-            let product_list: Vec<String> = products.split(',').map(|p| format!("- {}", p.trim())).collect();
-            parts.push(format!("## 方案产品\n{}", product_list.join("\n")));
-        }
-    }
-    // 项目动态
+    // 项目动态：倒序 + 限制 20 条 + 过滤空内容
     if let Ok(dynamics) = crate::database::all(
-        "SELECT type, content, created_at FROM project_dynamics WHERE project_id=?1 ORDER BY created_at",
+        "SELECT content, created_at FROM project_dynamics WHERE project_id=?1 AND content != '' ORDER BY created_at DESC LIMIT 20",
         &[serde_json::json!(project_id)]
     ) {
         let dyn_str: Vec<String> = dynamics.iter().filter_map(|d| {
-            let _t = d["type"].as_str().unwrap_or("");
             let c = d["content"].as_str().unwrap_or("");
             let dt = d["created_at"].as_str().unwrap_or("");
             if !c.is_empty() { Some(format!("- {} ({})", c, dt)) } else { None }
