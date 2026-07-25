@@ -3,10 +3,13 @@ import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import AppIcon from '@/components/common/AppIcon.vue'
+import NotificationPanel from '@/components/notification/NotificationPanel.vue'
 import { useSelectionStore } from '@/stores/selection'
 import { useNavigation } from '@/composables/useNavigation'
 import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Get, notesV2Delete, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData, lookupObjectNames } from '@/api/db-client'
+import { notificationStats, notificationMarkAllRead } from '@/api/notification-client'
 import { toast } from '@/composables/useToast'
 
 defineProps({})
@@ -330,16 +333,38 @@ function onQuickFocus() {
   if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
 }
 
+// ── Notification center ──
+const unreadCount = ref(0)
+const showNotifications = ref(false)
+const unlistenNotify = ref<(() => void) | null>(null)
+const notifWrapRef = ref<HTMLElement | null>(null)
+
+async function loadNotificationStats() {
+  const s = await notificationStats().catch(() => null)
+  if (s) unreadCount.value = s.unread_count
+}
+
+async function handleMarkAllRead() {
+  await notificationMarkAllRead()
+  unreadCount.value = 0
+}
+
 // ── Cleanup ──
 let todoPollTimer: ReturnType<typeof setInterval> | null = null
+let notifPollTimer: ReturnType<typeof setInterval> | null = null
 const quickTodoWrap = ref<HTMLElement | null>(null)
 function onDocumentMouseDown(e: MouseEvent) {
   if (quickTodoOpen.value && quickTodoWrap.value && !quickTodoWrap.value.contains(e.target as Node)) {
     quickTodoOpen.value = false
   }
 }
-onMounted(() => {
+onMounted(async () => {
   loadQuickTodos()
+  await loadNotificationStats()
+  unlistenNotify.value = await listen<string>('notification:new', async () => {
+    await loadNotificationStats()
+  })
+  notifPollTimer = setInterval(loadNotificationStats, 60 * 1000)
   todoPollTimer = setInterval(loadQuickTodos, 30 * 1000)
   document.addEventListener('mousedown', onDocumentMouseDown, true)
   window.addEventListener('resize', () => { if (quickNoteOpen.value) updateQuickNotePos() })
@@ -349,7 +374,9 @@ watch(() => route.path, () => loadQuickTodos())
 onUnmounted(() => {
   if (blurTimer) clearTimeout(blurTimer)
   if (todoPollTimer) clearInterval(todoPollTimer)
+  if (notifPollTimer) clearInterval(notifPollTimer)
   document.removeEventListener('mousedown', onDocumentMouseDown, true)
+  unlistenNotify.value?.()
 })
 </script>
 
@@ -486,6 +513,41 @@ onUnmounted(() => {
       <span>闪记</span>
     </button>
 
+    <!-- Notification icon -->
+    <div class="relative" ref="notifWrapRef">
+      <button class="titlebar-btn titlebar-btn--notif" title="通知中心"
+              @mousedown.stop @click="showNotifications = !showNotifications">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/>
+          <template v-if="unreadCount > 0">
+            <circle cx="18" cy="5.5" r="4" fill="#ef4444" stroke="white" stroke-width="1.5"/>
+            <text x="18" y="5.5" text-anchor="middle" dominant-baseline="central"
+                  fill="white" font-size="5" font-weight="bold" style="pointer-events:none">
+              {{ unreadCount > 9 ? '9+' : unreadCount }}
+            </text>
+          </template>
+        </svg>
+      </button>
+    </div>
+    <!-- Notification dropdown (fixed to viewport) -->
+    <div v-if="showNotifications" class="fixed inset-0 z-40" @mousedown.self="showNotifications = false">
+      <div class="fixed top-[50px] right-[60px] w-[440px] max-h-[480px] bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden flex flex-col">
+        <div class="flex items-center justify-between px-3 py-2 border-b border-slate-100">
+          <span class="text-[12px] font-semibold text-slate-700">通知中心</span>
+          <div class="flex items-center gap-2">
+            <button v-if="unreadCount > 0" @click="handleMarkAllRead"
+              class="text-[10px] text-blue-600 hover:underline">全部已读</button>
+            <button @click="showNotifications = false" class="p-0.5 rounded hover:bg-slate-100 transition-colors">
+              <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="flex-1 min-h-0 overflow-y-auto">
+          <NotificationPanel :visible="showNotifications" @close="showNotifications = false" />
+        </div>
+      </div>
+    </div>
+
     <!-- Window controls (macOS 使用原生红绿灯，隐藏自定义按钮) -->
     <div v-if="!isMac" class="titlebar-controls">
       <button class="titlebar-btn titlebar-btn--win" @click="minimizeWindow" title="最小化">
@@ -583,7 +645,6 @@ onUnmounted(() => {
 .titlebar-btn--quicknote {
   gap: 6px;
   padding: 6px 12px;
-  margin-right: 8px;
   font-size: 12px;
   font-weight: 500;
   color: #d97706;
@@ -591,6 +652,15 @@ onUnmounted(() => {
 }
 .titlebar-btn--quicknote:hover {
   background: #fef3c7;
+}
+
+.titlebar-btn--notif {
+  padding: 6px 8px;
+  color: #64748b;
+}
+.titlebar-btn--notif:hover {
+  background: #f1f5f9;
+  color: #334155;
 }
 
 .titlebar-btn--todo {
