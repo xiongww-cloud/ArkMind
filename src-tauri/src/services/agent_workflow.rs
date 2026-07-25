@@ -198,7 +198,7 @@ struct Focus {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct SessionMemory {
+pub struct SessionMemory {
     active_objects: Vec<ActiveObject>,
     visited_chunks: std::collections::HashSet<String>,
     visited_sources: std::collections::HashSet<String>,
@@ -427,7 +427,7 @@ impl SessionMemory {
     fn mark_chunk_visited(&mut self, chunk_id: &str) { self.visited_chunks.insert(chunk_id.to_string()); }
     fn mark_source_visited(&mut self, source_key: &str) { self.visited_sources.insert(source_key.to_string()); }
     fn record_search(&mut self, keywords: &[String]) { if !keywords.is_empty() { self.search_keywords.push(keywords.to_vec()); } }
-    fn record_observation(&mut self, text: &str) {
+    pub fn record_observation(&mut self, text: &str) {
         let t = text.trim();
         if !t.is_empty() && t.chars().count() > 10 {
             self.observations.insert(0, t.chars().take(200).collect());
@@ -2696,6 +2696,26 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     } else {
         SessionMemory::new()
     };
+
+    // ★ FAB 会话历史压缩：在构建 messages 之前检查并压缩
+    // 压缩直接替换 DB 中的旧消息，重新加载后前缀稳定，利于 prompt cache
+    let mut history = history;
+    if let Some(ref sid) = session_id {
+        if crate::services::context_compressor::should_compress_history(&history) {
+            log::info!("[ContextCompressor] 历史超过阈值，开始压缩...");
+            match crate::services::context_compressor::compress_and_persist(sid).await {
+                Ok(new_history) => {
+                    log::info!("[ContextCompressor] 压缩完成，历史从 {} 条变为 {} 条",
+                        history.len(), new_history.len());
+                    history = new_history;
+                }
+                Err(e) => {
+                    log::warn!("[ContextCompressor] 压缩失败: {}，继续使用原始历史", e);
+                }
+            }
+        }
+    }
+
     let mut messages: Vec<ChatMessage> = vec![
         ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
     ];

@@ -13,6 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
+  read: []
 }>()
 
 const router = useRouter()
@@ -70,6 +71,7 @@ async function markRead(id: string) {
   await notificationMarkRead(id)
   const n = notifications.value.find(n => n.id === id)
   if (n) n.read = 1
+  emit('read')
 }
 
 async function removeNotification(id: string) {

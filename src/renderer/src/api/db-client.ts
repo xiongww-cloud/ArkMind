@@ -330,6 +330,11 @@ export async function kbSaveSessions(sessions: KbSession[]): Promise<SuccessResp
 export async function kbLoadSessions(): Promise<KbLoadSessionsResult> { return invoke('kb_load_sessions') }
 export async function kbDeleteSession(sessionId: string): Promise<SuccessResponse> { return invoke('kb_delete_session', { sessionId }) }
 
+// ─── FAB Session API ─────────────────────────────────────────────
+export async function kbFabInitSession(): Promise<{success: boolean; session_id?: string}> { return invoke('kb_fab_init_session') }
+export async function kbFabLoadHistory(limit?: number): Promise<{success: boolean; messages?: ChatMessage[]}> { return invoke('kb_fab_load_history', { limit: limit || null }) }
+export async function kbFabSaveMessage(data: {role: string; content: string; metadata?: unknown}): Promise<SuccessResponse> { return invoke('kb_fab_save_message', { data }) }
+
 // ── Memory Explorer API ──
 export async function kbMemoryObjects(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string;title:string}>}> { return invoke('kb_memory_objects', { query }) }
 export async function searchBusiness(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string;title:string}>}> { return invoke('search_business', { query }) }

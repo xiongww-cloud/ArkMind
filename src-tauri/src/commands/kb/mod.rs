@@ -49,7 +49,7 @@ pub use kb_memory_commands::*;
         "SELECT s.id, s.title, s.created_at, s.updated_at, \
          (SELECT json_group_array(json_object('role',m.role,'content',m.content,'metadata',m.metadata)) \
           FROM chat_messages m WHERE m.session_id=s.id ORDER BY m.id) as messages \
-         FROM chat_sessions s ORDER BY s.updated_at DESC LIMIT 100",
+         FROM chat_sessions s WHERE s.id != 'fab-main-session' ORDER BY s.updated_at DESC LIMIT 100",
         &[],
     ).unwrap_or_default();
     for row in &mut rows {
@@ -77,4 +77,66 @@ pub use kb_memory_commands::*;
 #[tauri::command] pub async fn kb_delete_session(session_id: String) -> Result<Value, String> {
     database::run("DELETE FROM chat_sessions WHERE id=?", &[json!(&session_id)]).ok();
     Ok(json!({"success":true}))
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FAB Session — 小精灵隐藏会话（永远存在，全量持久化）
+// ═══════════════════════════════════════════════════════════════════
+const FAB_SESSION_ID: &str = "fab-main-session";
+
+/// 初始化 FAB 专属会话，确保存在
+#[tauri::command]
+pub async fn kb_fab_init_session() -> Result<Value, String> {
+    database::run(
+        "INSERT OR IGNORE INTO chat_sessions(id, title) VALUES(?1, '小精灵对话')",
+        &[json!(FAB_SESSION_ID)]
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({"success": true, "session_id": FAB_SESSION_ID}))
+}
+
+/// 加载 FAB 会话的历史消息
+#[tauri::command]
+pub async fn kb_fab_load_history(limit: Option<usize>) -> Result<Value, String> {
+    let limit = limit.unwrap_or(50);
+    let rows = database::all(
+        "SELECT role, content, metadata FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
+        &[json!(FAB_SESSION_ID), json!(limit)]
+    ).unwrap_or_default();
+    // 反转为正序（从旧到新）
+    let messages: Vec<Value> = rows.into_iter().rev().map(|m| {
+        if let Some(meta_str) = m.get("metadata").and_then(|v| v.as_str()) {
+            if let Ok(full_msg) = serde_json::from_str::<Value>(meta_str) {
+                return full_msg;
+            }
+        }
+        json!({"role": m["role"], "content": m["content"]})
+    }).collect();
+    Ok(json!({"success": true, "messages": messages}))
+}
+
+/// 保存单条消息到 FAB 会话（增量保存）
+#[tauri::command]
+pub async fn kb_fab_save_message(data: Value) -> Result<Value, String> {
+    let role = data["role"].as_str().unwrap_or("");
+    let content = data["content"].as_str().unwrap_or("");
+    let metadata = data.get("metadata")
+        .filter(|m| !m.is_null())
+        .and_then(|m| serde_json::to_string(m).ok());
+
+    if role.is_empty() || content.trim().is_empty() {
+        return Ok(json!({"success": true}));
+    }
+
+    database::run(
+        "INSERT INTO chat_messages(session_id, role, content, metadata) VALUES(?1, ?2, ?3, ?4)",
+        &[json!(FAB_SESSION_ID), json!(role), json!(content), json!(metadata)]
+    ).map_err(|e| e.to_string())?;
+
+    // 更新会话时间戳
+    database::run(
+        "UPDATE chat_sessions SET updated_at=datetime('now','localtime') WHERE id=?1",
+        &[json!(FAB_SESSION_ID)]
+    ).ok();
+
+    Ok(json!({"success": true}))
 }

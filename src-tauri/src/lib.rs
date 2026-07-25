@@ -27,6 +27,8 @@ pub fn get_data_dir() -> PathBuf {
 use database::db_path;
 use std::path::PathBuf;
 use tauri::{Manager, Emitter};
+use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
 fn app_data_dir(_app: &tauri::AppHandle) -> PathBuf {
     get_data_dir()
@@ -153,6 +155,40 @@ pub fn run() {
             commands::file_commands::cleanup_preview_links();
             if database::check_license_premium() { upgrade_fts5_triggers_on_startup(); }
 
+            // ★ 系统托盘图标
+            let show_item = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&show_item, &quit_item]).build()?;
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().unwrap())
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .tooltip("Arkmind")
+                .on_menu_event(move |app, event| {
+                    match event.id().as_ref() {
+                        "show" => {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
             // Start KnowledgePipeline
             std::thread::spawn(|| {
                 std::thread::sleep(std::time::Duration::from_secs(2));
@@ -246,7 +282,7 @@ pub fn run() {
             commands::storage_migrate, commands::storage_migrate_progress, commands::storage_default_path,
             // KB
             commands::kb_get_config, commands::kb_update_config, commands::kb_import_file, commands::kb_save_note,
-            commands::kb_search, commands::kb_delete, commands::kb_list_documents, commands::kb_chat, commands::kb_agent_chat, commands::agent_cancel, commands::kb_save_sessions, commands::kb_load_sessions, commands::kb_delete_session,
+            commands::kb_search, commands::kb_delete, commands::kb_list_documents, commands::kb_chat, commands::kb_agent_chat, commands::agent_cancel, commands::kb_save_sessions, commands::kb_load_sessions, commands::kb_delete_session, commands::kb_fab_init_session, commands::kb_fab_load_history, commands::kb_fab_save_message,
             commands::kb_diagnose, commands::kb_search_debug, commands::kb_data_browse, commands::kb_browse_parents, commands::kb_browse_vectors, commands::kb_inspect_fts5,
             commands::kb_fts5_inspector, commands::kb_get_table_chunks, commands::execute_production_rag,
             commands::kb_test_embedding, commands::kb_test_chat,

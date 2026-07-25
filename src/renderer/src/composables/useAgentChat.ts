@@ -92,6 +92,8 @@ export interface AgentChatOptions {
   onStartAnswer?: () => void
   /** 完成回调（done/error 共用，用于 mascot idle 等） */
   onFinish?: () => void
+  /** 会话 ID（用于持久化会话状态） */
+  sessionId?: string
 }
 
 // ─── Composable ─────────────────────────────────────────────────
@@ -194,7 +196,7 @@ export function useAgentChat() {
 
   // ── startAgentChat ──
   async function startAgentChat(query: string, options: AgentChatOptions) {
-    const { getMessage, scrollFn, getHistory, onDone, onError, onStartAnswer, onFinish } = options
+    const { getMessage, scrollFn, getHistory, onDone, onError, onStartAnswer, onFinish, sessionId } = options
 
     isChatting.value = true
     setThinkingProgress('')
@@ -254,7 +256,7 @@ export function useAgentChat() {
         scrollFn()
       })
 
-      invoke('kb_agent_chat', { data: { query, history: getHistory(), sessionId: undefined } }).catch((err) => {
+      invoke('kb_agent_chat', { data: { query, history: getHistory(), sessionId: sessionId || undefined } }).catch((err) => {
         console.error('[AgentChat] invoke failed:', err)
         const msg = getMessage()
         if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = String(err) }

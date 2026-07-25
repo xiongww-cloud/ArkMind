@@ -339,6 +339,13 @@ const showNotifications = ref(false)
 const unlistenNotify = ref<(() => void) | null>(null)
 const notifWrapRef = ref<HTMLElement | null>(null)
 
+const notifDropdownStyle = computed(() => {
+  const el = notifWrapRef.value
+  if (!el) return { top: '50px', right: '60px' }
+  const rect = el.getBoundingClientRect()
+  return { top: `${rect.bottom + 4}px`, right: `${window.innerWidth - rect.right}px` }
+})
+
 async function loadNotificationStats() {
   const s = await notificationStats().catch(() => null)
   if (s) unreadCount.value = s.unread_count
@@ -513,25 +520,18 @@ onUnmounted(() => {
       <span>闪记</span>
     </button>
 
-    <!-- Notification icon -->
+    <!-- Notification button -->
     <div class="relative" ref="notifWrapRef">
       <button class="titlebar-btn titlebar-btn--notif" title="通知中心"
               @mousedown.stop @click="showNotifications = !showNotifications">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0"/>
-          <template v-if="unreadCount > 0">
-            <circle cx="18" cy="5.5" r="4" fill="#ef4444" stroke="white" stroke-width="1.5"/>
-            <text x="18" y="5.5" text-anchor="middle" dominant-baseline="central"
-                  fill="white" font-size="5" font-weight="bold" style="pointer-events:none">
-              {{ unreadCount > 9 ? '9+' : unreadCount }}
-            </text>
-          </template>
-        </svg>
+        <AppIcon name="bell" size="14" />
+        <span>通知</span>
+        <span v-if="unreadCount > 0" class="ml-1 px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[9px] font-medium leading-none">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
       </button>
     </div>
     <!-- Notification dropdown (fixed to viewport) -->
     <div v-if="showNotifications" class="fixed inset-0 z-40" @mousedown.self="showNotifications = false">
-      <div class="fixed top-[50px] right-[60px] w-[440px] max-h-[480px] bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden flex flex-col">
+      <div :style="notifDropdownStyle" class="fixed w-[440px] max-h-[480px] bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden flex flex-col">
         <div class="flex items-center justify-between px-3 py-2 border-b border-slate-100">
           <span class="text-[12px] font-semibold text-slate-700">通知中心</span>
           <div class="flex items-center gap-2">
@@ -543,7 +543,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="flex-1 min-h-0 overflow-y-auto">
-          <NotificationPanel :visible="showNotifications" @close="showNotifications = false" />
+          <NotificationPanel :visible="showNotifications" @close="showNotifications = false" @read="loadNotificationStats" />
         </div>
       </div>
     </div>
@@ -655,7 +655,10 @@ onUnmounted(() => {
 }
 
 .titlebar-btn--notif {
-  padding: 6px 8px;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
   color: #64748b;
 }
 .titlebar-btn--notif:hover {
@@ -685,7 +688,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: 8px;
+  margin-left: 2px;
 }
 
 .titlebar-btn--win {
