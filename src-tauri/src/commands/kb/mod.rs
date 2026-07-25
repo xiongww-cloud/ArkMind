@@ -4,12 +4,10 @@ use serde_json::{json, Value};
 pub mod kb_config_commands;
 pub mod kb_search_commands;
 pub mod kb_memory_commands;
-pub mod kb_tag_commands;
 
 pub use kb_config_commands::*;
 pub use kb_search_commands::*;
 pub use kb_memory_commands::*;
-pub use kb_tag_commands::*;
 
 // Chat session persistence
 #[tauri::command] pub async fn kb_save_sessions(data: Value) -> Result<Value, String> {

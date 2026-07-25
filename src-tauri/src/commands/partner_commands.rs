@@ -17,12 +17,12 @@ pub async fn partner_list(project_id: String, partner_type: Option<String>) -> R
         }
     } else if let Some(ref pt) = partner_type {
         (
-            "SELECT p.* FROM partners p WHERE p.id IN (SELECT DISTINCT br.source_id FROM business_relations br WHERE br.target_type = 'PROJECT' AND br.target_id = ?1 AND br.relation_type = 'belongs_to') AND p.type = ?2".into(),
+            "SELECT p.*, ppm.remark as project_remark FROM partners p INNER JOIN partner_project_mapping ppm ON p.id = ppm.partner_id WHERE ppm.project_id = ?1 AND p.type = ?2".into(),
             vec![json!(&project_id), json!(pt)]
         )
     } else {
         (
-            "SELECT p.* FROM partners p WHERE p.id IN (SELECT DISTINCT br.source_id FROM business_relations br WHERE br.target_type = 'PROJECT' AND br.target_id = ?1 AND br.relation_type = 'belongs_to')".into(),
+            "SELECT p.*, ppm.remark as project_remark FROM partners p INNER JOIN partner_project_mapping ppm ON p.id = ppm.partner_id WHERE ppm.project_id = ?1".into(),
             vec![json!(&project_id)]
         )
     };
@@ -30,17 +30,8 @@ pub async fn partner_list(project_id: String, partner_type: Option<String>) -> R
     let mut result = Vec::new();
     for p in &partners {
         let pid = p["id"].as_str().unwrap_or("");
-        // 从 business_relations.metadata 提取 selected_contact_id 和 remark
-        let meta_str = database::get(
-            "SELECT metadata FROM business_relations WHERE source_type=?1 AND source_id=?2 AND target_type='PROJECT' AND target_id=?3 AND relation_type='belongs_to'",
-            &[json!(&p["type"]), json!(pid), json!(&project_id)]
-        ).ok().flatten().and_then(|r| r["metadata"].as_str().map(String::from));
-        let meta: Value = meta_str.as_deref().map(|s| serde_json::from_str(s).unwrap_or(json!({}))).unwrap_or(json!({}));
-        let selected_contact_id = meta.get("selected_contact_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let project_remark = meta.get("remark").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        // 通过 partner_contact_mapping 查询联系人（去重）
+        // 查该项目下该 Partner 的联系人
         let contact_ids: Vec<String> = if is_global {
-            // 全局视图：返回该渠道/厂商下的所有联系人
             database::all(
                 "SELECT DISTINCT contact_id FROM partner_contact_mapping WHERE partner_id=?",
                 &[json!(pid)]
@@ -48,10 +39,9 @@ pub async fn partner_list(project_id: String, partner_type: Option<String>) -> R
                 .filter_map(|r| r["contact_id"].as_str().map(String::from))
                 .collect()
         } else {
-            // 项目视图：只返回关联到当前项目的联系人
             database::all(
-                "SELECT DISTINCT pcm.contact_id FROM partner_contact_mapping pcm INNER JOIN business_relations br ON br.source_type='CONTACT' AND br.source_id=pcm.contact_id AND br.target_type='PROJECT' AND br.target_id=?1 AND br.relation_type='belongs_to' WHERE pcm.partner_id=?2",
-                &[json!(&project_id), json!(pid)]
+                "SELECT DISTINCT pcm.contact_id FROM partner_contact_mapping pcm INNER JOIN contact_project_mapping cpm ON pcm.contact_id = cpm.contact_id WHERE pcm.partner_id=?1 AND cpm.project_id=?2",
+                &[json!(pid), json!(&project_id)]
             ).unwrap_or_default().iter()
                 .filter_map(|r| r["contact_id"].as_str().map(String::from))
                 .collect()
@@ -64,8 +54,7 @@ pub async fn partner_list(project_id: String, partner_type: Option<String>) -> R
             database::all(&format!("SELECT DISTINCT * FROM partner_contacts WHERE id IN ({})", ph), &params).unwrap_or_default()
         };
         let mut obj = p.clone();
-        obj["selected_contact_id"] = json!(selected_contact_id);
-        obj["project_remark"] = json!(project_remark);
+        obj["selected_contact_id"] = json!("");
         obj["contacts"] = json!(contacts);
         result.push(obj);
     }
@@ -91,6 +80,10 @@ pub async fn partner_create(data: Value) -> Result<Value, String> {
     ).map_err(|e| e.to_string())?;
     
     if !pid.is_empty() {
+        database::run(
+            "INSERT OR IGNORE INTO partner_project_mapping(partner_id, project_id, partner_type, remark) VALUES(?, ?, ?, ?)",
+            &[json!(&id), json!(&pid), json!(&partner_type), json!("")]
+        ).ok();
         crate::services::business_relations::upsert(&partner_type, &id, "PROJECT", &pid, "belongs_to", "{}");
     }
     crate::services::knowledge_lifecycle::notify_changed(&partner_type, &id);
@@ -123,37 +116,59 @@ pub async fn partner_update(data: Value) -> Result<Value, String> {
 /// 删除合作伙伴
 #[tauri::command]
 pub async fn partner_delete(partner_id: String) -> Result<Value, String> {
-    let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
-    crate::services::knowledge_lifecycle::notify_deleted(&ptype, &partner_id);
-    crate::services::business_relations::delete_by_source(&ptype, &partner_id);
-    emit_for_partner(&partner_id);
+    // 去掉可能的 TYPE- 前缀（CHANNEL-xxx / VENDOR-xxx / CUSTOMER-xxx → xxx）
+    let clean_id = partner_id
+        .strip_prefix("CHANNEL-").or_else(|| partner_id.strip_prefix("VENDOR-")).or_else(|| partner_id.strip_prefix("CUSTOMER-"))
+        .unwrap_or(&partner_id);
+    let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(clean_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
+    crate::services::knowledge_lifecycle::notify_deleted(&ptype, clean_id);
+    crate::services::source_doc_sync::delete_entity_source_doc(&ptype, clean_id);
+    // 清理 partner_project_mapping
+    database::run("DELETE FROM partner_project_mapping WHERE partner_id=?", &[json!(clean_id)]).ok();
+    // 清理该 Partner 下所有联系人→项目的 contact_project_mapping
+    database::run("DELETE FROM contact_project_mapping WHERE contact_id IN (SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?)", &[json!(clean_id)]).ok();
+    crate::services::business_relations::delete_by_source(&ptype, clean_id);
+    emit_for_partner(clean_id);
     // 删除关联的联系人记录
-    let contact_ids: Vec<String> = database::all("SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?", &[json!(&partner_id)]).unwrap_or_default()
+    let contact_ids: Vec<String> = database::all("SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?", &[json!(clean_id)]).unwrap_or_default()
         .into_iter().filter_map(|r| r["contact_id"].as_str().map(String::from)).collect();
     for cid in &contact_ids {
         crate::services::knowledge_lifecycle::notify_deleted("CONTACT", cid);
+        crate::services::source_doc_sync::delete_entity_source_doc("CONTACT", cid);
+        crate::services::business_relations::delete_by_source("CONTACT", cid);
         database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?", &[json!(cid)]).ok();
         database::run("DELETE FROM partner_contacts WHERE id=?", &[json!(cid)]).ok();
     }
-    database::run("DELETE FROM partner_contact_mapping WHERE partner_id=?",&[json!(&partner_id)]).ok();
-    database::run("DELETE FROM partners WHERE id=?",&[json!(&partner_id)]).map_err(|e| e.to_string())?;
+    database::run("DELETE FROM partner_contact_mapping WHERE partner_id=?",&[json!(clean_id)]).ok();
+    let changes = database::run("DELETE FROM partners WHERE id=?",&[json!(clean_id)]).map_err(|e| e.to_string())?;
+    if changes.changes == 0 {
+        return Err(format!("未找到合作伙伴: {}", partner_id));
+    }
     Ok(json!({"success":true}))
 }
 
-/// 关联合作伙伴到项目（metadata 存储 selected_contact_id 和 remark）
+/// 关联合作伙伴到项目（Partner 直接映射，联系人可选）
 #[tauri::command]
 pub async fn partner_link_project(partner_id: String, project_id: String, contact_id: Option<String>, remark: Option<String>) -> Result<Value, String> {
     let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
-    let meta = json!({
-        "selected_contact_id": contact_id.as_deref().unwrap_or(""),
-        "remark": remark.as_deref().unwrap_or("")
-    });
-    crate::services::business_relations::upsert(&ptype, &partner_id, "PROJECT", &project_id, "belongs_to", &meta.to_string());
+    // WRITE 1: partner_project_mapping（始终写入，Partner 直接关联项目）
+    database::run(
+        "INSERT OR IGNORE INTO partner_project_mapping(partner_id, project_id, partner_type, remark) VALUES(?, ?, ?, ?)",
+        &[json!(&partner_id), json!(&project_id), json!(&ptype), json!(remark.as_deref().unwrap_or(""))]
+    ).ok();
+    // WRITE 2: business_relations（Partner → Project）
+    crate::services::business_relations::upsert(&ptype, &partner_id, "PROJECT", &project_id, "belongs_to", "{}");
+    // 如果指定了联系人，同时关联联系人到项目
     if let Some(ref cid) = contact_id {
         if !cid.is_empty() {
+            database::run(
+                "INSERT OR IGNORE INTO contact_project_mapping(contact_id, project_id) VALUES(?, ?)",
+                &[json!(cid), json!(&project_id)]
+            ).ok();
             crate::services::business_relations::upsert("CONTACT", cid, "PROJECT", &project_id, "belongs_to", "{}");
         }
     }
+    crate::services::knowledge_lifecycle::notify_changed(&ptype, &partner_id);
     Ok(json!({"success":true}))
 }
 
@@ -161,39 +176,45 @@ pub async fn partner_link_project(partner_id: String, project_id: String, contac
 #[tauri::command]
 pub async fn partner_unlink_project(partner_id: String, project_id: String) -> Result<Value, String> {
     let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
-    // 从 business_relations.metadata 读取 selected_contact_id
-    let selected = database::get(
-        "SELECT metadata FROM business_relations WHERE source_type=?1 AND source_id=?2 AND target_type='PROJECT' AND target_id=?3 AND relation_type='belongs_to'",
-        &[json!(&ptype), json!(&partner_id), json!(&project_id)]
-    ).ok().flatten()
-        .and_then(|r| r["metadata"].as_str().map(String::from))
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|m| m.get("selected_contact_id").and_then(|v| v.as_str().map(String::from)));
+    // DELETE 1: partner_project_mapping
+    database::run(
+        "DELETE FROM partner_project_mapping WHERE partner_id=? AND project_id=?",
+        &[json!(&partner_id), json!(&project_id)]
+    ).ok();
+    // DELETE 2: 该 Partner 下所有联系人→该项目的 contact_project_mapping
+    database::run(
+        "DELETE FROM contact_project_mapping WHERE project_id=?1 AND contact_id IN (SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?2)",
+        &[json!(&project_id), json!(&partner_id)]
+    ).ok();
+    // DELETE 3: business_relations（Partner → Project）
     crate::services::business_relations::delete(&ptype, &partner_id, "PROJECT", &project_id, "belongs_to");
-    if let Some(cid) = selected {
-        if !cid.is_empty() {
-            crate::services::business_relations::delete("CONTACT", &cid, "PROJECT", &project_id, "belongs_to");
-        }
+    // DELETE 4: business_relations（该 Partner 下联系人的 CONTACT → Project）
+    let contact_ids: Vec<String> = database::all(
+        "SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?",
+        &[json!(&partner_id)]
+    ).unwrap_or_default().iter()
+        .filter_map(|r| r["contact_id"].as_str().map(String::from))
+        .collect();
+    for cid in &contact_ids {
+        crate::services::business_relations::delete("CONTACT", cid, "PROJECT", &project_id, "belongs_to");
     }
     Ok(json!({"success":true}))
 }
 
-/// 更新合作伙伴的项目级备注（存储在 business_relations.metadata 中）
+/// 更新合作伙伴的项目级备注
 #[tauri::command]
 pub async fn partner_update_remark(partner_id: String, project_id: String, remark: Option<String>) -> Result<Value, String> {
-    let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
-    let existing = database::get(
-        "SELECT metadata FROM business_relations WHERE source_type=?1 AND source_id=?2 AND target_type='PROJECT' AND target_id=?3 AND relation_type='belongs_to'",
-        &[json!(&ptype), json!(&partner_id), json!(&project_id)]
-    ).ok().flatten();
-    let old_meta: Value = existing
-        .and_then(|r| r["metadata"].as_str().map(|s| serde_json::from_str(s).unwrap_or(json!({}))))
-        .unwrap_or(json!({}));
-    let new_meta = json!({
-        "selected_contact_id": old_meta.get("selected_contact_id").and_then(|v| v.as_str()).unwrap_or(""),
-        "remark": remark.as_deref().unwrap_or("")
-    });
-    crate::services::business_relations::upsert(&ptype, &partner_id, "PROJECT", &project_id, "belongs_to", &new_meta.to_string());
+    let new_remark = remark.as_deref().unwrap_or("");
+    // UPDATE 1: partner_project_mapping
+    database::run(
+        "UPDATE partner_project_mapping SET remark=? WHERE partner_id=? AND project_id=?",
+        &[json!(new_remark), json!(&partner_id), json!(&project_id)]
+    ).ok();
+    // UPDATE 2: contact_project_mapping（该 Partner 下所有联系人→该项目的 remark）
+    database::run(
+        "UPDATE contact_project_mapping SET remark=? WHERE project_id=?1 AND contact_id IN (SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?2)",
+        &[json!(new_remark), json!(&project_id), json!(&partner_id)]
+    ).ok();
     Ok(json!({"success":true}))
 }
 
@@ -244,17 +265,30 @@ pub async fn partner_contact_update(data: Value) -> Result<Value, String> {
 /// 删除联系人
 #[tauri::command]
 pub async fn partner_contact_delete(contact_id: String) -> Result<Value, String> {
-    crate::services::knowledge_lifecycle::notify_deleted("CONTACT", &contact_id);
-    crate::services::business_relations::delete_by_source("CONTACT", &contact_id);
-    emit_for_partner_contact(&contact_id);
-    database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?",&[json!(&contact_id)]).ok();
-    database::run("DELETE FROM partner_contacts WHERE id=?",&[json!(&contact_id)]).map_err(|e| e.to_string())?;
+    // 去掉可能的 CONTACT- 前缀
+    let clean_id = contact_id.strip_prefix("CONTACT-").unwrap_or(&contact_id);
+    crate::services::knowledge_lifecycle::notify_deleted("CONTACT", clean_id);
+    crate::services::source_doc_sync::delete_entity_source_doc("CONTACT", clean_id);
+    database::run("DELETE FROM contact_project_mapping WHERE contact_id=?", &[json!(clean_id)]).ok();
+    crate::services::business_relations::delete_by_source("CONTACT", clean_id);
+    emit_for_partner_contact(clean_id);
+    database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?",&[json!(clean_id)]).ok();
+    let changes = database::run("DELETE FROM partner_contacts WHERE id=?",&[json!(clean_id)]).map_err(|e| e.to_string())?;
+    if changes.changes == 0 {
+        return Err(format!("未找到联系人: {}（可能已被其所属合作伙伴删除）", contact_id));
+    }
     Ok(json!({"success":true}))
 }
 
-/// 关联联系人到项目
+/// 关联联系人到项目（主映射方式）
 #[tauri::command]
 pub async fn contact_link_project(contact_id: String, project_id: String) -> Result<Value, String> {
+    // WRITE 1: contact_project_mapping
+    database::run(
+        "INSERT OR IGNORE INTO contact_project_mapping(contact_id, project_id) VALUES(?, ?)",
+        &[json!(&contact_id), json!(&project_id)]
+    ).ok();
+    // WRITE 2: business_relations
     crate::services::business_relations::upsert("CONTACT", &contact_id, "PROJECT", &project_id, "belongs_to", "{}");
     crate::services::knowledge_lifecycle::notify_changed("CONTACT", &contact_id);
     Ok(json!({"success":true}))
@@ -263,6 +297,12 @@ pub async fn contact_link_project(contact_id: String, project_id: String) -> Res
 /// 取消联系人与项目的关联
 #[tauri::command]
 pub async fn contact_unlink_project(contact_id: String, project_id: String) -> Result<Value, String> {
+    // DELETE 1: contact_project_mapping
+    database::run(
+        "DELETE FROM contact_project_mapping WHERE contact_id=? AND project_id=?",
+        &[json!(&contact_id), json!(&project_id)]
+    ).ok();
+    // DELETE 2: business_relations
     crate::services::business_relations::delete("CONTACT", &contact_id, "PROJECT", &project_id, "belongs_to");
     Ok(json!({"success":true}))
 }
@@ -270,6 +310,14 @@ pub async fn contact_unlink_project(contact_id: String, project_id: String) -> R
 // ═══════════════════════════════════════════════════════════════════
 // 全局列表（通讯录用，不过滤 project_id）
 // ═══════════════════════════════════════════════════════════════════
+
+/// 获取联系人总数
+#[tauri::command]
+pub async fn contacts_count() -> Result<i64, String> {
+    let row = database::get("SELECT COUNT(*) as cnt FROM partner_contacts", &[])
+        .map_err(|e| e.to_string())?;
+    Ok(row.and_then(|r| r["cnt"].as_i64()).unwrap_or(0))
+}
 
 /// 列出所有合作伙伴（可选按类型过滤）
 #[tauri::command]
@@ -312,8 +360,20 @@ fn emit_for_project(pid: &str) {
 }
 
 fn emit_for_partner(pid: &str) {
+    // 从 partner_project_mapping 读取
     if let Ok(rows) = database::all(
-        "SELECT target_id as project_id FROM business_relations WHERE source_id=? AND target_type='PROJECT' AND relation_type='belongs_to'",
+        "SELECT project_id FROM partner_project_mapping WHERE partner_id=?",
+        &[json!(pid)]
+    ) {
+        for r in rows {
+            if let Some(proj_id) = r["project_id"].as_str() {
+                emit_for_project(proj_id);
+            }
+        }
+    }
+    // 从 contact_project_mapping 读取（通过联系人）
+    if let Ok(rows) = database::all(
+        "SELECT DISTINCT cpm.project_id FROM contact_project_mapping cpm INNER JOIN partner_contact_mapping pcm ON cpm.contact_id = pcm.contact_id WHERE pcm.partner_id=?",
         &[json!(pid)]
     ) {
         for r in rows {
@@ -325,9 +385,8 @@ fn emit_for_partner(pid: &str) {
 }
 
 fn emit_for_partner_contact(cid: &str) {
-    // 通过 partner_contact_mapping + business_relations 找到关联的项目
     if let Ok(Some(r)) = database::get(
-        "SELECT br.target_id as project_id FROM partner_contact_mapping pcm JOIN business_relations br ON br.source_id = pcm.partner_id AND br.target_type = 'PROJECT' AND br.relation_type = 'belongs_to' WHERE pcm.contact_id=?",
+        "SELECT project_id FROM contact_project_mapping WHERE contact_id=?",
         &[json!(cid)]
     ) {
         if let Some(pid) = r["project_id"].as_str() {

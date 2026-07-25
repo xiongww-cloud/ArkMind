@@ -16,8 +16,9 @@ use tauri::Emitter;
     let query = data["query"].as_str().unwrap_or("").to_string();
     let max_iter = data["maxIterations"].as_i64().map(|n| n as i32);
     let history: Vec<Value> = data["history"].as_array().map(|a| a.to_vec()).unwrap_or_default();
+    let session_id = data["sessionId"].as_str().map(String::from);
     tauri::async_runtime::spawn(async move {
-        let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, history, Some(app_handle.clone()), false).await;
+        let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, history, Some(app_handle.clone()), false, session_id).await;
         match result {
             Ok(v) => { let _ = app_handle.emit("agent:done", &v); if let Some(ans) = v["answer"].as_str() { if !ans.is_empty() { let preview: String = ans.chars().take(100).collect(); println!("[Agent] 响应: {}", preview); } } }
             Err(e) => {
@@ -36,7 +37,7 @@ use tauri::Emitter;
     let query = data["query"].as_str().unwrap_or("").to_string();
     if query.is_empty() { return Err("请输入问题".to_string()); }
     tauri::async_runtime::spawn(async move {
-        let result = crate::services::agent_workflow::agent_chat_workflow(query, None, vec![], Some(app_handle.clone()), false).await;
+        let result = crate::services::agent_workflow::agent_chat_workflow(query, None, vec![], Some(app_handle.clone()), false, None).await;
         match result {
             Ok(v) => { let _ = app_handle.emit("agent:done", &v); }
             Err(e) => {

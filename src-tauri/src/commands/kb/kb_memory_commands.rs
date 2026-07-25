@@ -245,12 +245,6 @@ pub async fn kb_memory_parents(source_type: String, source_id: String) -> Result
         let content = p["content"].as_str().unwrap_or("").chars().take(300).collect::<String>();
         let doc_title = p["doc_title"].as_str().unwrap_or("").to_string();
 
-        // Tags
-        let tags: Vec<String> = database::all(
-            "SELECT DISTINCT t.name FROM tags t JOIN tag_mappings tm ON tm.tag_id=t.tag_id WHERE tm.entity_type=?1 AND tm.entity_id=?2 LIMIT 10",
-            &[json!(source_type.to_lowercase() + "s"), json!(&source_id)],
-        ).unwrap_or_default().iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-
         // Child count
         let child_count: i64 = database::with_db(|c| c.query_row(
             "SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='child' AND parent_id=?1",
@@ -269,7 +263,6 @@ pub async fn kb_memory_parents(source_type: String, source_id: String) -> Result
             "access_count": access_count,
             "child_count": child_count,
             "stars": stars,
-            "tags": tags,
             "created_at": p["created_at"].as_str().unwrap_or(""),
         }));
     }
@@ -390,12 +383,7 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
          FROM source_data GROUP BY source_type ORDER BY cnt DESC", &[],
     ).unwrap_or_default();
 
-    // 5. Tag count
-    let tag_count: i64 = database::with_db(|c| c.query_row(
-        "SELECT COUNT(*) FROM tags WHERE type != 'ai_shadow'", [], |r| r.get(0)
-    )).unwrap_or(0);
-
-    // 6. Activity heatmap (last 30 days: updates + accesses per day)
+    // 5. Activity heatmap (last 30 days: updates + accesses per day)
     let activity_heatmap = database::all(
         "SELECT date, SUM(cnt) as cnt FROM ( \
             SELECT date(updated_at) as date, COUNT(*) as cnt FROM source_data \
@@ -420,7 +408,6 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
             "hot_count": hot_count,
             "cold_count": cold_count,
             "avg_weight": avg_weight,
-            "tag_count": tag_count,
             "hot_ratio": if child_total > 0 { (hot_count as f64 / child_total as f64 * 100.0).round() } else { 0.0 },
             "cold_ratio": if child_total > 0 { (cold_count as f64 / child_total as f64 * 100.0).round() } else { 0.0 },
         }

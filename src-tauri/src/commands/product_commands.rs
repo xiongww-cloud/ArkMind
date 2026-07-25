@@ -64,7 +64,6 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn product_delete(id: String) -> Result<Value, String> {
     database::run("DELETE FROM file_relations WHERE entity_type='product' AND entity_id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
-    database::run("DELETE FROM tag_mappings WHERE entity_type='products' AND entity_id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::business_relations::delete_by_source("PRODUCT", &id);
     database::run("DELETE FROM products WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::knowledge_lifecycle::notify_deleted("PRODUCT", &id);
@@ -72,6 +71,3 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))
 }
-#[tauri::command] pub async fn product_get_tags(product_id: String) -> Result<Value, String> { let tags = database::all("SELECT t.* FROM tags t INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id WHERE tm.entity_type='products' AND tm.entity_id=? ORDER BY t.name",&[json!(product_id)]).map_err(|e| e.to_string())?; Ok(json!({"success":true,"tags":tags})) }
-#[tauri::command] pub async fn product_add_tag_mapping(product_id: String, tag_name: String) -> Result<Value, String> { let tag_id = match database::get("SELECT tag_id FROM tags WHERE name=?",&[json!(&tag_name)]).ok().flatten() { Some(r) => r["tag_id"].as_str().unwrap_or("").to_string(), None => { let nid = uuid::Uuid::new_v4().to_string(); database::run("INSERT INTO tags(tag_id,name,color,type) VALUES(?,?,?,'general')",&[json!(&nid),json!(&tag_name),json!("#6366f1")]).ok(); nid } }; database::run("INSERT OR IGNORE INTO tag_mappings(entity_type,entity_id,tag_id) VALUES('products',?,?)",&[json!(&product_id),json!(&tag_id)]).map_err(|e| e.to_string())?; Ok(json!({"success":true})) }
-#[tauri::command] pub async fn product_remove_tag_mapping(product_id: String, tag_id: String) -> Result<Value, String> { database::run("DELETE FROM tag_mappings WHERE entity_type='products' AND entity_id=? AND tag_id=?",&[json!(&product_id),json!(&tag_id)]).map_err(|e| e.to_string())?; Ok(json!({"success":true})) }

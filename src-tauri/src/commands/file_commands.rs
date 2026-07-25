@@ -574,9 +574,6 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
     }
     Ok(json!({"success":true}))
 }
-#[tauri::command] pub async fn file_get_tags(file_id: String) -> Result<Value, String> { let tags = database::all("SELECT t.* FROM tags t INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id WHERE tm.entity_type='files' AND tm.entity_id=? ORDER BY t.name",&[json!(file_id)]).map_err(|e| e.to_string())?; Ok(json!({"success":true,"tags":tags})) }
-#[tauri::command] pub async fn file_add_tag_mapping(file_id: String, tag_name: String) -> Result<Value, String> { let tag_id = match database::get("SELECT tag_id FROM tags WHERE name=?",&[json!(&tag_name)]).ok().flatten() { Some(r) => r["tag_id"].as_str().unwrap_or("").to_string(), None => { let nid = uuid::Uuid::new_v4().to_string(); database::run("INSERT INTO tags(tag_id,name,color,type) VALUES(?,?,?,'general')",&[json!(&nid),json!(&tag_name),json!("#6366f1")]).ok(); nid } }; database::run("INSERT OR IGNORE INTO tag_mappings(entity_type,entity_id,tag_id) VALUES('files',?,?)",&[json!(&file_id),json!(&tag_id)]).map_err(|e| e.to_string())?; Ok(json!({"success":true})) }
-#[tauri::command] pub async fn file_remove_tag_mapping(file_id: String, tag_id: String) -> Result<Value, String> { database::run("DELETE FROM tag_mappings WHERE entity_type='files' AND entity_id=? AND tag_id=?",&[json!(&file_id),json!(&tag_id)]).map_err(|e| e.to_string())?; Ok(json!({"success":true})) }
 #[tauri::command] pub async fn file_move(data: Value) -> Result<Value, String> {
     let file_id = data["fileId"].as_str().unwrap_or("");
     let folder_id: Option<String> = data.get("toFolderId").and_then(|v| v.as_str().map(|s| s.to_string()));

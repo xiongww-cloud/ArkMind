@@ -105,7 +105,11 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
 
     if let Some(v) = data["title"].as_str() { fields.push("title=?".into()); values.push(json!(v)); }
     if let Some(v) = data["content"].as_str() { fields.push("content=?".into()); values.push(json!(v)); }
-    if let Some(v) = data["done"].as_bool() { fields.push("done=?".into()); values.push(json!(v as i32)); }
+    if let Some(v) = data["done"].as_bool() {
+        fields.push("done=?".into()); values.push(json!(v as i32));
+    } else if let Some(v) = data["done"].as_i64() {
+        fields.push("done=?".into()); values.push(json!(if v != 0 { 1i32 } else { 0i32 }));
+    }
     if let Some(p) = data.get("priority") {
         if p.is_null() || p.as_str().map(|s| s.is_empty()).unwrap_or(true) {
             fields.push("priority=NULL".into());

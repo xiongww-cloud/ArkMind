@@ -120,13 +120,9 @@ use serde_json::{json, Value};
 // Agent tools
 
 #[tauri::command]
-pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: Option<String>, filter_tags: Option<Vec<String>>) -> Result<String, String> {
+pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: Option<String>, _filter_tags: Option<Vec<String>>) -> Result<String, String> {
     let query = keywords.join(" ");
     if query.trim().is_empty() { return Ok("未提供检索关键词".into()); }
-    let tag_rowids: std::collections::HashSet<i64> = match &filter_tags {
-        Some(tags) if !tags.is_empty() => crate::services::agent_workflow::get_child_rowids_by_tag_names(tags).into_iter().collect(),
-        _ => std::collections::HashSet::new(),
-    };
     let query_vector = crate::services::embedding_client::get_embedding_with_caller(&query, "production_rag").await.map_err(|e| format!("embed: {}", e))?;
     let vec_rowids: Vec<(String, f64)> = match crate::services::lancedb_client::get_lancedb() {
         Ok(guard) => match guard.as_ref() { Some(client) => client.search_vectors_with_parent(&query_vector, 30).unwrap_or_default().into_iter().map(|(r,s,_,_,_)| (r.to_string(), s)).collect(), None => Vec::new() }, Err(_) => Vec::new()
@@ -135,8 +131,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
     let fts_query_str = fts_query.join(" OR ");
     let fts_results = database::fts5_search_chunks(&fts_query_str, 30).unwrap_or_default();
     let fts_rowids: Vec<(String, f64)> = fts_results.iter().map(|fr| (fr.rowid.to_string(), fr.rank)).collect();
-    let fuse = |rows: Vec<(String,f64)>| -> Vec<(String,f64)> { if tag_rowids.is_empty() { rows } else { rows.into_iter().filter(|(id,_)| id.parse::<i64>().map(|r| tag_rowids.contains(&r)).unwrap_or(false)).collect() } };
-    let fused = crate::services::search_assets::rrf_fusion(&fuse(fts_rowids), &fuse(vec_rowids), 60.0);
+    let fused = crate::services::search_assets::rrf_fusion(&fts_rowids, &vec_rowids, 60.0);
     if fused.is_empty() { return Ok("未找到相关知识切片".into()); }
     let mut seen = std::collections::HashSet::new(); let mut output = String::new(); let mut count = 0usize;
     for (rowid_str, rrf_score) in fused.iter() {
@@ -150,7 +145,16 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
             let _total_parents: i64 = r["source_data_id"].as_str().map(|sdid| database::get("SELECT COUNT(*) as cnt FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent'", &[serde_json::json!(sdid)]).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0)).unwrap_or(0);
             let _chunk_id = r["chunk_id"].as_str().unwrap_or(""); let _chunk_index = r["chunk_index"].as_i64().unwrap_or(0);
             if let Some(c) = r["content"].as_str() { count += 1; let t: String = c.chars().take(1300).collect();
-                let meta = crate::services::agent_workflow::build_chunk_metadata(st, sid, false);
+                let source_id_str = format!("{}-{}", st, sid);
+                let meta_json = crate::services::agent_workflow::build_chunk_metadata(&source_id_str);
+                let meta = if meta_json["found"].as_bool().unwrap_or(false) {
+                    format!("来源：{} · {}", 
+                        match st { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", _ => st },
+                        meta_json["name"].as_str().unwrap_or(sid)
+                    )
+                } else {
+                    String::new()
+                };
                 if meta.is_empty() { output.push_str(&format!("\n\n--- [父块{}|RRF={:.3}] ---\n{}", count, rrf_score, t)); }
                 else { output.push_str(&format!("\n\n--- [父块{}|RRF={:.3}] ---\n{}\n--------\n{}", count, rrf_score, meta, t)); }
             }
@@ -165,11 +169,6 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
     match doc.and_then(|d| d["content"].as_str().map(|s| s.to_string())) { Some(c) => Ok(format!("文档 {} 内容:\n{}", doc_id, c)), None => Ok(format!("文档 {} 未找到", doc_id)) }
 }
 #[tauri::command] pub async fn ext_tool_find_related_knowledge(_doc_id: String) -> Result<String, String> { Ok("[]".to_string()) }
-#[tauri::command] pub async fn ext_tool_search_by_tag(tag_name: String) -> Result<String, String> {
-    let results = database::fts5_search_chunks(&tag_name, 20).unwrap_or_default();
-    let ids: Vec<String> = results.iter().map(|r| r.rowid.to_string()).collect();
-    Ok(serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string()))
-}
 
 #[tauri::command]
 pub async fn ext_tool_get_project_context(query_name: String) -> Result<String, String> {
@@ -177,11 +176,8 @@ pub async fn ext_tool_get_project_context(query_name: String) -> Result<String, 
     let projects = database::all("SELECT id,name,status,owner,budget,bid_time,description,created_at,updated_at FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1",&[json!(format!("%{}%",crate::database::escape_like(query_name.trim())))]).unwrap_or_default();
     let proj = match projects.first() { Some(p) => p, None => return Ok(format!("未找到匹配「{}」的项目", query_name)) };
     let project_id = proj["id"].as_str().unwrap_or("");
-    let mut tags: Vec<String> = database::all("SELECT DISTINCT t.name FROM tags t INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id WHERE tm.entity_type='projects' AND tm.entity_id=?1",&[json!(project_id)]).unwrap_or_default().into_iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-    let note_tags: Vec<String> = database::all("SELECT DISTINCT t.name FROM tags t INNER JOIN tag_mappings tm ON tm.tag_id=t.tag_id INNER JOIN note_project_mapping npm ON npm.note_id=tm.entity_id WHERE tm.entity_type='notes' AND npm.project_id=?1",&[json!(project_id)]).unwrap_or_default().into_iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-    for nt in note_tags { if !tags.contains(&nt) { tags.push(nt); } }
     let bom: Vec<Value> = database::all("SELECT si.product_name,si.quantity,si.description,sv.version,s.name as solution_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 AND sv.status='final' ORDER BY sv.updated_at DESC,si.sort_order ASC",&[json!(project_id)]).unwrap_or_default().into_iter().map(|r| json!({"product_model":r["product_name"].as_str().unwrap_or(""),"quantity":r["quantity"].as_i64().unwrap_or(0),"spec":r["description"].as_str().unwrap_or(""),"solution":r["solution_name"].as_str().unwrap_or("")})).collect();
-    let result = json!({"project_id":project_id,"project_name":proj["name"].as_str().unwrap_or(""),"attributes":{"status":proj["status"].as_str().unwrap_or(""),"owner":proj["owner"].as_str().unwrap_or(""),"budget":proj["budget"].as_f64().unwrap_or(0.0),"bid_time":proj["bid_time"].as_str().unwrap_or(""),"description":proj["description"].as_str().unwrap_or("")},"tags":tags,"solution_bom":bom});
+    let result = json!({"project_id":project_id,"project_name":proj["name"].as_str().unwrap_or(""),"attributes":{"status":proj["status"].as_str().unwrap_or(""),"owner":proj["owner"].as_str().unwrap_or(""),"budget":proj["budget"].as_f64().unwrap_or(0.0),"bid_time":proj["bid_time"].as_str().unwrap_or(""),"description":proj["description"].as_str().unwrap_or("")},"solution_bom":bom});
     Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 

@@ -1,8 +1,8 @@
 use crate::database;
 use serde_json::{json, Value};
 
-#[tauri::command] pub async fn project_list() -> Result<Vec<Value>, String> { database::all("SELECT p.*, pr.name as customer_name FROM projects p LEFT JOIN project_customer_mapping pcm ON p.id = pcm.project_id LEFT JOIN partners pr ON pcm.customer_id = pr.id AND pr.type = 'CUSTOMER' ORDER BY p.updated_at DESC", &[]).map_err(|e| e.to_string()) }
-#[tauri::command] pub async fn project_get(id: String) -> Result<Value, String> { database::get("SELECT p.*, pr.name as customer_name FROM projects p LEFT JOIN project_customer_mapping pcm ON p.id = pcm.project_id LEFT JOIN partners pr ON pcm.customer_id = pr.id AND pr.type = 'CUSTOMER' WHERE p.id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
+#[tauri::command] pub async fn project_list() -> Result<Vec<Value>, String> { database::all("SELECT p.*, pr.name as customer_name FROM projects p LEFT JOIN (SELECT partner_id, project_id FROM partner_project_mapping WHERE partner_type = 'CUSTOMER' UNION SELECT pcm.partner_id, cpm.project_id FROM contact_project_mapping cpm INNER JOIN partner_contact_mapping pcm ON cpm.contact_id = pcm.contact_id INNER JOIN partners pt ON pcm.partner_id = pt.id AND pt.type = 'CUSTOMER') ppm ON ppm.project_id = p.id LEFT JOIN partners pr ON ppm.partner_id = pr.id ORDER BY p.updated_at DESC", &[]).map_err(|e| e.to_string()) }
+#[tauri::command] pub async fn project_get(id: String) -> Result<Value, String> { database::get("SELECT p.*, pr.name as customer_name FROM projects p LEFT JOIN (SELECT partner_id, project_id FROM partner_project_mapping WHERE partner_type = 'CUSTOMER' UNION SELECT pcm.partner_id, cpm.project_id FROM contact_project_mapping cpm INNER JOIN partner_contact_mapping pcm ON cpm.contact_id = pcm.contact_id INNER JOIN partners pt ON pcm.partner_id = pt.id AND pt.type = 'CUSTOMER') ppm ON ppm.project_id = p.id LEFT JOIN partners pr ON ppm.partner_id = pr.id WHERE p.id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
 #[tauri::command]
 pub async fn project_create(data: Value) -> Result<Value, String> {
     let id = data["displayId"].as_str().filter(|s| !s.is_empty()).or_else(|| data["id"].as_str().filter(|s| !s.is_empty())).unwrap_or("").to_string();
@@ -46,6 +46,12 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     // expected_order_date 预计下单时间
     if let Some(v) = data["expectedOrderDate"].as_str() { fields.push("expected_order_date=?".into()); values.push(json!(v)); }
     if let Some(_v) = data["budget"].as_f64() { /* already handled via str in loop above */ }
+    // 回退：如果 budget 以数字类型传入，补充处理
+    if !fields.iter().any(|f| f.starts_with("budget")) {
+        if let Some(v) = data["budget"].as_f64() {
+            fields.push("budget=?".into()); values.push(json!(v));
+        }
+    }
     if fields.is_empty() { return Ok(()); }
     fields.push("updated_at=datetime('now', 'localtime')".into()); values.push(json!(id));
     database::run(&format!("UPDATE projects SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
@@ -58,8 +64,9 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM projects WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &id, crate::services::object_changed::Action::Deleted);
     database::run("DELETE FROM note_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
-    database::run("DELETE FROM tag_mappings WHERE entity_type='projects' AND entity_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(&id)]).ok();
+    database::run("DELETE FROM partner_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
+    database::run("DELETE FROM contact_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?))", &[json!(&id)]).ok();
     database::run("DELETE FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?)", &[json!(&id)]).ok();
     database::run("DELETE FROM solutions WHERE project_id=?", &[json!(&id)]).ok();
