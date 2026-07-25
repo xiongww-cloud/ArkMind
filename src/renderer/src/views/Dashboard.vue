@@ -16,7 +16,7 @@ const { navigateTo } = useNavigation()
 const {
   greeting, dateStr,
   activeProjectCount, pipelineTotalBudget,
-  newThisMonthCount, newBudgetDelta,
+  newThisMonthCount, newThisMonthBudget, newBudgetDelta,
   wonThisMonthCount, wonThisMonthBudget, wonBudgetDelta, winRate,
   expectedOrderBudget, expectedOrders,
   overdueTodos, urgentBids, urgentCount,
@@ -213,7 +213,7 @@ const {
       <!-- ══════════ Row 5: Knowledge Base ══════════ -->
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
         <!-- KB Health -->
-        <div class="lg:col-span-5 bg-white rounded-2xl border border-surface-200 px-5 py-6 shadow-sm hover:shadow-md transition-shadow">
+        <div class="lg:col-span-5 bg-white rounded-2xl border border-surface-200 px-5 pt-8 pb-6 shadow-sm hover:shadow-md transition-shadow">
           <div class="flex items-center justify-between mb-5">
             <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5">
               <AppIcon name="sparkles" size="15" class="text-surface-400" />
@@ -255,7 +255,7 @@ const {
         </div>
 
         <!-- Activity Heatmap -->
-        <div class="lg:col-span-7 bg-white rounded-2xl border border-surface-200 px-5 py-6 shadow-sm hover:shadow-md transition-shadow">
+        <div class="lg:col-span-7 bg-white rounded-2xl border border-surface-200 px-5 pt-8 pb-6 shadow-sm hover:shadow-md transition-shadow">
           <h2 class="text-[13px] font-semibold text-surface-700 flex items-center gap-1.5 mb-5">
             <AppIcon name="sparkles" size="15" class="text-surface-400" />
             知识增长趋势

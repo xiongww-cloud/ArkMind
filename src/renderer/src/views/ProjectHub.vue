@@ -204,7 +204,7 @@ function closeAllDropdowns(except?: 'status' | 'budget' | 'time' | 'quarter') {
 
 // ─── Expected Date Calendar ──────────────────────────────────────
 const showExpectedDateCalendar = ref(false)
-const expectedDateCalendarRef = ref(null)
+const expectedDateCalendarRef = ref<HTMLElement | null>(null)
 const expectedDateCalendarYear = ref(new Date().getFullYear())
 const expectedDateCalendarMonth = ref(new Date().getMonth())
 const expectedDateCalendarProjectId = ref('')
@@ -277,9 +277,9 @@ async function selectExpectedDay(day: number) {
   showExpectedDateCalendar.value = false
   project.expectedOrderDate = displayTime
   project.expected_order_date = displayTime
-  projectStore.updateProjectInList(project.id, { expected_order_date: displayTime })
+    projectStore.updateProjectInList(project.id, { expectedOrderDate: displayTime })
   try {
-    await projectStore.updateProject(project.id, { expected_order_date: displayTime })
+    await projectStore.updateProject(project.id, { expectedOrderDate: displayTime })
   } catch (e) { console.warn('保存预计下单时间失败', e) }
 }
 
@@ -289,15 +289,23 @@ async function clearExpectedDate() {
   showExpectedDateCalendar.value = false
   project.expectedOrderDate = ''
   project.expected_order_date = ''
-  projectStore.updateProjectInList(project.id, { expected_order_date: '' })
+  projectStore.updateProjectInList(project.id, { expectedOrderDate: '' })
   try {
-    await projectStore.updateProject(project.id, { expected_order_date: '' })
+    await projectStore.updateProject(project.id, { expectedOrderDate: '' })
   } catch (e) { console.warn('清除预计下单时间失败', e) }
+  projectStore.addProjectDynamic(project.id, `清除了预计下单时间`).catch(() => {})
 }
 
 function handleClickOutside(e: MouseEvent) {
-  if (expectedDateCalendarRef.value && !expectedDateCalendarRef.value.contains(e.target)) {
+  const target = e.target as HTMLElement
+  if (expectedDateCalendarRef.value && !expectedDateCalendarRef.value.contains(target)) {
     showExpectedDateCalendar.value = false
+  }
+  if (statusMenuProjectId.value) {
+    if (!target.closest('[data-status-menu]') && !target.closest('[data-status-trigger]')) {
+      statusMenuProjectId.value = null
+      _activeStatusProjectId = null
+    }
   }
 }
 
@@ -474,6 +482,7 @@ const editingField = ref<{ projectId: string; field: 'name' | 'budget' | 'status
 const editValue = ref('')
 const statusMenuProjectId = ref<string | null>(null)
 const statusMenuRect = ref<DOMRect | null>(null)
+let _activeStatusProjectId: string | null = null
 
 function startEditName(project) {
   editingField.value = { projectId: project.id, field: 'name' }
@@ -500,6 +509,7 @@ async function saveEdit(project) {
     const q = v.toLowerCase()
     const duplicate = projectStore.projects.some((p: any) => p.id !== project.id && p.name && p.name.toLowerCase() === q)
     if (duplicate) { toast.error('已存在同名项目'); return }
+    const oldName = project.name
     project.name = v
     projectStore.updateProjectInList(project.id, { name: v })
     try { await projectStore.updateProject(project.id, { name: v }) } catch (e) { console.warn(e) }
@@ -509,16 +519,21 @@ async function saveEdit(project) {
     project.budget = clean
     projectStore.updateProjectInList(project.id, { budget: clean })
     try { await projectStore.updateProject(project.id, { budget: clean }) } catch (e) { console.warn(e) }
+    projectStore.addProjectDynamic(project.id, `将项目金额更新为 ¥${clean} 万`).catch(() => {})
   }
   editingField.value = null
   editValue.value = ''
 }
 async function changeStatus(project, status) {
   statusMenuProjectId.value = null
-  if (!status || project.status === status) return
+  _activeStatusProjectId = null
+  if (!status || !project || project.status === status) return
+  const oldLabel = statusLabels[project.status] || project.status
+  const newLabel = statusLabels[status] || status
   project.status = status
   projectStore.updateProjectInList(project.id, { status })
   try { await projectStore.updateProject(project.id, { status }) } catch (e) { console.warn(e) }
+  projectStore.addProjectDynamic(project.id, `将项目阶段从「${oldLabel}」变更为「${newLabel}」`).catch(() => {})
 }
 
 function toggleSort(field) {
@@ -718,7 +733,7 @@ async function handleImportProject() {
           <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
           <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
           <th @click="toggleSort('expected_order_date')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">预计下单 <span class="ml-0.5 opacity-60">{{ sortIcon('expected_order_date') }}</span></th>
-          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">更新 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
+          <th @click="toggleSort('updatedAt')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">更新时间 <span class="ml-0.5 opacity-60">{{ sortIcon('updatedAt') }}</span></th>
         </tr>
       </thead>
     </table>
@@ -728,10 +743,9 @@ async function handleImportProject() {
       <table class="w-full text-xs table-fixed min-w-[770px]">
         <tbody class="divide-y divide-surface-50">
           <tr v-for="project in filteredProjects" :key="project.id"
-            @click="selectionMode ? toggleProjectSelection(project.id) : goToProject(project.id)"
-            class="cursor-pointer transition-colors group hover:bg-surface-50"
+            class="transition-colors group"
             :class="selectionMode && isProjectSelected(project.id) ? 'bg-blue-50/50 ring-1 ring-inset ring-blue-300' : ''">
-            <td v-if="selectionMode" class="px-3 py-2.5 w-10 align-middle text-center">
+            <td v-if="selectionMode" class="px-3 py-2.5 w-10 align-middle text-center cursor-pointer" @click="toggleProjectSelection(project.id)">
               <div class="w-4 h-4 rounded border flex items-center justify-center mx-auto" :class="isProjectSelected(project.id) ? 'bg-blue-600 border-blue-600' : 'border-slate-300 bg-white'">
                 <AppIcon v-if="isProjectSelected(project.id)" name="check" class="w-2.5 h-2.5 text-white" />
               </div>
@@ -743,7 +757,7 @@ async function handleImportProject() {
               </template>
               <template v-else>
                 <div class="flex items-center gap-1 group/name">
-                  <span class="font-medium text-surface-800 truncate">{{ project.name }}</span>
+                  <span class="font-medium text-surface-800 truncate cursor-pointer hover:text-blue-600 transition-colors" @click="goToProject(project.id)">{{ project.name }}</span>
                   <button @click.stop="startEditName(project)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100 flex-shrink-0" title="编辑名称">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
                   </button>
@@ -751,8 +765,8 @@ async function handleImportProject() {
               </template>
             </td>
             <td class="px-3 py-2.5 w-[120px] align-middle whitespace-nowrap text-left">
-              <div class="relative" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) statusMenuProjectId = null }">
-                <button ref="statusBtnRefs" @click.stop="statusMenuProjectId = statusMenuProjectId === project.id ? null : project.id; statusMenuRect = $event.target.getBoundingClientRect()"
+              <div class="relative">
+                <button ref="statusBtnRefs" data-status-trigger @click.stop="if (statusMenuProjectId === project.id) { statusMenuProjectId = null; _activeStatusProjectId = null } else { statusMenuProjectId = project.id; _activeStatusProjectId = project.id }; statusMenuRect = $event.target.getBoundingClientRect()"
                   class="inline-flex items-center gap-1 cursor-pointer rounded px-1 py-0.5 hover:bg-slate-50 transition-colors">
                   <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusDotColors[project.status] || 'bg-gray-400'" />
                   <span class="text-xs" :class="statusBadgeClass(project.status)">{{ statusLabels[project.status] || project.status }}</span>
@@ -832,12 +846,12 @@ async function handleImportProject() {
 
     <Teleport to="body">
       <div v-if="statusMenuProjectId && statusMenuRect"
+        data-status-menu
         :style="{ position: 'fixed', top: statusMenuRect.bottom + 4 + 'px', left: statusMenuRect.left + 'px', zIndex: 9999 }"
-        class="min-w-[110px] bg-white rounded-lg shadow-lg border border-slate-100 py-1"
-        @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) statusMenuProjectId = null }">
-        <button v-for="s in allStatusOptions" :key="s" @click.stop="changeStatus(filteredProjects.find(p => p.id === statusMenuProjectId), s)"
+        class="min-w-[110px] bg-white rounded-lg shadow-lg border border-slate-100 py-1">
+        <button v-for="s in allStatusOptions" :key="s" @click.stop="changeStatus(projectStore.projects.find(p => p.id === _activeStatusProjectId), s)"
           class="w-full flex items-center gap-1.5 px-2.5 py-1 text-[11px] transition-colors text-left"
-          :class="filteredProjects.find(p => p.id === statusMenuProjectId)?.status === s ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
+          :class="projectStore.projects.find(p => p.id === _activeStatusProjectId)?.status === s ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
           <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusDotColors[s]" />
           <span>{{ statusLabels[s] }}</span>
         </button>
