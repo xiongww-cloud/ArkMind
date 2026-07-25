@@ -4,7 +4,8 @@ import { useProjectStore } from '@/stores/project'
 import {
   fetchProjects, fetchTodos, fetchAllDynamics, fetchNotes,
   kbDashboardStats, kbProjectNoteIds,
-  customerList, fetchChannels, fetchVendors
+  customerList, fetchChannels, fetchVendors,
+  fetchProducts, listAllFiles, contactsCount
 } from '@/api/db-client'
 
 const MS_PER_DAY = 86400000
@@ -29,13 +30,16 @@ export function useDashboardData() {
   const customers = ref<any[]>([])
   const channels = ref<any[]>([])
   const vendors = ref<any[]>([])
+  const products = ref<any[]>([])
+  const files = ref<any[]>([])
+  const totalContacts = ref(0)
 
   const loading = ref(true)
 
   async function loadData() {
     loading.value = true
     try {
-      const [p, t, d, n, pn, ks, c, ch, v] = await Promise.allSettled([
+      const [p, t, d, n, pn, ks, c, ch, v, pr, f, ct] = await Promise.allSettled([
         fetchProjects(),
         fetchTodos(),
         fetchAllDynamics(),
@@ -45,6 +49,9 @@ export function useDashboardData() {
         customerList(),
         fetchChannels(''),
         fetchVendors(''),
+        fetchProducts(),
+        listAllFiles(),
+        contactsCount(),
       ])
       if (p.status === 'fulfilled') allProjects.value = Array.isArray(p.value) ? p.value : projectStore.projects
       else allProjects.value = projectStore.projects
@@ -56,6 +63,9 @@ export function useDashboardData() {
       if (c.status === 'fulfilled') customers.value = (c.value as any) || []
       if (ch.status === 'fulfilled') channels.value = (ch.value as any) || []
       if (v.status === 'fulfilled') vendors.value = (v.value as any) || []
+      if (pr.status === 'fulfilled') products.value = (pr.value as any) || []
+      if (f.status === 'fulfilled') files.value = (f.value as any) || []
+      if (ct.status === 'fulfilled') totalContacts.value = (ct.value as number) || 0
     } finally {
       loading.value = false
     }
@@ -393,10 +403,14 @@ export function useDashboardData() {
 
   // ─── Business overview bar ─────────────────────────────────────
   const bizOverview = computed(() => [
+    { label: '项目', count: allProjects.value.length, route: '/projects' },
+    { label: '联系人', count: totalContacts.value, route: '/contacts' },
     { label: '客户', count: customers.value.length, route: '/contacts' },
     { label: '渠道', count: channels.value.length, route: '/contacts' },
     { label: '供应商', count: vendors.value.length, route: '/contacts' },
+    { label: '产品', count: products.value.length, route: '/products' },
     { label: '笔记', count: allNotes.value.length, route: '/notes' },
+    { label: '文件', count: files.value.length, route: '/files' },
     { label: '知识碎片', count: kbTotalChunks.value, route: '/knowledge' },
   ])
 

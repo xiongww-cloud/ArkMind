@@ -245,6 +245,7 @@ export async function contactLinkProject(contactId: string, projectId: string): 
 export async function contactUnlinkProject(contactId: string, projectId: string): Promise<SuccessResponse> { return invoke('contact_unlink_project', { contactId, projectId }) }
 export async function partnerUpdateRemark(partnerId: string, projectId: string, remark?: string): Promise<SuccessResponse> { return invoke('partner_update_remark', { partnerId, projectId, remark: remark || null }) }
 export async function contactsListAll(partnerType?: string): Promise<PartnerRow[]> { return invoke('contacts_list_all', { partnerType: partnerType || null }) }
+export async function contactsCount(): Promise<number> { return invoke('contacts_count') }
 
 // ─── Partners (Legacy aliases) ──────────────────────────────
 export async function fetchChannelPartners(projectId: string): Promise<PartnerRow[]> { return invoke('channel_list', { projectId }) }
