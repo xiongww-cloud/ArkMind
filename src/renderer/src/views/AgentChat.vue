@@ -193,6 +193,14 @@ const feedScrollRef = ref<HTMLElement|null>(null)
 const isRefining = ref(false)
 const sidebarOpen = ref(true)
 
+let unlistenProgress: (() => void) | null = null
+let unlistenStream: (() => void) | null = null
+let unlistenStatus: (() => void) | null = null
+let unlistenStartAnswer: (() => void) | null = null
+let unlistenRoundThought: (() => void) | null = null
+let unlistenDone: (() => void) | null = null
+let unlistenError: (() => void) | null = null
+
 async function confirmDeleteSession(id: string) {
   const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？此操作不可撤销。', confirmText: '删除' })
   if (!ok) return
@@ -245,13 +253,6 @@ async function handleSendMessage() {
   agent.isChatting.value = true
   agent.setThinkingProgress('')
   // ★ Real Cognitive Stream: 实时进度
-  let unlistenProgress: (() => void) | null = null
-  let unlistenStream: (() => void) | null = null
-  let unlistenStatus: (() => void) | null = null
-  let unlistenStartAnswer: (() => void) | null = null
-  let unlistenRoundThought: (() => void) | null = null
-  let unlistenDone: (() => void) | null = null
-  let unlistenError: (() => void) | null = null
   unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
     agent.setThinkingProgress(ev.payload.msg); scrollToBottomIfNear()
   })

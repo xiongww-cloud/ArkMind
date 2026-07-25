@@ -156,6 +156,19 @@ function closeAll() {
   mascotState.value = 'idle'
 }
 
+async function expandChat() {
+  if (expanded.value) {
+    expanded.value = false
+    agent.stopAllTypewriters(messages.value)
+    return
+  }
+  expanded.value = true
+  if (!historyLoaded.value) {
+    await loadFabHistory()
+  }
+  scrollChat()
+}
+
 // ─── Lifecycle ──────────────────────────────────────────────
 const unlistenNotify = ref<(() => void) | null>(null)
 const unlistenAgentStatus = ref<(() => void) | null>(null)
@@ -216,16 +229,11 @@ onUnmounted(() => {
   <!-- ═══ Chat Container (compact + expanded) ═══ -->
   <Transition name="fab-chat">
     <div v-if="open" class="fab-chat" :class="['fab-chat--' + popoverSide, { 'fab-chat--expanded': expanded }]">
-      <!-- Title Bar (expanded only) -->
-      <div v-if="expanded" class="fab-chat__title">
-        <div class="flex items-center gap-2">
-          <svg class="w-3.5 h-3.5 text-[#2563eb] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
-          <span class="text-[10px] font-medium text-[#3a3a3c]">AI 助手</span>
-        </div>
-        <button @click="closeAll" class="p-1 rounded-lg hover:bg-white/30 transition-colors" title="关闭">
-          <svg class="w-3 h-3 text-[#86868b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
-        </button>
-      </div>
+      <!-- Floating close button (expanded only) -->
+      <button v-if="expanded" @click="closeAll"
+        class="absolute top-2 right-2 z-10 w-6 h-6 rounded-md flex items-center justify-center text-[#94a3b8] hover:text-[#ef4444] hover:bg-red-50 transition-colors" title="关闭">
+        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
 
       <!-- Messages (expanded only) -->
       <div v-if="expanded" ref="chatListRef" class="fab-chat__body">
@@ -248,6 +256,10 @@ onUnmounted(() => {
 
       <!-- Input (always visible) -->
       <div class="fab-chat__input">
+        <button @click="expandChat"
+          class="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 text-[#94a3b8] hover:text-[#2563eb] hover:bg-blue-50 transition-colors" :title="expanded ? '收起聊天记录' : '查看聊天记录'">
+          <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-180': expanded }" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
+        </button>
         <textarea v-model="inputText" rows="1" :placeholder="expanded ? '向 AI 提问...' : currentSpeechText" class="fab-input"
           @keydown.enter.exact.prevent="send"
           @input="(e: any) => { if (!inputText.trim()) { e.target.style.height = ''; return }; e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 40) + 'px' }" />
@@ -282,8 +294,8 @@ onUnmounted(() => {
 
 /* ═══ Chat Container ═══ */
 .fab-chat {
-  position: absolute; top: 50%; transform: translateY(-50%);
-  width: 360px;
+  position: absolute; bottom: 15px;
+  width: 380px;
   background: rgba(255,255,255,0.92);
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(0,0,0,0.06);
@@ -291,6 +303,7 @@ onUnmounted(() => {
   box-shadow: 0 4px 20px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.06);
   z-index: 9998;
   overflow: hidden;
+  transition: height 0.3s cubic-bezier(0.16,1,0.3,1), width 0.3s cubic-bezier(0.16,1,0.3,1);
 }
 /* 小箭头指向精灵 */
 .fab-chat--left::after {
@@ -316,16 +329,6 @@ onUnmounted(() => {
   width: 440px;
   height: calc(60vh + 50px);
   display: flex; flex-direction: column;
-  top: auto;
-  bottom: 17px;
-  transform: none; /* 覆盖基础的 translateY(-50%) */
-}
-
-.fab-chat__title {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 10px;
-  border-bottom: 1px solid rgba(0,0,0,0.06);
-  flex-shrink: 0;
 }
 
 .fab-chat__body {
@@ -345,8 +348,8 @@ onUnmounted(() => {
 /* Chat transition */
 .fab-chat-enter-active { transition: all 0.5s cubic-bezier(0.16,1,0.3,1); }
 .fab-chat-leave-active { transition: all 0.25s ease; }
-.fab-chat-enter-from { opacity: 0; transform: translateY(-50%) scale(0.92); }
-.fab-chat-leave-to { opacity: 0; transform: translateY(-50%) scale(0.95); }
+.fab-chat-enter-from { opacity: 0; transform: scale(0.92); }
+.fab-chat-leave-to { opacity: 0; transform: scale(0.95); }
 
 .fab-input { flex: 1; border: none; resize: none; outline: none; font-size: 11px; color: #3a3a3c; background: transparent; line-height: 1.5; max-height: 40px; font-family: inherit; }
 .fab-input::placeholder { color: #94a3b8; }

@@ -657,6 +657,7 @@ onUnmounted(() => {
 .titlebar-btn--notif {
   gap: 6px;
   padding: 6px 12px;
+  margin-right: 20px;
   font-size: 12px;
   font-weight: 500;
   color: #64748b;
@@ -689,7 +690,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: 2px;
+  margin-left: -10px;
 }
 
 .titlebar-btn--win {
