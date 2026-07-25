@@ -118,7 +118,10 @@ pub(crate) fn init_kb_fts_triggers(conn: &Connection) -> SqliteResult<()> {
              INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content);
          END;
 
-
+         CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks
+         BEGIN
+             INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES('delete', old.rowid);
+         END;
 
          CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks
          WHEN old.chunk_type = 'child' OR new.chunk_type = 'child'

@@ -204,7 +204,6 @@ function closeAllDropdowns(except?: 'status' | 'budget' | 'time' | 'quarter') {
 
 // ─── Expected Date Calendar ──────────────────────────────────────
 const showExpectedDateCalendar = ref(false)
-const expectedDateCalendarRef = ref<HTMLElement | null>(null)
 const expectedDateCalendarYear = ref(new Date().getFullYear())
 const expectedDateCalendarMonth = ref(new Date().getMonth())
 const expectedDateCalendarProjectId = ref('')
@@ -298,7 +297,7 @@ async function clearExpectedDate() {
 
 function handleClickOutside(e: MouseEvent) {
   const target = e.target as HTMLElement
-  if (expectedDateCalendarRef.value && !expectedDateCalendarRef.value.contains(target)) {
+  if (showExpectedDateCalendar.value && !target.closest('[data-expected-calendar]')) {
     showExpectedDateCalendar.value = false
   }
   if (statusMenuProjectId.value) {
@@ -789,7 +788,7 @@ async function handleImportProject() {
               </template>
             </td>
             <td class="px-3 py-2.5 w-[120px] align-middle whitespace-nowrap text-left" @click.stop>
-              <span ref="expectedDateCalendarRef" class="relative inline-flex items-center gap-0.5 group/expected-inline">
+              <span data-expected-calendar class="relative inline-flex items-center gap-0.5 group/expected-inline">
                 <span @click.stop="startEditExpectedDateCalendar(project, $event)" class="text-xs text-surface-600 rounded px-1 py-0.5 border border-transparent cursor-pointer hover:bg-slate-50 transition-colors">
                   {{ (project.expectedOrderDate || project.expected_order_date) || '-' }}
                 </span>

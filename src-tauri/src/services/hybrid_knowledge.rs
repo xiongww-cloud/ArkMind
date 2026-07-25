@@ -15,7 +15,7 @@ pub async fn vectorize_new_chunks(batch_size: usize) -> Result<usize, String> {
 
     let texts: Vec<String> = chunks.iter().map(|r| {
         let c = r["content"].as_str().unwrap_or("");
-        c.chars().take(150).collect()
+        c.to_string()
     }).collect();
     let vectors = embedding_client::embed_texts_with_caller(&texts, "vectorize").await.map_err(|e| format!("embed: {e}"))?;
     if vectors.len() != chunk_ids.len() { return Err(format!("count mismatch")); }

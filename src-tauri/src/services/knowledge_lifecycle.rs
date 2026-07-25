@@ -95,8 +95,11 @@ pub fn get_changed_since(since: &str, limit: i64) -> Vec<(String, String, String
 }
 
 /// 获取指定 source_data 的 id（供知识管线调用）
-pub fn get_source_data_id(_source_type: &str, source_id: &str) -> Option<String> {
-    Some(source_id.to_string())
+pub fn get_source_data_id(source_type: &str, source_id: &str) -> Option<String> {
+    crate::database::get(
+        "SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",
+        &[serde_json::json!(source_type), serde_json::json!(source_id)],
+    ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from))
 }
 
 /// 重建 FTS5 触发器
@@ -107,12 +110,11 @@ fn restore_fts_triggers() {
     crate::database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_delete AFTER DELETE ON source_data BEGIN INSERT INTO global_search_fts(global_search_fts, rowid) VALUES('delete', old.rowid); END", &[]).ok();
     crate::database::run("CREATE TRIGGER IF NOT EXISTS sd_fts_update AFTER UPDATE ON source_data BEGIN INSERT INTO global_search_fts(global_search_fts, rowid) VALUES('delete', old.rowid); INSERT INTO global_search_fts(rowid) VALUES(new.rowid); END", &[]).ok();
     // kk_chunks_fts 触发器：使用 DROP + CREATE 确保定义始终最新
-    // 注意：不创建 DELETE 触发器，FTS5 清理在应用代码中处理（更可靠）
-    let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_delete", &[]);
     let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_insert", &[]);
     let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_update", &[]);
     let _ = crate::database::run("CREATE TRIGGER kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks WHEN new.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content); END", &[]);
     let _ = crate::database::run("CREATE TRIGGER kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks WHEN old.chunk_type='child' OR new.chunk_type='child' BEGIN DELETE FROM kk_chunks_fts WHERE rowid = old.rowid; INSERT INTO kk_chunks_fts(rowid, doc_title, content) SELECT new.rowid, new.doc_title, new.content WHERE new.chunk_type='child'; END", &[]);
+    let _ = crate::database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks BEGIN INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES('delete', old.rowid); END", &[]);
     // 清理已废弃的 ai_tag 触发器（ai_tag 管线已移除，这些触发器只会产生无消费者的数据）
     for t in &["ai_tag_notes_insert", "ai_tag_notes_update", "ai_tag_products_insert", "ai_tag_products_update", "ai_tag_projects_insert", "ai_tag_projects_update", "ai_tag_todos_insert", "ai_tag_todos_update"] {
         let _ = crate::database::run(&format!("DROP TRIGGER IF EXISTS {}", t), &[]);

@@ -117,7 +117,9 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             creator TEXT DEFAULT '',
             description TEXT DEFAULT '',
             folder_id TEXT DEFAULT NULL,
-            created_at TEXT DEFAULT (datetime('now', 'localtime'))
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            FOREIGN KEY (file_id) REFERENCES file_assets(id) ON DELETE SET NULL,
+            FOREIGN KEY (folder_id) REFERENCES library_folders(id) ON DELETE SET NULL
         );
         CREATE INDEX IF NOT EXISTS idx_file_rel_entity ON file_relations(entity_type, entity_id);
         -- idx_file_rel_object / idx_file_rel_unique 在 run_migrations(ALTER TABLE ADD object_id)之后创建
@@ -350,6 +352,24 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_calls','0');
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_tokens','0');
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_date','');
+
+        -- ★ 业务关联表：实体间多对多关系
+        CREATE TABLE IF NOT EXISTS business_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL DEFAULT 'belongs_to',
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_br_unique ON business_relations(source_type, source_id, target_type, target_id, relation_type);
+        CREATE INDEX IF NOT EXISTS idx_br_source ON business_relations(source_type, source_id);
+        CREATE INDEX IF NOT EXISTS idx_br_target ON business_relations(target_type, target_id);
+        CREATE INDEX IF NOT EXISTS idx_br_type ON business_relations(relation_type);
+        CREATE INDEX IF NOT EXISTS idx_br_updated ON business_relations(updated_at);
 
 
     ")?;

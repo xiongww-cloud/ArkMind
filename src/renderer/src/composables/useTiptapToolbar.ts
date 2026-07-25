@@ -5,7 +5,7 @@ export function useTiptapToolbar(editor: Ref<any>) {
   const headingLabel = ref('正文')
   const headingOpen = ref(false)
   const listOpen = ref(false)
-  const alignOpen = ref('false')
+  const alignOpen = ref(false)
   const alignLabel = ref('左对齐')
   const tableMenuOpen = ref(false)
   const tableRows = ref(3)

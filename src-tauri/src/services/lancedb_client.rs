@@ -97,7 +97,8 @@ impl LanceDBClient {
             let pids = b.column_by_name("parent_id").ok_or("no pid")?.as_any().downcast_ref::<StringArray>().ok_or("cast")?;
             let dids = b.column_by_name("doc_id").ok_or("no did")?.as_any().downcast_ref::<StringArray>().ok_or("cast")?;
             for i in 0..b.num_rows() {
-                let sim = (2.0f64 - dists.value(i) as f64).max(0.0) / 2.0;
+                let d = dists.value(i) as f64;
+                let sim = (1.0 - d * d / 2.0).max(0.0);
                 items.push((rids.value(i), sim, pids.value(i).to_string(), dids.value(i).to_string(), String::new()));
             }
         }
@@ -110,7 +111,10 @@ impl LanceDBClient {
         if query.is_empty() { return Ok(Vec::new()); }
         if !self.table_exists()? { return Ok(Vec::new()); }
         let table = sync_run(self.db.open_table(&self.table_name).execute(), "open")?;
-        let filter = tags.iter().map(|t| format!("tags LIKE '%{}%'", crate::database::escape_like(&t.replace('\'', "''")))).collect::<Vec<_>>().join(" OR ");
+        let filter = tags.iter()
+            .filter(|t| !t.is_empty() && t.len() <= 200)
+            .map(|t| format!("tags LIKE '%{}%'", crate::database::escape_like(&t.replace('\'', "''"))))
+            .collect::<Vec<_>>().join(" OR ");
         let stream = sync_run(table.vector_search(query.to_vec()).map_err(|e| format!("search: {e}"))?.only_if(&filter).limit(limit).execute(), "execute")?;
         let batches = collect(stream)?;
         let mut items = Vec::new();
@@ -119,7 +123,8 @@ impl LanceDBClient {
             let dists = b.column_by_name("_distance").ok_or("no dist")?.as_any().downcast_ref::<arrow_array::Float32Array>().ok_or("cast")?;
             let pids = b.column_by_name("parent_id").ok_or("no pid")?.as_any().downcast_ref::<StringArray>().ok_or("cast")?;
             for i in 0..b.num_rows() {
-                let sim = (2.0f64 - dists.value(i) as f64).max(0.0) / 2.0;
+                let d = dists.value(i) as f64;
+                let sim = (1.0 - d * d / 2.0).max(0.0);
                 items.push((rids.value(i), sim, pids.value(i).to_string()));
             }
         }
@@ -132,6 +137,7 @@ impl LanceDBClient {
         if !self.table_exists()? { return Ok(Vec::new()); }
         let table = sync_run(self.db.open_table(&self.table_name).execute(), "open")?;
         let filter = file_ids.iter()
+            .filter(|id| !id.is_empty() && id.len() <= 200 && id.chars().all(|c| c.is_alphanumeric() || c == '-'))
             .map(|id| format!("doc_id = '{}'", id.replace('\'', "''")))
             .collect::<Vec<_>>().join(" OR ");
         let stream = sync_run(table.vector_search(query.to_vec()).map_err(|e| format!("search: {e}"))?.only_if(&filter).limit(limit).execute(), "execute")?;
@@ -143,7 +149,8 @@ impl LanceDBClient {
             let pids = b.column_by_name("parent_id").ok_or("no pid")?.as_any().downcast_ref::<StringArray>().ok_or("cast")?;
             let dids = b.column_by_name("doc_id").ok_or("no did")?.as_any().downcast_ref::<StringArray>().ok_or("cast")?;
             for i in 0..b.num_rows() {
-                let sim = (2.0f64 - dists.value(i) as f64).max(0.0) / 2.0;
+                let d = dists.value(i) as f64;
+                let sim = (1.0 - d * d / 2.0).max(0.0);
                 items.push((rids.value(i), sim, pids.value(i).to_string(), dids.value(i).to_string(), String::new()));
             }
         }

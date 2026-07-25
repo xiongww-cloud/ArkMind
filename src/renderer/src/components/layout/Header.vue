@@ -660,6 +660,7 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 500;
   color: #64748b;
+  background: #f8fafc;
 }
 .titlebar-btn--notif:hover {
   background: #f1f5f9;

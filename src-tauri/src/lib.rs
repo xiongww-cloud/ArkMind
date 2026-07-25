@@ -122,6 +122,9 @@ pub fn run() {
             // Initialize business_relations table
             services::business_relations::init();
 
+            // ★ 首次启动注入使用指南到记忆系统
+            services::user_guides::inject_if_needed();
+
             // ★ 启动时清理过期许可证
             license::cleanup_expired_licenses();
 
@@ -296,7 +299,7 @@ pub fn run() {
             commands::ai_sync_status, commands::ai_sync_trigger, commands::ai_sync_diagnose,
             commands::cleanup_retry_failed, commands::cleanup_orphan_data,
             commands::knowledge_pipeline_status,
-            commands::pipeline_debug_status, commands::pipeline_clear_knowledge, commands::pipeline_clear_vectors, commands::pipeline_clear_all, commands::pipeline_resync, commands::pipeline_browse_source, commands::pipeline_get_source_content,
+            commands::pipeline_debug_status, commands::pipeline_clear_knowledge, commands::pipeline_clear_vectors, commands::pipeline_clear_all, commands::pipeline_resync, commands::pipeline_browse_source, commands::pipeline_get_source_content, commands::pipeline_revectorize,
             // Assets
             commands::assets_search, commands::assets_search_fts5, commands::assets_list,
             commands::asset_sync_status, commands::asset_sync_trigger, commands::asset_diagnose,

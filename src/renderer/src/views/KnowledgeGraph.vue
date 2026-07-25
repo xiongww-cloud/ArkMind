@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import VueApexCharts from 'vue3-apexcharts'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
 import {
   kbDashboardStats,
   pipelineClearKnowledge, pipelineClearAll,
+  pipelineRevectorize,
   cleanupRetryFailed, cleanupOrphanData,
   kbPipelineDebug,
   pipelineDebugStatus, knowledgePipelineStatus,
@@ -15,7 +16,8 @@ const stats = ref<any>(null)
 const pipelineData = ref<any>(null)
 const pipelineRunning = ref(false)
 const growthDays = ref(30)
-async function loadStats() { try { const r = await kbDashboardStats(); if (r?.success) stats.value = r } catch (e) { console.error('[KG] loadStats failed:', e) } }
+const chartVersion = ref(0)
+async function loadStats() { try { const r = await kbDashboardStats(); if (r?.success) { stats.value = r; chartVersion.value++ } } catch (e) { console.error('[KG] loadStats failed:', e) } }
 async function loadPipeline() {
   try {
     const [debug, status] = await Promise.all([pipelineDebugStatus(), knowledgePipelineStatus()])
@@ -51,15 +53,36 @@ async function handleClearAll() { if (!(await dangerConfirm({ title: '重置全�
 async function handleClearKnowledge() { if (!(await dangerConfirm({ title: '重置知识管线', message: '确定重置知识碎片和向量缓存？将重新从源数据物化。', confirmText: '重置' }))) return; try { await pipelineClearKnowledge(); toast({ message: '已重置知识管线，正在重新物化', type: 'success' }); await loadStats(); await loadPipeline() } catch (e) { console.error('[KG] clearKnowledge failed:', e); toast({ message: '重置失败', type: 'error' }) } }
 async function handleOrphanCleanup() { try { await cleanupOrphanData(); toast({ message: '孤儿数据清理已完成', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] orphanCleanup failed:', e); toast({ message: '清理失败', type: 'error' }) } }
 
+async function handleRevectorize() {
+  if (!(await dangerConfirm({ title: '重新向量化', message: '将清除所有现有向量数据并重新向量化。这可能需要较长时间，确定继续？', confirmText: '重新向量化' }))) return
+  try {
+    const result = await pipelineRevectorize()
+    toast({ message: result.message || '已启动重新向量化', type: 'success' })
+    await loadStats()
+    await loadPipeline()
+  } catch (e) { console.error('[KG] revectorize failed:', e); toast({ message: '重新向量化失败', type: 'error' }) }
+}
+
 const debugData = ref<any>(null)
 async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch (e) { console.error('[KG] loadDebug failed:', e) } }
 function typeLabel(st: string): string { const m: Record<string,string> = { FILE:'文件',NOTE:'笔记',PRODUCT:'产品',PROJECT:'项目',TODO:'待办',MEMORY:'记忆',POLICY:'策略',CHANNEL:'渠道',VENDOR:'供应商',CONTACT:'联系人',CUSTOMER:'客户' }; return m[st] || st || '通用' }
 function typeColor(st: string): string { const m: Record<string,string> = { FILE:'#60a5fa',NOTE:'#fbbf24',PRODUCT:'#a78bfa',PROJECT:'#34d399',TODO:'#94a3b8',MEMORY:'#f59e0b',POLICY:'#ec4899',CHANNEL:'#06b6d4',VENDOR:'#8b5cf6',CONTACT:'#14b8a6',CUSTOMER:'#f43f5e' }; return m[st] || '#94a3b8' }
 let refreshTimer: ReturnType<typeof setInterval> | null = null
+function saveScroll() {
+  const el = document.querySelector('#kg-root .overflow-y-auto')
+  return el ? el.scrollTop : 0
+}
+function restoreScroll(pos: number) {
+  const el = document.querySelector('#kg-root .overflow-y-auto')
+  if (el) el.scrollTop = pos
+}
 onMounted(() => {
   loadStats()
   loadPipeline()
-  refreshTimer = setInterval(() => { loadStats(); loadPipeline() }, 5000)
+  refreshTimer = setInterval(() => {
+    const scrollPos = saveScroll()
+    Promise.all([loadStats(), loadPipeline()]).then(() => nextTick(() => restoreScroll(scrollPos)))
+  }, 5000)
 })
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
@@ -89,19 +112,19 @@ onUnmounted(() => {
         </div>
         <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
           <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识分布</h3>
-          <VueApexCharts v-if="byTypeChart" type="donut" height="260" :series="byTypeChart.series" :options="{ labels: byTypeChart.labels, colors: byTypeChart.colors, legend: { position: 'bottom', fontSize: '12px', labels: { colors: '#64748b' } }, dataLabels: { enabled: true, formatter: (v: number) => v.toFixed(0) + '%' }, plotOptions: { pie: { donut: { size: '65%', labels: { show: true, total: { show: true, label: '总计', fontSize: '13px', color: '#334155' } } } } }, chart: { fontFamily: 'inherit' } }" />
+          <VueApexCharts v-if="byTypeChart" :key="'bytype-' + chartVersion" type="donut" height="260" :series="byTypeChart.series" :options="{ labels: byTypeChart.labels, colors: byTypeChart.colors, legend: { position: 'bottom', fontSize: '12px', labels: { colors: '#64748b' } }, dataLabels: { enabled: true, formatter: (v: number) => v.toFixed(0) + '%' }, plotOptions: { pie: { donut: { size: '65%', labels: { show: true, total: { show: true, label: '总计', fontSize: '13px', color: '#334155' } } } } }, chart: { fontFamily: 'inherit' } }" />
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
           <h3 class="text-[12px] font-semibold text-surface-600 mb-3">遗忘曲线</h3>
-          <VueApexCharts v-if="weightDistChart" type="area" height="260" :series="weightDistChart.series" :options="{ xaxis: { type: 'numeric', min: 0, max: 100, title: { text: '有效权重', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' }, formatter: (v: string) => { const n = parseFloat(v); if (n === 0) return '0%'; if (n === 100) return '100%'; return '' } }, tickAmount: 1 }, yaxis: { title: { text: '碎片数', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#6366f1'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 0 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false } } }" />
+          <VueApexCharts v-if="weightDistChart" :key="'weight-' + chartVersion" type="area" height="260" :series="weightDistChart.series" :options="{ xaxis: { type: 'numeric', min: 0, max: 100, title: { text: '有效权重', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' }, formatter: (v: string) => { const n = parseFloat(v); if (n === 0) return '0%'; if (n === 100) return '100%'; return '' } }, tickAmount: 1 }, yaxis: { title: { text: '碎片数', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#6366f1'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 0 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false } } }" />
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
         <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
           <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识增长趋势</h3>
-          <VueApexCharts v-if="growthChart" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '新增碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false, mouseWheel: { enabled: false } } } }" />
+          <VueApexCharts v-if="growthChart" :key="'growth-' + chartVersion" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '新增碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false, mouseWheel: { enabled: false } } } }" />
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
       </div>
@@ -156,6 +179,7 @@ onUnmounted(() => {
       <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
         <h3 class="text-[12px] font-semibold text-surface-600 mb-3">系统操作</h3>
         <div class="flex flex-wrap gap-2">
+          <button @click="handleRevectorize" class="px-3 py-1 text-[11px] rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重新向量化</button>
           <button @click="handleClearKnowledge" class="px-3 py-1 text-[11px] rounded-lg border border-amber-300 text-amber-600 hover:bg-amber-50 transition">重置知识管线</button>
           <button @click="handleClearAll" class="px-3 py-1 text-[11px] rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重置全部数据</button>
           <span class="w-px h-6 bg-surface-200 self-center" />

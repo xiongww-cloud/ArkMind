@@ -322,6 +322,7 @@ export async function knowledgePipelineStatus(): Promise<PipelineStatus> { retur
 export async function pipelineDebugStatus(): Promise<PipelineStatus> { return invoke('pipeline_debug_status') }
 export async function pipelineClearKnowledge(): Promise<SuccessResponse> { return invoke('pipeline_clear_knowledge') }
 export async function pipelineClearVectors(): Promise<SuccessResponse> { return invoke('pipeline_clear_vectors') }
+export async function pipelineRevectorize(): Promise<SuccessResponse & { chunk_count?: number }> { return invoke('pipeline_revectorize') }
 export async function pipelineClearAll(): Promise<SuccessResponse> { return invoke('pipeline_clear_all') }
 export async function pipelineResync(): Promise<SuccessResponse> { return invoke('pipeline_resync') }
 export async function pipelineBrowseSource(sourceType?: string, limit?: number): Promise<PipelineSourceItem[]> { return invoke('pipeline_browse_source', { sourceType: sourceType || null, limit: limit || 50 }) }

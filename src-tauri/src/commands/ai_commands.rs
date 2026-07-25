@@ -92,6 +92,25 @@ pub async fn pipeline_clear_vectors() -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub async fn pipeline_revectorize() -> Result<Value, String> {
+    // 1. 清除向量缓存和 LanceDB
+    crate::database::run("DELETE FROM vector_cache", &[]).ok();
+    if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
+        if let Some(ref c) = *g { c.clear_all_vectors().ok(); }
+    }
+    // 2. 获取需要向量化的 chunk 数量
+    let chunk_count: i64 = crate::database::with_db(|c| {
+        c.query_row(
+            "SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='child' AND content IS NOT NULL AND content != ''",
+            [], |r| r.get(0)
+        )
+    }).unwrap_or(0);
+    // 3. 启动知识管线进行重新向量化
+    crate::services::knowledge_pipeline::start();
+    Ok(json!({"success":true,"message":format!("已清除向量数据并启动重新向量化（{} 个碎片）", chunk_count),"chunk_count":chunk_count}))
+}
+
+#[tauri::command]
 pub async fn pipeline_clear_all() -> Result<Value, String> {
     crate::services::knowledge_lifecycle::reset_pipeline();
     crate::database::run("DELETE FROM source_data", &[]).ok();

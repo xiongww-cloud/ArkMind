@@ -245,7 +245,14 @@ async function handleSendMessage() {
   agent.isChatting.value = true
   agent.setThinkingProgress('')
   // ★ Real Cognitive Stream: 实时进度
-  const unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
+  let unlistenProgress: (() => void) | null = null
+  let unlistenStream: (() => void) | null = null
+  let unlistenStatus: (() => void) | null = null
+  let unlistenStartAnswer: (() => void) | null = null
+  let unlistenRoundThought: (() => void) | null = null
+  let unlistenDone: (() => void) | null = null
+  let unlistenError: (() => void) | null = null
+  unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
     agent.setThinkingProgress(ev.payload.msg); scrollToBottomIfNear()
   })
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
@@ -256,8 +263,6 @@ async function handleSendMessage() {
   agent.setThinkingProgress(presetText)
   sessionDirty.value = true; saveToStorage()
   nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
-  let unlistenStream: (() => void) | null = null
-  let unlistenStatus: (() => void) | null = null
   try {
     // ★ 流式监听：实时显示 LLM 最终答案（逐 token 渲染）
     const isRealStreaming = ref(false)
@@ -265,7 +270,7 @@ async function handleSendMessage() {
     let lastRenderTime = 0
     const RENDER_THROTTLE_MS = 80
     // 首字清空：收到 agent:start-answer 时标记真正流式开始
-    const unlistenStartAnswer = await listen('agent:start-answer', () => {
+    unlistenStartAnswer = await listen('agent:start-answer', () => {
       console.log('[FE] start-answer received')
       isRealStreaming.value = true
       streamedContent = ''
@@ -286,10 +291,10 @@ async function handleSendMessage() {
       }
       scrollToBottomIfNear()
     })
-    const unlistenStatus = await listen<{stage:string; tool?:string; msg?:string}>('agent:status', (ev) => {
+    unlistenStatus = await listen<{stage:string; tool?:string; msg?:string}>('agent:status', (ev) => {
     })
     // ★ 工具轮结束：恢复预设文案，保持呼吸气泡
-    const unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
+    unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
       console.log('[FE] round-thought received')
       streamedContent = ''
       const msg = session.messages[aiIdx]
@@ -303,7 +308,7 @@ async function handleSendMessage() {
     })
 
     // ★ 监听 agent:done 事件（后台任务完成时触发）
-    const unlistenDone = await listen<any>('agent:done', (ev) => {
+    unlistenDone = await listen<any>('agent:done', (ev) => {
       console.log('[FE] done received, isRealStreaming=', isRealStreaming.value)
       const result = ev.payload
       const msg = session.messages[aiIdx]; msg.isThinking = false
@@ -336,7 +341,7 @@ async function handleSendMessage() {
     })
 
     // ★ 监听 agent:error 事件
-    const unlistenError = await listen<any>('agent:error', (ev) => {
+    unlistenError = await listen<any>('agent:error', (ev) => {
       const msg = session.messages[aiIdx]; msg.isThinking = false
       msg.error = ev.payload.error || 'AI 服务异常'
       agent.isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
@@ -450,6 +455,13 @@ async function openNotebookPicker(msgId: string) { savingMsgId.value = msgId; no
 onUnmounted(() => {
   saveToStorage()
   stopAllTypewriters()
+  unlistenProgress?.()
+  unlistenStream?.()
+  unlistenStartAnswer?.()
+  unlistenStatus?.()
+  unlistenRoundThought?.()
+  unlistenDone?.()
+  unlistenError?.()
 })
 </script>
 
