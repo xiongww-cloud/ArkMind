@@ -223,7 +223,7 @@ pub fn run() {
             commands::partner_contact_create, commands::partner_contact_update, commands::partner_contact_delete,
             commands::partner_update_remark,
             commands::contact_link_project, commands::contact_unlink_project,
-            commands::contacts_list_all,
+            commands::contacts_list_all, commands::contacts_count,
             // Partners (legacy aliases)
             commands::channel_list, commands::channel_create, commands::channel_update, commands::channel_delete,
             commands::channel_contact_create, commands::channel_contact_update, commands::channel_contact_delete,
@@ -280,6 +280,10 @@ pub fn run() {
             commands::oss_raw_diagnose,
             // Logs
             commands::get_logs, commands::clear_logs,
+            // Notifications
+            commands::notification_list, commands::notification_create, commands::notification_mark_read,
+            commands::notification_mark_all_read, commands::notification_delete, commands::notification_stats,
+            commands::notification_config_get, commands::notification_config_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arkmind");
