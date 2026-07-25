@@ -52,7 +52,7 @@ const series = computed(() => [{
 </script>
 
 <template>
-  <div>
+  <div class="-mt-4">
     <VueApexCharts
       v-if="data.length"
       :options="chartOptions"
