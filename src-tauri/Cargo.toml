@@ -74,9 +74,6 @@ dirs = "5"
 opener = "0.7"
 regex = "1"
 
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = ["Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Foundation"] }
-
 [dev-dependencies]
 tempfile = "3"
 
