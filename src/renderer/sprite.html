@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="data:,">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 精灵</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      * {
+        margin: 0 !important;
+        padding: 0 !important;
+        box-sizing: border-box !important;
+      }
+      html, body {
+        width: 48px !important;
+        height: 74px !important;
+        background: transparent !important;
+        background-color: rgba(0, 0, 0, 0) !important;
+        overflow: hidden !important;
+        border: none !important;
+        outline: none !important;
+      }
+      #sprite-root {
+        width: 48px !important;
+        height: 74px !important;
+        background: transparent !important;
+        overflow: hidden !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="sprite-root"></div>
+    <script type="module" src="/src/sprite.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+import { createApp } from 'vue'
+import ChatWindow from './components/chat/ChatWindow.vue'
+import './assets/main.css'
+
+const app = createApp(ChatWindow)
+app.mount('#chat-root')
