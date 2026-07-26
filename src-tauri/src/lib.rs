@@ -174,7 +174,9 @@ pub fn run() {
                 }
             }
 
-            // ★ 系统托盘图标
+            // ★ 系统托盘图标（macOS 不需要）
+            #[cfg(not(target_os = "macos"))]
+            {
             let show_item = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
             let sprite_item = MenuItemBuilder::with_id("sprite", "显示精灵").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
@@ -215,6 +217,7 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            }
 
             // Start KnowledgePipeline
             std::thread::spawn(|| {
