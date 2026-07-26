@@ -120,6 +120,13 @@ defineProps<{ state: 'idle' | 'thinking' | 'speaking' | 'notifying' }>()
 }
 
 /* ── Idle 动画 ── */
+.idle .bot-eyes {
+  animation: blink 4s ease-in-out infinite;
+}
+@keyframes blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
 @keyframes float-head { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 @keyframes float-body { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
 @keyframes float-arm-l { 0%, 100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-4px) rotate(5deg); } }
