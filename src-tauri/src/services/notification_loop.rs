@@ -1,50 +1,184 @@
 use crate::database;
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::Emitter;
 
-/// App 启动时执行一次后台 LLM 分析，生成通知
-pub fn run_startup_check(app_handle: tauri::AppHandle) {
-    // 检查是否启用
-    let enabled = get_config("enabled").unwrap_or("1".to_string());
-    if enabled != "1" {
-        log::info!("[通知循环] 后台分析已禁用，跳过");
+/// 循环运行标志
+static LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
+/// 本次启动是否已执行过（startup_only 模式用）
+static STARTUP_DONE: AtomicBool = AtomicBool::new(false);
+
+/// 循环状态信息
+pub struct LoopStatus {
+    pub running: bool,
+    pub last_check_at: String,
+    pub next_check_at: String,
+}
+
+/// 启动周期通知分析循环
+pub fn start_notification_loop(app_handle: tauri::AppHandle) {
+    if LOOP_RUNNING.swap(true, Ordering::AcqRel) {
+        log::info!("[通知循环] 已在运行，跳过重复启动");
         return;
     }
 
-    log::info!("[通知循环] 启动时执行后台分析...");
+    log::info!("[通知循环] 启动周期分析循环");
 
-    // 构造上下文
-    let context = build_initial_context();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("Failed to create notification loop runtime");
 
-    // 查询最近5条通知
-    let recent = get_recent_notifications(5);
+        rt.block_on(async {
+            // 启动后等待 15 秒再开始，让应用完成初始化
+            tokio::time::sleep(Duration::from_secs(15)).await;
 
-    // 构造模拟消息
+            loop {
+                if !LOOP_RUNNING.load(Ordering::Relaxed) {
+                    log::info!("[通知循环] 收到停止信号，退出循环");
+                    break;
+                }
+
+                match tick(&app_handle) {
+                    Ok(wait_secs) => {
+                        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                    }
+                    Err(e) => {
+                        log::error!("[通知循环] tick 异常: {}，30秒后重试", e);
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// 停止循环
+pub fn stop_notification_loop() {
+    LOOP_RUNNING.store(false, Ordering::Relaxed);
+    log::info!("[通知循环] 已发送停止信号");
+}
+
+/// 获取循环状态
+pub fn get_loop_status() -> LoopStatus {
+    let running = LOOP_RUNNING.load(Ordering::Relaxed);
+    let last_check_at = get_config("last_check_at").unwrap_or_default();
+    let next_check_at = if running && !last_check_at.is_empty() {
+        let interval: i64 = get_config("interval_minutes")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        calc_next_check(&last_check_at, interval)
+    } else {
+        String::new()
+    };
+    LoopStatus { running, last_check_at, next_check_at }
+}
+
+/// 单次 tick：检查配置，决定是否执行分析，返回下次 sleep 秒数
+fn tick(app_handle: &tauri::AppHandle) -> Result<u64, String> {
+    // 1. 检查是否启用
+    let enabled = get_config("enabled").unwrap_or_else(|| "1".to_string());
+    if enabled != "1" {
+        log::debug!("[通知循环] 后台分析已禁用，60秒后重试");
+        return Ok(60);
+    }
+
+    // 2. 检查 startup_only
+    let startup_only = get_config("startup_only").unwrap_or_else(|| "0".to_string());
+    if startup_only == "1" {
+        if STARTUP_DONE.load(Ordering::Relaxed) {
+            log::debug!("[通知循环] startup_only 模式，本次已执行，60秒后重试");
+            return Ok(60);
+        }
+        // 首次执行
+        log::info!("[通知循环] startup_only 模式，执行首次分析...");
+        run_analysis(app_handle);
+        STARTUP_DONE.store(true, Ordering::Relaxed);
+        return Ok(60);
+    }
+
+    // 3. 周期模式：检查间隔
+    let last_check_at = get_config("last_check_at").unwrap_or_default();
+    let interval: i64 = get_config("interval_minutes")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+
+    if !last_check_at.is_empty() {
+        let now = chrono::Local::now();
+        if let Ok(last_time) = chrono::NaiveDateTime::parse_from_str(&last_check_at, "%Y-%m-%d %H:%M") {
+            let diff = now.naive_local().signed_duration_since(last_time);
+            let diff_minutes = diff.num_minutes();
+            if diff_minutes < interval {
+                let wait = (interval - diff_minutes) as u64 * 60;
+                log::debug!("[通知循环] 距上次分析{}分钟，需等待{}秒", diff_minutes, wait);
+                return Ok(wait);
+            }
+        }
+    }
+
+    // 4. 执行分析
+    log::info!("[通知循环] 开始周期分析...");
+    run_analysis(app_handle);
+
+    // 5. 等待一个完整间隔后再检查
+    Ok(interval as u64 * 60)
+}
+
+/// 执行 LLM 分析
+fn run_analysis(app_handle: &tauri::AppHandle) {
+    let since = get_config("last_check_at").unwrap_or_else(|| {
+        chrono::Local::now().checked_sub_signed(chrono::Duration::days(7))
+            .unwrap_or_else(chrono::Local::now)
+            .format("%Y-%m-%d %H:%M").to_string()
+    });
+    let context = build_initial_context(&since);
+
+    // 无新数据时跳过 LLM 调用，直接更新检查时间
+    if context == "距上次分析以来无业务数据变化。" {
+        log::info!("[通知循环] 无新业务数据，跳过 LLM 调用");
+        update_call_stats();
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+        set_config("last_check_at", &now);
+        return;
+    }
+
+    let recent = get_recent_notifications(3);
+
     let prompt = format!(
-        "你是 ArkMind 的后台智能分析助手。请分析以下业务数据，发现需要用户关注的事项。\n\n\
-         当前业务快照：\n{}\n\n\
-         最近通知：\n{}\n\n\
-         请分析以上数据，发现需要用户关注的事项。\n\
-         以下情况请调用 ext_tool_manage_notification 创建通知：\n\
-         - 待办即将到期（24小时内）\n\
-         - 项目停滞超过7天\n\
-         - 投标截止临近（3天内）\n\
-         - 发现业务数据中的重要趋势或异常\n\
-         通知 content 请使用 Markdown 格式（**加粗**、- 列表、> 引用等），让内容结构清晰。\n\
-         如有跟进之前通知的事项，请设置 follow_up_of 为对应通知ID。\n\
-         如果没有新发现，回复\"暂无新发现\"。",
+        "## 后台分析任务\n\
+         你正在执行后台智能分析任务。分析业务数据后，如发现需要用户关注的事项，\n\
+         必须调用 ext_tool_manage_notification 创建通知，而不是直接在回复中输出。\n\
+         \n\
+         典型触发条件（不限于此，自行判断）：\n\
+         - 待办即将到期或已逾期\n\
+         - 项目长期停滞、状态异常\n\
+         - 投标截止临近\n\
+         - 关键数据变化趋势、异常波动\n\
+         - 多个项目/待办之间的冲突或风险\n\
+         - 用户可能忽略的重要信息\n\
+         \n\
+         如果数据中没有值得用户关注的事项，回复\"暂无新发现\"。\n\
+         \n\
+         以下数据是距上次分析之后发生变化的业务数据，仅包含项目和待办。\n\
+         如需其他业务数据（合作伙伴、联系人、文件、知识库等）辅助分析，可调用工具检索。\n\
+         {}\n\
+         \n\
+         最近通知：\n{}",
         context, recent
     );
 
-    // 使用 tauri::async_runtime::spawn 调用 agent_chat_workflow
+    let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(
             prompt,
-            Some(4),  // 限制迭代次数
+            Some(6),
             vec![],
-            Some(app_handle.clone()),
-            true,  // silent=true，不发 UI event
-            None,  // 不使用 session 缓存
+            Some(handle.clone()),
+            true,
+            None,
         ).await;
 
         match result {
@@ -59,26 +193,33 @@ pub fn run_startup_check(app_handle: tauri::AppHandle) {
             }
         }
 
-        // 通知循环结束，通知前端恢复 mascot 状态
-        let _ = app_handle.emit("agent:done", serde_json::json!({}));
+        let _ = handle.emit("agent:done", serde_json::json!({}));
 
-        // 更新统计
         update_call_stats();
-        // 更新最后检查时间
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
         set_config("last_check_at", &now);
     });
 }
 
-/// 构造初始上下文（全量快照）
-fn build_initial_context() -> String {
+/// 根据上次检查时间和间隔计算下次检查时间
+fn calc_next_check(last_check_at: &str, interval_minutes: i64) -> String {
+    if let Ok(last_time) = chrono::NaiveDateTime::parse_from_str(last_check_at, "%Y-%m-%d %H:%M") {
+        let next = last_time + chrono::Duration::minutes(interval_minutes);
+        next.format("%Y-%m-%d %H:%M").to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// 构造初始上下文（增量数据：仅返回上次分析后有变化的对象）
+fn build_initial_context(since: &str) -> String {
     let mut parts = Vec::new();
 
-    // 活跃项目
     if let Ok(rows) = database::all(
         "SELECT name, status, budget, bid_time, expected_order_date, updated_at FROM projects \
-         WHERE status NOT IN ('Won','Ordered','Lost','Archived') ORDER BY updated_at DESC LIMIT 10",
-        &[],
+         WHERE updated_at > ?1 AND status NOT IN ('Won','Ordered','Lost','Archived') \
+         ORDER BY updated_at DESC",
+        &[json!(since)],
     ) {
         if !rows.is_empty() {
             let items: Vec<String> = rows.iter().map(|r| {
@@ -91,10 +232,11 @@ fn build_initial_context() -> String {
         }
     }
 
-    // 待办
     if let Ok(rows) = database::all(
-        "SELECT title, priority, due_date, done FROM todos WHERE done=0 ORDER BY due_date ASC LIMIT 10",
-        &[],
+        "SELECT title, priority, due_date, done, updated_at FROM todos \
+         WHERE done=0 AND updated_at > ?1 \
+         ORDER BY due_date ASC",
+        &[json!(since)],
     ) {
         if !rows.is_empty() {
             let items: Vec<String> = rows.iter().map(|r| {
@@ -107,10 +249,11 @@ fn build_initial_context() -> String {
         }
     }
 
-    // 近期中标
     if let Ok(rows) = database::all(
-        "SELECT name, budget, updated_at FROM projects WHERE status='Won' ORDER BY updated_at DESC LIMIT 5",
-        &[],
+        "SELECT name, budget, updated_at FROM projects \
+         WHERE updated_at > ?1 AND status='Won' \
+         ORDER BY updated_at DESC",
+        &[json!(since)],
     ) {
         if !rows.is_empty() {
             let items: Vec<String> = rows.iter().map(|r| {
@@ -124,7 +267,7 @@ fn build_initial_context() -> String {
     }
 
     if parts.is_empty() {
-        "暂无业务数据".to_string()
+        "距上次分析以来无业务数据变化。".to_string()
     } else {
         parts.join("\n\n")
     }

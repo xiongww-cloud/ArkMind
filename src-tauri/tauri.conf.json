@@ -19,6 +19,20 @@
         "minHeight": 700,
         "decorations": false,
         "center": true
+      },
+      {
+        "label": "sprite",
+        "title": "",
+        "url": "sprite.html",
+        "width": 48,
+        "height": 74,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "visible": false
       }
     ],
     "security": {

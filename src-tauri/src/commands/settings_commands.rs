@@ -2,6 +2,7 @@ use crate::database;
 use crate::license;
 use crate::crypto;
 use serde_json::{json, Value};
+use tauri::Manager;
 
 #[tauri::command] pub async fn settings_get() -> Result<Value, String> {
     // 返回 camelCase 键名，匹配前端 Settings.vue 的读取方式
@@ -178,4 +179,90 @@ pub async fn ai_test_embedding(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub fn clear_logs(state: tauri::State<'_, crate::services::log_collector::LogState>) {
     state.clear();
+}
+
+// ─── 精灵窗口位置 ─────────────────────────────────────────
+#[tauri::command]
+pub async fn save_sprite_position(x: f64, y: f64) -> Result<Value, String> {
+    let pos_str = serde_json::to_string(&json!({ "x": x, "y": y })).unwrap_or_default();
+    let result = database::run(
+        "UPDATE system_config SET sprite_position=?, updated_at=datetime('now','localtime') WHERE tenant_id='local-user'",
+        &[json!(pos_str)]
+    ).map_err(|e| e.to_string())?;
+
+    if result.changes == 0 {
+        database::run(
+            "INSERT INTO system_config(tenant_id, sprite_position, created_at, updated_at) VALUES('local-user', ?, datetime('now','localtime'), datetime('now','localtime'))",
+            &[json!(pos_str)]
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(json!({ "success": true }))
+}
+
+#[tauri::command]
+pub async fn get_sprite_position() -> Result<Value, String> {
+    get_sprite_position_sync().map_err(|e| e.to_string())
+}
+
+pub fn get_sprite_position_sync() -> Result<Value, String> {
+    let row = database::get("SELECT sprite_position FROM system_config WHERE tenant_id='local-user'", &[]).map_err(|e| e.to_string())?;
+    match row {
+        Some(r) => {
+            if let Some(s) = r["sprite_position"].as_str() {
+                let pos: Value = serde_json::from_str(s).unwrap_or(json!({}));
+                if pos.get("x").is_some() && pos.get("y").is_some() {
+                    return Ok(pos);
+                }
+            }
+            Ok(json!({ "x": 800.0, "y": 400.0 }))
+        }
+        None => Ok(json!({ "x": 800.0, "y": 400.0 }))
+    }
+}
+
+// ─── 精灵窗口开关 ─────────────────────────────────────────
+#[tauri::command]
+pub async fn get_sprite_enabled() -> Result<bool, String> {
+    get_sprite_enabled_sync().map_err(|e| e.to_string())
+}
+
+pub fn get_sprite_enabled_sync() -> Result<bool, String> {
+    let row = database::get("SELECT sprite_enabled FROM system_config WHERE tenant_id='local-user'", &[]).map_err(|e| e.to_string())?;
+    match row {
+        Some(r) => Ok(r["sprite_enabled"].as_i64().unwrap_or(1) != 0),
+        None => Ok(true),
+    }
+}
+
+#[tauri::command]
+pub async fn set_sprite_enabled(enabled: bool, app: tauri::AppHandle) -> Result<Value, String> {
+    let val: i64 = if enabled { 1 } else { 0 };
+    let result = database::run(
+        "UPDATE system_config SET sprite_enabled=?, updated_at=datetime('now','localtime') WHERE tenant_id='local-user'",
+        &[json!(val)]
+    ).map_err(|e| e.to_string())?;
+
+    if result.changes == 0 {
+        database::run(
+            "INSERT INTO system_config(tenant_id, sprite_enabled, created_at, updated_at) VALUES('local-user', ?, datetime('now','localtime'), datetime('now','localtime'))",
+            &[json!(val)]
+        ).map_err(|e| e.to_string())?;
+    }
+
+    // 立即控制窗口显示/隐藏
+    if let Some(win) = app.get_webview_window("sprite") {
+        if enabled {
+            if let Ok(pos) = get_sprite_position_sync() {
+                let x = pos["x"].as_f64().unwrap_or(800.0);
+                let y = pos["y"].as_f64().unwrap_or(400.0);
+                let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+            }
+            let _ = win.show();
+        } else {
+            let _ = win.hide();
+        }
+    }
+
+    Ok(json!({ "success": true }))
 }

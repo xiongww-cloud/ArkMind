@@ -1,8 +1,9 @@
 {
   "identifier": "desktop-capability",
   "description": "Allows desktop window operations (minimize, maximize, close) via the custom titlebar",
-  "windows": ["main"],
+  "windows": ["main", "sprite", "chat"],
   "permissions": [
+    "core:default",
     "core:window:allow-minimize",
     "core:window:allow-unminimize",
     "core:window:allow-maximize",
@@ -12,8 +13,22 @@
     "core:window:allow-is-maximized",
     "core:window:allow-is-minimized",
     "core:window:allow-set-fullscreen",
+    "core:window:allow-create",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-focus",
+    "core:window:allow-is-visible",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-position",
+    "core:window:allow-scale-factor",
     "dialog:default",
     "core:event:allow-listen",
-    "core:event:allow-unlisten"
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:event:allow-emit-to"
   ]
 }

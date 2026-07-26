@@ -115,6 +115,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 ## 规则记录
 
 用户明确表达的工作规则、流程、约束（如"报价前必须先确认库存"），记录为 policy。
+规则只能来自用户的输入，禁止在分析数据、回答问题时自行创建或修改策略。
 
 ## 你的身份
 你是用户的长期思维伙伴。
@@ -1257,10 +1258,9 @@ async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app
         reasoning: String,
         tca: Vec<(String, String, String)>, // (id, name, arguments)
         usage: Option<Value>,
-        first: bool,
         count: u64,
     }
-    let mut st = SseState { buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(), usage: None, first: true, count: 0 };
+    let mut st = SseState { buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(), usage: None, count: 0 };
     let mut stream = resp.bytes_stream();
 
     // 尝试从 buffer 头部提取一个完整的 SSE JSON 并处理；返回 false 表示数据不完整
@@ -1285,10 +1285,6 @@ async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app
                             st.full.push_str(tok);
                             st.count += 1;
                             if let Some(ref h) = app {
-                                if st.first {
-                                    let _ = h.emit("agent:start-answer", json!({}));
-                                    st.first = false;
-                                }
                                 let _ = h.emit("agent:token", json!({"token": tok}));
                             }
                         }

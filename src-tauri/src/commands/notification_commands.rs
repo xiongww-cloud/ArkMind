@@ -100,3 +100,14 @@ pub async fn notification_config_update(data: Value) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[tauri::command]
+pub async fn notification_loop_status() -> Result<Value, String> {
+    let status = crate::services::notification_loop::get_loop_status();
+    Ok(json!({
+        "success": true,
+        "running": status.running,
+        "last_check_at": status.last_check_at,
+        "next_check_at": status.next_check_at,
+    }))
+}

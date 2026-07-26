@@ -158,10 +158,27 @@ pub fn run() {
             commands::file_commands::cleanup_preview_links();
             if database::check_license_premium() { upgrade_fts5_triggers_on_startup(); }
 
+            // ★ 启动时根据开关显示精灵
+            {
+                let sprite_enabled = commands::get_sprite_enabled_sync().unwrap_or(true);
+                if sprite_enabled {
+                    if let Some(win) = app.get_webview_window("sprite") {
+                        // 恢复位置
+                        if let Ok(pos) = commands::get_sprite_position_sync() {
+                            let x = pos["x"].as_f64().unwrap_or(800.0);
+                            let y = pos["y"].as_f64().unwrap_or(400.0);
+                            let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                        }
+                        let _ = win.show();
+                    }
+                }
+            }
+
             // ★ 系统托盘图标
             let show_item = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
+            let sprite_item = MenuItemBuilder::with_id("sprite", "显示精灵").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show_item, &quit_item]).build()?;
+            let menu = MenuBuilder::new(app).items(&[&show_item, &sprite_item, &quit_item]).build()?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().unwrap())
                 .menu(&menu)
@@ -174,6 +191,13 @@ pub fn run() {
                                 let _ = win.show();
                                 let _ = win.set_focus();
                             }
+                        }
+                        "sprite" => {
+                            let app_handle = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let current = commands::get_sprite_enabled_sync().unwrap_or(true);
+                                let _ = commands::set_sprite_enabled(!current, app_handle).await;
+                            });
                         }
                         "quit" => {
                             app.exit(0);
@@ -217,12 +241,8 @@ pub fn run() {
                 services::file_ingestion::start(ingestion_handle);
             });
 
-            // ★ 启动通知循环：App启动时执行一次后台LLM分析
-            let notify_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(15));
-                services::notification_loop::run_startup_check(notify_handle);
-            });
+            // ★ 启动通知循环：App启动时执行周期后台LLM分析
+            services::notification_loop::start_notification_loop(app.handle().clone());
 
             Ok(())
         })
@@ -307,8 +327,15 @@ pub fn run() {
             // Settings
             commands::settings_get, commands::settings_update, commands::get_ai_config, commands::update_ai_config, commands::ai_test_provider, commands::ai_test_embedding,
             commands::user_profile, commands::user_profile_update,
+            // Sprite Position
+            commands::save_sprite_position, commands::get_sprite_position,
+            commands::get_sprite_enabled, commands::set_sprite_enabled,
             // Window
             commands::window_minimize, commands::window_toggle_maximize, commands::window_close,
+            // Sprite Window
+            commands::create_sprite_window, commands::toggle_sprite_window, commands::close_sprite_window, commands::set_sprite_position,
+            // Chat Window
+            commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::position_chat_near_sprite, commands::resize_chat_window_smooth,
             // Export
             commands::export_data, commands::import_data, commands::backup_all, commands::restore_all,
             commands::solution_download_excel,
@@ -323,6 +350,7 @@ pub fn run() {
             commands::notification_list, commands::notification_create, commands::notification_mark_read,
             commands::notification_mark_all_read, commands::notification_delete, commands::notification_stats,
             commands::notification_config_get, commands::notification_config_update,
+            commands::notification_loop_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arkmind");

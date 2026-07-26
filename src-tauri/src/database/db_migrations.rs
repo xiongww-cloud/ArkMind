@@ -206,6 +206,10 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE chat_sessions ADD COLUMN session_state TEXT DEFAULT NULL",
         // 清理旧的 session_cache 表（如果存在）
         "DROP TABLE IF EXISTS session_cache",
+        // 精灵窗口位置
+        "ALTER TABLE system_config ADD COLUMN sprite_position TEXT DEFAULT '{}'",
+        // 精灵窗口开关
+        "ALTER TABLE system_config ADD COLUMN sprite_enabled INTEGER DEFAULT 1",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
@@ -927,7 +931,8 @@ pub(crate) fn create_notifications_tables(conn: &Connection) {
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('last_check_at','');
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_calls','0');
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_tokens','0');
-        INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_date','');"
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_date','');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('startup_only','0');"
     );
     log::info!("[迁移] notifications 表创建完成");
 }

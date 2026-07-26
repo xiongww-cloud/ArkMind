@@ -67,6 +67,8 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             encrypt_password_salt TEXT DEFAULT '',
             ai_config TEXT DEFAULT '{}', kb_config TEXT DEFAULT '{}',
             storage_cards TEXT DEFAULT '[]', active_card_id TEXT DEFAULT '',
+            sprite_position TEXT DEFAULT '{}',
+            sprite_enabled INTEGER DEFAULT 1,
             created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
         CREATE TABLE IF NOT EXISTS notebooks (
@@ -352,6 +354,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_calls','0');
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_tokens','0');
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('today_date','');
+        INSERT OR IGNORE INTO notification_config(key,value) VALUES('startup_only','0');
 
         -- ★ 业务关联表：实体间多对多关系
         CREATE TABLE IF NOT EXISTS business_relations (
