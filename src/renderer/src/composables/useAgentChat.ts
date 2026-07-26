@@ -206,6 +206,7 @@ export function useAgentChat() {
     scrollFn()
 
     let unlistenStream: (() => void) | null = null
+    let hasRoundThought = false
     try {
       const isRealStreaming = ref(false)
       let streamedContent = ''
@@ -213,12 +214,13 @@ export function useAgentChat() {
       const RENDER_THROTTLE_MS = 80
 
       const unlistenProgress = await listen<{ msg: string }>('agent:progress', (ev) => {
-        setThinkingProgress(ev.payload.msg)
+        if (!hasRoundThought) { setThinkingProgress(ev.payload.msg) }
         scrollFn()
       })
       const unlistenStatus = await listen<{ stage: string; tool?: string; msg?: string }>('agent:status', (ev) => {
       })
       const unlistenStartAnswer = await listen('agent:start-answer', () => {
+        hasRoundThought = false
         isRealStreaming.value = true
         streamedContent = ''
         onStartAnswer?.()
@@ -240,6 +242,7 @@ export function useAgentChat() {
         scrollFn()
       })
       const unlistenRoundThought = await listen<{text?: string}>('agent:round-thought', (ev) => {
+        hasRoundThought = true
         streamedContent = ''
         isRealStreaming.value = false
         const msg = getMessage()

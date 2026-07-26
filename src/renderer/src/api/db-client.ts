@@ -336,6 +336,10 @@ export async function kbFabInitSession(): Promise<{success: boolean; session_id?
 export async function kbFabLoadHistory(limit?: number): Promise<{success: boolean; messages?: ChatMessage[]}> { return invoke('kb_fab_load_history', { limit: limit || null }) }
 export async function kbFabSaveMessage(data: {role: string; content: string; metadata?: unknown}): Promise<SuccessResponse> { return invoke('kb_fab_save_message', { data }) }
 
+// ─── Sprite Window API ───────────────────────────────────────────
+export async function getSpriteEnabled(): Promise<boolean> { return invoke('get_sprite_enabled') }
+export async function setSpriteEnabled(enabled: boolean): Promise<{success: boolean}> { return invoke('set_sprite_enabled', { enabled }) }
+
 // ── Memory Explorer API ──
 export async function kbMemoryObjects(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string;title:string}>}> { return invoke('kb_memory_objects', { query }) }
 export async function searchBusiness(query: string): Promise<{success:boolean;objects:Array<{source_type:string;source_id:string;title:string}>}> { return invoke('search_business', { query }) }

@@ -200,6 +200,7 @@ let unlistenStartAnswer: (() => void) | null = null
 let unlistenRoundThought: (() => void) | null = null
 let unlistenDone: (() => void) | null = null
 let unlistenError: (() => void) | null = null
+let hasRoundThought = false
 
 async function confirmDeleteSession(id: string) {
   const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？此操作不可撤销。', confirmText: '删除' })
@@ -254,7 +255,8 @@ async function handleSendMessage() {
   agent.setThinkingProgress('')
   // ★ Real Cognitive Stream: 实时进度
   unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
-    agent.setThinkingProgress(ev.payload.msg); scrollToBottomIfNear()
+    if (!hasRoundThought) { agent.setThinkingProgress(ev.payload.msg) }
+    scrollToBottomIfNear()
   })
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
   session.messages.push(aiMsg); const aiIdx = session.messages.length - 1
@@ -266,21 +268,10 @@ async function handleSendMessage() {
   nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
   try {
     // ★ 流式监听：实时显示 LLM 最终答案（逐 token 渲染）
-    const isRealStreaming = ref(false)
     let streamedContent = ''
     let lastRenderTime = 0
     const RENDER_THROTTLE_MS = 80
-    // 首字清空：收到 agent:start-answer 时标记真正流式开始
-    unlistenStartAnswer = await listen('agent:start-answer', () => {
-      console.log('[FE] start-answer received')
-      isRealStreaming.value = true
-      streamedContent = ''
-      const msg = session.messages[aiIdx]
-      if (msg) { msg.content = ''; agent.rendered.value[msg.id || ''] = '' }
-      scrollToBottomIfNear()
-    })
     unlistenStream = await listen<{token:string}>('agent:token', (ev) => {
-      if (!isRealStreaming.value) return // start-answer 前的 token 仅作为检索/思考，不显示为答案
       if (!streamedContent) console.log('[FE] first token received:', JSON.stringify(ev.payload.token))
       streamedContent += ev.payload.token
       const msg = session.messages[aiIdx]
@@ -294,9 +285,13 @@ async function handleSendMessage() {
     })
     unlistenStatus = await listen<{stage:string; tool?:string; msg?:string}>('agent:status', (ev) => {
     })
+    unlistenStartAnswer = await listen('agent:start-answer', () => {
+      hasRoundThought = false
+    })
     // ★ 工具轮结束：恢复预设文案，保持呼吸气泡
     unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
       console.log('[FE] round-thought received')
+      hasRoundThought = true
       streamedContent = ''
       const msg = session.messages[aiIdx]
       msg.content = ''
@@ -310,14 +305,14 @@ async function handleSendMessage() {
 
     // ★ 监听 agent:done 事件（后台任务完成时触发）
     unlistenDone = await listen<any>('agent:done', (ev) => {
-      console.log('[FE] done received, isRealStreaming=', isRealStreaming.value)
+      console.log('[FE] done received')
       const result = ev.payload
       const msg = session.messages[aiIdx]; msg.isThinking = false
       if (result.success) {
         const finalAnswer = (result.answer || streamedContent || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
         agent.setThinkingProgress('')
         msg.toolCalls = result.tool_log || []
-        if (isRealStreaming.value) {
+        if (streamedContent) {
           console.log('[FE] done -> DIRECT branch')
           msg.content = finalAnswer
           renderMessageContent(msg.id || '', msg.content)
@@ -338,7 +333,7 @@ async function handleSendMessage() {
         msg.workspace = result.workspace || '';
       } else { msg.error = result.answer || result.error || '失败' }
       agent.isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-      try { unlistenDone(); unlistenStream(); unlistenStartAnswer(); unlistenStatus(); unlistenProgress(); unlistenRoundThought() } catch (e) { console.error('[KB] unlisten failed:', e) }
+      try { unlistenDone(); unlistenStream(); unlistenStatus(); unlistenProgress(); unlistenRoundThought() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
 
     // ★ 监听 agent:error 事件
@@ -346,7 +341,7 @@ async function handleSendMessage() {
       const msg = session.messages[aiIdx]; msg.isThinking = false
       msg.error = ev.payload.error || 'AI 服务异常'
       agent.isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-      try { unlistenError(); unlistenDone(); unlistenStream(); unlistenStartAnswer(); unlistenStatus(); unlistenProgress(); unlistenRoundThought() } catch {}
+      try { unlistenError(); unlistenDone(); unlistenStream(); unlistenStatus(); unlistenProgress(); unlistenRoundThought() } catch {}
     })
 
     // ★ 调用命令（立即返回，不等待结果）

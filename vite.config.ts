@@ -27,5 +27,12 @@ export default defineConfig({
     outDir: resolve(__dirname, 'dist'),
     emptyOutDir: true,
     target: 'esnext',
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'src/renderer/index.html'),
+        sprite: resolve(__dirname, 'src/renderer/sprite.html'),
+        chat: resolve(__dirname, 'src/renderer/chat.html'),
+      },
+    },
   },
 })

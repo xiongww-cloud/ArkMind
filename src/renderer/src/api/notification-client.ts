@@ -57,3 +57,14 @@ export async function notificationConfigGet(): Promise<NotificationConfig> {
 export async function notificationConfigUpdate(data: Record<string, unknown>): Promise<void> {
   return invoke('notification_config_update', { data })
 }
+
+export interface LoopStatus {
+  success: boolean
+  running: boolean
+  last_check_at: string
+  next_check_at: string
+}
+
+export async function notificationLoopStatus(): Promise<LoopStatus> {
+  return invoke('notification_loop_status')
+}

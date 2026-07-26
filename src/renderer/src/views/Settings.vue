@@ -233,7 +233,6 @@ async function handleRestoreAll() {
 }
 
 // ─── AI Config ───────────────────────────────────────────────────────────
-const showAiHelpModal = ref(false)
 // Multi-provider support: each provider has { id, name, apiKey, baseUrl, modelName }
 const aiProviders = ref([])
 const activeProviderId = ref(null) // system default (saved)
@@ -327,6 +326,7 @@ async function loadAiConfig() {
     loadVecConfig(config)
     loadVisionConfig(config)
     loadNotifyConfig()
+    loadSpriteConfig()
   } catch (e) {
     console.warn('Failed to load AI config:', e)
   }
@@ -609,11 +609,38 @@ const vecSavedData = ref<any>(null)
 const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
-import { notificationConfigGet, notificationConfigUpdate, notificationStats } from '@/api/notification-client'
+import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, type LoopStatus } from '@/api/notification-client'
+import { getSpriteEnabled, setSpriteEnabled } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
-const notifyStats = ref({ today_calls: 0, today_tokens: 0 })
+const notifyStartupOnly = ref(false)
+const loopStatus = ref<LoopStatus>({ success: true, running: false, last_check_at: '', next_check_at: '' })
+let loopStatusTimer: ReturnType<typeof setInterval> | null = null
+
+const intervalOptions = [
+  { value: 30, label: '30分钟' },
+  { value: 60, label: '1小时' },
+  { value: 120, label: '2小时' },
+  { value: 360, label: '6小时' },
+  { value: 720, label: '12小时' },
+  { value: 1440, label: '24小时' },
+]
+
+// ─── Sprite Settings ────────────────────────────────────────
+const spriteEnabled = ref(true)
+
+async function loadSpriteConfig() {
+  try {
+    spriteEnabled.value = await getSpriteEnabled()
+  } catch {}
+}
+
+async function toggleSprite() {
+  try {
+    await setSpriteEnabled(spriteEnabled.value)
+  } catch {}
+}
 
 async function loadNotifyConfig() {
   try {
@@ -621,11 +648,14 @@ async function loadNotifyConfig() {
     if (r.config) {
       notifyEnabled.value = r.config.enabled !== '0'
       notifyInterval.value = parseInt(r.config.interval_minutes) || 60
+      notifyStartupOnly.value = r.config.startup_only === '1'
     }
   } catch {}
+}
+
+async function loadLoopStatus() {
   try {
-    const s = await notificationStats()
-    notifyStats.value = { today_calls: s.today_calls, today_tokens: s.today_tokens }
+    loopStatus.value = await notificationLoopStatus()
   } catch {}
 }
 
@@ -634,6 +664,7 @@ async function saveNotifyConfig() {
     await notificationConfigUpdate({
       enabled: notifyEnabled.value ? '1' : '0',
       interval_minutes: notifyInterval.value.toString(),
+      startup_only: notifyStartupOnly.value ? '1' : '0',
     })
   } catch {}
 }
@@ -734,7 +765,8 @@ async function testVecConnection() {
   vecTesting.value = true
   const { aiTestEmbedding } = await import('@/api/db-client')
   try {
-    const r = await aiTestEmbedding({ baseUrl: vecForm.value.baseUrl, apiKey: vecForm.value.apiKey, modelName: vecForm.value.modelName })
+    const apiKey = vecForm.value.apiKey?.trim() || vecSavedData.value?.apiKey || ''
+    const r = await aiTestEmbedding({ baseUrl: vecForm.value.baseUrl, apiKey, modelName: vecForm.value.modelName })
     vecTestResult.value = r.success ? (r.message || '连接成功') : (r.error || '连接失败')
   } catch (e: any) {
     vecTestResult.value = '连接失败: ' + (e.message || '网络错误')
@@ -758,6 +790,10 @@ async function testProviderConnection(provider?: any) {
     apiKey = (f.apiKey || '').trim()
     modelName = (f.modelName || '').trim()
     label = modelName || '模型'
+    // 编辑模式下 apiKey 为空时，回退到原始 provider 的 apiKey
+    if (!apiKey && editingProvider.value?.apiKey) {
+      apiKey = editingProvider.value.apiKey
+    }
   }
   testingProviderId.value = provider?.id || '__form__'
   aiTestResult.value = ''
@@ -879,12 +915,16 @@ onMounted(async () => {
     loadLicense(),
     loadAiConfig(),
     refreshLogs(),
+    loadNotifyConfig(),
+    loadLoopStatus(),
   ])
   logTimer = setInterval(refreshLogs, 3000)
+  loopStatusTimer = setInterval(loadLoopStatus, 600000)  // 10分钟刷新一次
 })
 
 onUnmounted(() => {
   if (logTimer) clearInterval(logTimer)
+  if (loopStatusTimer) clearInterval(loopStatusTimer)
 })
 </script>
 
@@ -893,12 +933,8 @@ onUnmounted(() => {
 
     <!-- AI 模型配置 ── Tab 切换 -->
     <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
-      <div class="flex items-center justify-between px-5 pt-5 pb-0">
+      <div class="px-5 pt-5 pb-0">
         <h2 class="text-[13px] font-semibold text-surface-700">AI 模型配置</h2>
-        <button @click="showAiHelpModal = true" class="text-[10px] text-surface-400 hover:text-brand-600 flex items-center gap-1 transition-colors" title="配置帮助">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          帮助
-        </button>
       </div>
       <div class="flex gap-0 border-b border-surface-100 px-5 mt-3">
         <button v-for="tab in ['llm','vision','vector']" :key="tab"
@@ -926,7 +962,7 @@ onUnmounted(() => {
         </div>
         <div class="flex items-center justify-between gap-2">
           <div class="flex items-center gap-3">
-            <button v-if="pendingDefaultId !== activeProviderId" @click="saveDefaultConfig" :disabled="aiSaving" class="px-3 py-1.5 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ aiSaving ? '保存中...' : '保存默认' }}</button>
+            <button v-if="pendingDefaultId !== activeProviderId" @click="saveDefaultConfig" :disabled="aiSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ aiSaving ? '保存中...' : '保存默认' }}</button>
             <p v-if="aiTestResult" class="text-[10px]" :class="aiTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ aiTestResult }}</p>
             <p v-if="aiSaved" class="text-[10px] text-emerald-600">已保存</p>
           </div>
@@ -951,7 +987,7 @@ onUnmounted(() => {
         </div>
         <div class="flex items-center justify-between gap-2">
           <div class="flex items-center gap-3">
-            <button v-if="visionPendingId !== visionActiveId" @click="saveVisionDefault" :disabled="visionSaving" class="px-3 py-1.5 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ visionSaving ? '保存中...' : '保存默认' }}</button>
+            <button v-if="visionPendingId !== visionActiveId" @click="saveVisionDefault" :disabled="visionSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ visionSaving ? '保存中...' : '保存默认' }}</button>
             <p v-if="visionTestResult" class="text-[10px]" :class="visionTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ visionTestResult }}</p>
             <p v-if="visionSaved" class="text-[10px] text-emerald-600">已保存</p>
           </div>
@@ -984,10 +1020,18 @@ onUnmounted(() => {
 
     <!-- 智能通知 -->
     <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
-      <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0 flex items-center gap-1.5">
-        <AppIcon name="sparkles" size="15" class="text-surface-400" />
-        智能通知
-      </h2>
+      <div class="flex items-center justify-between px-5 pt-5 pb-0">
+        <h2 class="text-[13px] font-semibold text-surface-700">智能通知</h2>
+        <div v-if="notifyEnabled && !notifyStartupOnly" class="flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full" :class="loopStatus.running ? 'bg-emerald-500' : 'bg-surface-300'"></span>
+          <span class="text-[10px]" :class="loopStatus.running ? 'text-emerald-600' : 'text-surface-400'">
+            {{ loopStatus.running ? '循环运行中' : '未启动' }}
+          </span>
+          <span v-if="loopStatus.running && loopStatus.next_check_at" class="text-[10px] text-surface-400">
+            · 下次: {{ loopStatus.next_check_at.slice(11) || loopStatus.next_check_at }}
+          </span>
+        </div>
+      </div>
       <div class="p-5 space-y-4">
         <div class="flex items-center justify-between">
           <div>
@@ -1000,23 +1044,44 @@ onUnmounted(() => {
           </label>
         </div>
         <div class="flex items-center justify-between">
-          <p class="text-[12px] font-medium text-surface-700">分析频率</p>
-          <select v-model="notifyInterval" @change="saveNotifyConfig"
-            class="text-[11px] border border-surface-200 rounded-lg px-2 py-1 outline-none focus:border-brand-400">
-            <option :value="30">每30分钟</option>
-            <option :value="60">每1小时</option>
-            <option :value="120">每2小时</option>
-          </select>
+          <div>
+            <p class="text-[12px] font-medium text-surface-700">仅在启动时执行</p>
+            <p class="text-[10px] text-surface-400">关闭后按时间周期执行，启动时不执行</p>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" v-model="notifyStartupOnly" class="sr-only peer" @change="saveNotifyConfig">
+            <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
+          </label>
         </div>
-        <div class="bg-surface-50 rounded-xl p-3 space-y-1.5">
-          <div class="flex justify-between text-[11px]">
-            <span class="text-surface-500">今日调用次数</span>
-            <span class="text-surface-700 font-medium">{{ notifyStats.today_calls }}</span>
+        <div v-if="!notifyStartupOnly" class="flex items-center justify-between">
+          <p class="text-[12px] font-medium text-surface-700">分析频率</p>
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <button v-for="opt in intervalOptions" :key="opt.value"
+              @click="notifyInterval = opt.value; saveNotifyConfig()"
+              class="px-2.5 py-1 rounded-md text-[11px] transition-all"
+              :class="notifyInterval === opt.value
+                ? 'bg-brand-600 text-white shadow-sm'
+                : 'bg-surface-100 text-surface-600 hover:bg-surface-200'">
+              {{ opt.label }}
+            </button>
           </div>
-          <div class="flex justify-between text-[11px]">
-            <span class="text-surface-500">今日 Token 消耗</span>
-            <span class="text-surface-700 font-medium">{{ notifyStats.today_tokens }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 桌面精灵 -->
+    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
+      <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">桌面精灵</h2>
+      <div class="p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-[12px] font-medium text-surface-700">启动桌面精灵</p>
+            <p class="text-[10px] text-surface-400">关闭后精灵隐藏，打开后立即显示</p>
           </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" v-model="spriteEnabled" class="sr-only peer" @change="toggleSprite">
+            <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
+          </label>
         </div>
       </div>
     </div>
@@ -1188,7 +1253,7 @@ onUnmounted(() => {
             <p v-if="providerFormError" class="text-[10px] text-red-500">{{ providerFormError }}</p>
           </div>
           <div class="flex items-center justify-between mt-4">
-            <button @click="testProviderConnection" :disabled="testingProviderId" class="btn-secondary text-xs">{{ testingProviderId ? '测试中...' : '测试连接' }}</button>
+            <button @click="testProviderConnection()" :disabled="testingProviderId" class="btn-secondary text-xs">{{ testingProviderId ? '测试中...' : '测试连接' }}</button>
             <div class="flex items-center gap-2">
               <button @click="closeProviderModal" class="btn-secondary text-xs">取消</button>
               <button @click="confirmProviderForm" :disabled="providerFormSaving" class="btn-primary text-xs">{{ providerFormSaving ? '保存中...' : (editingProvider ? '保存' : '添加') }}</button>
@@ -1241,7 +1306,7 @@ onUnmounted(() => {
             <p v-if="visionFormError" class="text-[10px] text-red-500">{{ visionFormError }}</p>
           </div>
           <div class="flex items-center justify-between mt-4">
-            <button @click="testVisionConnection" :disabled="visionTestingId" class="btn-secondary text-xs">{{ visionTestingId ? '测试中...' : '测试连接' }}</button>
+            <button @click="testVisionConnection()" :disabled="visionTestingId" class="btn-secondary text-xs">{{ visionTestingId ? '测试中...' : '测试连接' }}</button>
             <div class="flex items-center gap-2">
               <button @click="closeVisionModal" class="btn-secondary text-xs">取消</button>
               <button @click="confirmVisionForm" :disabled="visionFormSaving" class="btn-primary text-xs">{{ visionFormSaving ? '保存中...' : (editingVision ? '保存' : '添加') }}</button>
@@ -1294,80 +1359,13 @@ onUnmounted(() => {
             <p v-if="vecFormError" class="text-[10px] text-red-500">{{ vecFormError }}</p>
           </div>
           <div class="flex items-center justify-between mt-4">
-            <button @click="testVecConnection" :disabled="vecTesting" class="btn-secondary text-xs">{{ vecTesting ? '测试中...' : '测试连接' }}</button>
+            <button @click="testVecConnection()" :disabled="vecTesting" class="btn-secondary text-xs">{{ vecTesting ? '测试中...' : '测试连接' }}</button>
             <div class="flex items-center gap-2">
               <button @click="closeVecModal" class="btn-secondary text-xs">取消</button>
               <button @click="saveVecConfig" :disabled="vecSaving" class="btn-primary text-xs">{{ vecSaving ? '保存中...' : '保存' }}</button>
             </div>
           </div>
           <p v-if="vecTestResult" class="text-[10px] mt-3" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
-
-  <!-- AI 模型配置帮助弹窗 -->
-  <Teleport to="body">
-    <Transition name="modal-fade">
-      <div v-if="showAiHelpModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="showAiHelpModal = false">
-        <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] max-h-[80vh] overflow-y-auto p-6">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-[14px] font-semibold text-surface-800">AI 模型配置帮助</h3>
-            <button @click="showAiHelpModal = false" class="text-surface-400 hover:text-surface-600 transition-colors">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
-          </div>
-          <div class="space-y-4 text-[11px] text-surface-600 leading-relaxed">
-            <!-- 连接测试失败 -->
-            <div>
-              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">连接测试失败排查</h4>
-              <table class="w-full text-[10px] border-collapse">
-                <tr class="border-b border-surface-100"><td class="py-1.5 font-medium text-surface-700 w-[30%]">错误信息</td><td class="py-1.5 text-surface-500">可能原因</td><td class="py-1.5 text-surface-500">解决方案</td></tr>
-                <tr class="border-b border-surface-100"><td class="py-1.5 text-surface-700">连接超时 / 网络错误</td><td class="py-1.5 text-surface-500">网络不通或 URL 错误</td><td class="py-1.5 text-surface-500">检查网络连接，确认 URL 可以在浏览器中打开</td></tr>
-                <tr class="border-b border-surface-100"><td class="py-1.5 text-surface-700">401 Unauthorized</td><td class="py-1.5 text-surface-500">API Key 错误或过期</td><td class="py-1.5 text-surface-500">检查 Key 是否正确，是否已过期，是否有权限</td></tr>
-                <tr class="border-b border-surface-100"><td class="py-1.5 text-surface-700">404 Not Found</td><td class="py-1.5 text-surface-500">模型名称错误</td><td class="py-1.5 text-surface-500">检查模型名称拼写是否正确</td></tr>
-                <tr class="border-b border-surface-100"><td class="py-1.5 text-surface-700">429 Too Many Requests</td><td class="py-1.5 text-surface-500">请求频率超限</td><td class="py-1.5 text-surface-500">稍后再试，或升级 API 账户</td></tr>
-                <tr><td class="py-1.5 text-surface-700">SSL/TLS 错误</td><td class="py-1.5 text-surface-500">证书问题或代理干扰</td><td class="py-1.5 text-surface-500">检查代理设置，确认 URL 使用 https://</td></tr>
-              </table>
-            </div>
-            <!-- Base URL 填写规范 -->
-            <div>
-              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">Base URL 填写规范</h4>
-              <p class="text-surface-500 mb-1">Base URL 是 API 的基础地址，必须包含协议（https://）和版本路径。</p>
-              <p class="font-medium text-surface-600 mb-0.5">常见错误：</p>
-              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
-                <li>❌ <code class="text-[10px] bg-red-50 px-1 rounded">api.openai.com</code>（缺少协议）</li>
-                <li>❌ <code class="text-[10px] bg-red-50 px-1 rounded">https://api.openai.com</code>（缺少版本路径）</li>
-                <li>✅ <code class="text-[10px] bg-emerald-50 px-1 rounded">https://api.openai.com/v1</code></li>
-              </ul>
-              <p class="font-medium text-surface-600 mt-2 mb-0.5">常用地址：</p>
-              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
-                <li>OpenAI: <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.openai.com/v1</code></li>
-                <li>硅基流动: <code class="text-[10px] bg-surface-100 px-1 rounded">https://api.siliconflow.cn/v1</code></li>
-                <li>通义千问: <code class="text-[10px] bg-surface-100 px-1 rounded">https://dashscope.aliyuncs.com/compatible-mode/v1</code></li>
-              </ul>
-            </div>
-            <!-- API Key 说明 -->
-            <div>
-              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">API Key 获取与安全</h4>
-              <ul class="list-disc pl-4 space-y-0.5 text-surface-500">
-                <li>OpenAI: platform.openai.com → API Keys → Create new secret key</li>
-                <li>硅基流动: cloud.siliconflow.cn → API 密钥</li>
-                <li>通义千问: dashscope.console.aliyun.com → API-KEY 管理</li>
-              </ul>
-              <p class="text-amber-600 mt-1">⚠️ API Key 本地加密存储，不会上传到任何服务器。更换电脑后需要重新配置。</p>
-            </div>
-            <!-- 常见问题 -->
-            <div>
-              <h4 class="text-[12px] font-semibold text-surface-700 mb-1">常见问题</h4>
-              <p class="font-medium text-surface-600 mb-0.5">Q: 连接测试通过但 AI 不回答？</p>
-              <p class="text-surface-500 mb-2">A: 检查是否设置了默认模型（点击模型前的单选按钮并保存）。</p>
-              <p class="font-medium text-surface-600 mb-0.5">Q: 向量化失败怎么办？</p>
-              <p class="text-surface-500 mb-2">A: 确认向量模型配置正确，检查 API Key 是否有 embedding 权限。更换模型后需要清除知识库重新向量化。</p>
-              <p class="font-medium text-surface-600 mb-0.5">Q: 视觉解析不准确？</p>
-              <p class="text-surface-500 mb-2">A: 确认视觉模型配置正确。对于中文文档，推荐使用通义千问视觉模型。</p>
-            </div>
-          </div>
         </div>
       </div>
     </Transition>

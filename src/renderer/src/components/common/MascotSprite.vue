@@ -64,12 +64,11 @@ defineProps<{ state: 'idle' | 'thinking' | 'speaking' | 'notifying' }>()
   position: relative;
   width: 100%; height: 100%;
   display: flex; align-items: center; justify-content: center;
-  padding: 8px;
+  padding: 2px;
   box-sizing: border-box;
 }
 .mascot-svg {
   width: 64px; height: 64px; overflow: visible;
-  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
 }
 .mascot-ground-shadow {
   position: absolute; bottom: -3px; left: 50%; transform: translateX(-50%);

@@ -333,6 +333,7 @@ onUnmounted(() => {
 
 .fab-chat__body {
   flex: 1; min-height: 0; overflow-y: auto; padding: 10px;
+  user-select: text;
   scrollbar-width: thin; scrollbar-color: rgba(37,99,235,0.2) transparent;
 }
 .fab-chat__body::-webkit-scrollbar { width: 3px; }

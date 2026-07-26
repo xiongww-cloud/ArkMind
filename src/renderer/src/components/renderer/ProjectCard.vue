@@ -40,6 +40,7 @@ const statusClass = computed(() => {
     case 'SolutionDesign': return 'status-design'
     case 'Ordered': return 'status-ordered'
     case 'Lead': return 'status-lead'
+    case 'Archived': return 'status-archived'
     default: return 'status-default'
   }
 })
@@ -51,6 +52,7 @@ const statusText = computed(() => {
     case 'SolutionDesign': return '方案设计'
     case 'Ordered': return '已下单'
     case 'Lead': return '线索'
+    case 'Archived': return '归档'
     default: return props.status || '未知'
   }
 })
@@ -115,6 +117,7 @@ function handleClick() {
 .status-design { background: #dbeafe; color: #1e40af; }
 .status-ordered { background: #fef3c7; color: #92400e; }
 .status-lead { background: #f3f4f6; color: #374151; }
+.status-archived { background: #f5f5f4; color: #78716c; }
 .status-default { background: #f3f4f6; color: #6b7280; }
 
 .project-info {
