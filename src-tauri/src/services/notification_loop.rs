@@ -56,12 +56,6 @@ pub fn start_notification_loop(app_handle: tauri::AppHandle) {
     });
 }
 
-/// 停止循环
-pub fn stop_notification_loop() {
-    LOOP_RUNNING.store(false, Ordering::Relaxed);
-    log::info!("[通知循环] 已发送停止信号");
-}
-
 /// 获取循环状态
 pub fn get_loop_status() -> LoopStatus {
     let running = LOOP_RUNNING.load(Ordering::Relaxed);
@@ -162,7 +156,9 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
          \n\
          如果数据中没有值得用户关注的事项，回复\"暂无新发现\"。\n\
          \n\
-         以下数据是距上次分析之后发生变化的业务数据，仅包含项目和待办。\n\
+         以下数据是距上次分析之后发生变化的业务数据，每行开头的ID是对象ID。\n\
+         如需查看某个对象的完整详情，可调用 ext_tool_object(id=[\"对象ID\"])。\n\
+         例如：ext_tool_object(id=[\"abc123def456\"]) 查看项目详情。\n\
          如需其他业务数据（合作伙伴、联系人、文件、知识库等）辅助分析，可调用工具检索。\n\
          {}\n\
          \n\
@@ -175,7 +171,6 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
         let result = crate::services::agent_workflow::agent_chat_workflow(
             prompt,
             Some(6),
-            vec![],
             Some(handle.clone()),
             true,
             None,
@@ -216,51 +211,54 @@ fn build_initial_context(since: &str) -> String {
     let mut parts = Vec::new();
 
     if let Ok(rows) = database::all(
-        "SELECT name, status, budget, bid_time, expected_order_date, updated_at FROM projects \
+        "SELECT id, name, status, budget, bid_time, expected_order_date, updated_at FROM projects \
          WHERE updated_at > ?1 AND status NOT IN ('Won','Ordered','Lost','Archived') \
          ORDER BY updated_at DESC",
         &[json!(since)],
     ) {
         if !rows.is_empty() {
             let items: Vec<String> = rows.iter().map(|r| {
+                let id = r["id"].as_str().unwrap_or("");
                 let name = r["name"].as_str().unwrap_or("");
                 let status = r["status"].as_str().unwrap_or("");
                 let budget = r["budget"].as_f64().unwrap_or(0.0);
-                format!("  - {} (状态:{}, 预算:{:.0}万)", name, status, budget)
+                format!("  - {} {} (状态:{}, 预算:{:.0}万)", id, name, status, budget)
             }).collect();
             parts.push(format!("活跃项目 ({}个):\n{}", rows.len(), items.join("\n")));
         }
     }
 
     if let Ok(rows) = database::all(
-        "SELECT title, priority, due_date, done, updated_at FROM todos \
+        "SELECT id, title, priority, due_date, done, updated_at FROM todos \
          WHERE done=0 AND updated_at > ?1 \
          ORDER BY due_date ASC",
         &[json!(since)],
     ) {
         if !rows.is_empty() {
             let items: Vec<String> = rows.iter().map(|r| {
+                let id = r["id"].as_str().unwrap_or("");
                 let title = r["title"].as_str().unwrap_or("");
                 let priority = r["priority"].as_str().unwrap_or("");
                 let due = r["due_date"].as_str().unwrap_or("无");
-                format!("  - [{}] {} (截止:{})", priority, title, due)
+                format!("  - {} [{}] {} (截止:{})", id, priority, title, due)
             }).collect();
             parts.push(format!("未完成待办 ({}个):\n{}", rows.len(), items.join("\n")));
         }
     }
 
     if let Ok(rows) = database::all(
-        "SELECT name, budget, updated_at FROM projects \
+        "SELECT id, name, budget, updated_at FROM projects \
          WHERE updated_at > ?1 AND status='Won' \
          ORDER BY updated_at DESC",
         &[json!(since)],
     ) {
         if !rows.is_empty() {
             let items: Vec<String> = rows.iter().map(|r| {
+                let id = r["id"].as_str().unwrap_or("");
                 let name = r["name"].as_str().unwrap_or("");
                 let budget = r["budget"].as_f64().unwrap_or(0.0);
                 let updated = r["updated_at"].as_str().unwrap_or("");
-                format!("  - {} ({:.0}万, {})", name, budget, &updated[..10.min(updated.len())])
+                format!("  - {} {} ({:.0}万, {})", id, name, budget, &updated[..10.min(updated.len())])
             }).collect();
             parts.push(format!("近期中标:\n{}", items.join("\n")));
         }

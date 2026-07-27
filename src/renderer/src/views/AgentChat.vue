@@ -96,7 +96,7 @@ function newSession() {
 
 // ★ 启动时加载持久化会话
 onMounted(async () => {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
   if (!sessions.value.length) { newSession() }
   else if (!currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
   // 渲染当前会话的消息
@@ -116,7 +116,7 @@ onActivated(async () => {
         createdAt: s.created_at || s.createdAt,
         messages: (s.messages || []).map((m: any) => {
           const { isThinking, typewriterText, typewriterDone, ...rest } = m
-          return rest
+          return { ...rest, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) }
         })
       })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
     }
@@ -194,9 +194,6 @@ const isRefining = ref(false)
 const sidebarOpen = ref(true)
 
 let unlistenProgress: (() => void) | null = null
-let unlistenStream: (() => void) | null = null
-let unlistenStatus: (() => void) | null = null
-let unlistenStartAnswer: (() => void) | null = null
 let unlistenRoundThought: (() => void) | null = null
 let unlistenDone: (() => void) | null = null
 let unlistenError: (() => void) | null = null
@@ -264,40 +261,14 @@ async function handleSendMessage() {
   const presetText = pickRetrievalPhrase()
   aiMsg.content = presetText
   agent.setThinkingProgress(presetText)
-  sessionDirty.value = true; saveToStorage()
   nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
   try {
-    // ★ 流式监听：实时显示 LLM 最终答案（逐 token 渲染）
-    let streamedContent = ''
-    let lastRenderTime = 0
-    const RENDER_THROTTLE_MS = 80
-    unlistenStream = await listen<{token:string}>('agent:token', (ev) => {
-      if (!streamedContent) console.log('[FE] first token received:', JSON.stringify(ev.payload.token))
-      streamedContent += ev.payload.token
-      const msg = session.messages[aiIdx]
-      msg.content = streamedContent.replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-      const now = Date.now()
-      if (now - lastRenderTime > RENDER_THROTTLE_MS) {
-        lastRenderTime = now
-        renderMessageContent(msg.id || '', msg.content)
-      }
-      scrollToBottomIfNear()
-    })
-    unlistenStatus = await listen<{stage:string; tool?:string; msg?:string}>('agent:status', (ev) => {
-    })
-    unlistenStartAnswer = await listen('agent:start-answer', () => {
-      hasRoundThought = false
-    })
     // ★ 工具轮结束：恢复预设文案，保持呼吸气泡
     unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
       console.log('[FE] round-thought received')
       hasRoundThought = true
-      streamedContent = ''
       const msg = session.messages[aiIdx]
-      msg.content = ''
-      agent.rendered.value[msg.id || ''] = ''
       msg.isThinking = true
-      isRealStreaming.value = false
       if (ev.payload.text && ev.payload.text.trim()) { agent.setThinkingProgress(ev.payload.text.trim()) }
       else { agent.setThinkingProgress(pickRetrievalPhrase()) }
       scrollToBottomIfNear()
@@ -309,63 +280,33 @@ async function handleSendMessage() {
       const result = ev.payload
       const msg = session.messages[aiIdx]; msg.isThinking = false
       if (result.success) {
-        const finalAnswer = (result.answer || streamedContent || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
+        const finalAnswer = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
         agent.setThinkingProgress('')
-        msg.toolCalls = result.tool_log || []
-        if (streamedContent) {
-          console.log('[FE] done -> DIRECT branch')
-          msg.content = finalAnswer
-          renderMessageContent(msg.id || '', msg.content)
-        } else {
-          console.log('[FE] done -> TYPEWRITER branch')
-          startTypewriter(msg, finalAnswer)
-        }
-        const rawCalls: any[] = []; const toolResults: any[] = []
-        for (const r of (result.tool_log || [])) {
-          for (const t of (r.tools || [])) {
-            const callId = 'call_' + Math.random().toString(36).slice(2, 8)
-            rawCalls.push({ id: callId, type: 'function', function: { name: t.tool, arguments: typeof t.args === 'string' ? t.args : JSON.stringify(t.args) } })
-            const rawResult = typeof t.result === 'string' ? t.result : ''
-            toolResults.push({ id: callId, name: t.tool, content: rawResult })
-          }
-        }
-        msg.rawToolCalls = rawCalls; msg.toolResults = toolResults; msg.contextDocs = result.context_docs || result.sources || [];
-        msg.workspace = result.workspace || '';
+        startTypewriter(msg, finalAnswer)
       } else { msg.error = result.answer || result.error || '失败' }
-      agent.isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-      try { unlistenDone(); unlistenStream(); unlistenStatus(); unlistenProgress(); unlistenRoundThought() } catch (e) { console.error('[KB] unlisten failed:', e) }
+      agent.isChatting.value = false; scrollToBottomIfNear()
+      try { unlistenDone(); unlistenProgress(); unlistenRoundThought() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
 
     // ★ 监听 agent:error 事件
     unlistenError = await listen<any>('agent:error', (ev) => {
       const msg = session.messages[aiIdx]; msg.isThinking = false
       msg.error = ev.payload.error || 'AI 服务异常'
-      agent.isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
-      try { unlistenError(); unlistenDone(); unlistenStream(); unlistenStatus(); unlistenProgress(); unlistenRoundThought() } catch {}
+      agent.isChatting.value = false; scrollToBottomIfNear()
+      try { unlistenError(); unlistenDone(); unlistenProgress(); unlistenRoundThought() } catch {}
     })
 
     // ★ 调用命令（立即返回，不等待结果）
-    const history: any[] = []
-    for (const m of session.messages) {
-      if (m === aiMsg) continue
-      if (m.role === 'user') history.push({ role: 'user', content: m.content })
-      else if (m.role === 'assistant') {
-        const entry: any = { role: 'assistant', content: m.content || '' }
-        if (m.rawToolCalls?.length) entry.tool_calls = m.rawToolCalls
-        history.push(entry)
-        if (m.toolResults) { for (const tr of m.toolResults) history.push({ role: 'tool', content: tr.content || '', tool_call_id: tr.id, name: tr.name }) }
-      }
-    }
-    invoke('kb_agent_chat', { data: { query: q, history, sessionId: currentSessionId.value } }).catch((err) => {
+    invoke('kb_agent_chat', { data: { query: q, sessionId: currentSessionId.value } }).catch((err) => {
       console.error('[KB] invoke failed:', err)
       const msg = session.messages[aiIdx]; msg.isThinking = false
       msg.error = String(err)
-      agent.isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
+      agent.isChatting.value = false; scrollToBottomIfNear()
     })
   } catch (e: any) {
     const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
-    agent.isChatting.value = false; sessionDirty.value = true; saveToStorage(); scrollToBottomIfNear()
+    agent.isChatting.value = false; scrollToBottomIfNear()
   }
 }
 
@@ -449,12 +390,8 @@ async function openNotebookPicker(msgId: string) { savingMsgId.value = msgId; no
 
 // ─── Init ───────────────────────────────────────────────────────
 onUnmounted(() => {
-  saveToStorage()
   stopAllTypewriters()
   unlistenProgress?.()
-  unlistenStream?.()
-  unlistenStartAnswer?.()
-  unlistenStatus?.()
   unlistenRoundThought?.()
   unlistenDone?.()
   unlistenError?.()

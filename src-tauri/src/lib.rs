@@ -177,10 +177,9 @@ pub fn run() {
             // ★ 系统托盘图标（macOS 不需要）
             #[cfg(not(target_os = "macos"))]
             {
-            let show_item = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
-            let sprite_item = MenuItemBuilder::with_id("sprite", "显示精灵").build(app)?;
+            let sprite_item = MenuItemBuilder::with_id("sprite", "显示/隐藏精灵").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show_item, &sprite_item, &quit_item]).build()?;
+            let menu = MenuBuilder::new(app).items(&[&sprite_item, &quit_item]).build()?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().unwrap())
                 .menu(&menu)
@@ -188,12 +187,6 @@ pub fn run() {
                 .tooltip("Arkmind")
                 .on_menu_event(move |app, event| {
                     match event.id().as_ref() {
-                        "show" => {
-                            if let Some(win) = app.get_webview_window("main") {
-                                let _ = win.show();
-                                let _ = win.set_focus();
-                            }
-                        }
                         "sprite" => {
                             let app_handle = app.clone();
                             tauri::async_runtime::spawn(async move {
@@ -354,6 +347,8 @@ pub fn run() {
             commands::notification_mark_all_read, commands::notification_delete, commands::notification_stats,
             commands::notification_config_get, commands::notification_config_update,
             commands::notification_loop_status,
+            // Debug
+            commands::save_agent_context, commands::get_agent_context,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Arkmind");

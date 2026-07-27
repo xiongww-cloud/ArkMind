@@ -1,201 +1,151 @@
 //! Context Compressor — 上下文压缩器
-//! 在 agent_chat_workflow 入口处检查历史长度，超过阈值时压缩旧消息为摘要
-//! 摘要直接替换 chat_messages 中的旧消息，保证 prompt cache 前缀稳定
+//! 复用会话上下文进行压缩，LLM 返回 JSON 格式摘要
+//! 摘要保存到 chat_sessions.context_metadata（session 级别）
+//! 旧消息的 metadata 清空，content 保留供前端展示
 
-const MAX_CONTEXT_TOKENS: usize = 200_000;
-const COMPRESS_TRIGGER_RATIO: f64 = 0.8;
-const KEEP_RECENT_MESSAGES: usize = 10;
+/// 压缩 prompt：要求 LLM 返回 JSON
+const COMPRESS_PROMPT: &str = r#"请将以上对话历史压缩为 JSON 格式的摘要。严格按以下格式输出，不要输出其他内容：
 
-/// 估算文本的 token 数量
-pub fn estimate_tokens(text: &str) -> usize {
-    let chinese_chars = text.chars()
-        .filter(|c| *c >= '\u{4e00}' && *c <= '\u{9fff}')
-        .count();
-    let other_chars = text.len().saturating_sub(chinese_chars);
-    chinese_chars * 2 + other_chars / 4
+{
+  "summary": "详细的对话摘要（3000-5000字）",
+  "key_points": ["关键发现1", "关键发现2", "..."],
+  "decisions": ["决策1", "决策2", "..."],
+  "unfinished": "未完成的事项（没有则为空字符串）"
 }
 
-/// 估算历史消息的总 token 数
-pub fn estimate_history_tokens(history: &[serde_json::Value]) -> usize {
-    history.iter()
-        .map(|m| {
-            let content = m["content"].as_str().unwrap_or("");
-            estimate_tokens(content)
-        })
-        .sum()
+要求：
+- summary 必须是 3000-5000 字的详细摘要，包含：
+  * 用户的主要问题和目标
+  * AI 的回答和分析过程
+  * 工具调用的关键结果和数据
+  * 讨论中涉及的具体数字、日期、名称等细节
+  * 对话的演进脉络和逻辑链条
+- key_points 列出 5-10 个最重要的发现或结论
+- decisions 列出对话中已做出的所有决策
+- unfinished 记录所有待跟进事项
+- 只输出 JSON，不要输出其他内容"#;
+
+/// 压缩结果
+pub struct CompressResult {
+    pub summary: String,
+    pub key_points: Vec<String>,
+    pub decisions: Vec<String>,
+    pub unfinished: String,
 }
 
-/// 检查是否需要压缩历史
-pub fn should_compress_history(history: &[serde_json::Value]) -> bool {
-    let total_tokens = estimate_history_tokens(history);
-    let threshold = (MAX_CONTEXT_TOKENS as f64 * COMPRESS_TRIGGER_RATIO) as usize;
-    total_tokens > threshold
-}
-
-/// 压缩历史并持久化到 DB，返回压缩后的历史
-/// 1. 从 DB 加载所有消息
-/// 2. 分离旧消息和保留的最近消息
-/// 3. 调用 LLM 生成摘要
-/// 4. 删除旧消息，插入摘要
-/// 5. 返回 [摘要消息] + 保留消息
-pub async fn compress_and_persist(session_id: &str) -> Result<Vec<serde_json::Value>, String> {
-    // 1. 从 DB 加载所有消息（带 id）
-    let rows = crate::database::all(
-        "SELECT id, role, content FROM chat_messages WHERE session_id=?1 ORDER BY id",
-        &[serde_json::json!(session_id)],
-    ).map_err(|e| format!("加载消息失败: {}", e))?;
-
-    if rows.len() <= KEEP_RECENT_MESSAGES {
-        return Ok(rows.iter().map(|r| {
-            serde_json::json!({"role": r["role"], "content": r["content"]})
-        }).collect());
-    }
-
-    // 2. 分离：旧消息（需压缩）和保留的最近消息
-    let split_at = rows.len() - KEEP_RECENT_MESSAGES;
-    let old_rows = &rows[..split_at];
-    let recent_rows = &rows[split_at..];
-
-    // 3. 生成摘要
-    let old_messages: Vec<serde_json::Value> = old_rows.iter().map(|r| {
-        serde_json::json!({"role": r["role"], "content": r["content"]})
-    }).collect();
-
-    log::info!("[ContextCompressor] 开始压缩 {} 条旧消息（session: {}）", old_rows.len(), session_id);
-    let summary = generate_summary(&old_messages).await?;
-    if summary.is_empty() {
-        log::warn!("[ContextCompressor] 摘要为空，跳过压缩");
-        return Ok(rows.iter().map(|r| {
-            serde_json::json!({"role": r["role"], "content": r["content"]})
-        }).collect());
-    }
-
-    // 4. 删除旧消息
-    let old_ids: Vec<i64> = old_rows.iter()
-        .filter_map(|r| r["id"].as_i64())
-        .collect();
-    if !old_ids.is_empty() {
-        let placeholders: Vec<String> = old_ids.iter().enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect();
-        let sql = format!(
-            "DELETE FROM chat_messages WHERE session_id=? AND id IN ({})",
-            placeholders.join(",")
-        );
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(session_id.to_string())];
-        for id in &old_ids {
-            params.push(Box::new(*id));
+/// 从 LLM 返回的文本中提取 JSON（兼容 markdown code block 包裹的情况）
+fn extract_json_from_response(text: &str) -> &str {
+    let trimmed = text.trim();
+    if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            return &trimmed[start..=end];
         }
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        crate::database::with_db(|conn| {
-            conn.execute(&sql, rusqlite::params_from_iter(params_refs.iter()))
-        }).map_err(|e| format!("删除旧消息失败: {}", e))?;
+    }
+    trimmed
+}
+
+/// 复用会话上下文进行压缩，返回压缩结果
+/// messages: 当前会话的完整 messages 数组（会被临时修改，调用后恢复）
+pub async fn compress_with_context(
+    messages: &mut Vec<crate::services::agent_workflow::ChatMessage>,
+    app_handle: &Option<tauri::AppHandle>,
+) -> Result<CompressResult, String> {
+    use crate::services::agent_workflow::{ChatMessage, MessageRole};
+
+    if messages.len() <= 2 {
+        return Err("消息太少，无法压缩".to_string());
     }
 
-    // 5. 插入摘要消息
-    let summary_content = format!("[HISTORY_SUMMARY]\n{}", summary);
-    crate::database::run(
-        "INSERT INTO chat_messages(session_id, role, content) VALUES(?1, 'assistant', ?2)",
-        &[serde_json::json!(session_id), serde_json::json!(summary_content)],
-    ).map_err(|e| format!("插入摘要失败: {}", e))?;
+    // 1. 保存最后一条用户消息（当前查询）
+    let original_last = messages.pop().unwrap_or_else(|| ChatMessage {
+        role: MessageRole::User,
+        content: Some(String::new()),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        reasoning_content: None,
+    });
 
-    log::info!("[ContextCompressor] 压缩完成: {} 条旧消息 → 1 条摘要", old_rows.len());
+    // 2. 添加压缩 prompt 作为最后一条用户消息
+    messages.push(ChatMessage {
+        role: MessageRole::User,
+        content: Some(COMPRESS_PROMPT.to_string()),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        reasoning_content: None,
+    });
 
-    // 6. 返回新历史 = [摘要] + 保留消息
-    let mut result = vec![serde_json::json!({"role": "assistant", "content": summary_content})];
-    for r in recent_rows {
-        result.push(serde_json::json!({"role": r["role"], "content": r["content"]}));
-    }
+    // 3. 调用 LLM（复用会话上下文，命中缓存）
+    log::info!("[ContextCompressor] 开始压缩，复用 {} 条消息的上下文", messages.len());
+    let (ac, _reasoning, _tcs, _usage) = crate::services::agent_workflow::call_llm_streaming(
+        messages, None, app_handle,
+    ).await.map_err(|e| format!("LLM 调用失败: {}", e))?;
+
+    // 4. 恢复最后一条用户消息
+    messages.pop(); // 移除压缩 prompt
+    messages.push(original_last); // 恢复原始查询
+
+    // 5. 解析 JSON
+    let json_str = extract_json_from_response(&ac);
+    let parsed: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| format!("JSON 解析失败: {}，原始响应: {}", e, &ac[..ac.len().min(200)]))?;
+
+    let result = CompressResult {
+        summary: parsed["summary"].as_str().unwrap_or("").to_string(),
+        key_points: parsed["key_points"].as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        decisions: parsed["decisions"].as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        unfinished: parsed["unfinished"].as_str().unwrap_or("").to_string(),
+    };
+
+    log::info!("[ContextCompressor] 压缩完成: summary={}字, key_points={}, decisions={}",
+        result.summary.len(), result.key_points.len(), result.decisions.len());
+
     Ok(result)
 }
 
-/// 调用 LLM 生成历史摘要
-async fn generate_summary(messages: &[serde_json::Value]) -> Result<String, String> {
-    if messages.is_empty() {
-        return Ok(String::new());
-    }
+/// 保存压缩结果到 DB：
+/// 1. 更新 chat_sessions.context_metadata（session 级别存储压缩摘要）
+/// 2. 清空旧消息的 metadata（保留 content 供前端展示）
+///
+/// 参数:
+/// - session_id: 会话 ID
+/// - result: 压缩结果
+/// - total_message_count: 当前会话的总消息数量（用于计算 original_count）
+pub fn save_compressed_to_db(
+    session_id: &str,
+    result: &CompressResult,
+    total_message_count: usize,
+) -> Result<(), String> {
+    // 1. 构建 session 级别的 context_metadata
+    let context_metadata = serde_json::json!({
+        "compressed": true,
+        "summary": result.summary,
+        "key_points": result.key_points,
+        "decisions": result.decisions,
+        "unfinished": result.unfinished,
+        "original_count": total_message_count
+    }).to_string();
 
-    // 检查是否有已有的摘要（可能包含 [HISTORY_SUMMARY] 前缀）
-    let has_existing_summary = messages.iter().any(|m| {
-        m["content"].as_str().unwrap_or("").starts_with("[HISTORY_SUMMARY]")
-    });
+    // 2. 写入 chat_sessions.context_metadata
+    crate::database::run(
+        "UPDATE chat_sessions SET context_metadata=?1 WHERE id=?2",
+        &[serde_json::json!(context_metadata), serde_json::json!(session_id)],
+    ).map_err(|e| format!("更新 session context_metadata 失败: {}", e))?;
 
-    let history_text: Vec<String> = messages.iter()
-        .filter_map(|m| {
-            let role = m["role"].as_str()?;
-            let content = m["content"].as_str()?;
-            let truncated = if content.len() > 500 {
-                format!("{}...", &content[..500])
-            } else {
-                content.to_string()
-            };
-            Some(format!("{}: {}", role, truncated))
-        })
-        .collect();
+    // 3. 清空所有消息的 metadata（保留 content 供前端展示）
+    //    所有消息的 metadata 都清空，因为摘要已在 session 级别
+    crate::database::run(
+        "UPDATE chat_messages SET metadata=NULL WHERE session_id=?1",
+        &[serde_json::json!(session_id)],
+    ).map_err(|e| format!("清空消息 metadata 失败: {}", e))?;
 
-    let summary_hint = if has_existing_summary {
-        "注意：对话历史中可能包含之前的摘要（以 [HISTORY_SUMMARY] 开头），请将其内容也纳入本次压缩。\n"
-    } else {
-        ""
-    };
+    log::info!("[ContextCompressor] 压缩保存完成: session={}, summary={}字, original_count={}",
+        session_id, result.summary.len(), total_message_count);
 
-    let prompt = format!(
-        r#"请将以下对话历史压缩为简洁的摘要，保留关键信息：
-{hint}1. 用户的主要问题和需求
-2. AI 的重要回答和结论
-3. 提到的关键数据（项目名、产品名、数字等）
-4. 未完成的任务或待跟进事项
-
-注意：
-- 摘要应简洁，不超过 2000 字
-- 保留具体的数字、名称、日期等关键信息
-- 用中文输出
-
-对话历史：
-{history}
-
-请输出压缩后的摘要："#,
-        hint = summary_hint,
-        history = history_text.join("\n")
-    );
-
-    let config = crate::services::chat_api::get_chat_config();
-    if config.api_key.is_empty() {
-        return Ok(String::new());
-    }
-
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-
-    let mut req = client.post(&url).json(&serde_json::json!({
-        "model": config.model,
-        "max_tokens": 2048,
-        "temperature": 0.0,
-        "messages": [
-            {"role": "system", "content": "你是一个对话历史压缩助手。请将对话历史压缩为简洁的摘要，保留关键信息。"},
-            {"role": "user", "content": prompt}
-        ]
-    }));
-
-    if !config.api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", config.api_key));
-    }
-
-    let resp = req.send().await.map_err(|e| format!("LLM 请求失败: {}", e))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("LLM API 错误 {}: {}", status, body));
-    }
-
-    let body: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
-    let content = body["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    Ok(content)
+    Ok(())
 }

@@ -20,34 +20,13 @@ pub use kb_memory_commands::*;
             .to_string();
         database::run("INSERT INTO chat_sessions(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3) ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
             &[json!(id), json!(_title), json!(updated_at)]).map_err(|e| e.to_string())?;
-        let msgs_raw = s["messages"].as_array().cloned().or_else(|| s["messages"].as_str().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()));
-        if let Some(ref msgs) = msgs_raw {
-            // Use transaction to ensure atomicity: DELETE + INSERT as a single operation
-            database::with_db(|conn| {
-                let tx = conn.unchecked_transaction()?;
-                tx.execute("DELETE FROM chat_messages WHERE session_id=?", rusqlite::params![id])?;
-                for m in msgs {
-                    let role = m["role"].as_str().unwrap_or("");
-                    let content = m["content"].as_str().unwrap_or("");
-                    if role != "user" && role != "assistant" { continue; }
-                    if content.trim().is_empty() { continue; }
-                    let metadata = serde_json::to_string(m).ok();
-                    tx.execute("INSERT INTO chat_messages(session_id,role,content,metadata) VALUES(?1,?2,?3,?4)",
-                        rusqlite::params![id, role, content, metadata])?;
-                }
-                tx.commit()?;
-                Ok(())
-            }).map_err(|e| e.to_string())?;
-            // 对话记录由后端 agent_chat_workflow 以 MEMORY 类型（认知过程格式）自动创建
-            // 前端不再创建 CHAT source_data，只保存 chat_messages 表（显示用）
-        }
     }
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn kb_load_sessions() -> Result<Value, String> {
     let mut rows = database::all(
         "SELECT s.id, s.title, s.created_at, s.updated_at, \
-         (SELECT json_group_array(json_object('role',m.role,'content',m.content,'metadata',m.metadata)) \
+         (SELECT json_group_array(json_object('id',m.id,'role',m.role,'content',m.content,'created_at',m.created_at)) \
           FROM chat_messages m WHERE m.session_id=s.id ORDER BY m.id) as messages \
          FROM chat_sessions s WHERE s.id != 'fab-main-session' ORDER BY s.updated_at DESC LIMIT 100",
         &[],
@@ -55,19 +34,8 @@ pub use kb_memory_commands::*;
     for row in &mut rows {
         if let Some(s) = row["messages"].as_str() {
             if let Ok(arr) = serde_json::from_str::<Value>(s) {
-                // Restore full message from metadata (toolCalls, workspace, etc.)
-                let restored: Vec<Value> = arr.as_array().map(|msgs| {
-                    msgs.iter().map(|m| {
-                        if let Some(meta_str) = m.get("metadata").and_then(|v| v.as_str()) {
-                            if let Ok(full_msg) = serde_json::from_str::<Value>(meta_str) {
-                                return full_msg;
-                            }
-                        }
-                        json!({"role": m["role"], "content": m["content"]})
-                    }).collect()
-                }).unwrap_or_default();
                 let m = row.as_object_mut().unwrap();
-                m.insert("messages".to_string(), Value::Array(restored));
+                m.insert("messages".to_string(), arr);
             }
         }
     }
@@ -99,17 +67,13 @@ pub async fn kb_fab_init_session() -> Result<Value, String> {
 pub async fn kb_fab_load_history(limit: Option<usize>) -> Result<Value, String> {
     let limit = limit.unwrap_or(50);
     let rows = database::all(
-        "SELECT role, content, metadata FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
+        "SELECT id, role, content, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
         &[json!(FAB_SESSION_ID), json!(limit)]
     ).unwrap_or_default();
+    
     // 反转为正序（从旧到新）
     let messages: Vec<Value> = rows.into_iter().rev().map(|m| {
-        if let Some(meta_str) = m.get("metadata").and_then(|v| v.as_str()) {
-            if let Ok(full_msg) = serde_json::from_str::<Value>(meta_str) {
-                return full_msg;
-            }
-        }
-        json!({"role": m["role"], "content": m["content"]})
+        json!({"id": m["id"], "role": m["role"], "content": m["content"], "created_at": m["created_at"]})
     }).collect();
     Ok(json!({"success": true, "messages": messages}))
 }

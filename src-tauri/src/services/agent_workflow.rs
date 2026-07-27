@@ -57,6 +57,26 @@ pub fn cancel_agent() {
     AGENT_CANCEL.store(true, Ordering::Release);
 }
 const AGENT_SYSTEM_PROMPT: &str = r#"
+## 工具调用格式（最高优先级，必须遵守）
+
+✅ 正确格式：通过 tool_calls 字段返回，格式如下：
+{
+  "tool_calls": [
+    {
+      "id": "call_xxx",
+      "type": "function",
+      "function": {"name": "ext_tool_xxx", "arguments": "..."}
+    }
+  ]
+}
+
+❌ 错误格式（禁止，违反将导致失败）：
+- 在 content 中输出 <tool_call> 或 <tool_calls> 标签
+- 在 content 中输出 ext_tool_xxx(...) 函数调用
+- 在 content 中输出 {"tool_calls": ...} JSON
+
+⚠️ 违反以上规则会导致工具调用无法执行，系统将拒绝处理
+
 ## 检索流程
 
 当用户提问时：
@@ -105,7 +125,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 ## 记忆（必须遵守）
 
 回答前检查上下文中已检索到的记忆，如果有相关的记忆且内容一致，则跳过记录；仅在发现新信息时调用工具记录。格式为：
-[问题] 用户问了什么或遇到了什么情况 / [动作] 查看了什么资料、执行了什么操作 / [结论] 结果和关键数据
+[问题] 我遇到什么问题或情况 / [动作] 查看了什么资料、执行了什么操作 / [结论] 结果和关键数据
 
 - 一条记录只写一个记忆，可独立检索
 - 记忆中不得出现"主人""老板"等称呼，一律用"用户"指代
@@ -135,17 +155,6 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 - 来自记忆：标注「根据记忆」
 - 来自知识库：标注「根据资料」
 - 记忆与知识冲突：告知用户存在冲突，请用户确认
-
-## 工具调用格式
-- 必须通过 tool_calls 字段调用工具，这是唯一正确的格式
-- 禁止在 content 中输出以下任何内容：
-  - ext_tool_search(...)、ext_tool_memory(...) 等函数调用文本
-  - <tool_calls><invoke>...</invoke></tool_calls> XML 标签
-  - {"tool_calls": [...]} JSON 对象
-  - function_call 或 function calling 关键字
-- 如果你需要调用工具，只输出 tool_calls，不要在 content 中写任何内容
-- 如果你需要同时输出文字和调用工具，文字放在 content，工具调用放在 tool_calls
-- 违反以上规则会导致工具调用无法执行，系统将拒绝处理
 
 ## 回答格式
 
@@ -207,19 +216,16 @@ pub struct SessionMemory {
     focus: Focus,
     observations: Vec<String>,
     hypotheses: Vec<String>,
-    current_goal: String,
     access_counter: usize,
     search_keywords: Vec<Vec<String>>,
     tool_history: Vec<String>,  // 工具调用历史（用于生成检索计划）
-    completeness: f64,  // 信息充分度 (0.0 ~ 1.0)
-    #[allow(dead_code)]
-    progress_cache: Option<String>,
-    #[allow(dead_code)]
-    progress_dirty: bool,
+    prompt_tokens: i64,  // 累计 prompt tokens
+    completion_tokens: i64,  // 累计 completion tokens
+    cached_tokens: i64,  // 累计 cached tokens
 }
 
 // ★ Session 状态缓存：从 chat_sessions.session_state 加载/保存 SessionMemory
-fn load_session_state(session_id: &str) -> Option<SessionMemory> {
+pub fn load_session_state(session_id: &str) -> Option<SessionMemory> {
     let json_str = crate::database::get(
         "SELECT session_state FROM chat_sessions WHERE id=?1 AND session_state IS NOT NULL",
         &[json!(session_id)],
@@ -245,23 +251,23 @@ impl SessionMemory {
             focus: Focus { entities: Vec::new(), intent: String::new(), open_questions: Vec::new(), focus_objects: Vec::new() },
             observations: Vec::new(),
             hypotheses: Vec::new(),
-            current_goal: String::new(),
             access_counter: 0,
             search_keywords: Vec::new(),
             tool_history: Vec::new(),
-            completeness: 0.0,
-            progress_cache: None,
-            progress_dirty: true,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cached_tokens: 0,
         }
     }
 
-    /// 记录一个对象被访问/命中，然后淘汰过期的
-    fn update(&mut self, obj_type: &str, obj_id: &str, name: &str) {
+    /// 记录一个对象被访问/命中，并根据 score_delta 更新注意力分数，然后淘汰过期的
+    fn update(&mut self, obj_type: &str, obj_id: &str, name: &str, score_delta: f64) {
         self.access_counter += 1;
         if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == obj_type && o.obj_id == obj_id) {
             existing.name = name.to_string();
             existing.access_order = self.access_counter;
             existing.hits += 1;
+            existing.score = (existing.score * 0.95 + score_delta).clamp(0.0, 1.0);
         } else {
             self.active_objects.push(ActiveObject {
                 obj_type: obj_type.to_string(),
@@ -269,22 +275,37 @@ impl SessionMemory {
                 name: name.to_string(),
                 access_order: self.access_counter,
                 hits: 1,
-                score: 0.0,
+                score: (0.3_f64 * 0.95 + score_delta).clamp(0.0, 1.0),
             });
         }
         self.evict_stale();
     }
 
     /// 从包含 source_id 的行解析并记录
-    fn update_from_line(&mut self, line: &str) {
+    fn update_from_line(&mut self, _tool_name: &str, line: &str) {
         let tl = line.trim();
         if let Some(cid) = tl.strip_prefix("ChunkID：").map(|s| s.trim()) {
             self.mark_chunk_visited(cid);
         }
     }
 
+    /// 根据工具名返回注意力分数增量（EMA 公式：new_score = old_score * 0.95 + delta）
+    fn score_delta_for_tool(tool_name: &str) -> f64 {
+        match tool_name {
+            "ext_tool_search" | "ext_tool_batch_search" => 0.9,
+            "ext_tool_object" => 0.8,
+            "ext_tool_relations" => 0.6,
+            "ext_tool_chunk_navigate" => 0.6,
+            "ext_tool_manage_todo" | "ext_tool_manage_project" | "ext_tool_manage_partner" |
+            "ext_tool_manage_contact" | "ext_tool_manage_notification" | "ext_tool_manage_policy" => 0.5,
+            "ext_tool_memory" => 0.0,
+            _ => 0.3,
+        }
+    }
+
     /// 从 JSON 信封格式更新会话状态
-    fn update_from_envelope(&mut self, envelope: &ToolResultEnvelope) {
+    fn update_from_envelope(&mut self, tool_name: &str, envelope: &ToolResultEnvelope) {
+        let score_delta = Self::score_delta_for_tool(tool_name);
         match envelope.result_type.as_str() {
             "knowledge_search_result" => {
                 // 提取 chunks 中的 chunk_id 和 source
@@ -296,7 +317,7 @@ impl SessionMemory {
                         if let Some(stype) = chunk["source"]["type"].as_str() {
                             if let Some(sid) = chunk["source"]["id"].as_str() {
                                 let name = chunk["source"]["name"].as_str().unwrap_or("");
-                                self.update(stype, sid, name);
+                                self.update(stype, sid, name, score_delta);
                             }
                         }
                     }
@@ -307,7 +328,7 @@ impl SessionMemory {
                         if let Some(stype) = obj["type"].as_str() {
                             if let Some(sid) = obj["id"].as_str() {
                                 let name = obj["name"].as_str().unwrap_or("");
-                                self.update(stype, sid, name);
+                                self.update(stype, sid, name, score_delta);
                             }
                         }
                     }
@@ -319,7 +340,7 @@ impl SessionMemory {
                         if let Some(stype) = item["source_type"].as_str() {
                             if let Some(sid) = item["id"].as_str() {
                                 let name = item["name"].as_str().unwrap_or("");
-                                self.update(stype, sid, name);
+                                self.update(stype, sid, name, score_delta);
                             }
                         }
                     }
@@ -340,7 +361,7 @@ impl SessionMemory {
                         if let Some(stype) = rel["type"].as_str() {
                             if let Some(sid) = rel["id"].as_str() {
                                 let name = rel["name"].as_str().unwrap_or("");
-                                self.update(stype, sid, name);
+                                self.update(stype, sid, name, score_delta);
                             }
                         }
                     }
@@ -359,7 +380,7 @@ impl SessionMemory {
                         }
                         if let Some(stype) = r["source_type"].as_str() {
                             if let Some(sid) = r["id"].as_str() {
-                                self.update(stype, sid, "");
+                                self.update(stype, sid, "", score_delta);
                             }
                         }
                     }
@@ -374,7 +395,7 @@ impl SessionMemory {
                             .or_else(|| item["title"].as_str())
                             .unwrap_or("");
                         if !entity.is_empty() && !id.is_empty() {
-                            self.update(&entity.to_lowercase(), id, name);
+                            self.update(&entity.to_lowercase(), id, name, score_delta);
                         }
                     }
                 }
@@ -385,19 +406,21 @@ impl SessionMemory {
                     envelope.data["id"].as_str(),
                 ) {
                     let name = envelope.data["name"].as_str().unwrap_or("");
-                    self.update(st, sid, name);
+                    self.update(st, sid, name, score_delta);
                 }
                 if let Some(cid) = envelope.data["chunk_id"].as_str() {
                     self.mark_chunk_visited(cid);
                 }
             }
-            t if t.ends_with("_create_result") => {
+            t if t.ends_with("_create_result") || t.ends_with("_update_result") || t.ends_with("_delete_result") => {
                 if let Some(id) = envelope.data["id"].as_str() {
                     let name = envelope.data["name"].as_str()
                         .or_else(|| envelope.data["title"].as_str())
                         .unwrap_or("");
-                    let entity = t.replace("_create_result", "");
-                    self.update(&entity, id, name);
+                    let entity = t.replace("_create_result", "")
+                        .replace("_update_result", "")
+                        .replace("_delete_result", "");
+                    self.update(&entity, id, name, score_delta);
                 }
             }
             _ => {}
@@ -405,15 +428,15 @@ impl SessionMemory {
     }
 
     /// 从工具结果更新会话状态（支持 JSON 信封和旧格式）
-    pub fn update_from_tool_result(&mut self, result: &str) {
+    pub fn update_from_tool_result(&mut self, tool_name: &str, result: &str) {
         // 尝试解析 JSON 信封
         if let Ok(envelope) = serde_json::from_str::<ToolResultEnvelope>(result) {
-            self.update_from_envelope(&envelope);
+            self.update_from_envelope(tool_name, &envelope);
             return;
         }
         // 回退到旧格式解析
         for line in result.lines() {
-            self.update_from_line(line);
+            self.update_from_line(tool_name, line);
         }
     }
 
@@ -438,12 +461,9 @@ impl SessionMemory {
     fn set_focus_from_user_query(&mut self, query: &str, top_entities: &[String]) {
         if query.is_empty() { return; }
         self.focus.entities = top_entities.to_vec();
+        // 追问检测：查询包含 top3 实体名称，或查询较短且有之前的观察
         let is_followup = top_entities.iter().any(|e| query.contains(e.as_str()))
             || (!self.observations.is_empty() && query.chars().count() < 40);
-        if self.current_goal.is_empty() || !is_followup {
-            self.current_goal = query.to_string();
-            self.hypotheses.clear();
-        }
         if is_followup && !self.observations.is_empty() {
             self.focus.open_questions.push(query.to_string());
             self.focus.open_questions.truncate(3);
@@ -453,56 +473,17 @@ impl SessionMemory {
         }
     }
 
-    /// 从用户目标中提取需要的信息类型
-    fn extract_required_types(goal: &str) -> Vec<String> {
-        let mut types = Vec::new();
-        let g = goal.to_lowercase();
-        if g.contains("客户") || g.contains("customer") { types.push("CUSTOMER".to_string()); }
-        if g.contains("渠道") || g.contains("channel") { types.push("CHANNEL".to_string()); }
-        if g.contains("厂商") || g.contains("供应商") || g.contains("vendor") { types.push("VENDOR".to_string()); }
-        if g.contains("联系人") || g.contains("contact") { types.push("CONTACT".to_string()); }
-        if g.contains("产品") || g.contains("product") { types.push("PRODUCT".to_string()); }
-        if g.contains("文件") || g.contains("file") { types.push("FILE".to_string()); }
-        if g.contains("笔记") || g.contains("note") { types.push("NOTE".to_string()); }
-        if g.contains("待办") || g.contains("todo") { types.push("TODO".to_string()); }
-        if types.is_empty() { types.push("PROJECT".to_string()); }
-        types
-    }
-
-    /// 计算信息充分度 (0.0 ~ 1.0)
-    fn compute_completeness(&self) -> f64 {
-        if self.current_goal.is_empty() { return 0.0; }
-        let required_types = Self::extract_required_types(&self.current_goal);
-        let covered_types: std::collections::HashSet<&str> = self.active_objects.iter()
-            .map(|o| o.obj_type.as_str()).collect();
-        let type_coverage = required_types.iter()
-            .filter(|t| covered_types.contains(t.as_str()))
-            .count() as f64 / required_types.len().max(1) as f64;
-        let observation_score = if self.observations.is_empty() { 0.0 } else {
-            (self.observations.len() as f64).min(5.0) / 5.0
-        };
-        (type_coverage * 0.6 + observation_score * 0.4).clamp(0.0, 1.0)
-    }
-
     /// 生成注入 Prompt 的工作记忆文本，受 Token 预算约束
-    fn generate_scratchpad(&mut self) -> String {
+    pub fn generate_scratchpad(&mut self) -> String {
         let mut lines: Vec<String> = Vec::new();
-        lines.push("## 当前会话工作记忆".to_string());
 
-        // 1. Goal（当前目标）
-        if !self.current_goal.is_empty() {
-            lines.push(String::new());
-            lines.push("## Goal（当前目标）".to_string());
-            lines.push(self.current_goal.clone());
-        }
-
-        // 2. Attention（注意力排序，按 score 降序）
+        // 1. Attention（注意力排序，按 score 降序，只保留 top 5）
         if !self.active_objects.is_empty() {
             lines.push(String::new());
             lines.push("## Attention（注意力排序）".to_string());
-            let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().collect();
+            let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().filter(|o| o.score > 0.0).collect();
             sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-            for (_i, o) in sorted.iter().take(10).enumerate() {
+            for (_i, o) in sorted.iter().take(5).enumerate() {
                 let label = match o.obj_type.as_str() {
                     "product" => format!("PRODUCT: {}", o.name),
                     "project" => format!("PROJECT: {}", o.name),
@@ -528,122 +509,10 @@ impl SessionMemory {
             }
         }
 
-        // 4. Working Memory（推理状态，不是数据库字段）
-        let has_wm = !self.observations.is_empty() || !self.hypotheses.is_empty() || !self.focus.open_questions.is_empty();
-        if has_wm {
-            lines.push(String::new());
-            lines.push("## Working Memory（推理状态）".to_string());
-            // 已确认的事实（来自 observations）
-            if !self.observations.is_empty() {
-                lines.push("已确认：".to_string());
-                for obs in self.observations.iter().take(5) {
-                    let preview: String = obs.chars().take(150).collect();
-                    lines.push(format!("  - {}", preview));
-                }
-            }
-            // 假设（来自 hypotheses）
-            if !self.hypotheses.is_empty() {
-                lines.push("假设：".to_string());
-                for h in self.hypotheses.iter().take(3) {
-                    let preview: String = h.chars().take(100).collect();
-                    lines.push(format!("  - {}", preview));
-                }
-            }
-            // 未解决的问题
-            if !self.focus.open_questions.is_empty() {
-                lines.push("仍待确认：".to_string());
-                for q in self.focus.open_questions.iter() {
-                    lines.push(format!("  - {}", q));
-                }
-            }
-        }
-
-        // 5. Completeness（信息充分度）
-        if !self.current_goal.is_empty() {
-            self.completeness = self.compute_completeness();
-            let required_types = Self::extract_required_types(&self.current_goal);
-            let covered_types: std::collections::HashSet<&str> = self.active_objects.iter()
-                .map(|o| o.obj_type.as_str()).collect();
-            let covered_str: Vec<String> = required_types.iter()
-                .filter(|t| covered_types.contains(t.as_str()))
-                .map(|t| format!("{} +", t))
-                .collect();
-            let uncovered_str: Vec<String> = required_types.iter()
-                .filter(|t| !covered_types.contains(t.as_str()))
-                .map(|t| format!("{} -", t))
-                .collect();
-            let status = if self.completeness >= 0.8 { "充足" } 
-                else if self.completeness >= 0.5 { "部分" } 
-                else { "不足" };
-            lines.push(String::new());
-            lines.push("## Completeness（信息充分度）".to_string());
-            lines.push(format!("目标：{}", self.current_goal));
-            if !covered_str.is_empty() { lines.push(format!("已覆盖：{}", covered_str.join(", "))); }
-            if !uncovered_str.is_empty() { lines.push(format!("未覆盖：{}", uncovered_str.join(", "))); }
-            lines.push(format!("充分度：{:.0}% {}", self.completeness * 100.0, status));
-        }
-
-        // 6. Execution Log（从工具调用历史生成）
-        if !self.tool_history.is_empty() {
-            lines.push(String::new());
-            lines.push("## Execution Log".to_string());
-            let mut groups: Vec<(String, usize)> = Vec::new();
-            for step in self.tool_history.iter() {
-                let group_key = step.split(&['(', ' '][..]).next().unwrap_or(step).to_string();
-                if let Some(last) = groups.last_mut() {
-                    if last.0 == group_key {
-                        last.1 += 1;
-                        continue;
-                    }
-                }
-                groups.push((group_key, 1));
-            }
-            for (i, (action, count)) in groups.iter().enumerate() {
-                let is_last = i == groups.len() - 1;
-                let status = if is_last { "..." } else { "done" };
-                let count_label = if *count > 1 { format!(" (已完成 {} 次)", count) } else { String::new() };
-                let label = if is_last { " (当前)" } else { "" };
-                lines.push(format!("  {} {}{}{}", status, action, count_label, label));
-            }
-        }
-
-        // 6. Knowledge Progress（source 覆盖率统计）
-        if !self.visited_sources.is_empty() {
-            lines.push(String::new());
-            lines.push("## Knowledge Progress".to_string());
-            for src_key in self.visited_sources.iter() {
-                let parts: Vec<&str> = src_key.splitn(2, '-').collect();
-                if parts.len() != 2 { continue; }
-                let (st, sid) = (parts[0], parts[1]);
-                let name = crate::database::get(
-                    "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
-                    &[json!(st), json!(sid)],
-                ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
-                if name.is_empty() { continue; }
-                let total: i64 = crate::database::get(
-                    "SELECT COUNT(*) as cnt FROM knowledge_chunks kc JOIN source_data sd ON sd.id=kc.source_data_id WHERE sd.source_type=?1 AND sd.source_id=?2 AND kc.chunk_type='child'",
-                    &[json!(st), json!(sid)],
-                ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-                if total == 0 { continue; }
-                let visited_count: i64 = crate::database::all(
-                    "SELECT kc.chunk_id FROM knowledge_chunks kc JOIN source_data sd ON sd.id=kc.source_data_id WHERE sd.source_type=?1 AND sd.source_id=?2 AND kc.chunk_type='child'",
-                    &[json!(st), json!(sid)],
-                ).unwrap_or_default().iter().filter(|r| {
-                    let cid = r["chunk_id"].as_str().unwrap_or("");
-                    let short: String = cid.chars().take(8).collect();
-                    self.visited_chunks.contains(&short)
-                }).count() as i64;
-                let pct = (visited_count as f64 / total as f64 * 100.0) as i64;
-                let status = if visited_count >= total { "v" } else { "..." };
-                lines.push(format!("  {} {}：{}/{} 块 ({}%)", status, name, visited_count, total, pct));
-            }
-            // 显示已搜索关键词
-            if !self.search_keywords.is_empty() {
-                let all_kw: Vec<String> = self.search_keywords.iter().flat_map(|v| v.iter().cloned()).collect();
-                let unique_kw: Vec<String> = { let s: std::collections::HashSet<String> = all_kw.into_iter().collect(); s.into_iter().collect() };
-                lines.push(format!("  已搜索：{}", unique_kw.join("、")));
-            }
-        }
+        // ✅ 已删除：Working Memory（已确认/仍待确认）
+        // ✅ 已删除：Execution Log
+        // ✅ 已删除：Knowledge Progress
+        // ✅ 已删除：Completeness（信息充分度）— 改为由 LLM 自行判断
 
         let mut text = lines.join("\n");
         if text.chars().count() > SCRATCHPAD_MAX_CHARS {
@@ -661,8 +530,7 @@ impl SessionMemory {
 enum SessionEffect {
     RecordSearch(Vec<String>),
     MarkSourceVisited(String),
-    UpdateObject { obj_type: String, obj_id: String, name: String },
-    UpdateObjectScore { obj_type: String, obj_id: String, score_delta: f64 },
+    UpdateObject { obj_type: String, obj_id: String, name: String, score_delta: f64 },
     #[allow(dead_code)]
     MarkChunkVisited(String),
 }
@@ -672,12 +540,8 @@ impl SessionMemory {
         match effect {
             SessionEffect::RecordSearch(kw) => self.record_search(kw),
             SessionEffect::MarkSourceVisited(s) => self.mark_source_visited(s),
-            SessionEffect::UpdateObject { obj_type, obj_id, name } => self.update(obj_type, obj_id, name),
-            SessionEffect::UpdateObjectScore { obj_type, obj_id, score_delta } => {
-                if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == *obj_type && o.obj_id == *obj_id) {
-                    // Residual: 旧分衰减 + 新分叠加
-                    existing.score = existing.score * 0.95 + score_delta;
-                }
+            SessionEffect::UpdateObject { obj_type, obj_id, name, score_delta } => {
+                self.update(obj_type, obj_id, name, *score_delta);
             }
             SessionEffect::MarkChunkVisited(cid) => self.mark_chunk_visited(cid),
         }
@@ -689,9 +553,13 @@ impl SessionMemory {
 fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collections::HashSet<i64>> {
     let mut scope_ids: Vec<String> = Vec::new();
     let type_prefix = |t: &str| -> Option<&str> {
-        match t { "product" => Some("PRODUCT"), "project" => Some("PROJECT"),
+        match t.to_lowercase().as_str() {
+            "product" => Some("PRODUCT"), "project" => Some("PROJECT"),
             "file" => Some("FILE"), "note" => Some("NOTE"), "todo" => Some("TODO"),
-            "contact" => Some("CONTACT"), "chat" => Some("CHAT"), _ => None }
+            "contact" => Some("CONTACT"), "chat" => Some("CHAT"),
+            "channel" => Some("CHANNEL"), "vendor" => Some("VENDOR"), "customer" => Some("CUSTOMER"),
+            _ => None
+        }
     };
     // 1. top 5 高分对象
     let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
@@ -913,7 +781,7 @@ fn execute_object_catalog(entity: &str, field_filters: &[Value], sort: Option<&V
                 };
                 return envelope.to_json();
             }
-            let total = rows.len();
+        let total = rows.len();
             let items: Vec<Value> = rows.iter().map(|row| {
                 json!(row)
             }).collect();
@@ -1224,16 +1092,39 @@ fn parse_html_tool_calls(content: &str) -> Option<Vec<Value>> {
     }
     if tool_calls.is_empty() { None } else { Some(tool_calls) }
 }
+
+/// 清理消息内容中的非法字符，防止 LLM API 解析失败
+fn sanitize_content(content: &str) -> String {
+    content.chars().filter(|c| {
+        // 保留正常字符，过滤 null 字符和控制字符（保留换行和制表符）
+        !(*c == '\0') && (!c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
+    }).collect()
+}
+
 /// ★ 单请求流式调用：一次请求同时完成
 ///   - content 逐 token 流式输出到前端（agent:token / agent:start-answer）
 ///   - tool_calls delta 按 index 累积（工具调用决策）
 ///   - usage 统计（stream_options.include_usage）
 /// 返回 (content, reasoning_content, tool_calls, usage)
-async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
+pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
     let (url, api_key, model) = get_api_endpoint();
-    let msgs: Vec<Value> = messages.iter().map(|m| {
+    // ★ 清理消息内容中的非法字符，防止 LLM API 解析失败
+    let msgs: Vec<Value> = messages.iter().enumerate().map(|(i, m)| {
         let mut v = serde_json::to_value(m).unwrap_or_default();
         if let Some(obj) = v.as_object_mut() {
+            // 清理 content 字段
+            if let Some(content) = obj.get("content").and_then(|c| c.as_str()) {
+                let sanitized = sanitize_content(content);
+                if sanitized.len() != content.len() {
+                    log::warn!("[LLM] 消息 {} 清理了 {} 个非法字符", i, content.len() - sanitized.len());
+                }
+                obj.insert("content".to_string(), json!(sanitized));
+            }
+            // 清理 tool_call_id 字段
+            if let Some(id) = obj.get("tool_call_id").and_then(|c| c.as_str()) {
+                obj.insert("tool_call_id".to_string(), json!(sanitize_content(id)));
+            }
+            // 移除空的 tool_calls
             if let Some(tc) = obj.get("tool_calls") {
                 if tc.as_array().map_or(false, |a| a.is_empty()) { obj.remove("tool_calls"); }
             }
@@ -1340,12 +1231,15 @@ async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app
         }))
         .collect();
     let reasoning = if st.reasoning.is_empty() { None } else { Some(st.reasoning) };
+    log::info!("[call_llm_streaming] 返回: content_len={}, tool_calls={}, usage={}", st.full.len(), tool_calls.len(), st.usage.is_some());
     Ok((st.full, reasoning, tool_calls, st.usage))
 }
 
 /// 流式补生成（无工具）：用于强制总结等路径；答案逐 token 输出到前端
 async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<tauri::AppHandle>) -> Result<String, String> {
+    log::info!("[call_llm_without_tools] 被调用，messages 长度: {}", messages.len());
     let (content, _, _, _) = call_llm_streaming(messages, None, app_handle).await?;
+    log::info!("[call_llm_without_tools] 返回: content_len={}", content.len());
     // 过滤 DSML 残留
     let re_dsml = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*[^\n]*").unwrap();
     Ok(re_dsml.replace_all(&content, "").to_string())
@@ -2317,15 +2211,15 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                 ) {
                     if r.changes > 0 {
                         created += 1;
-                        ids.push(format!("MEMORY-{}", id));
+                        ids.push(id);
                     }
                 }
             }
             let summary = if created == 1 {
-                let short_id = ids[0].strip_prefix("MEMORY-").unwrap_or(&ids[0]);
+                let short_id = &ids[0];
                 format!("已记住 1 条事实，ID: {}", short_id)
             } else {
-                let short_ids: Vec<&str> = ids.iter().map(|id| id.strip_prefix("MEMORY-").unwrap_or(id.as_str())).collect();
+                let short_ids: Vec<&str> = ids.iter().map(|id| id.as_str()).collect();
                 format!("已记住 {} 条事实，ID: {}", created, short_ids.join(", "))
             };
             let envelope = ToolResultEnvelope {
@@ -2354,7 +2248,7 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                 };
                 return envelope.to_json();
             }
-            let sid = mid.strip_prefix("MEMORY-").unwrap_or(mid);
+            let sid = mid;
             let (success, summary) = match database::run("UPDATE memories SET content=?1, updated_at=datetime('now','localtime') WHERE id=?2", &[json!(c), json!(sid)]) {
                 Ok(r) if r.changes > 0 => (true, format!("已更新记忆: {}", sid)),
                 Err(e) => (false, format!("更新失败: {}", e)),
@@ -2369,7 +2263,7 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
         }
         "delete" => {
             if !memory_id.trim().is_empty() {
-                let sid = memory_id.trim().strip_prefix("MEMORY-").unwrap_or(memory_id.trim()).to_string();
+                let sid = memory_id.trim().to_string();
                 let (success, summary) = match database::run("DELETE FROM memories WHERE id=?1", &[json!(sid)]) {
                     Ok(r) if r.changes > 0 => (true, format!("已删除记忆: {}", sid)),
                     Err(e) => (false, format!("删除失败: {}", e)),
@@ -2452,7 +2346,7 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                         let sid = r["id"].as_str().unwrap_or("");
                         let content = r["content"].as_str().unwrap_or("");
                         json!({
-                            "memory_id": format!("MEMORY-{}", sid),
+                            "memory_id": sid.to_string(),
                             "content": content
                         })
                     }).collect();
@@ -2570,108 +2464,12 @@ fn relative_time(created_at: &str) -> String {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Session Compression — 上下文超限时压缩工具结果
-// ═══════════════════════════════════════════════════════════════════
-
-const COMPRESSION_PROMPT: &str = r#"你是上下文压缩器。请将以下多轮工具检索结果压缩为一份综合摘要。
-
-要求：
-- 保留所有 source_id（格式 TYPE-UUID，如 PROJECT-xxx、PRODUCT-xxx、FILE-xxx）
-- 保留所有 ChunkID（8位短ID）
-- 保留关键事实、数据点、数值
-- 保留对象之间的关系
-- 去除重复信息
-- 保留搜索关键词和命中的对象名
-- 用简洁的结构化格式输出，每条信息一行
-- 不要添加解释性文字，只输出摘要本身
-
-原始内容：
-"#;
-
-/// 收集消息中所有 Tool 角色的消息内容，合并后调用 LLM 压缩为综合摘要。
-/// 压缩完成后替换 messages 中的 Tool 消息为一条压缩摘要。
-/// 返回 (原始token估算, 压缩后token估算)
-async fn compress_tool_results(messages: &mut Vec<ChatMessage>, app_handle: &Option<tauri::AppHandle>) -> Result<(i64, i64), String> {
-    // 1. 收集所有 Tool 消息的原始 token 估算
-    let mut tool_indices: Vec<usize> = Vec::new();
-    let mut tool_contents: Vec<String> = Vec::new();
-    let mut original_tokens: i64 = 0;
-
-    for (i, msg) in messages.iter().enumerate() {
-        if matches!(msg.role, MessageRole::Tool) {
-            let content = msg.content.as_deref().unwrap_or("");
-            let token_est = (content.len() as i64) / 3;
-            original_tokens += token_est;
-            tool_indices.push(i);
-            tool_contents.push(content.to_string());
-        }
-    }
-
-    if tool_contents.is_empty() {
-        return Ok((0, 0));
-    }
-
-    let merged = tool_contents.join("\n\n---\n\n");
-    let tool_count = tool_contents.len();
-
-    log::info!("[Compression] 开始压缩 {} 条工具结果，原始 token 估算: {}", tool_count, original_tokens);
-
-    // 2. 调用 LLM 生成综合摘要
-    let prompt = format!("{}{}", COMPRESSION_PROMPT, merged);
-    let compress_messages = vec![
-        ChatMessage { role: MessageRole::User, content: Some(prompt), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None },
-    ];
-
-    if let Some(ref h) = app_handle {
-        let _ = h.emit("agent:status", json!({"stage":"compressing", "msg": format!("压缩 {} 条工具结果...", tool_count)}));
-    }
-
-    let summary = call_llm_without_tools(&compress_messages, &None).await
-        .unwrap_or_else(|e| {
-            log::warn!("[Compression] LLM 压缩失败: {}，使用规则截断作为 fallback", e);
-            // Fallback：保留每条 tool result 的前 200 字符
-            tool_contents.iter().enumerate().map(|(i, c)| {
-                let preview: String = c.chars().take(200).collect();
-                format!("[{}#/{}] {}", tool_count, i + 1, preview)
-            }).collect::<Vec<_>>().join("\n\n")
-        });
-
-    let compressed_tokens = (summary.len() as i64) / 3;
-
-    // 3. 构建压缩标记
-    let marker = format!(
-        "[压缩摘要] 原始 {} 条工具结果（共 ~{} token）→ 压缩后 ~{} token\n---\n{}",
-        tool_count, original_tokens, compressed_tokens, summary
-    );
-
-    // 4. 替换：删除所有旧 Tool 消息，在第一个 Tool 的位置插入压缩摘要
-    // 从后往前删除，避免索引偏移
-    let first_tool_idx = tool_indices[0];
-    for &idx in tool_indices.iter().rev() {
-        messages.remove(idx);
-    }
-    messages.insert(first_tool_idx, ChatMessage {
-        role: MessageRole::Tool,
-        content: Some(marker),
-        tool_calls: None,
-        tool_call_id: Some("compression_summary".to_string()),
-        name: Some("context_compressor".to_string()),
-        reasoning_content: None,
-    });
-
-    log::info!("[Compression] 完成: ~{} → ~{} token (节省 {:.0}%)", original_tokens, compressed_tokens,
-        if original_tokens > 0 { (1.0 - compressed_tokens as f64 / original_tokens as f64) * 100.0 } else { 0.0 });
-
-    Ok((original_tokens, compressed_tokens))
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // Main Agent Loop
 // ═══════════════════════════════════════════════════════════════════
 
 
 #[tauri::command]
-pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, history: Vec<Value>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>) -> Result<Value, String> {
+pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>) -> Result<Value, String> {
     AGENT_CANCEL.store(false, Ordering::Release);
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
@@ -2693,35 +2491,97 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         SessionMemory::new()
     };
 
-    // ★ FAB 会话历史压缩：在构建 messages 之前检查并压缩
-    // 压缩直接替换 DB 中的旧消息，重新加载后前缀稳定，利于 prompt cache
-    let mut history = history;
-    if let Some(ref sid) = session_id {
-        if crate::services::context_compressor::should_compress_history(&history) {
-            log::info!("[ContextCompressor] 历史超过阈值，开始压缩...");
-            match crate::services::context_compressor::compress_and_persist(sid).await {
-                Ok(new_history) => {
-                    log::info!("[ContextCompressor] 压缩完成，历史从 {} 条变为 {} 条",
-                        history.len(), new_history.len());
-                    history = new_history;
+    // ★ 从 DB 加载历史消息
+    // 读取 session 的压缩摘要（如果有）
+    // 旧消息（被摘要覆盖的）跳过，只加载近期消息
+    let (compressed_summary, original_count): (Option<String>, usize) = if let Some(ref sid) = session_id {
+        let session_row = crate::database::get(
+            "SELECT context_metadata FROM chat_sessions WHERE id=?1",
+            &[json!(sid)],
+        ).unwrap_or_default();
+        if let Some(meta_str) = session_row.and_then(|r| r["context_metadata"].as_str().map(|s| s.to_string())) {
+            if let Ok(meta) = serde_json::from_str::<Value>(&meta_str) {
+                let summary = meta["summary"].as_str().map(|s| s.to_string());
+                let count = meta["original_count"].as_u64().unwrap_or(0) as usize;
+                (summary, count)
+            } else { (None, 0) }
+        } else { (None, 0) }
+    } else { (None, 0) };
+
+    let history: Vec<Value> = if let Some(ref sid) = session_id {
+        let rows = crate::database::all(
+            "SELECT role, content, metadata, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id",
+            &[json!(sid)],
+        ).unwrap_or_default();
+
+        log::info!("[AgentWorkflow] 从 DB 加载 {} 条消息, 压缩摘要: {}, original_count: {}",
+            rows.len(), compressed_summary.is_some(), original_count);
+
+        // 如果有压缩摘要，跳过前 original_count 条消息（已被摘要覆盖）
+        let skip_count = original_count;
+
+        // 找到最后一条 assistant 消息的位置（只加载该消息的 tool_calls/tool_results）
+        let last_assistant_idx = rows.iter().enumerate()
+            .filter(|(i, r)| *i >= skip_count && r["role"].as_str() == Some("assistant"))
+            .map(|(i, _)| i)
+            .last();
+
+        rows.into_iter().enumerate().filter_map(|(i, r)| {
+            // 跳过已被压缩覆盖的旧消息
+            if i < skip_count {
+                return None;
+            }
+
+            let role = r["role"].as_str().unwrap_or("");
+            let db_content = r["content"].as_str().unwrap_or("");
+            let created_at = r["created_at"].as_str().unwrap_or("");
+            let meta: Option<Value> = r.get("metadata").and_then(|v| v.as_str()).and_then(|s| serde_json::from_str(s).ok());
+
+            if db_content.is_empty() { return None; }
+
+            // 为 user 和 assistant 消息添加时间戳
+            let content_with_timestamp = if role == "user" || role == "assistant" {
+                if !created_at.is_empty() {
+                    format!("[{}] {}", created_at, db_content)
+                } else {
+                    db_content.to_string()
                 }
-                Err(e) => {
-                    log::warn!("[ContextCompressor] 压缩失败: {}，继续使用原始历史", e);
+            } else {
+                db_content.to_string()
+            };
+
+            // 只从最后一条 assistant 消息加载 tool_calls/tool_results
+            let mut msg = json!({"role": role, "content": content_with_timestamp});
+            if Some(i) == last_assistant_idx {
+                if let Some(ref m) = meta {
+                    if let Some(tc) = m.get("tool_calls") { msg["tool_calls"] = tc.clone(); }
+                    if let Some(tr) = m.get("tool_results") { msg["tool_results"] = tr.clone(); }
+                    if let Some(cd) = m.get("context_docs") { msg["context_docs"] = cd.clone(); }
                 }
             }
-        }
-    }
+            Some(msg)
+        }).collect()
+    } else {
+        vec![]
+    };
 
     let mut messages: Vec<ChatMessage> = vec![
         ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
     ];
+
+    // ★ 注入压缩摘要（如果有）
+    if let Some(ref summary) = compressed_summary {
+        let summary_text = format!("【历史摘要】\n{}", summary);
+        messages.push(ChatMessage{role:MessageRole::Assistant,content:Some(summary_text),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+        log::info!("[AgentWorkflow] 注入压缩摘要: {}字", summary.len());
+    }
     // ★ 恢复历史消息中的 assistant/tool 对话 + 更新 SessionMemory
     for h in &history {
         let role = h["role"].as_str().unwrap_or("");
         match role {
             "assistant" => {
                 let content = h["content"].as_str().map(|s| s.to_string());
-                // ★ 过滤空数组，避免 LLM API 报错
+                // ★ 解析 tool_calls
                 let tcs: Option<Vec<ToolCall>> = h["tool_calls"].as_array()
                     .filter(|arr| !arr.is_empty())
                     .map(|arr| arr.iter().filter_map(|tc| {
@@ -2733,11 +2593,55 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     } else { args_str.to_string() };
                     Some(ToolCall { id: id.to_string(), call_type: "function".into(), function: FunctionCall { name: name.to_string(), arguments: args } })
                 }).collect());
-                let tcs = tcs.filter(|v| !v.is_empty()); // 确保空 Vec 变为 None
+                let has_tool_calls = tcs.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+                let tcs = tcs.filter(|v| !v.is_empty());
                 messages.push(ChatMessage{role:MessageRole::Assistant,content:content.clone(),tool_calls:tcs,tool_call_id:None,name:None,reasoning_content:h["reasoning_content"].as_str().map(String::from)});
+                // ★ 如果有 tool_results，按 tool_call_id 分组合并，每个 tool_call 生成一条 tool 消息
+                if has_tool_calls {
+                    if let Some(results) = h.get("tool_results").and_then(|v| v.as_array()) {
+                        if !results.is_empty() {
+                            // 按 tool_call_id 分组，合并 content
+                            let mut grouped: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+                            for tr in results {
+                                let tr_id = tr["tool_call_id"].as_str().unwrap_or("").to_string();
+                                let tr_name = tr["name"].as_str().unwrap_or("").to_string();
+                                let tr_content = tr["content"].as_str().unwrap_or("");
+                                let entry = grouped.entry(tr_id).or_insert((String::new(), tr_name));
+                                if !entry.0.is_empty() { entry.0.push_str("\n\n---\n\n"); }
+                                entry.0.push_str(tr_content);
+                            }
+                            for (tr_id, (tr_content, tr_name)) in grouped {
+                                messages.push(ChatMessage{role:MessageRole::Tool,content:Some(tr_content.clone()),tool_calls:None,tool_call_id:Some(tr_id),reasoning_content:None,name:Some(tr_name.clone())});
+                                session.update_from_tool_result(&tr_name, &tr_content);
+                            }
+                        } else {
+                            // tool_results 为空：为每个 tool_call 生成空 tool 消息
+                            if let Some(tcs_arr) = h.get("tool_calls").and_then(|v| v.as_array()) {
+                                for tc in tcs_arr {
+                                    let tc_id = tc["id"].as_str().unwrap_or("");
+                                    let tc_name = tc["function"]["name"].as_str().unwrap_or("");
+                                    if !tc_id.is_empty() {
+                                        messages.push(ChatMessage{role:MessageRole::Tool,content:Some("[工具结果为空]".to_string()),tool_calls:None,tool_call_id:Some(tc_id.to_string()),reasoning_content:None,name:Some(tc_name.to_string())});
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // tool_results 字段不存在：为每个 tool_call 生成空 tool 消息
+                        if let Some(tcs_arr) = h.get("tool_calls").and_then(|v| v.as_array()) {
+                            for tc in tcs_arr {
+                                let tc_id = tc["id"].as_str().unwrap_or("");
+                                let tc_name = tc["function"]["name"].as_str().unwrap_or("");
+                                if !tc_id.is_empty() {
+                                    messages.push(ChatMessage{role:MessageRole::Tool,content:Some("[工具结果为空]".to_string()),tool_calls:None,tool_call_id:Some(tc_id.to_string()),reasoning_content:None,name:Some(tc_name.to_string())});
+                                }
+                            }
+                        }
+                    }
+                }
                 // 没有 tool_calls 的 content 是最终回答，记录为 observation
                 if let Some(ref text) = content {
-                    if h["tool_calls"].as_array().map(|a| a.is_empty()).unwrap_or(true) {
+                    if !has_tool_calls {
                         session.record_observation(text);
                     }
                 }
@@ -2746,9 +2650,9 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 let content_str = h["content"].as_str().unwrap_or("").to_string();
                 let id = h["tool_call_id"].as_str().unwrap_or("").to_string();
                 let name = h["name"].as_str().unwrap_or("").to_string();
-                messages.push(ChatMessage{role:MessageRole::Tool,content:Some(content_str.clone()),tool_calls:None,tool_call_id:Some(id),reasoning_content:None,name:Some(name)});
+                messages.push(ChatMessage{role:MessageRole::Tool,content:Some(content_str.clone()),tool_calls:None,tool_call_id:Some(id),reasoning_content:None,name:Some(name.clone())});
                 // 从 tool 结果中重建 SessionMemory
-                session.update_from_tool_result(&content_str);
+                session.update_from_tool_result(&name, &content_str);
             }
             _ => {
                 // user 或其他角色
@@ -2760,6 +2664,185 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     // ★ 追加本轮新问题
     messages.push(ChatMessage{role:MessageRole::User,content:Some(query.clone()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
+    // ★ 上下文压缩：复用会话上下文，LLM 返回 JSON 摘要
+    // 单个会话上下文长度 256k，自动压缩阈值 80%（204,800 tokens）
+    if let Some(ref sid) = session_id {
+        let total_tokens: i64 = messages.iter().map(|m| {
+            let content_len = m.content.as_ref().map(|s| s.len()).unwrap_or(0);
+            let tc_len = m.tool_calls.as_ref().map(|tc| tc.len() * 100).unwrap_or(0);
+            ((content_len + tc_len) as i64) / 3
+        }).sum();
+        if total_tokens > 204_800 {
+            log::info!("[ContextCompressor] 当前上下文 token {} 超过阈值 204800 (256k×80%)，开始压缩...", total_tokens);
+            match crate::services::context_compressor::compress_with_context(&mut messages, &app_handle).await {
+                Ok(result) => {
+                    log::info!("[ContextCompressor] 压缩成功: summary={}字", result.summary.len());
+                    // 计算当前会话的总消息数量（用于 original_count 累计）
+                    let msg_count = crate::database::get(
+                        "SELECT COUNT(*) as cnt FROM chat_messages WHERE session_id=?1",
+                        &[json!(sid)],
+                    ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0) as usize;
+                    if let Err(e) = crate::services::context_compressor::save_compressed_to_db(sid, &result, msg_count) {
+                        log::warn!("[ContextCompressor] 保存压缩结果失败: {}", e);
+                    }
+                    // 压缩后重新加载历史（从 DB 读取压缩后的状态）
+                    messages.clear();
+                    messages.push(ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+
+                    // 读取新的压缩摘要
+                    let new_session_row = crate::database::get(
+                        "SELECT context_metadata FROM chat_sessions WHERE id=?1",
+                        &[json!(sid)],
+                    ).unwrap_or_default();
+                    if let Some(meta_str) = new_session_row.as_ref().and_then(|r| r["context_metadata"].as_str().map(|s| s.to_string())) {
+                        if let Ok(meta) = serde_json::from_str::<Value>(&meta_str) {
+                            if let Some(summary) = meta["summary"].as_str() {
+                                let summary_text = format!("【历史摘要】\n{}", summary);
+                                messages.push(ChatMessage{role:MessageRole::Assistant,content:Some(summary_text),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+                                log::info!("[ContextCompressor] 注入压缩摘要: {}字", summary.len());
+                            }
+                        }
+                    }
+
+                    // 从 DB 重新加载近期消息（压缩后 metadata 已清空）
+                    let recent_history: Vec<Value> = {
+                        let rows = crate::database::all(
+                            "SELECT role, content, metadata, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id",
+                            &[json!(sid)],
+                        ).unwrap_or_default();
+                        log::info!("[ContextCompressor] 从 DB 加载 {} 条消息", rows.len());
+
+                        // 读取 original_count，跳过已被压缩的旧消息
+                        let skip_count = new_session_row
+                            .as_ref()
+                            .and_then(|r| r["context_metadata"].as_str().map(|s| s.to_string()))
+                            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                            .and_then(|m| m["original_count"].as_u64())
+                            .unwrap_or(0) as usize;
+
+                        // 找到最后一条 assistant 消息的位置（只加载该消息的 tool_calls/tool_results）
+                        let last_assistant_idx = rows.iter().enumerate()
+                            .filter(|(i, r)| *i >= skip_count && r["role"].as_str() == Some("assistant"))
+                            .map(|(i, _)| i)
+                            .last();
+
+                        rows.into_iter().enumerate().filter_map(|(i, r)| {
+                            // 跳过已被压缩覆盖的旧消息
+                            if i < skip_count {
+                                return None;
+                            }
+
+                            let role = r["role"].as_str().unwrap_or("");
+                            let db_content = r["content"].as_str().unwrap_or("");
+                            let created_at = r["created_at"].as_str().unwrap_or("");
+                            let meta: Option<Value> = r.get("metadata").and_then(|v| v.as_str()).and_then(|s| serde_json::from_str(s).ok());
+
+                            if db_content.is_empty() { return None; }
+
+                            // 为 user 和 assistant 消息添加时间戳
+                            let content_with_timestamp = if role == "user" || role == "assistant" {
+                                if !created_at.is_empty() {
+                                    format!("[{}] {}", created_at, db_content)
+                                } else {
+                                    db_content.to_string()
+                                }
+                            } else {
+                                db_content.to_string()
+                            };
+
+                            // 只从最后一条 assistant 消息加载 tool_calls/tool_results
+                            let mut msg = json!({"role": role, "content": content_with_timestamp});
+                            if Some(i) == last_assistant_idx {
+                                if let Some(ref m) = meta {
+                                    if let Some(tc) = m.get("tool_calls") { msg["tool_calls"] = tc.clone(); }
+                                    if let Some(tr) = m.get("tool_results") { msg["tool_results"] = tr.clone(); }
+                                }
+                            }
+                            Some(msg)
+                        }).collect()
+                    };
+                    for h in &recent_history {
+                        let role = h["role"].as_str().unwrap_or("");
+                        match role {
+                            "assistant" => {
+                                let content = h["content"].as_str().map(|s| s.to_string());
+                                let tcs: Option<Vec<ToolCall>> = h["tool_calls"].as_array()
+                                    .filter(|arr| !arr.is_empty())
+                                    .map(|arr| arr.iter().filter_map(|tc| {
+                                    let id = tc["id"].as_str()?;
+                                    let name = tc["function"]["name"].as_str()?;
+                                    let args_str = tc["function"]["arguments"].as_str().unwrap_or("");
+                                    let args = if args_str.is_empty() {
+                                        serde_json::to_string(&tc["function"]["arguments"]).unwrap_or_default()
+                                    } else { args_str.to_string() };
+                                    Some(ToolCall { id: id.to_string(), call_type: "function".into(), function: FunctionCall { name: name.to_string(), arguments: args } })
+                                }).collect());
+                                let has_tcs = tcs.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+                                let tcs = tcs.filter(|v| !v.is_empty());
+                                messages.push(ChatMessage{role:MessageRole::Assistant,content,tool_calls:tcs,tool_call_id:None,name:None,reasoning_content:None});
+                                // 如果有 tool_calls，从 tool_results 生成对应的 tool 消息
+                                if has_tcs {
+                                    if let Some(results) = h.get("tool_results").and_then(|v| v.as_array()) {
+                                        if !results.is_empty() {
+                                            let mut grouped: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+                                            for tr in results {
+                                                let tr_id = tr["tool_call_id"].as_str().unwrap_or("").to_string();
+                                                let tr_name = tr["name"].as_str().unwrap_or("").to_string();
+                                                let tr_content = tr["content"].as_str().unwrap_or("");
+                                                let entry = grouped.entry(tr_id).or_insert((String::new(), tr_name));
+                                                if !entry.0.is_empty() { entry.0.push_str("\n\n---\n\n"); }
+                                                entry.0.push_str(tr_content);
+                                            }
+                                            for (tr_id, (tr_content, tr_name)) in grouped {
+                                                messages.push(ChatMessage{role:MessageRole::Tool,content:Some(tr_content),tool_calls:None,tool_call_id:Some(tr_id),reasoning_content:None,name:Some(tr_name)});
+                                            }
+                                        } else {
+                                            if let Some(tcs_arr) = h.get("tool_calls").and_then(|v| v.as_array()) {
+                                                for tc in tcs_arr {
+                                                    let tc_id = tc["id"].as_str().unwrap_or("");
+                                                    let tc_name = tc["function"]["name"].as_str().unwrap_or("");
+                                                    if !tc_id.is_empty() {
+                                                        messages.push(ChatMessage{role:MessageRole::Tool,content:Some("[工具结果为空]".to_string()),tool_calls:None,tool_call_id:Some(tc_id.to_string()),reasoning_content:None,name:Some(tc_name.to_string())});
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        if let Some(tcs_arr) = h.get("tool_calls").and_then(|v| v.as_array()) {
+                                            for tc in tcs_arr {
+                                                let tc_id = tc["id"].as_str().unwrap_or("");
+                                                let tc_name = tc["function"]["name"].as_str().unwrap_or("");
+                                                if !tc_id.is_empty() {
+                                                    messages.push(ChatMessage{role:MessageRole::Tool,content:Some("[工具结果为空]".to_string()),tool_calls:None,tool_call_id:Some(tc_id.to_string()),reasoning_content:None,name:Some(tc_name.to_string())});
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            "tool" => {
+                                let content_str = h["content"].as_str().unwrap_or("").to_string();
+                                let id = h["tool_call_id"].as_str().unwrap_or("").to_string();
+                                let name = h["name"].as_str().unwrap_or("").to_string();
+                                messages.push(ChatMessage{role:MessageRole::Tool,content:Some(content_str),tool_calls:None,tool_call_id:Some(id),reasoning_content:None,name:Some(name)});
+                            }
+                            _ => {
+                                let content = h["content"].as_str().map(|s| s.to_string());
+                                messages.push(ChatMessage{role:MessageRole::User,content,tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+                            }
+                        }
+                    }
+                    // 追加当前查询
+                    messages.push(ChatMessage{role:MessageRole::User,content:Some(query.clone()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+                }
+                Err(e) => {
+                    log::warn!("[ContextCompressor] 压缩失败: {}", e);
+                    return Err(format!("上下文压缩失败: {}", e));
+                }
+            }
+        }
+    }
+
     // ★ 从活跃对象和本轮 query 设置 Focus
     let top_entities: Vec<String> = {
         let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
@@ -2769,15 +2852,12 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
     session.set_focus_from_user_query(&query, &top_entities);
 
     let mut tool_log: Vec<Value> = Vec::new();
-    let (mut iters, mut pt, mut ct) = (0i32, 0i64, 0i64);
-    let mut cached_total: i64 = 0;
-    let mut prev_pt: i64 = 0;
+    let (mut iters, mut pt, mut _ct) = (0i32, 0i64, 0i64);
+    let mut _cached_total: i64 = 0;
+    let mut _prev_pt: i64 = 0;
     let mut budget = 150i32;  // 增加到150分
     let mut search_cost = 8i32;  // 降低初始消耗到8分
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    // ★ 会话压缩：一次 workflow 只压缩一次
-    let mut session_compressed = false;
-    let compact_ratio: f64 = 0.8;
     
     // 加载用户策略（policy）— 从 policies 表读取
     let user_policies = {
@@ -2809,13 +2889,13 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             AGENT_CANCEL.store(false, Ordering::Release);
             log::info!("收到停止信号，中断执行");
             let ws = session.generate_scratchpad();
-            return Ok(json!({"success":true,"result_type":"answer","answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+            return Ok(json!({"success":true,"result_type":"answer","answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
         }
         
         log::info!("预算: {}/150 cost={}", budget, search_cost);
         if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking","msg":"思考中..."})); } }
         // ★ 每轮注意力衰减（Residual 方式：new_score = old_score * 0.95 + gain）
-        // gain 在 SessionEffect::UpdateObjectScore 中通过 EMA 完成
+        // gain 在 update_from_tool_result / UpdateObject effect 中通过 EMA 完成
         // 这里只做衰减，不做加分
         let prev_count = session.active_objects.len();
         for o in &mut session.active_objects {
@@ -2829,106 +2909,84 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         if removed > 0 { log::info!("[注意力] 衰减后移除 {} 个未命中对象，剩余 {}", removed, session.active_objects.len()); }
         iters += 1;
 
-        // ★ 上下文压缩：token 超过阈值时触发 LLM 摘要压缩（一次 workflow 只压缩一次）
-        if !session_compressed {
-            let est_tokens: i64 = messages.iter().map(|m| {
-                let text_len = m.content.as_ref().map_or(0, |s| s.len() as i64);
-                let tc_len = m.tool_calls.as_ref().map_or(0, |tcs| tcs.iter()
-                    .map(|tc| tc.function.arguments.len() as i64)
-                    .sum::<i64>());
-                (text_len + tc_len) / 3
-            }).sum();
-            let threshold = (CONTEXT_TOKEN_LIMIT as f64 * compact_ratio) as i64;
-            let tool_count = messages.iter().filter(|m| matches!(m.role, MessageRole::Tool)).count();
-            if est_tokens > threshold && tool_count >= 2 {
-                session_compressed = true;
-                match compress_tool_results(&mut messages, &app_handle).await {
-                    Ok((orig, compressed)) => {
-                        log::info!("[Compression] 触发压缩: ~{} → ~{} token", orig, compressed);
-                        if !silent {
-                            if let Some(ref h) = app_handle {
-                                let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": "context_compressor", "result_len": compressed, "original_len": orig}));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("[Compression] 压缩失败: {}，回退到淘汰策略", e);
-                        session_compressed = false;
-                    }
-                }
-            }
-        }
-
-        // ★ 上下文分层淘汰：估算 token，超限时先丢旧工具结果，再丢旧对话轮
-        const CONTEXT_TOKEN_LIMIT: i64 = 200_000;
-        {
-            let est_tokens: i64 = messages.iter().map(|m| {
-                let text_len = m.content.as_ref().map_or(0, |s| s.len() as i64);
-                let tc_len = m.tool_calls.as_ref().map_or(0, |tcs| tcs.iter()
-                    .map(|tc| tc.function.arguments.len() as i64)
-                    .sum::<i64>());
-                (text_len + tc_len) / 3
-            }).sum();
-            if est_tokens > CONTEXT_TOKEN_LIMIT && messages.len() > 4 {
-                let mut removed = 0i32;
-                let min_remaining = messages.len().saturating_sub(1); // keep at least all non-tool messages
-                messages.retain(|m| {
-                    if matches!(m.role, MessageRole::Tool) && removed < min_remaining as i32 {
-                        removed += 1;
-                        false
-                    } else { true }
-                });
-                if removed > 0 { log::info!("[上下文淘汰] 丢弃 {} 条旧工具结果", removed); }
-                let est2: i64 = messages.iter().map(|m| {
-                    m.content.as_ref().map_or(0, |s| s.len() as i64) / 3
-                }).sum();
-                if est2 > CONTEXT_TOKEN_LIMIT && messages.len() > 6 {
-                    let remove_end = messages.len().saturating_sub(4);
-                    if remove_end > 1 {
-                        messages.drain(1..remove_end);
-                        log::info!("[上下文淘汰] 仍超限，丢弃旧对话轮，剩余 {} 条消息", messages.len());
-                    }
-                }
-            }
-        }
 
         // ★ 首轮/无工具轮：在 LLM 调用前注入动态上下文（后续轮次由循环末尾注入）
         {
             let scratchpad = session.generate_scratchpad();
-            let today_str = chrono::Local::now().format("%Y年%m月%d日").to_string();
-            let budget_info = if iters == 1 {
-                let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
-                format!("当前会话工作记忆\n{}\n\n搜索状态\n- 剩余预算: {}/150 — {}\n- 上下文: {} tokens\n- 证据足够就直接回答。", scratchpad, budget, status, pt)
-            } else {
-                let round_pt = pt - prev_pt;
-                let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
-                format!("当前会话工作记忆\n{}\n\n搜索状态\n- 剩余预算: {}/150 — {}\n- 上下文: {} tokens（本轮 +{}）| 已生成: {} tokens\n- 证据足够就直接回答。", scratchpad, budget, status, pt, round_pt, ct)
-            };
+            let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
+            // ★ 计算当前上下文 token 数
+            let context_tokens: i64 = messages.iter().map(|m| {
+                let text_len = m.content.as_ref().map_or(0, |s| s.len() as i64);
+                let tc_len = m.tool_calls.as_ref().map_or(0, |tcs| tcs.iter()
+                    .map(|tc| tc.function.arguments.len() as i64)
+                    .sum::<i64>());
+                (text_len + tc_len) / 3
+            }).sum();
+            let budget_info = format!(
+                "当前会话工作记忆\n{}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
+                scratchpad, iters, search_cost, budget, status, context_tokens
+            );
             // 移除上一轮的动态上下文消息
             if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
                 messages.remove(pos);
             }
-            messages.push(ChatMessage{role:MessageRole::User, content: Some(format!("[DYNAMIC_CONTEXT]\n当前日期\n{}\n\n用户策略\n{}\n\n{}", today_str, user_policies, budget_info)), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+            messages.push(ChatMessage{role:MessageRole::User, content: Some(format!("[DYNAMIC_CONTEXT]\n用户策略\n{}\n\n{}", user_policies, budget_info)), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+        }
+
+        // ★ 调试：保存 context 到文件（供 debug_server.py 读取）
+        {
+            let context_json: Vec<Value> = messages.iter().filter_map(|m| {
+                serde_json::to_value(m).ok()
+            }).collect();
+            let _ = crate::commands::save_agent_context(context_json);
         }
 
         // ★ 单请求流式：content 逐 token 输出到前端，同时累积 tool_calls delta
-        let (ac_owned, reasoning, tcs_streamed, usage) = call_llm_streaming(&messages, Some(&tools), &app_handle).await?;
+        log::info!("[Agent] 调用 call_llm_streaming，messages 长度: {}", messages.len());
+        let (ac_owned, reasoning, tcs_streamed, usage) = match call_llm_streaming(&messages, Some(&tools), &app_handle).await {
+            Ok(r) => {
+                log::info!("[Agent] call_llm_streaming 成功: content_len={}, tool_calls={}", r.0.len(), r.2.len());
+                r
+            }
+            Err(e) => {
+                log::error!("[Agent] call_llm_streaming 失败: {}", e);
+                if let Some(ref h) = app_handle {
+                    let _ = h.emit("agent:error", json!({"error": e}));
+                }
+                return Ok(json!({"success":false,"answer":format!("LLM 调用失败: {}", e),"iterations":iters}));
+            }
+        };
         if let Some(u) = usage {
-            prev_pt = pt;
+            _prev_pt = pt;
             let round_pt = u["prompt_tokens"].as_i64().unwrap_or(0);
             let round_ct = u["completion_tokens"].as_i64().unwrap_or(0);
             let cached = u["prompt_tokens_details"]["cached_tokens"].as_i64().unwrap_or(0);
             pt += round_pt;
-            ct += round_ct;
-            cached_total += cached;
+            _ct += round_ct;
+            _cached_total += cached;
+            session.prompt_tokens += round_pt;
+            session.completion_tokens += round_ct;
+            session.cached_tokens += cached;
             let hit_rate = if round_pt > 0 { cached as f64 / round_pt as f64 * 100.0 } else { 0.0 };
-            let total_hit = if pt > 0 { cached_total as f64 / pt as f64 * 100.0 } else { 0.0 };
-            log::info!("[Token] 本轮 prompt={} cached={:.0}% completion={} | 累计 prompt={} cached={:.0}% completion={}",
-                round_pt, hit_rate, round_ct, pt, total_hit, ct);
+            // ★ 当前上下文 token 数
+            let context_tokens: i64 = messages.iter().map(|m| {
+                let text_len = m.content.as_ref().map_or(0, |s| s.len() as i64);
+                let tc_len = m.tool_calls.as_ref().map_or(0, |tcs| tcs.iter()
+                    .map(|tc| tc.function.arguments.len() as i64)
+                    .sum::<i64>());
+                (text_len + tc_len) / 3
+            }).sum();
+            log::info!("[Token] 当前上下文={} | 本轮 prompt={} cached={:.0}% completion={} | 累计 prompt={} | session p={} c={}",
+                context_tokens, round_pt, hit_rate, round_ct, pt, session.prompt_tokens, session.completion_tokens);
         }
         let ac = ac_owned.as_str();
         let mut tcs: Option<Vec<Value>> = if tcs_streamed.is_empty() { None } else { Some(tcs_streamed) };
         let mut cleaned_ac: Option<String> = None; // 清理后的 content（当 XML 解析失败时）
+        log::info!("[Agent] 解析完成: ac_len={}, tcs={}, has_xml_tool={}", 
+            ac.len(), 
+            tcs.as_ref().map(|v| v.len()).unwrap_or(0),
+            ac.contains("tool_calls") || ac.contains("<tool_call>")
+        );
 
         // ★ 兜底：如果 tool_calls 为空但 content 包含 XML 格式工具调用，尝试解析
         if tcs.is_none() || tcs.as_ref().map_or(false, |v| v.is_empty()) {
@@ -2953,6 +3011,14 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         }
 
         let effective_ac = cleaned_ac.as_deref().unwrap_or(ac);
+        log::info!("[Agent] LLM 响应: len={}, tool_calls={}, has_tool_pattern={}", 
+            effective_ac.len(), 
+            tcs.as_ref().map(|v| v.len()).unwrap_or(0),
+            (effective_ac.trim().starts_with('{') && effective_ac.contains("tool_calls"))
+                || effective_ac.contains("<tool_call")
+                || effective_ac.starts_with("<invoke")
+                || (effective_ac.contains("ext_tool_") && effective_ac.contains("```"))
+        );
 
         match tcs {
             None => {
@@ -2974,32 +3040,42 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
 
                 // ★ 单请求流式：答案已在流式中逐 token 输出，无需再次生成
                 let mut answer = effective_ac.to_string();
+                log::info!("[Agent] 处理答案前: len={}, preview={}", answer.len(), answer.chars().take(100).collect::<String>());
                 if answer.trim().is_empty() {
                     log::info!("[Agent] 流式内容为空，回退补生成");
-                    answer = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::info!("[Agent] 流式补生成失败: {e}"); format!("未能生成有效回答: {e}") });
+                    answer = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::warn!("[Agent] 流式补生成失败，降级为纯文本回答: {e}"); format!("未能生成有效回答: {e}") });
                 }
                 // 清理 DSML 残留（流式原文可能含未解析的工具调用标记）
                 let re_dsml = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*[^\n]*").unwrap();
+                let before_dsml = answer.len();
                 answer = re_dsml.replace_all(&answer, "").to_string();
+                if before_dsml != answer.len() { log::warn!("[Agent] DSML 清理: {} → {} chars", before_dsml, answer.len()); }
                 // 清理工具调用残留（兜底，防止 LLM 将工具调用输出到 content）
                 // 清理 ext_tool_xxx(...) 函数调用
                 let re_tool = regex::Regex::new(r"(?s)ext_tool_\w+\s*\([^)]*\)").unwrap();
+                let before_tool = answer.len();
                 answer = re_tool.replace_all(&answer, "").to_string();
+                if before_tool != answer.len() { log::warn!("[Agent] Tool 清理: {} → {} chars", before_tool, answer.len()); }
                 // 清理 <tool_calls>...</tool_calls> XML 标签
                 let re_xml = regex::Regex::new(r"(?s)<tool_calls>.*?</tool_calls>").unwrap();
+                let before_xml = answer.len();
                 answer = re_xml.replace_all(&answer, "").to_string();
+                if before_xml != answer.len() { log::warn!("[Agent] XML 清理: {} → {} chars", before_xml, answer.len()); }
                 // 清理 <tool_call>...</tool_call> XML 标签（单数格式）
                 let re_tool_call = regex::Regex::new(r"(?s)<tool_call>.*?</tool_call>").unwrap();
+                let before_tc = answer.len();
                 answer = re_tool_call.replace_all(&answer, "").to_string();
+                if before_tc != answer.len() { log::warn!("[Agent] ToolCall 清理: {} → {} chars", before_tc, answer.len()); }
                 // 清理连续空行
                 while answer.contains("\n\n\n") {
                     answer = answer.replace("\n\n\n", "\n\n");
                 }
                 answer = answer.trim().to_string();
+                log::info!("[Agent] 最终答案: len={}, preview={}", answer.len(), answer.chars().take(50).collect::<String>());
                 if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": &answer})); } }
                 if !answer.is_empty() { session.record_observation(&answer); }
                 if let Some(ref sid) = session_id { save_session_state(sid, &session); }
-                let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"result_type":"answer","answer":answer,"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"result_type":"answer","answer":answer,"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
                 // ★ 工具轮：本轮已流式输出的 interim 内容通知前端归置到思考区
@@ -3011,17 +3087,18 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                         let _ = h.emit("agent:budget-low", json!({"remaining":budget,"cost":search_cost,"next_query":kw}));
                     }
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("预算不足，请直接总结已获取的信息。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::info!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::warn!("[Agent] 预算不足总结失败: {e}"); format!("总结失败: {e}") });
                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                     let ws = session.generate_scratchpad();
-                    return Ok(json!({"success":true,"result_type":"answer","answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": &ans})); } }
+                    return Ok(json!({"success":true,"result_type":"answer","answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
                 }
                 if iters >= max_iters {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::info!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::warn!("[Agent] 迭代上限总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); } }
-                    return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                    return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
                 }
             // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
 
@@ -3492,8 +3569,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                                 let oi = &oi[1..];
                                                 let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
                                                 if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
-                                                    effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name });
-                                                    effects.push(SessionEffect::UpdateObjectScore { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), score_delta: 0.9 });
+                                                    effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name, score_delta: 0.0 });
                                                 }
                                             }
                                         }
@@ -3507,8 +3583,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                                 let oi = &oi[1..];
                                                 let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
                                                 if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
-                                                    effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name });
-                                                    effects.push(SessionEffect::UpdateObjectScore { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), score_delta: 0.9 });
+                                                    effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name, score_delta: 0.0 });
                                                 }
                                             }
                                         }
@@ -3535,8 +3610,13 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                         }));
                     }
                     for handle in handles {
-                        if let Ok(result) = handle.await {
-                            results_mutex.lock().unwrap_or_else(|e| e.into_inner()).push(result);
+                        match handle.await {
+                            Ok(result) => {
+                                results_mutex.lock().unwrap_or_else(|e| e.into_inner()).push(result);
+                            }
+                            Err(e) => {
+                                log::error!("[Agent] 异步工具任务 JoinHandle 失败: {}", e);
+                            }
                         }
                     }
                 }
@@ -4589,15 +4669,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     for effect in effects {
                         session.apply_effect(effect);
                     }
-                    // ★ 记录本轮展示的 MEMORY source_id（跨轮次去重）
-                    for line in result.lines() {
-                        if let Some(sid) = line.split("source_id: MEMORY-").nth(1) {
-                            let sid = sid.trim().split(|c: char| c == '|' || c.is_whitespace()).next().unwrap_or("");
-                            if !sid.is_empty() {
-                                session.shown_memory_ids.insert(format!("MEMORY-{}", sid));
-                            }
-                        }
-                    }
+
                     let tc = &atc[*idx];
                     let key = (tc.function.name.clone(), tc.function.arguments.clone());
                     dedup_cache.insert(key, result.clone());
@@ -4630,7 +4702,8 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                         }
                     }
                     session.tool_history.push(step_desc);
-                    session.update_from_tool_result(&result_str);
+                    let tool_name = t["tool"].as_str().unwrap_or("");
+                    session.update_from_tool_result(tool_name, &result_str);
                 }
 
                 // ★ 状态驱动熔断检查
@@ -4686,11 +4759,11 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
 
                 if !circuit_break_reason.is_empty() {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::info!("[Agent] 流式总结失败: {e}"); format!("总结失败: {e}") });
+                    let ans = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::warn!("[Agent] 熔断总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); } }
                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }
-                    return Ok(json!({"success":true,"result_type":"answer","answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log}));
+                    return Ok(json!({"success":true,"result_type":"answer","answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
                 }
 
                 // ★ 扣减预算（工具执行后，下一轮生效）
@@ -4702,24 +4775,38 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                 // 工具结果成为稳定前缀，可被 prompt cache 命中
                 {
                     let scratchpad = session.generate_scratchpad();
-                    let today_str = chrono::Local::now().format("%Y年%m月%d日").to_string();
-                    let budget_info = {
-                        let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
-                        let round_pt = pt - prev_pt;
-                format!("当前会话工作记忆\n{}\n\n搜索状态\n- 剩余预算: {}/150 — {}\n- 上下文: {} tokens（本轮 +{}）| 已生成: {} tokens\n- 证据足够就直接回答。", scratchpad, budget, status, pt, round_pt, ct)
-                    };
+                    let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
+                    // ★ 计算当前上下文 token 数
+                    let context_tokens: i64 = messages.iter().map(|m| {
+                        let text_len = m.content.as_ref().map_or(0, |s| s.len() as i64);
+                        let tc_len = m.tool_calls.as_ref().map_or(0, |tcs| tcs.iter()
+                            .map(|tc| tc.function.arguments.len() as i64)
+                            .sum::<i64>());
+                        (text_len + tc_len) / 3
+                    }).sum();
+                    let budget_info = format!(
+                        "当前会话工作记忆\n{}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
+                        scratchpad, iters, search_cost, budget, status, context_tokens
+                    );
                     // 移除上一轮的动态上下文消息
                     if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
                         messages.remove(pos);
                     }
-            messages.push(ChatMessage{role:MessageRole::User, content: Some(format!("[DYNAMIC_CONTEXT]\n当前日期\n{}\n\n用户策略\n{}\n\n{}", today_str, user_policies, budget_info)), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+            messages.push(ChatMessage{role:MessageRole::User, content: Some(format!("[DYNAMIC_CONTEXT]\n用户策略\n{}\n\n{}", user_policies, budget_info)), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+                }
+                // ★ 调试：每轮工具调用后保存完整上下文
+                {
+                    let context_json: Vec<Value> = messages.iter().filter_map(|m| {
+                        serde_json::to_value(m).ok()
+                    }).collect();
+                    let _ = crate::commands::save_agent_context(context_json);
                 }
                 // ★ 保存 session 缓存
                 if let Some(ref sid) = session_id {
                     save_session_state(sid, &session);
                 }
             }
-            _ => { if let Some(ref sid) = session_id { save_session_state(sid, &session); } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"result_type":"answer","answer":format!("根据当前信息：\n\n{}",effective_ac),"workspace":ws,"iterations":iters,"promptTokens":pt,"completionTokens":ct,"tool_log":tool_log})); }
+            _ => { if let Some(ref sid) = session_id { save_session_state(sid, &session); } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"result_type":"answer","answer":format!("根据当前信息：\n\n{}",effective_ac),"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log})); }
         }
     }
 }

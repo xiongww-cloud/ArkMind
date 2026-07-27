@@ -82,8 +82,6 @@ export interface AgentChatOptions {
   getMessage: () => ChatMessage | null
   /** 滚动函数 */
   scrollFn: () => void
-  /** 构建 history 传给 invoke */
-  getHistory: () => any[]
   /** agent:done 回调（处理组件特有逻辑） */
   onDone?: (result: AgentDoneResult, ctx: AgentDoneContext) => void
   /** agent:error 回调 */
@@ -196,7 +194,7 @@ export function useAgentChat() {
 
   // ── startAgentChat ──
   async function startAgentChat(query: string, options: AgentChatOptions) {
-    const { getMessage, scrollFn, getHistory, onDone, onError, onStartAnswer, onFinish, sessionId } = options
+    const { getMessage, scrollFn, onDone, onError, onStartAnswer, onFinish, sessionId } = options
 
     isChatting.value = true
     setThinkingProgress('')
@@ -205,51 +203,19 @@ export function useAgentChat() {
     setThinkingProgress(presetText)
     scrollFn()
 
-    let unlistenStream: (() => void) | null = null
-    let hasRoundThought = false
     try {
-      const isRealStreaming = ref(false)
-      let streamedContent = ''
-      let lastRenderTime = 0
-      const RENDER_THROTTLE_MS = 80
+      let hasRoundThought = false
 
       const unlistenProgress = await listen<{ msg: string }>('agent:progress', (ev) => {
         if (!hasRoundThought) { setThinkingProgress(ev.payload.msg) }
         scrollFn()
       })
-      const unlistenStatus = await listen<{ stage: string; tool?: string; msg?: string }>('agent:status', (ev) => {
-      })
-      const unlistenStartAnswer = await listen('agent:start-answer', () => {
-        hasRoundThought = false
-        isRealStreaming.value = true
-        streamedContent = ''
-        onStartAnswer?.()
-        scrollFn()
-      })
-      unlistenStream = await listen<{ token: string }>('agent:token', (ev) => {
-        if (!isRealStreaming.value) return
-        streamedContent += ev.payload.token
-        const msg = getMessage()
-        if (msg) {
-          msg.content = streamedContent.replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-          const now = Date.now()
-          if (now - lastRenderTime > RENDER_THROTTLE_MS) {
-            lastRenderTime = now
-            const text = streamedContent.replace(/<refs>[\s\S]*<\/refs>/g, '').replace(/~/g, '～')
-            renderMd(text).then(h => { if (h && msg.id) rendered.value[msg.id] = h })
-          }
-        }
-        scrollFn()
-      })
       const unlistenRoundThought = await listen<{text?: string}>('agent:round-thought', (ev) => {
         hasRoundThought = true
-        streamedContent = ''
-        isRealStreaming.value = false
         const msg = getMessage()
         if (msg) {
           msg.thinking = true
           msg.isThinking = true
-          if (msg.id) rendered.value[msg.id] = ''
         }
         if (ev.payload.text && ev.payload.text.trim()) {
           setThinkingProgress(ev.payload.text.trim())
@@ -259,7 +225,7 @@ export function useAgentChat() {
         scrollFn()
       })
 
-      invoke('kb_agent_chat', { data: { query, history: getHistory(), sessionId: sessionId || undefined } }).catch((err) => {
+      invoke('kb_agent_chat', { data: { query, sessionId: sessionId || undefined } }).catch((err) => {
         console.error('[AgentChat] invoke failed:', err)
         const msg = getMessage()
         if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = String(err) }
@@ -274,12 +240,11 @@ export function useAgentChat() {
         setThinkingProgress('')
 
         if (result && result.success) {
-          const rawAnswer = (result.answer || streamedContent || '').trim()
+          const finalAnswer = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
           
           // 解析 <refs> 标签
-          const refsMatch = rawAnswer.match(/<refs>([\s\S]*?)<\/refs>/)
+          const refsMatch = (result.answer || '').match(/<refs>([\s\S]*?)<\/refs>/)
           let objectRefs = []
-          let finalAnswer = rawAnswer.replace(/<refs>[\s\S]*?<\/refs>/g, '').trim()
           
           if (refsMatch) {
             try {
@@ -298,16 +263,11 @@ export function useAgentChat() {
                 if (msg.id) rendered.value[msg.id!] = `<div class="object-references">${refsHtml}</div><div class="answer-content">${mdHtml}</div>`
               })
             } else {
-              // 普通 Markdown 渲染
-              if (isRealStreaming.value) {
-                msg.content = finalAnswer
-                if (msg.id) renderMd(finalAnswer.replace(/~/g, '～')).then(h => { rendered.value[msg.id!] = h })
-              } else {
-                startTypewriter(msg.id || '', finalAnswer, msg)
-              }
+              // 普通 Markdown 渲染 + 打字机效果
+              startTypewriter(msg.id || '', finalAnswer, msg)
             }
           }
-          onDone?.(result, { finalAnswer, isRealStreaming: isRealStreaming.value, streamedContent, responseType })
+          onDone?.(result, { finalAnswer, isRealStreaming: false, streamedContent: '', responseType })
         } else {
           if (msg) { msg.content = result?.answer || result?.error || '请求失败' }
           onError?.(result?.error || result?.answer || '请求失败')
@@ -332,9 +292,6 @@ export function useAgentChat() {
       function cleanup() {
         try {
           unlistenProgress()
-          unlistenStatus()
-          unlistenStartAnswer()
-          unlistenStream?.()
           unlistenRoundThought()
           unlistenDone()
           unlistenError()

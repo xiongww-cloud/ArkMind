@@ -3,7 +3,7 @@ import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { kbFabInitSession, kbFabLoadHistory, kbFabSaveMessage } from '@/api/db-client'
+import { kbFabInitSession, kbFabLoadHistory } from '@/api/db-client'
 import { useAgentChat, type ChatMessage } from '@/composables/useAgentChat'
 
 const agent = useAgentChat()
@@ -38,11 +38,6 @@ async function loadHistory() {
         role: m.role,
         content: m.content,
         timestamp: Date.now() - (result.messages!.length - i) * 1000,
-        toolCalls: m.toolCalls || m.tool_calls || undefined,
-        rawToolCalls: m.rawToolCalls || m.raw_tool_calls || undefined,
-        toolResults: m.toolResults || m.tool_results || undefined,
-        contextDocs: m.contextDocs || m.context_docs || undefined,
-        workspace: m.workspace || undefined,
       }))
       historyLoaded.value = true
       for (const msg of messages.value) {
@@ -53,18 +48,6 @@ async function loadHistory() {
     }
   } catch (e) {
     console.error('[Chat] 加载历史失败:', e)
-  }
-}
-
-async function saveMessage(msg: ChatMessage) {
-  try {
-    await kbFabSaveMessage({
-      role: msg.role,
-      content: msg.content || '',
-      metadata: msg,
-    })
-  } catch (e) {
-    console.error('[Chat] 保存消息失败:', e)
   }
 }
 
@@ -84,25 +67,6 @@ function fmtTime(ts?: number) {
   if (d >= today) return `今天 ${time}`
   if (d >= yesterday) return `昨天 ${time}`
   return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-}
-
-function buildChatHistory() {
-  return messages.value.slice(0, -1).map(m => {
-    if (m.role === 'user') {
-      return { role: 'user', content: m.content || '' }
-    }
-    const entry: any = { role: 'assistant', content: m.content || '' }
-    if (m.rawToolCalls?.length) entry.tool_calls = m.rawToolCalls
-    if (m.toolResults?.length) {
-      return [entry, ...m.toolResults.map((tr: any) => ({
-        role: 'tool',
-        content: tr.content || '',
-        tool_call_id: tr.id,
-        name: tr.name,
-      }))]
-    }
-    return entry
-  }).flat()
 }
 
 // ─── Expand/Collapse ────────────────────────────────────────
@@ -130,38 +94,23 @@ async function send() {
 
   const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() }
   messages.value.push(userMsg)
-  saveMessage(userMsg)
 
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', thinking: true, toolCalls: [], rawToolCalls: [], toolResults: [], timestamp: Date.now() }
   messages.value.push(aiMsg)
   while (messages.value.length > 20) { messages.value.shift() }
   scrollChat()
 
-  let saved = false
   await agent.startAgentChat(q, {
     getMessage: () => aiMsg,
     scrollFn: scrollChat,
-    getHistory: () => buildChatHistory(),
     sessionId: 'fab-main-session',
     onDone: (result, ctx) => {
       if (ctx.finalAnswer && ctx.finalAnswer.trim()) {
-        aiMsg.content = ctx.finalAnswer
         aiMsg.toolCalls = result.tool_log || []
-        saveMessage(aiMsg)
-        saved = true
       }
     },
     onError: (error) => {
-      if (!saved) {
-        aiMsg.content = error
-        saveMessage(aiMsg)
-        saved = true
-      }
-    },
-    onFinish: () => {
-      if (!saved && aiMsg.content && aiMsg.content.trim()) {
-        saveMessage(aiMsg)
-      }
+      aiMsg.content = error
     },
   })
 }

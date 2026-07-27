@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { notificationStats } from '@/api/notification-client'
-import { kbFabInitSession, kbFabLoadHistory, kbFabSaveMessage } from '@/api/db-client'
+import { kbFabInitSession, kbFabLoadHistory } from '@/api/db-client'
 import MascotSprite from '@/components/common/MascotSprite.vue'
 import { useAgentChat, type ChatMessage } from '@/composables/useAgentChat'
 
@@ -40,11 +40,11 @@ async function loadFabHistory() {
     await kbFabInitSession()
     const result = await kbFabLoadHistory(50)
     if (result.success && result.messages) {
-      messages.value = result.messages.map((m: any, i: number) => ({
+      messages.value = result.messages.map((m: any) => ({
         id: crypto.randomUUID(),
         role: m.role,
         content: m.content,
-        timestamp: Date.now() - (result.messages!.length - i) * 1000,
+        timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
       }))
       historyLoaded.value = true
       // 加载历史后渲染 markdown
@@ -56,17 +56,6 @@ async function loadFabHistory() {
     }
   } catch (e) {
     console.error('[FAB] 加载历史失败:', e)
-  }
-}
-
-async function saveFabMessage(msg: ChatMessage) {
-  try {
-    await kbFabSaveMessage({
-      role: msg.role,
-      content: msg.content || '',
-    })
-  } catch (e) {
-    console.error('[FAB] 保存消息失败:', e)
   }
 }
 
@@ -99,8 +88,6 @@ async function send() {
 
   const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() }
   messages.value.push(userMsg)
-  // 保存用户消息
-  saveFabMessage(userMsg)
 
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', thinking: true }
   messages.value.push(aiMsg)
@@ -111,23 +98,12 @@ async function send() {
   await agent.startAgentChat(q, {
     getMessage: () => aiMsg,
     scrollFn: scrollChat,
-    getHistory: () => buildFabHistory(),
     sessionId: 'fab-main-session',
     onStartAnswer: () => { mascotState.value = 'speaking' },
     onFinish: () => {
       mascotState.value = 'idle'
-      // 保存 AI 回复
-      saveFabMessage(aiMsg)
     },
   })
-}
-
-function buildFabHistory() {
-  // 构建历史：排除最后一条（当前问题），传递给后端用于上下文
-  return messages.value.slice(0, -1).map(m => ({
-    role: m.role,
-    content: m.content || '',
-  }))
 }
 
 async function stopAgent() {

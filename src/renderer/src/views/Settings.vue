@@ -614,11 +614,11 @@ import { getSpriteEnabled, setSpriteEnabled } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
-const notifyStartupOnly = ref(false)
 const loopStatus = ref<LoopStatus>({ success: true, running: false, last_check_at: '', next_check_at: '' })
 let loopStatusTimer: ReturnType<typeof setInterval> | null = null
 
 const intervalOptions = [
+  { value: 0, label: '仅启动时' },
   { value: 30, label: '30分钟' },
   { value: 60, label: '1小时' },
   { value: 120, label: '2小时' },
@@ -647,8 +647,7 @@ async function loadNotifyConfig() {
     const r = await notificationConfigGet()
     if (r.config) {
       notifyEnabled.value = r.config.enabled !== '0'
-      notifyInterval.value = parseInt(r.config.interval_minutes) || 60
-      notifyStartupOnly.value = r.config.startup_only === '1'
+      notifyInterval.value = r.config.startup_only === '1' ? 0 : (parseInt(r.config.interval_minutes) || 60)
     }
   } catch {}
 }
@@ -663,8 +662,8 @@ async function saveNotifyConfig() {
   try {
     await notificationConfigUpdate({
       enabled: notifyEnabled.value ? '1' : '0',
-      interval_minutes: notifyInterval.value.toString(),
-      startup_only: notifyStartupOnly.value ? '1' : '0',
+      interval_minutes: notifyInterval.value === 0 ? '60' : notifyInterval.value.toString(),
+      startup_only: notifyInterval.value === 0 ? '1' : '0',
     })
   } catch {}
 }
@@ -1022,7 +1021,7 @@ onUnmounted(() => {
     <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
       <div class="flex items-center justify-between px-5 pt-5 pb-0">
         <h2 class="text-[13px] font-semibold text-surface-700">智能通知</h2>
-        <div v-if="notifyEnabled && !notifyStartupOnly" class="flex items-center gap-1.5">
+        <div v-if="notifyEnabled && notifyInterval !== 0" class="flex items-center gap-1.5">
           <span class="w-1.5 h-1.5 rounded-full" :class="loopStatus.running ? 'bg-emerald-500' : 'bg-surface-300'"></span>
           <span class="text-[10px]" :class="loopStatus.running ? 'text-emerald-600' : 'text-surface-400'">
             {{ loopStatus.running ? '循环运行中' : '未启动' }}
@@ -1044,16 +1043,6 @@ onUnmounted(() => {
           </label>
         </div>
         <div class="flex items-center justify-between">
-          <div>
-            <p class="text-[12px] font-medium text-surface-700">仅在启动时执行</p>
-            <p class="text-[10px] text-surface-400">关闭后按时间周期执行，启动时不执行</p>
-          </div>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" v-model="notifyStartupOnly" class="sr-only peer" @change="saveNotifyConfig">
-            <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
-          </label>
-        </div>
-        <div v-if="!notifyStartupOnly" class="flex items-center justify-between">
           <p class="text-[12px] font-medium text-surface-700">分析频率</p>
           <div class="flex items-center gap-1.5 flex-wrap">
             <button v-for="opt in intervalOptions" :key="opt.value"

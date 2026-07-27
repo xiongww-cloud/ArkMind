@@ -204,6 +204,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE projects ADD COLUMN expected_order_date TEXT DEFAULT ''",
         // session state: SessionMemory JSON 缓存到 chat_sessions
         "ALTER TABLE chat_sessions ADD COLUMN session_state TEXT DEFAULT NULL",
+        // context metadata: 压缩摘要存储在 session 级别
+        "ALTER TABLE chat_sessions ADD COLUMN context_metadata TEXT DEFAULT NULL",
         // 清理旧的 session_cache 表（如果存在）
         "DROP TABLE IF EXISTS session_cache",
         // 精灵窗口位置
