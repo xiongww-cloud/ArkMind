@@ -25,6 +25,14 @@ pub(crate) fn set_db(conn: Connection) {
     *db = Some(conn);
 }
 
+/// 关闭并释放数据库连接（恢复备份前调用，释放文件句柄）
+pub(crate) fn close_db() {
+    let mut db = DB.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(conn) = db.take() {
+        drop(conn);
+    }
+}
+
 /// 转义 LIKE 查询中的通配符（% 和 _）
 pub fn escape_like(input: &str) -> String {
     input.replace('\\', "\\\\")

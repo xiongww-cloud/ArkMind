@@ -206,7 +206,7 @@ async function handleBackupAll() {
 async function handleRestoreAll() {
   const ok = await dangerConfirm({
     title: '一键恢复',
-    message: '恢复将覆盖当前所有数据（数据库、文件、向量库）。恢复后需要重启应用。是否继续？',
+    message: '恢复将覆盖当前所有数据（数据库、文件、向量库）。恢复完成后应用将自动重启。是否继续？',
     confirmText: '确认恢复',
   })
   if (!ok) return
@@ -221,7 +221,7 @@ async function handleRestoreAll() {
     const { restoreAll } = await import('@/api/db-client')
     const result = await restoreAll(filePath as string)
     if (result.success) {
-      toast.success('数据已恢复，请重启应用以完成恢复。')
+      toast.success('数据已恢复，应用即将自动重启...')
     } else {
       alert({ title: '恢复失败', message: result.error || '未知错误' })
     }

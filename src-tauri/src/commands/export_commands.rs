@@ -233,6 +233,8 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
 
         // 1. SQLite 数据库
         eprintln!("[备份] 步骤 1/4: 复制数据库...");
+        // ★ 先强制 WAL checkpoint，确保所有事务落盘，避免备份不一致
+        let _ = crate::database::with_db(|conn| conn.pragma_update(None, "wal_checkpoint", "TRUNCATE"));
         let db_dir = tmp.join("database");
         std::fs::create_dir_all(&db_dir).map_err(|e| e.to_string())?;
         let db_path = crate::get_data_dir().join("arkmind.db");
@@ -332,9 +334,9 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
     }).await.map_err(|e| e.to_string())?
 }
 
-/// 一键恢复：从 ZIP 文件恢复所有数据
+/// 一键恢复：从 ZIP 文件恢复所有数据（完成后自动重启应用）
 #[tauri::command]
-pub async fn restore_all(backup_path: String) -> Result<Value, String> {
+pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> Result<Value, String> {
     tokio::task::spawn_blocking(move || {
         eprintln!("[恢复] 开始一键恢复 <- {}", backup_path);
         let zip_path = std::path::PathBuf::from(&backup_path);
@@ -362,12 +364,19 @@ pub async fn restore_all(backup_path: String) -> Result<Value, String> {
         let db_dir = tmp.join("database");
         if db_dir.exists() {
             let db_dest = crate::get_data_dir().join("arkmind.db");
+            // ★ 先关闭数据库连接，释放文件句柄（Windows 下覆盖打开中的文件会失败）
+            crate::database::close_db();
+            // ★ 删除残留的 WAL/SHM，避免旧 WAL 重放到恢复后的数据库
+            let wal_dest = db_dest.with_extension("db-wal");
+            let shm_dest = db_dest.with_extension("db-shm");
+            if wal_dest.exists() { std::fs::remove_file(&wal_dest).ok(); }
+            if shm_dest.exists() { std::fs::remove_file(&shm_dest).ok(); }
             if let Some(parent) = db_dest.parent() { std::fs::create_dir_all(parent).ok(); }
             std::fs::copy(db_dir.join("arkmind.db"), &db_dest).map_err(|e| e.to_string())?;
             let wal_src = db_dir.join("arkmind.db-wal");
             let shm_src = db_dir.join("arkmind.db-shm");
-            if wal_src.exists() { std::fs::copy(&wal_src, db_dest.with_extension("db-wal")).ok(); }
-            if shm_src.exists() { std::fs::copy(&shm_src, db_dest.with_extension("db-shm")).ok(); }
+            if wal_src.exists() { std::fs::copy(&wal_src, &wal_dest).ok(); }
+            if shm_src.exists() { std::fs::copy(&shm_src, &shm_dest).ok(); }
             eprintln!("[恢复] 数据库已恢复到: {}", db_dest.display());
         } else {
             eprintln!("[恢复] 备份中无数据库，跳过");
@@ -400,9 +409,15 @@ pub async fn restore_all(backup_path: String) -> Result<Value, String> {
 
         // 6. 清理临时目录
         std::fs::remove_dir_all(&tmp).ok();
-        eprintln!("[恢复] 完成! 请重启应用以完成恢复。");
+        eprintln!("[恢复] 完成! 应用即将自动重启...");
 
-        Ok(json!({"success": true}))
+        // ★ 延迟 1.5 秒后自动重启（让响应先送达前端）
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            app_handle.restart();
+        });
+
+        Ok(json!({"success": true, "restart": true}))
     }).await.map_err(|e| e.to_string())?
 }
 
