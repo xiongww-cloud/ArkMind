@@ -96,7 +96,10 @@ pub fn get_changed_since(since: &str, limit: i64) -> Vec<(String, String, String
 
 /// 获取指定 source_data 的 id（供知识管线调用）
 pub fn get_source_data_id(source_type: &str, source_id: &str) -> Option<String> {
-    crate::database::repository::source_data_id(source_type, source_id)
+    crate::database::get(
+        "SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",
+        &[serde_json::json!(source_type), serde_json::json!(source_id)],
+    ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from))
 }
 
 /// 重建 FTS5 触发器

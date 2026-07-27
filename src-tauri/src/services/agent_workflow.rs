@@ -563,7 +563,7 @@ fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collection
     };
     // 1. top 5 高分对象
     let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
-    sorted.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| b.access_order.cmp(&a.access_order)));
+    sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     for o in sorted.iter().take(5) {
         if let Some(p) = type_prefix(&o.obj_type) {
             scope_ids.push(format!("{}-{}", p, o.obj_id));
@@ -919,7 +919,10 @@ fn execute_relations(entity_type: &str, entity_id: &str, target_type: Option<&st
     let total = all_rels.len();
 
     // 获取源实体名称
-    let source_name = crate::database::repository::source_title(&upper, bare_id);
+    let source_name = crate::database::get(
+        "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
+        &[json!(&upper), json!(bare_id)],
+    ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
 
     // 分页
     let start = offset.min(total);
@@ -1246,12 +1249,25 @@ async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<ta
 // Chunk metadata enrichment
 // ═══════════════════════════════════════════════════════════════════
 
+/// 从 source_id 字符串解析出 source_type 和 source_id
+/// 支持格式：PROJECT-uuid 或裸 UUID
+fn parse_source_id(source_id_str: &str) -> (String, String) {
+    let known_types = ["PROJECT", "PRODUCT", "FILE", "NOTE", "TODO", "CHANNEL", "VENDOR", "CONTACT", "CUSTOMER"];
+    if let Some(dash) = source_id_str.find('-') {
+        let prefix = &source_id_str[..dash];
+        if known_types.contains(&prefix.to_uppercase().as_str()) {
+            return (prefix.to_uppercase(), source_id_str[dash+1..].to_string());
+        }
+    }
+    ("__raw__".to_string(), source_id_str.to_string())
+}
+
 /// 查询 source_data 表获取来源信息，返回 JSON 对象
 /// 返回结构：{"found": true, "id": "uuid", "type": "PROJECT", "name": "名称", "source_data_id": "123"}
 pub fn build_chunk_metadata(source_id_str: &str) -> serde_json::Value {
     if source_id_str.is_empty() { return json!({"found": false}); }
 
-    let (source_type, source_id) = crate::database::repository::parse_source_id(source_id_str);
+    let (source_type, source_id) = parse_source_id(source_id_str);
     
     let result = if source_type == "__raw__" {
         // 裸 UUID：搜索所有类型的 source_data
@@ -1313,8 +1329,10 @@ fn resolve_scope_to_rowids(scope: &[String]) -> std::collections::HashSet<i64> {
         let st = parts[0].to_uppercase();
         let sid = parts[1];
         // source_data.id 是 TEXT 类型（= source_id），不能用 as_i64()
-        match crate::database::repository::source_data_id(&st, sid) {
-            Some(sdid_str) => {
+        match database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(st), json!(sid)]) {
+            Ok(Some(row)) => {
+                let sdid_str = row["id"].as_str().unwrap_or("");
+                if sdid_str.is_empty() { log::info!("[Scope] ✗ {} source_data.id 为空", s); continue; }
                 match database::all("SELECT id FROM knowledge_chunks WHERE chunk_type='child' AND source_data_id=?1",&[json!(sdid_str)]) {
                     Ok(rows) => {
                         let count = rows.len();
@@ -1324,7 +1342,8 @@ fn resolve_scope_to_rowids(scope: &[String]) -> std::collections::HashSet<i64> {
                     Err(e) => log::info!("[Scope] ✗ {} 查询 child_chunks 失败: {}", s, e),
                 }
             }
-            None => log::info!("[Scope] ✗ {} 在 source_data 中未找到 (type={}, sid={})", s, st, sid),
+            Ok(None) => log::info!("[Scope] ✗ {} 在 source_data 中未找到 (type={}, sid={})", s, st, sid),
+            Err(e) => log::info!("[Scope] ✗ {} 查询 source_data 失败: {}", s, e),
         }
     }
     all_rowids
@@ -1382,7 +1401,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
                 match crate::services::lancedb_client::get_lancedb() {
                     Ok(g) => match g.as_ref() {
                         Some(c) => {
-                            let raw = c.search_vectors_with_parent(&qv, if scope_rowids.is_some() { 120 } else { 30 }).unwrap_or_default();
+                            let raw = c.search_vectors_with_parent(&qv, 30).unwrap_or_default();
                             raw.into_iter().map(|(r,s,_,_,_)|(r.to_string(),s)).collect()
                         }
                         None => vec![]
@@ -1393,7 +1412,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
             Err(_e) => vec![]
         }
     };
-    let fts_limit = if scope_rowids.is_some() { 120 } else { 30 };
+    let fts_limit = 30;
     let fts_q = keywords.iter().map(|k| format!("\"{}\"", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
     let fts_rowids: Vec<(String,f64)> = database::fts5_search_chunks(&fts_q, fts_limit).unwrap_or_default().iter()
         .map(|fr| (fr.rowid.to_string(), fr.rank)).collect();
@@ -1454,7 +1473,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
             }
             // ★ 时间过滤
             if let Some((ref start, ref end)) = time_range {
-                let created_at: String = crate::database::repository::chunk_created_at(cr);
+                let created_at: String = database::get("SELECT created_at FROM knowledge_chunks WHERE id=?1",&[json!(cr)]).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
                 if !created_at.is_empty() {
                     let date = &created_at[..10.min(created_at.len())];  // "2026-06-25"
                     if date < start.as_str() || date > end.as_str() { continue; }
@@ -1464,7 +1483,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
             let short_chunk: String = chunk_id.chars().take(8).collect();
             if !short_chunk.is_empty() && visited_chunks.contains(&short_chunk) { continue; }
 
-            let total_parents: i64 = crate::database::repository::count_parent_chunks(&sdid);
+            let total_parents: i64 = database::get("SELECT COUNT(*) as cnt FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent'",&[json!(sdid)]).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
             candidates.push((score, cr, st.clone(), sid.clone(), chunk_id, content, h, chunk_index, total_parents, is_scope_path, matched_sources.contains(&(st, sid))));
         }
     }
@@ -1515,7 +1534,9 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
                 "TODO" => "TODO",
                 _ => st,
             };
-            let created_at: String = crate::database::repository::chunk_created_at(*cr);
+            let created_at: String = database::get(
+                "SELECT created_at FROM knowledge_chunks WHERE id=?1", &[json!(cr)],
+            ).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
             let time_info = relative_time(&created_at);
             if !time_info.is_empty() {
                 if !meta.is_empty() { meta.push('\n'); }
@@ -1605,7 +1626,10 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
         let short_chunk_id: String = chunk_id.chars().take(8).collect();
         let preview: String = content.chars().take(1300).collect();
         // 查询时间信息
-        let created_at: String = crate::database::repository::chunk_created_at(*cr);
+        let created_at: String = database::get(
+            "SELECT created_at FROM knowledge_chunks WHERE id=?1",
+            &[json!(cr)],
+        ).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
         json!({
             "chunk_id": short_chunk_id,
             "rrf_score": score,
@@ -1624,7 +1648,10 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     
     // 构建 related_objects 数组（带名称）
     let related_objects: Vec<Value> = matched_sources.iter().map(|(st, sid)| {
-        let name = crate::database::repository::source_title(st, sid);
+        let name = database::get(
+            "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
+            &[json!(st), json!(sid)],
+        ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
         json!({
             "type": st,
             "id": sid,
@@ -1682,7 +1709,7 @@ fn execute_traverse(chunk_id: &str, edge_type: &str, radius: usize, visited: &st
         };
         return envelope.to_json();
     }};
-    let total: i64 = crate::database::repository::count_parent_chunks(&sdid);
+    let total: i64 = database::get("SELECT COUNT(*) as cnt FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent'",&[json!(sdid)]).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     let r = radius.max(1).min(20);
     // 将认知边缘映射到物理边缘
     let edge = match edge_type {
@@ -3540,7 +3567,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             if let Some(dash) = s.find('-') {
                                                 let (ot, oi) = s.split_at(dash);
                                                 let oi = &oi[1..];
-                                                let name = crate::database::repository::source_title(&ot.to_uppercase(), oi);
+                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
                                                 if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
                                                     effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name, score_delta: 0.0 });
                                                 }
@@ -3554,7 +3581,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                             if let Some(dash) = s.find('-') {
                                                 let (ot, oi) = s.split_at(dash);
                                                 let oi = &oi[1..];
-                                                let name = crate::database::repository::source_title(&ot.to_uppercase(), oi);
+                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
                                                 if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
                                                     effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name, score_delta: 0.0 });
                                                 }

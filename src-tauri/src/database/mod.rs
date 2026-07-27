@@ -2,7 +2,6 @@ pub mod db_core;
 pub mod db_schema;
 pub mod db_fts;
 pub mod db_migrations;
-pub mod repository;
 
 pub use db_core::*;
 pub use db_fts::*;
