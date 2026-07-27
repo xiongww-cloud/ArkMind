@@ -18,7 +18,7 @@ pub struct LoopStatus {
 
 /// 启动周期通知分析循环
 pub fn start_notification_loop(app_handle: tauri::AppHandle) {
-    if LOOP_RUNNING.swap(true, Ordering::AcqRel) {
+    if LOOP_RUNNING.swap(true, Ordering::SeqCst) {
         log::info!("[通知循环] 已在运行，跳过重复启动");
         return;
     }
@@ -37,7 +37,7 @@ pub fn start_notification_loop(app_handle: tauri::AppHandle) {
             tokio::time::sleep(Duration::from_secs(15)).await;
 
             loop {
-                if !LOOP_RUNNING.load(Ordering::Relaxed) {
+                if !LOOP_RUNNING.load(Ordering::SeqCst) {
                     log::info!("[通知循环] 收到停止信号，退出循环");
                     break;
                 }
@@ -58,7 +58,7 @@ pub fn start_notification_loop(app_handle: tauri::AppHandle) {
 
 /// 获取循环状态
 pub fn get_loop_status() -> LoopStatus {
-    let running = LOOP_RUNNING.load(Ordering::Relaxed);
+    let running = LOOP_RUNNING.load(Ordering::SeqCst);
     let last_check_at = get_config("last_check_at").unwrap_or_default();
     let next_check_at = if running && !last_check_at.is_empty() {
         let interval: i64 = get_config("interval_minutes")
@@ -83,14 +83,14 @@ fn tick(app_handle: &tauri::AppHandle) -> Result<u64, String> {
     // 2. 检查 startup_only
     let startup_only = get_config("startup_only").unwrap_or_else(|| "0".to_string());
     if startup_only == "1" {
-        if STARTUP_DONE.load(Ordering::Relaxed) {
+        if STARTUP_DONE.load(Ordering::SeqCst) {
             log::debug!("[通知循环] startup_only 模式，本次已执行，60秒后重试");
             return Ok(60);
         }
         // 首次执行
         log::info!("[通知循环] startup_only 模式，执行首次分析...");
         run_analysis(app_handle);
-        STARTUP_DONE.store(true, Ordering::Relaxed);
+        STARTUP_DONE.store(true, Ordering::SeqCst);
         return Ok(60);
     }
 
