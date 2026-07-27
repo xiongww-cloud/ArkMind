@@ -522,37 +522,37 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
         for p in projects {
             let id = p["id"].as_str().unwrap_or("");
             if id.is_empty() { continue; }
-            database::run("INSERT OR REPLACE INTO projects(id,name,description,status,owner,budget,bid_time,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", &[
+            database::run("INSERT OR IGNORE INTO projects(id,name,description,status,owner,budget,bid_time,expected_order_date,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[
                 json!(id), json!(p["name"]), json!(p["description"]), json!(p["status"]),
                 json!(p["owner"]), json!(p["budget"]),
-                json!(p["bid_time"]),
+                json!(p["bid_time"]), json!(p["expected_order_date"]),
                 json!(p["created_at"]), json!(p["updated_at"]),
             ]).ok();
         }
     }
     // 方案
     if let Some(sols) = data["solutions"].as_array() {
-        for s in sols { database::run("INSERT OR REPLACE INTO solutions(id,project_id,name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)", &[json!(s["id"]),json!(s["project_id"]),json!(s["name"]),json!(s["created_at"]),json!(s["updated_at"])]).ok(); }
+        for s in sols { database::run("INSERT OR IGNORE INTO solutions(id,project_id,name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)", &[json!(s["id"]),json!(s["project_id"]),json!(s["name"]),json!(s["created_at"]),json!(s["updated_at"])]).ok(); }
     }
     // 方案版本
     if let Some(vers) = data["solution_versions"].as_array() {
-        for v in vers { database::run("INSERT OR REPLACE INTO solution_versions(id,solution_id,version,tags,content,creator,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", &[json!(v["id"]),json!(v["solution_id"]),json!(v["version"]),json!(v["tags"]),json!(v["content"]),json!(v["creator"]),json!(v["status"]),json!(v["created_at"]),json!(v["updated_at"])]).ok(); }
+        for v in vers { database::run("INSERT OR IGNORE INTO solution_versions(id,solution_id,version,tags,content,creator,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", &[json!(v["id"]),json!(v["solution_id"]),json!(v["version"]),json!(v["tags"]),json!(v["content"]),json!(v["creator"]),json!(v["status"]),json!(v["created_at"]),json!(v["updated_at"])]).ok(); }
     }
     // 方案设备清单
     if let Some(items) = data["solution_items"].as_array() {
-        for i in items { database::run("INSERT OR REPLACE INTO solution_items(id,solution_version_id,product_id,product_name,quantity,unit_price,description,device_name,row_type,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", &[json!(i["id"]),json!(i["solution_version_id"]),json!(i["product_id"]),json!(i["product_name"]),json!(i["quantity"]),json!(i["unit_price"]),json!(i["description"]),json!(i["device_name"]),json!(i["row_type"]),json!(i["sort_order"]),json!(i["created_at"]),json!(i["updated_at"])]).ok(); }
+        for i in items { database::run("INSERT OR IGNORE INTO solution_items(id,solution_version_id,product_id,product_name,quantity,unit_price,description,device_name,row_type,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", &[json!(i["id"]),json!(i["solution_version_id"]),json!(i["product_id"]),json!(i["product_name"]),json!(i["quantity"]),json!(i["unit_price"]),json!(i["description"]),json!(i["device_name"]),json!(i["row_type"]),json!(i["sort_order"]),json!(i["created_at"]),json!(i["updated_at"])]).ok(); }
     }
     // 动态
     if let Some(dyns) = data["project_dynamics"].as_array() {
-        for d in dyns { database::run("INSERT OR REPLACE INTO project_dynamics(id,project_id,type,content,operator,created_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(d["id"]),json!(d["project_id"]),json!(d["type"]),json!(d["content"]),json!(d["operator"]),json!(d["created_at"])]).ok(); }
+        for d in dyns { database::run("INSERT OR IGNORE INTO project_dynamics(id,project_id,type,content,operator,created_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(d["id"]),json!(d["project_id"]),json!(d["type"]),json!(d["content"]),json!(d["operator"]),json!(d["created_at"])]).ok(); }
     }
     // 合作伙伴（新格式或旧格式兼容）
     if let Some(arr) = data["partners"].as_array() {
-        // 新格式：直接导入 partners 表
+        // 新格式：直接导入 partners 表（address 列，由 company 迁移而来）
         for p in arr {
-            database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[
+            database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[
                 json!(p["id"]),json!(p["type"]),json!(p["name"]),json!(p["phone"]),
-                json!(p["company"]),json!(p["remark"]),json!(p["contact_person"]),json!(p["contact_phone"]),
+                json!(p["address"]),json!(p["remark"]),json!(p["contact_person"]),json!(p["contact_phone"]),
                 json!(p["created_at"]),json!(p["updated_at"])
             ]).ok();
         }
@@ -560,7 +560,7 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
         // 旧格式：转换 channel_partners → partners
         if let Some(chs) = data["channel_partners"].as_array() {
             for c in chs {
-                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)", &[
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)", &[
                     json!(c["id"]),json!(c["name"]),json!(c["phone"]),json!(c["company"]),json!(c["remark"]),json!(c["created_at"])
                 ]).ok();
             }
@@ -568,7 +568,7 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
         // 旧格式：转换 vendor_partners → partners
         if let Some(vds) = data["vendor_partners"].as_array() {
             for v in vds {
-                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)", &[
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)", &[
                     json!(v["id"]),json!(v["name"]),json!(v["phone"]),json!(v["company"]),json!(v["remark"]),json!(v["created_at"])
                 ]).ok();
             }
@@ -576,7 +576,7 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
         // 旧格式：客户
         if let Some(custs) = data["customers"].as_array() {
             for c in custs {
-                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,'CUSTOMER',?2,'','',?3,?4,?5,?6,?7)", &[
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,contact_person,contact_phone,created_at,updated_at) VALUES(?1,'CUSTOMER',?2,'','',?3,?4,?5,?6,?7)", &[
                     json!(c["id"]),json!(c["name"]),json!(c["remark"]),json!(c["contact_person"]),json!(c["contact_phone"]),json!(c["created_at"]),json!(c["updated_at"])
                 ]).ok();
             }
@@ -649,14 +649,30 @@ fn import_products(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
         for p in products {
             let id = p["id"].as_str().unwrap_or("");
             if id.is_empty() { continue; }
-            database::run("INSERT OR REPLACE INTO products(id,name,series_id,model,description,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", &[
-                json!(id), json!(p["name"]), json!(p["series_id"]), json!(p["model"]),
-                json!(p["description"]), json!(p["status"]), json!(p["created_at"]), json!(p["updated_at"]),
+            database::run("INSERT OR IGNORE INTO products(id,name,series_id,series_name,description,price,standard_specs,full_specs,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)", &[
+                json!(id), json!(p["name"]), json!(p["series_id"]), json!(p["series_name"]),
+                json!(p["description"]), json!(p["price"]), json!(p["standard_specs"]),
+                json!(p["full_specs"]), json!(p["sort_order"]),
+                json!(p["created_at"]), json!(p["updated_at"]),
             ]).ok();
         }
     }
     if let Some(series) = data["product_series"].as_array() {
-        for s in series { database::run("INSERT OR REPLACE INTO product_series(id,name,created_at,updated_at) VALUES(?1,?2,?3,?4)", &[json!(s["id"]),json!(s["name"]),json!(s["created_at"]),json!(s["updated_at"])]).ok(); }
+        for s in series { database::run("INSERT OR IGNORE INTO product_series(id,name,parent_id,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(s["id"]),json!(s["name"]),json!(s["parent_id"]),json!(s["sort_order"]),json!(s["created_at"]),json!(s["updated_at"])]).ok(); }
+    }
+    // 物料附件：先恢复 file_assets 行（二进制复制依赖 content_hash 查询）
+    if let Some(assets) = data["file_assets"].as_array() {
+        for a in assets {
+            let id = a["id"].as_str().unwrap_or("");
+            if id.is_empty() { continue; }
+            database::run("INSERT OR IGNORE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
+                json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
+                json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
+            ]).ok();
+        }
+    }
+    if let Some(rels) = data["file_relations"].as_array() {
+        for r in rels { database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
     }
     // 复制物料文件
     let files_dir = tmp.join("product_files");
@@ -682,10 +698,24 @@ fn import_products(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
 
 fn import_notes(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
     if let Some(notebooks) = data["notebooks"].as_array() {
-        for n in notebooks { database::run("INSERT OR REPLACE INTO notebooks(id,name,color,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(n["id"]),json!(n["name"]),json!(n["color"]),json!(n["sort_order"]),json!(n["created_at"]),json!(n["updated_at"])]).ok(); }
+        for n in notebooks { database::run("INSERT OR IGNORE INTO notebooks(id,name,color,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(n["id"]),json!(n["name"]),json!(n["color"]),json!(n["sort_order"]),json!(n["created_at"]),json!(n["updated_at"])]).ok(); }
     }
     if let Some(notes) = data["notes"].as_array() {
-        for n in notes { database::run("INSERT OR REPLACE INTO notes(note_id,title,content,is_daily,notebook_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(n["note_id"]),json!(n["title"]),json!(n["content"]),json!(n["is_daily"]),json!(n["notebook_id"]),json!(n["created_at"]),json!(n["updated_at"])]).ok(); }
+        for n in notes { database::run("INSERT OR IGNORE INTO notes(note_id,title,content,is_daily,notebook_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(n["note_id"]),json!(n["title"]),json!(n["content"]),json!(n["is_daily"]),json!(n["notebook_id"]),json!(n["created_at"]),json!(n["updated_at"])]).ok(); }
+    }
+    // 笔记附件：先恢复 file_assets 行（二进制复制依赖 content_hash 查询）
+    if let Some(assets) = data["file_assets"].as_array() {
+        for a in assets {
+            let id = a["id"].as_str().unwrap_or("");
+            if id.is_empty() { continue; }
+            database::run("INSERT OR IGNORE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
+                json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
+                json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
+            ]).ok();
+        }
+    }
+    if let Some(rels) = data["file_relations"].as_array() {
+        for r in rels { database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
     }
     // 复制笔记附件
     let files_dir = tmp.join("note_files");
@@ -714,12 +744,26 @@ fn import_todos(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
         for t in todos {
             let id = t["id"].as_str().unwrap_or("");
             if id.is_empty() { continue; }
-            database::run("INSERT OR REPLACE INTO todos(id,title,content,done,priority,due_date,repeat,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", &[
+            database::run("INSERT OR IGNORE INTO todos(id,title,content,done,priority,due_date,repeat,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", &[
                 json!(id), json!(t["title"]), json!(t["content"]), json!(t["done"]),
                 json!(t["priority"]), json!(t["due_date"]), json!(t["repeat"]),
                 json!(t["created_at"]), json!(t["updated_at"]),
             ]).ok();
         }
+    }
+    // 待办附件：先恢复 file_assets 行（二进制复制依赖 content_hash 查询）
+    if let Some(assets) = data["file_assets"].as_array() {
+        for a in assets {
+            let id = a["id"].as_str().unwrap_or("");
+            if id.is_empty() { continue; }
+            database::run("INSERT OR IGNORE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
+                json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
+                json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
+            ]).ok();
+        }
+    }
+    if let Some(rels) = data["file_relations"].as_array() {
+        for r in rels { database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
     }
     // 复制待办附件
     let files_dir = tmp.join("todo_files");
@@ -748,17 +792,17 @@ fn import_files(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
         for a in assets {
             let id = a["id"].as_str().unwrap_or("");
             if id.is_empty() { continue; }
-            database::run("INSERT OR REPLACE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
+            database::run("INSERT OR IGNORE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
                 json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
                 json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
             ]).ok();
         }
     }
     if let Some(rels) = data["file_relations"].as_array() {
-        for r in rels { database::run("INSERT OR REPLACE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
+        for r in rels { database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
     }
     if let Some(folders) = data["library_folders"].as_array() {
-        for f in folders { database::run("INSERT OR REPLACE INTO library_folders(id,name,parent_id,project_id,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(f["id"]),json!(f["name"]),json!(f["parent_id"]),json!(f["project_id"]),json!(f["sort_order"]),json!(f["created_at"]),json!(f["updated_at"])]).ok(); }
+        for f in folders { database::run("INSERT OR IGNORE INTO library_folders(id,name,parent_id,project_id,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(f["id"]),json!(f["name"]),json!(f["parent_id"]),json!(f["project_id"]),json!(f["sort_order"]),json!(f["created_at"]),json!(f["updated_at"])]).ok(); }
     }
     // 复制资料库文件
     let files_dir = tmp.join("library_files");
