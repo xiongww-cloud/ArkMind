@@ -234,14 +234,7 @@ pub async fn materialize_and_store(
     }
 
     // 获取标题
-    let title = database::get(
-        "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
-        &[json!(source_type), json!(source_id)],
-    )
-    .ok()
-    .flatten()
-    .and_then(|r| r["title"].as_str().map(String::from))
-    .unwrap_or_default();
+    let title = crate::database::repository::source_title(source_type, source_id);
 
     // 清洗内容（根据类型）
     let mut text = content.to_string();
