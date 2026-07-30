@@ -228,6 +228,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
 
         CREATE TABLE IF NOT EXISTS chat_sessions (
             id TEXT PRIMARY KEY, title TEXT DEFAULT '',
+            tool_metadata TEXT DEFAULT NULL,
             created_at TEXT DEFAULT (datetime('now','localtime')),
             updated_at TEXT DEFAULT (datetime('now','localtime'))
         );
@@ -235,7 +236,8 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
             role TEXT NOT NULL, content TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now','localtime'))
+            status TEXT DEFAULT 'active',
+            created_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
         CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id);
 

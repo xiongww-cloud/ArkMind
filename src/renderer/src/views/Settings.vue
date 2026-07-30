@@ -8,6 +8,8 @@ import {
   fetchSettings, updateSettings, browseFolder,
   updateAiConfig, fetchAiConfig,
   migrateFiles, pipelineClearVectors,
+  pipelineClearKnowledge, pipelineClearAll,
+  pipelineRevectorize, cleanupOrphanData,
   getLogs, clearLogs,
 } from '@/api/db-client'
 
@@ -668,6 +670,27 @@ async function saveNotifyConfig() {
   } catch {}
 }
 
+// ─── Pipeline Management ──────────────────────────────────────
+async function handleRevectorize() {
+  if (!(await dangerConfirm({ title: '重新向量化', message: '将清除所有现有向量数据并重新向量化。这可能需要较长时间，确定继续？', confirmText: '重新向量化' }))) return
+  try { const r = await pipelineRevectorize(); toast({ message: r.message || '已启动重新向量化', type: 'success' }) }
+  catch { toast({ message: '重新向量化失败', type: 'error' }) }
+}
+async function handleClearKnowledge() {
+  if (!(await dangerConfirm({ title: '重置知识管线', message: '确定重置知识碎片和向量缓存？将重新从源数据物化。', confirmText: '重置' }))) return
+  try { await pipelineClearKnowledge(); toast({ message: '已重置知识管线，正在重新物化', type: 'success' }) }
+  catch { toast({ message: '重置失败', type: 'error' }) }
+}
+async function handleClearAll() {
+  if (!(await dangerConfirm({ title: '重置全部数据', message: '确定重置全部数据？将重新从业务表抓取数据并重新物化知识。', confirmText: '重置' }))) return
+  try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }) }
+  catch { toast({ message: '重置失败', type: 'error' }) }
+}
+async function handleOrphanCleanup() {
+  try { await cleanupOrphanData(); toast({ message: '孤儿数据清理已完成', type: 'success' }) }
+  catch { toast({ message: '清理失败', type: 'error' }) }
+}
+
 function loadVecConfig(config) {
   const e = config?.embedding
   vecForm.value = {
@@ -928,278 +951,322 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="max-w-3xl mx-auto py-8 px-4 space-y-6">
+  <div class="h-full bg-white rounded-xl border border-surface-200 shadow-sm overflow-y-auto">
+    <div class="max-w-[1200px] mx-auto p-6 space-y-4">
 
-    <!-- AI 模型配置 ── Tab 切换 -->
-    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
-      <div class="px-5 pt-5 pb-0">
-        <h2 class="text-[13px] font-semibold text-surface-700">AI 模型配置</h2>
-      </div>
-      <div class="flex gap-0 border-b border-surface-100 px-5 mt-3">
-        <button v-for="tab in ['llm','vision','vector']" :key="tab"
-          @click="aiTab = tab"
-          class="px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px"
-          :class="aiTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-400 hover:text-surface-600'">
-          {{ {llm:'语言模型',vision:'视觉模型',vector:'向量模型'}[tab] }}
-        </button>
-      </div>
+      <!-- ══════════ Row 0: 页面标题 ══════════ -->
+      <header class="flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-bold tracking-tight text-surface-900">设置</h1>
+          <p class="text-surface-400 text-[13px] mt-1">ArkMind v{{ appVersion }}</p>
+        </div>
+      </header>
 
-      <!-- LLM Tab -->
-      <div v-show="aiTab === 'llm'" class="p-5 space-y-3">
-        <p class="text-[10px] text-surface-400">选择默认的大语言模型，用于 AI 问答、知识库检索等任务</p>
-        <div v-for="p in aiProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="activeProviderId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
-          <input type="radio" :value="p.id" :checked="pendingDefaultId === p.id" @change="setPendingDefault(p.id)" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
-          <div class="flex-1 min-w-0">
-            <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
-            <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
-          </div>
-          <button @click="testProviderConnection(p)" :disabled="testingProviderId" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
-            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-          </button>
-          <button @click="openEditProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-          <button @click="removeProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
-        </div>
-        <div class="flex items-center justify-between gap-2">
-          <div class="flex items-center gap-3">
-            <button v-if="pendingDefaultId !== activeProviderId" @click="saveDefaultConfig" :disabled="aiSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ aiSaving ? '保存中...' : '保存默认' }}</button>
-            <p v-if="aiTestResult" class="text-[10px]" :class="aiTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ aiTestResult }}</p>
-            <p v-if="aiSaved" class="text-[10px] text-emerald-600">已保存</p>
-          </div>
-          <button @click="openAddProvider" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
-        </div>
-      </div>
-
-      <!-- Vision Tab -->
-      <div v-show="aiTab === 'vision'" class="p-5 space-y-3">
-        <p class="text-[10px] text-surface-400">用于图片/PDF 视觉解析的模型</p>
-        <div v-for="p in visionProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="visionActiveId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
-          <input type="radio" :value="p.id" :checked="visionPendingId === p.id" @change="visionPendingId = p.id" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
-          <div class="flex-1 min-w-0">
-            <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
-            <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
-          </div>
-          <button @click="testVisionConnection(p)" :disabled="visionTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
-            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-          </button>
-          <button @click="openEditVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-          <button @click="removeVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
-        </div>
-        <div class="flex items-center justify-between gap-2">
-          <div class="flex items-center gap-3">
-            <button v-if="visionPendingId !== visionActiveId" @click="saveVisionDefault" :disabled="visionSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ visionSaving ? '保存中...' : '保存默认' }}</button>
-            <p v-if="visionTestResult" class="text-[10px]" :class="visionTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ visionTestResult }}</p>
-            <p v-if="visionSaved" class="text-[10px] text-emerald-600">已保存</p>
-          </div>
-          <button @click="openAddVision" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
-        </div>
-      </div>
-
-      <!-- Vector Tab -->
-      <div v-show="aiTab === 'vector'" class="p-5 space-y-3">
-        <p class="text-[10px] text-surface-400">用于文本向量化的 Embedding 模型</p>
-        <div v-if="vecConfigured" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-brand-300 bg-brand-50">
-          <div class="w-7 h-7 rounded-full bg-brand-100 flex items-center justify-center shrink-0"><AppIcon name="sparkles" size="14" /></div>
-          <div class="flex-1 min-w-0">
-            <p class="text-[12px] font-medium text-surface-700 truncate">{{ vecSavedData.modelName }}</p>
-            <p class="text-[10px] text-surface-400 truncate font-mono">{{ vecSavedData.baseUrl }}</p>
-          </div>
-          <button @click="testVecConnection" :disabled="vecTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
-            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-          </button>
-          <button @click="openVecModal" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-          <button @click="deleteVecConfig" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
-        </div>
-        <div class="flex items-center justify-between">
-          <div></div>
-          <button v-if="!vecSavedData" @click="openVecModal" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
-        </div>
-        <p v-if="vecTestResult" class="text-[10px]" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
-      </div>
-    </div>
-
-    <!-- 智能通知 -->
-    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
-      <div class="flex items-center justify-between px-5 pt-5 pb-0">
-        <h2 class="text-[13px] font-semibold text-surface-700">智能通知</h2>
-        <div v-if="notifyEnabled && notifyInterval !== 0" class="flex items-center gap-1.5">
-          <span class="w-1.5 h-1.5 rounded-full" :class="loopStatus.running ? 'bg-emerald-500' : 'bg-surface-300'"></span>
-          <span class="text-[10px]" :class="loopStatus.running ? 'text-emerald-600' : 'text-surface-400'">
-            {{ loopStatus.running ? '循环运行中' : '未启动' }}
-          </span>
-          <span v-if="loopStatus.running && loopStatus.next_check_at" class="text-[10px] text-surface-400">
-            · 下次: {{ loopStatus.next_check_at.slice(11) || loopStatus.next_check_at }}
-          </span>
-        </div>
-      </div>
-      <div class="p-5 space-y-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-[12px] font-medium text-surface-700">后台智能分析</p>
-            <p class="text-[10px] text-surface-400">AI 定期分析业务数据，主动提醒关注事项</p>
-          </div>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" v-model="notifyEnabled" class="sr-only peer" @change="saveNotifyConfig">
-            <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
-          </label>
-        </div>
-        <div class="flex items-center justify-between">
-          <p class="text-[12px] font-medium text-surface-700">分析频率</p>
-          <div class="flex items-center gap-1.5 flex-wrap">
-            <button v-for="opt in intervalOptions" :key="opt.value"
-              @click="notifyInterval = opt.value; saveNotifyConfig()"
-              class="px-2.5 py-1 rounded-md text-[11px] transition-all"
-              :class="notifyInterval === opt.value
-                ? 'bg-brand-600 text-white shadow-sm'
-                : 'bg-surface-100 text-surface-600 hover:bg-surface-200'">
-              {{ opt.label }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 桌面精灵 -->
-    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
-      <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">桌面精灵</h2>
-      <div class="p-5 space-y-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-[12px] font-medium text-surface-700">启动桌面精灵</p>
-            <p class="text-[10px] text-surface-400">关闭后精灵隐藏，打开后立即显示</p>
-          </div>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" v-model="spriteEnabled" class="sr-only peer" @change="toggleSprite">
-            <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
-          </label>
-        </div>
-      </div>
-    </div>
-
-    <!-- 数据与许可证 -->
-    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
-      <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">数据与许可证</h2>
-      <div class="p-5 space-y-4">
-        <!-- Export -->
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-[12px] font-medium text-surface-700">导出数据</p>
-            <p class="text-[10px] text-surface-400">选择性备份业务域数据到本地</p>
-          </div>
-          <button class="btn-primary text-[11px]" :disabled="isExporting" @click="showDomainSelector = true">{{ isExporting ? '导出中...' : '导出数据' }}</button>
-        </div>
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-[12px] font-medium text-surface-700">导入数据</p>
-            <p class="text-[10px] text-surface-400">从 .ark 文件恢复业务数据</p>
-          </div>
-          <button class="btn-primary text-[11px]" :disabled="isImporting" @click="handleImportData">{{ isImporting ? '导入中...' : '导入数据' }}</button>
-        </div>
-        <hr class="border-surface-100" />
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-[12px] font-medium text-surface-700">一键备份</p>
-            <p class="text-[10px] text-surface-400">打包所有数据（数据库、文件、向量库）到单个 .zip 文件</p>
-          </div>
-          <button class="btn-secondary text-[11px]" :disabled="isBackingUp" @click="handleBackupAll">{{ isBackingUp ? '备份中...' : '一键备份' }}</button>
-        </div>
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-[12px] font-medium text-surface-700">一键恢复</p>
-            <p class="text-[10px] text-surface-400">从 .zip 备份文件恢复所有数据（需重启应用）</p>
-          </div>
-          <button class="btn-secondary text-[11px]" :disabled="isRestoring" @click="handleRestoreAll">{{ isRestoring ? '恢复中...' : '一键恢复' }}</button>
-        </div>
-        <!-- Domain Selector Modal -->
-        <Teleport to="body"><Transition name="modal-fade"><div v-if="showDomainSelector" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="showDomainSelector=false">
-          <div class="bg-white rounded-xl shadow-xl w-[380px] max-h-[80vh] overflow-y-auto" @click.stop>
-            <div class="flex items-center px-5 py-3 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">选择导出范围</h3></div>
-            <div class="p-5 space-y-2">
-              <label v-for="d in selectedDomains" :key="d.key" class="flex items-center gap-2 cursor-pointer py-1">
-                <input type="checkbox" v-model="d.selected" class="w-3.5 h-3.5 rounded border-surface-300 text-brand-600" />
-                <span class="text-[11px] text-surface-600">{{ d.label }}</span>
-              </label>
+      <!-- ══════════ Row 1: 状态概览卡片 ══════════ -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <!-- AI 模型 -->
+        <div class="bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="w-8 h-8 rounded-lg bg-brand-50 flex items-center justify-center">
+              <AppIcon name="sparkles" size="16" class="text-brand-600" />
             </div>
-            <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-surface-100">
-              <button @click="showDomainSelector=false" class="btn-secondary text-xs">取消</button>
-              <button @click="handleExportData" class="btn-primary text-xs" :disabled="isExporting">{{ isExporting ? '导出中...' : '确定导出' }}</button>
+            <span class="text-[11px] text-surface-400">AI 模型</span>
+          </div>
+          <div class="text-[20px] font-bold text-surface-900">{{ aiProviders.length + visionProviders.length + (vecConfigured ? 1 : 0) }}</div>
+          <div class="text-[10px] text-surface-400">个已配置</div>
+        </div>
+        <!-- 智能通知 -->
+        <div class="bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center">
+              <AppIcon name="bell" size="16" class="text-emerald-600" />
+            </div>
+            <span class="text-[11px] text-surface-400">智能通知</span>
+          </div>
+          <div class="text-[20px] font-bold" :class="notifyEnabled ? 'text-emerald-600' : 'text-surface-300'">{{ notifyEnabled ? '已启用' : '已关闭' }}</div>
+          <div class="text-[10px] text-surface-400">{{ notifyInterval === 0 ? '仅启动时' : intervalOptions.find(o => o.value === notifyInterval)?.label || '' }}</div>
+        </div>
+        <!-- 桌面精灵 -->
+        <div class="bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
+              <AppIcon name="chat-ai" size="16" class="text-indigo-600" />
+            </div>
+            <span class="text-[11px] text-surface-400">桌面精灵</span>
+          </div>
+          <div class="text-[20px] font-bold" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-300'">{{ spriteEnabled ? '已启用' : '已关闭' }}</div>
+        </div>
+        <!-- 知识管线 -->
+        <div class="bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center">
+              <AppIcon name="server" size="16" class="text-amber-600" />
+            </div>
+            <span class="text-[11px] text-surface-400">知识管线</span>
+          </div>
+          <div class="text-[20px] font-bold text-surface-900">{{ loopStatus.running ? '运行中' : '空闲' }}</div>
+          <div class="text-[10px] text-surface-400">{{ loopStatus.running && loopStatus.next_check_at ? '下次: ' + (loopStatus.next_check_at.slice(11) || loopStatus.next_check_at) : '' }}</div>
+        </div>
+      </div>
+
+      <!-- ══════════ 两栏布局 ══════════ -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+
+        <!-- ──── 左栏 ──── -->
+        <div class="space-y-4">
+
+          <!-- AI 模型配置 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">AI 模型配置</h2>
+            </div>
+            <div class="flex gap-0 border-b border-surface-100 px-5 mt-3">
+              <button v-for="tab in ['llm','vision','vector']" :key="tab"
+                @click="aiTab = tab"
+                class="px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px"
+                :class="aiTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-400 hover:text-surface-600'">
+                {{ {llm:'语言模型',vision:'视觉模型',vector:'向量模型'}[tab] }}
+              </button>
+            </div>
+
+            <!-- LLM Tab -->
+            <div v-show="aiTab === 'llm'" class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">选择默认的大语言模型，用于 AI 问答、知识库检索等任务</p>
+              <div v-for="p in aiProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="activeProviderId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
+                <input type="radio" :value="p.id" :checked="pendingDefaultId === p.id" @change="setPendingDefault(p.id)" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
+                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
+                </div>
+                <button @click="testProviderConnection(p)" :disabled="testingProviderId" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </button>
+                <button @click="openEditProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
+                <button @click="removeProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-3">
+                  <button v-if="pendingDefaultId !== activeProviderId" @click="saveDefaultConfig" :disabled="aiSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ aiSaving ? '保存中...' : '保存默认' }}</button>
+                  <p v-if="aiTestResult" class="text-[10px]" :class="aiTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ aiTestResult }}</p>
+                  <p v-if="aiSaved" class="text-[10px] text-emerald-600">已保存</p>
+                </div>
+                <button @click="openAddProvider" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
+              </div>
+            </div>
+
+            <!-- Vision Tab -->
+            <div v-show="aiTab === 'vision'" class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">用于图片/PDF 视觉解析的模型</p>
+              <div v-for="p in visionProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="visionActiveId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
+                <input type="radio" :value="p.id" :checked="visionPendingId === p.id" @change="visionPendingId = p.id" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
+                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
+                </div>
+                <button @click="testVisionConnection(p)" :disabled="visionTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </button>
+                <button @click="openEditVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
+                <button @click="removeVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-3">
+                  <button v-if="visionPendingId !== visionActiveId" @click="saveVisionDefault" :disabled="visionSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ visionSaving ? '保存中...' : '保存默认' }}</button>
+                  <p v-if="visionTestResult" class="text-[10px]" :class="visionTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ visionTestResult }}</p>
+                  <p v-if="visionSaved" class="text-[10px] text-emerald-600">已保存</p>
+                </div>
+                <button @click="openAddVision" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
+              </div>
+            </div>
+
+            <!-- Vector Tab -->
+            <div v-show="aiTab === 'vector'" class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">用于文本向量化的 Embedding 模型</p>
+              <div v-if="vecConfigured" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-brand-300 bg-brand-50">
+                <div class="w-7 h-7 rounded-full bg-brand-100 flex items-center justify-center shrink-0"><AppIcon name="sparkles" size="14" /></div>
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ vecSavedData.modelName }}</p>
+                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ vecSavedData.baseUrl }}</p>
+                </div>
+                <button @click="testVecConnection" :disabled="vecTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </button>
+                <button @click="openVecModal" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
+                <button @click="deleteVecConfig" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+              </div>
+              <div class="flex items-center justify-between">
+                <div></div>
+                <button v-if="!vecSavedData" @click="openVecModal" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
+              </div>
+              <p v-if="vecTestResult" class="text-[10px]" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
             </div>
           </div>
-        </div></Transition></Teleport>
 
-        <hr class="border-surface-100" />
-
-        <!-- License -->
-        <div v-if="licenseActivated">
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="text-[12px] font-medium text-surface-700">{{ licenseProductLabel || '已激活' }} <span class="text-[10px] text-emerald-500 font-normal">● 已激活</span></p>
-              <p class="text-[10px] text-surface-400">{{ formatExpiryDate(licenseExpiresAt) ? '有效期至 ' + formatExpiryDate(licenseExpiresAt) : '永久许可' }}</p>
+          <!-- 智能通知 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+            <div class="flex items-center justify-between px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">智能通知</h2>
+              <div v-if="notifyEnabled && notifyInterval !== 0" class="flex items-center gap-1.5">
+                <span class="w-1.5 h-1.5 rounded-full" :class="loopStatus.running ? 'bg-emerald-500' : 'bg-surface-300'"></span>
+                <span class="text-[10px]" :class="loopStatus.running ? 'text-emerald-600' : 'text-surface-400'">
+                  {{ loopStatus.running ? '循环运行中' : '未启动' }}
+                </span>
+                <span v-if="loopStatus.running && loopStatus.next_check_at" class="text-[10px] text-surface-400">
+                  · 下次: {{ loopStatus.next_check_at.slice(11) || loopStatus.next_check_at }}
+                </span>
+              </div>
             </div>
-            <button @click="licenseUpdating = true" class="btn-primary text-[11px]">更新</button>
-          </div>
-        </div>
-        <!-- License Update Modal -->
-        <Teleport to="body"><Transition name="modal-fade"><div v-if="licenseUpdating" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="licenseUpdating=false">
-          <div class="bg-white rounded-xl shadow-xl w-[400px]" @click.stop>
-            <div class="flex items-center px-5 py-3 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">更新许可证</h3></div>
-            <div class="p-5 space-y-3">
-              <div>
-                <p class="text-[10px] text-surface-500 mb-1.5">机器码</p>
-                <div class="flex items-center gap-2">
-                  <code class="flex-1 px-3 py-2 bg-surface-50 border border-surface-200 rounded-lg text-[11px] font-mono text-surface-700 select-all break-all">{{ licenseMachineCode }}</code>
-                  <button @click="copyMachineCode" class="px-2.5 py-2 text-[11px] rounded-lg border border-surface-200 text-surface-500 hover:bg-surface-100 whitespace-nowrap">{{ licenseCodeCopied ? '已复制' : '复制' }}</button>
+            <div class="p-5 space-y-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">后台智能分析</p>
+                  <p class="text-[10px] text-surface-400">AI 定期分析业务数据，主动提醒关注事项</p>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" v-model="notifyEnabled" class="sr-only peer" @change="saveNotifyConfig">
+                  <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
+                </label>
+              </div>
+              <div class="flex items-center justify-between">
+                <p class="text-[12px] font-medium text-surface-700">分析频率</p>
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <button v-for="opt in intervalOptions" :key="opt.value"
+                    @click="notifyInterval = opt.value; saveNotifyConfig()"
+                    class="px-2.5 py-1 rounded-md text-[11px] transition-all"
+                    :class="notifyInterval === opt.value
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-surface-100 text-surface-600 hover:bg-surface-200'">
+                    {{ opt.label }}
+                  </button>
                 </div>
               </div>
-              <div>
-                <p class="text-[10px] text-surface-500 mb-1.5">许可证密钥</p>
-                <input v-model="licenseKey" class="w-full border border-surface-200 rounded-lg px-3 py-2 text-[12px] font-mono outline-none focus:border-brand-400" placeholder="输入许可证密钥" @keyup.enter="activateLicenseKey" />
-              </div>
-              <p v-if="licenseError" class="text-[10px] text-red-500">{{ licenseError }}</p>
-              <p v-if="licenseSuccess" class="text-[10px] text-emerald-600">{{ licenseSuccess }}</p>
-            </div>
-            <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-surface-100">
-              <button @click="licenseUpdating=false" class="btn-secondary text-xs">取消</button>
-              <button @click="activateLicenseKey" class="btn-primary text-xs" :disabled="licenseActivating">{{ licenseActivating ? '激活中...' : '激活' }}</button>
             </div>
           </div>
-        </div></Transition></Teleport>
-        <div v-if="!licenseActivated">
-          <p class="text-[12px] font-medium text-surface-700 mb-2">激活许可证</p>
-          <div class="bg-surface-50 rounded-lg p-3 mb-3">
-            <p class="text-[10px] text-surface-500 mb-2">机器码（提供给管理员获取秘钥）</p>
-            <div class="flex items-center gap-2">
-              <code class="flex-1 px-2.5 py-1.5 bg-white border border-surface-200 rounded-lg text-[11px] font-mono text-surface-700 select-all">{{ licenseMachineCode || '加载中...' }}</code>
-              <button @click="copyMachineCode" class="px-2.5 py-1.5 text-[11px] rounded-lg border border-surface-200 text-surface-500 hover:bg-surface-100" v-if="licenseMachineCode">{{ licenseCodeCopied ? '已复制' : '复制' }}</button>
-            </div>
-          </div>
-          <div class="flex items-center gap-2">
-            <input v-model="licenseKey" class="flex-1 border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="PMS-xxxx" @keyup.enter="activateLicenseKey" />
-            <button class="px-3 py-1.5 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" :disabled="licenseActivating" @click="activateLicenseKey">{{ licenseActivating ? '激活中...' : '激活' }}</button>
-          </div>
-          <p v-if="licenseError" class="text-[10px] text-red-500 mt-2">{{ licenseError }}</p>
-          <p v-if="licenseSuccess" class="text-[10px] text-emerald-600 mt-2">{{ licenseSuccess }}</p>
+
         </div>
+
+        <!-- ──── 右栏 ──── -->
+        <div class="space-y-4">
+
+          <!-- 桌面精灵 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+            <div class="flex items-center justify-between px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">桌面精灵</h2>
+              <div class="flex items-center gap-1.5">
+                <span class="text-[10px]" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-400'">{{ spriteEnabled ? '已启用' : '已关闭' }}</span>
+              </div>
+            </div>
+            <div class="p-5 space-y-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">启用桌面精灵</p>
+                  <p class="text-[10px] text-surface-400">桌面上显示悬浮精灵图标，快速唤起 AI 对话</p>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" v-model="spriteEnabled" class="sr-only peer" @change="toggleSprite">
+                  <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- 数据与许可证 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+            <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">数据与许可证</h2>
+            <div class="p-5 space-y-3">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">导出数据</p>
+                  <p class="text-[10px] text-surface-400">选择性备份业务域数据到本地</p>
+                </div>
+                <button class="btn-primary text-[11px]" :disabled="isExporting" @click="showDomainSelector = true">{{ isExporting ? '导出中...' : '导出数据' }}</button>
+              </div>
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">导入数据</p>
+                  <p class="text-[10px] text-surface-400">从 .ark 文件恢复业务数据</p>
+                </div>
+                <button class="btn-primary text-[11px]" :disabled="isImporting" @click="handleImportData">{{ isImporting ? '导入中...' : '导入数据' }}</button>
+              </div>
+              <hr class="border-surface-100 my-1" />
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">一键备份</p>
+                  <p class="text-[10px] text-surface-400">打包所有数据到 .zip 文件</p>
+                </div>
+                <button class="btn-secondary text-[11px]" :disabled="isBackingUp" @click="handleBackupAll">{{ isBackingUp ? '备份中...' : '一键备份' }}</button>
+              </div>
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">一键恢复</p>
+                  <p class="text-[10px] text-surface-400">从 .zip 备份恢复（需重启）</p>
+                </div>
+                <button class="btn-secondary text-[11px]" :disabled="isRestoring" @click="handleRestoreAll">{{ isRestoring ? '恢复中...' : '一键恢复' }}</button>
+              </div>
+              <hr class="border-surface-100 my-1" />
+              <!-- License -->
+              <div v-if="licenseActivated">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-[12px] font-medium text-surface-700">{{ licenseProductLabel || '已激活' }} <span class="text-[10px] text-emerald-500 font-normal">● 已激活</span></p>
+                    <p class="text-[10px] text-surface-400">{{ formatExpiryDate(licenseExpiresAt) ? '有效期至 ' + formatExpiryDate(licenseExpiresAt) : '永久许可' }}</p>
+                  </div>
+                  <button @click="licenseUpdating = true" class="btn-primary text-[11px]">更新</button>
+                </div>
+              </div>
+              <div v-if="!licenseActivated">
+                <p class="text-[12px] font-medium text-surface-700 mb-2">激活许可证</p>
+                <div class="bg-surface-50 rounded-lg p-3 mb-3">
+                  <p class="text-[10px] text-surface-500 mb-2">机器码</p>
+                  <div class="flex items-center gap-2">
+                    <code class="flex-1 px-2.5 py-1.5 bg-white border border-surface-200 rounded-lg text-[11px] font-mono text-surface-700 select-all">{{ licenseMachineCode || '加载中...' }}</code>
+                    <button @click="copyMachineCode" class="px-2.5 py-1.5 text-[11px] rounded-lg border border-surface-200 text-surface-500 hover:bg-surface-100" v-if="licenseMachineCode">{{ licenseCodeCopied ? '已复制' : '复制' }}</button>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input v-model="licenseKey" class="flex-1 border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="PMS-xxxx" @keyup.enter="activateLicenseKey" />
+                  <button class="px-3 py-1.5 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" :disabled="licenseActivating" @click="activateLicenseKey">{{ licenseActivating ? '激活中...' : '激活' }}</button>
+                </div>
+                <p v-if="licenseError" class="text-[10px] text-red-500 mt-2">{{ licenseError }}</p>
+                <p v-if="licenseSuccess" class="text-[10px] text-emerald-600 mt-2">{{ licenseSuccess }}</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 知识管线管理 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+            <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">知识管线管理</h2>
+            <div class="p-5">
+              <div class="flex flex-wrap gap-2 justify-end">
+                <button @click="handleRevectorize" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重新向量化</button>
+                <button @click="handleClearKnowledge" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-amber-300 text-amber-600 hover:bg-amber-50 transition">重置知识管线</button>
+                <button @click="handleClearAll" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重置全部数据</button>
+                <button @click="handleOrphanCleanup" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-purple-300 text-purple-600 hover:bg-purple-50 transition">清理孤儿数据</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 运行日志 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">运行日志</h2>
+            </div>
+            <div class="p-5">
+              <div class="flex items-center justify-between mb-3">
+                <p class="text-[11px] text-surface-400">共 {{ logs.length }} 条日志</p>
+                <button @click="openLogModal" class="h-6 px-3 text-[11px] rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">查看</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
       </div>
-    </div>
 
-
-    <!-- 日志 -->
-    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm p-5">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-[13px] font-semibold text-surface-700">运行日志</h2>
-        <button @click="openLogModal" class="h-6 px-3 text-[11px] rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">查看</button>
-      </div>
-      <p class="text-[11px] text-surface-400">共 {{ logs.length }} 条日志 · 每 3 秒自动刷新</p>
-    </div>
-
-    <!-- 关于 -->
-    <div class="bg-white rounded-2xl border border-surface-200 shadow-sm p-5">
-      <h2 class="text-[13px] font-semibold text-surface-700 mb-2">关于</h2>
-      <p class="text-[11px] text-surface-400">ArkMind v{{ appVersion }} · Vue 3 + Tauri</p>
     </div>
   </div>
 
-  <!-- ===== 模态框（保持原逻辑不变，只改样式） ===== -->
+  <!-- ===== 模态框 ===== -->
 
   <!-- LLM Model Modal -->
   <Teleport to="body">

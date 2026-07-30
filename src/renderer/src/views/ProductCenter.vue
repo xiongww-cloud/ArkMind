@@ -469,7 +469,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
         <!-- Tech specs -->
         <div>
           <p class="text-[10px] text-surface-400 uppercase tracking-wider mb-1">技术参数</p>
-          <textarea v-model="localFullSpecs" rows="8" class="w-full border border-surface-200 rounded-lg px-3 py-2 text-xs text-surface-600 outline-none focus:border-brand-400 bg-white resize-none placeholder-surface-300" placeholder="输入关键技术参数..."/>
+          <textarea v-model="localFullSpecs" rows="16" class="w-full border border-surface-200 rounded-lg px-3 py-2 text-xs text-surface-600 outline-none focus:border-brand-400 bg-white resize-none placeholder-surface-300" placeholder="输入关键技术参数..."/>
         </div>
 
           <!-- ★ Materials section -->

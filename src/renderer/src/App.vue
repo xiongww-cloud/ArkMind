@@ -5,7 +5,6 @@ import AppHeader from '@/components/layout/Header.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Toast from '@/components/common/Toast.vue'
 import UploadProgress from '@/components/common/UploadProgress.vue'
-import AIAssistantFAB from '@/components/chat/AIAssistantFAB.vue'
 import ActivationModal from '@/components/common/ActivationModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import { listen } from '@tauri-apps/api/event'
@@ -83,7 +82,6 @@ onUnmounted(() => {
     <ConfirmDialog />
     <Toast />
     <UploadProgress />
-    <AIAssistantFAB />
     <ActivationModal v-if="showActivation" @activated="onActivated" />
   </div>
 </template>

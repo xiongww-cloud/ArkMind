@@ -115,37 +115,35 @@ pub async fn compress_with_context(
 /// 参数:
 /// - session_id: 会话 ID
 /// - result: 压缩结果
-/// - total_message_count: 当前会话的总消息数量（用于计算 original_count）
+/// - total_message_count: 当前会话的总消息数量（保留参数兼容，不再使用）
 pub fn save_compressed_to_db(
     session_id: &str,
     result: &CompressResult,
-    total_message_count: usize,
+    _total_message_count: usize,
 ) -> Result<(), String> {
-    // 1. 构建 session 级别的 context_metadata
+    // 1. 标记当前所有 active 消息为 compressed（不删除，前端仍可展示）
+    crate::database::run(
+        "UPDATE chat_messages SET status='compressed' WHERE session_id=?1 AND status='active'",
+        &[serde_json::json!(session_id)],
+    ).map_err(|e| format!("标记消息为 compressed 失败: {}", e))?;
+
+    // 2. 构建 session 级别的 context_metadata（只存摘要，不含 original_count）
     let context_metadata = serde_json::json!({
         "compressed": true,
         "summary": result.summary,
         "key_points": result.key_points,
         "decisions": result.decisions,
-        "unfinished": result.unfinished,
-        "original_count": total_message_count
+        "unfinished": result.unfinished
     }).to_string();
 
-    // 2. 写入 chat_sessions.context_metadata
+    // 3. 写入 chat_sessions.context_metadata
     crate::database::run(
         "UPDATE chat_sessions SET context_metadata=?1 WHERE id=?2",
         &[serde_json::json!(context_metadata), serde_json::json!(session_id)],
     ).map_err(|e| format!("更新 session context_metadata 失败: {}", e))?;
 
-    // 3. 清空所有消息的 metadata（保留 content 供前端展示）
-    //    所有消息的 metadata 都清空，因为摘要已在 session 级别
-    crate::database::run(
-        "UPDATE chat_messages SET metadata=NULL WHERE session_id=?1",
-        &[serde_json::json!(session_id)],
-    ).map_err(|e| format!("清空消息 metadata 失败: {}", e))?;
-
-    log::info!("[ContextCompressor] 压缩保存完成: session={}, summary={}字, original_count={}",
-        session_id, result.summary.len(), total_message_count);
+    log::info!("[ContextCompressor] 压缩保存完成: session={}, summary={}字",
+        session_id, result.summary.len());
 
     Ok(())
 }

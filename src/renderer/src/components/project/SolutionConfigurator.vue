@@ -3,7 +3,7 @@ import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from
 import { parsePMSExcel, exportToPMSExcel } from '@/utils/solutionExcel'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
-import { confirm, alert } from '@/composables/useConfirm'
+import { confirm, dangerConfirm, alert } from '@/composables/useConfirm'
 import AppIcon from '@/components/common/AppIcon.vue'
 import AppRemark from '@/components/common/AppRemark.vue'
 import ServiceFeeAllocator from '@/components/project/ServiceFeeAllocator.vue'
@@ -533,7 +533,7 @@ async function sdv() {
 }
 
 function gtl() { av.value = 'timeline'; vvi.value = null; aii.value = null; clearValidation() }
-function cancelDraft() { if (cplan.value) { const pid = cplan.value.id; cplan.value.draft = null; clearDraft(pid) }; gtl() }
+async function cancelDraft() { if (!cplan.value) return; const ok = await dangerConfirm({ title: '删除编辑中的版本', message: `确定删除正在编辑的版本 ${fmtVersion(cplan.value.draft?.versionNum) || ''}？未保存的修改将丢失，此操作不可撤销。`, confirmText: '删除' }); if (!ok) return; const pid = cplan.value.id; cplan.value.draft = null; clearDraft(pid); gtl() }
 function vhv(vi) { vvi.value = vi; av.value = 'view'; aii.value = null }
 function sed() { av.value = 'edit'; aii.value = null; clearValidation() }
 
@@ -563,7 +563,7 @@ async function evx(ver) {
 }
 
 async function deleteVersionEntry(entry) {
-  const ok = await confirm({ title: '删除版本', message: `确定删除版本 ${fmtVersion(entry.data.versionNum)}？此操作不可撤销。`, confirmText: '删除' })
+  const ok = await dangerConfirm({ title: '删除版本', message: `确定删除版本 ${fmtVersion(entry.data.versionNum)}？此操作不可撤销。`, confirmText: '删除' })
   if (!ok) return
   const verId = entry.data.versionId || entry.data.id
   if (!verId) return
@@ -618,7 +618,7 @@ async function anp() {
 function srp(plan) { rpid.value = plan.id; rv.value = plan.name; nextTick(() => { if (planNameInput && typeof planNameInput.focus === 'function') { planNameInput.focus(); planNameInput.select() } }) }
 function crp() { const plan = plans.value.find(p => p.id === rpid.value); if (plan && rv.value.trim() && rv.value.trim() !== plan.name) { projectStore.updatePlan(props.project.id, plan.id, { name: rv.value.trim() }) }; rpid.value = null }
 function crpc() { rpid.value = null }
-async function rmp(id) { if (plans.value.length <= 1) return; const plan = plans.value.find(p => p.id === id); if (!plan) return; const vc = Array.isArray(plan.history) ? plan.history.length : 0; const hasDraft = !!plan.draft; if (vc > 0 || hasDraft) { const parts = []; if (vc > 0) parts.push(`${vc} 个历史版本`); if (hasDraft) parts.push('1 份草稿'); const ok = await confirm({ title: '删除方案', message: `该方案包含 ${parts.join(' 和 ')}，删除后数据将无法恢复。确定删除？` }); if (!ok) return } if (apid.value === id) apid.value = plans.value[0]?.id || ''; clearDraft(id); projectStore.deletePlan(props.project.id, id) }
+async function rmp(id) { if (plans.value.length <= 1) return; const plan = plans.value.find(p => p.id === id); if (!plan) return; const vc = Array.isArray(plan.history) ? plan.history.length : 0; const hasDraft = !!plan.draft; const parts = []; if (vc > 0) parts.push(`${vc} 个历史版本`); if (hasDraft) parts.push('1 份草稿'); const detail = parts.length ? `该方案包含 ${parts.join(' 和 ')}，` : ''; const ok = await dangerConfirm({ title: '删除方案', message: `${detail}删除后数据将无法恢复。确定删除方案「${plan.name}」？`, confirmText: '删除' }); if (!ok) return; if (apid.value === id) apid.value = plans.value[0]?.id || ''; clearDraft(id); projectStore.deletePlan(props.project.id, id) }
 
 watch(apid, () => { gtl() })
 watch(li, () => { if (im.value && invalidItems.value.length) clearValidation() }, { deep: true })

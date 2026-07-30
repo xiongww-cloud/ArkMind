@@ -67,6 +67,8 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM partner_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM contact_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
+    // 清理解决方案图谱边（has_version/uses/instance_of 以方案/版本/设备为源，PROJECT 源边由下方统一清理）
+    database::run("DELETE FROM business_relations WHERE relation_type IN ('has_version','uses','instance_of') AND ((source_type='SOLUTION' AND source_id IN (SELECT id FROM solutions WHERE project_id=?1)) OR (source_type='SOLUTION_VERSION' AND source_id IN (SELECT sv.id FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1)) OR (source_type='SOLUTION_ITEM' AND source_id IN (SELECT si.id FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1)))", &[json!(&id)]).ok();
     database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?))", &[json!(&id)]).ok();
     database::run("DELETE FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?)", &[json!(&id)]).ok();
     database::run("DELETE FROM solutions WHERE project_id=?", &[json!(&id)]).ok();
@@ -79,7 +81,6 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     let id = uuid::Uuid::new_v4().to_string(); let ts = crate::time_utils::now_db();
     let content = event["content"].as_str().unwrap_or("").to_string();
     database::run("INSERT INTO project_dynamics(id,project_id,type,content,operator,created_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(id),json!(project_id),json!(event["type"].as_str().unwrap_or("note")),json!(&content),json!(event["operator"].as_str().unwrap_or("")),json!(ts)]).map_err(|e| e.to_string())?;
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &project_id, crate::services::object_changed::Action::Updated);
     database::get("SELECT * FROM project_dynamics WHERE id=?", &[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null))
 }
 #[tauri::command] pub async fn project_dynamics_list(project_id: String) -> Result<Vec<Value>, String> { database::all("SELECT * FROM project_dynamics WHERE project_id=? ORDER BY created_at DESC", &[json!(project_id)]).map_err(|e| e.to_string()) }
@@ -88,7 +89,7 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     if let Ok(Some(r)) = database::get("SELECT project_id FROM project_dynamics WHERE id=?1",&[json!(&dynamic_id)]) {
         database::run("DELETE FROM project_dynamics WHERE id=? AND type='note'", &[json!(dynamic_id)]).map_err(|e| e.to_string())?;
         if let Some(pid) = r["project_id"].as_str() {
-            crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, pid, crate::services::object_changed::Action::Updated);
+            let _ = pid;
         }
     }
     Ok(())
@@ -97,7 +98,7 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     if let Ok(Some(r)) = database::get("SELECT project_id FROM project_dynamics WHERE id=?1",&[json!(&dynamic_id)]) {
         database::run("UPDATE project_dynamics SET content=? WHERE id=? AND type='note'", &[json!(content), json!(dynamic_id)]).map_err(|e| e.to_string())?;
         if let Some(pid) = r["project_id"].as_str() {
-            crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, pid, crate::services::object_changed::Action::Updated);
+            let _ = pid;
         }
     }
     Ok(())
@@ -763,9 +764,9 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
     }
     Ok(result)
 }
-#[tauri::command] pub async fn solution_create(project_id: String, name: String) -> Result<Value, String> { let id = uuid::Uuid::new_v4().to_string(); database::run("INSERT INTO solutions(id,project_id,name) VALUES(?,?,?)",&[json!(id),json!(project_id),json!(name)]).map_err(|e| e.to_string())?; crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &project_id, crate::services::object_changed::Action::Updated); database::get("SELECT * FROM solutions WHERE id=?",&[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
-#[tauri::command] pub async fn solution_rename(solution_id: String, name: String) -> Result<(), String> { database::run("UPDATE solutions SET name=?,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(name),json!(solution_id)]).map_err(|e| e.to_string())?; if let Ok(Some(r)) = database::get("SELECT project_id FROM solutions WHERE id=?1",&[json!(&solution_id)]) { if let Some(pid) = r["project_id"].as_str() { crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, pid, crate::services::object_changed::Action::Updated); } } Ok(()) }
-#[tauri::command] pub async fn solution_delete(solution_id: String) -> Result<(), String> { let pid = database::get("SELECT project_id FROM solutions WHERE id=?1",&[json!(&solution_id)]).ok().flatten().and_then(|r| r["project_id"].as_str().map(|s| s.to_string())); database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id=?)",&[json!(&solution_id)]).ok(); database::run("DELETE FROM solution_versions WHERE solution_id=?",&[json!(&solution_id)]).ok(); database::run("DELETE FROM solutions WHERE id=?",&[json!(solution_id)]).map_err(|e| e.to_string())?; if let Some(pid) = pid { crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &pid, crate::services::object_changed::Action::Updated); } Ok(()) }
+#[tauri::command] pub async fn solution_create(project_id: String, name: String) -> Result<Value, String> { let id = uuid::Uuid::new_v4().to_string(); database::run("INSERT INTO solutions(id,project_id,name) VALUES(?,?,?)",&[json!(id),json!(project_id),json!(name)]).map_err(|e| e.to_string())?; crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &project_id, crate::services::object_changed::Action::Updated); sync_solution_graph(&project_id); database::get("SELECT * FROM solutions WHERE id=?",&[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
+#[tauri::command] pub async fn solution_rename(solution_id: String, name: String) -> Result<(), String> { database::run("UPDATE solutions SET name=?,updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(name),json!(solution_id)]).map_err(|e| e.to_string())?; if let Ok(Some(r)) = database::get("SELECT project_id FROM solutions WHERE id=?1",&[json!(&solution_id)]) { if let Some(pid) = r["project_id"].as_str() { crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, pid, crate::services::object_changed::Action::Updated); sync_solution_graph(pid); } } Ok(()) }
+#[tauri::command] pub async fn solution_delete(solution_id: String) -> Result<(), String> { let pid = database::get("SELECT project_id FROM solutions WHERE id=?1",&[json!(&solution_id)]).ok().flatten().and_then(|r| r["project_id"].as_str().map(|s| s.to_string())); database::run("DELETE FROM business_relations WHERE (source_type='SOLUTION' AND source_id=?1) OR (target_type='SOLUTION' AND target_id=?1) OR (source_type='SOLUTION_VERSION' AND source_id IN (SELECT id FROM solution_versions WHERE solution_id=?1)) OR (target_type='SOLUTION_VERSION' AND target_id IN (SELECT id FROM solution_versions WHERE solution_id=?1)) OR (source_type='SOLUTION_ITEM' AND source_id IN (SELECT si.id FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id WHERE sv.solution_id=?1)) OR (target_type='SOLUTION_ITEM' AND target_id IN (SELECT si.id FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id WHERE sv.solution_id=?1))",&[json!(&solution_id)]).ok(); database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id=?)",&[json!(&solution_id)]).ok(); database::run("DELETE FROM solution_versions WHERE solution_id=?",&[json!(&solution_id)]).ok(); database::run("DELETE FROM solutions WHERE id=?",&[json!(solution_id)]).map_err(|e| e.to_string())?; if let Some(pid) = pid { sync_project_products(&pid).ok(); sync_solution_graph(&pid); crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, &pid, crate::services::object_changed::Action::Updated); } Ok(()) }
 #[tauri::command] pub async fn solution_version_list(solution_id: String) -> Result<Vec<Value>, String> {
     let mut rows = database::all("SELECT sv.id, sv.version as versionNum, sv.tags, sv.content, sv.creator, sv.created_at as createdAt, sv.status, COALESCE((SELECT SUM(si2.quantity * si2.unit_price) FROM solution_items si2 WHERE si2.solution_version_id=sv.id), 0) as amount, COALESCE((SELECT json_group_array(json_object('id', si.id, 'productId', si.product_id, 'product_id', si.product_id, 'model', si.product_name, 'deviceName', si.device_name, 'count', si.quantity, 'price', si.unit_price, 'name', CASE WHEN si.row_type='subnet' THEN si.description ELSE '' END, 'parameters', si.description, 'rowType', si.row_type, 'sortOrder', si.sort_order)) FROM solution_items si WHERE si.solution_version_id=sv.id), '[]') as items FROM solution_versions sv WHERE sv.solution_id=? ORDER BY sv.created_at DESC",&[json!(solution_id)]).map_err(|e| e.to_string())?;
     for row in &mut rows {
@@ -807,9 +808,11 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
         }
     }
     // ★ 解决方案中的产品变化 → 刷新关联项目的 source_data，触发知识管线重新物化
+    let mut pid: Option<String> = None;
     if let Ok(Some(sol)) = database::get("SELECT project_id FROM solutions WHERE id=?1",&[json!(&solution_id)]) {
-        if let Some(pid) = sol["project_id"].as_str().filter(|s| !s.is_empty()) {
-            crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, pid, crate::services::object_changed::Action::Updated);
+        if let Some(p) = sol["project_id"].as_str().filter(|s| !s.is_empty()) {
+            crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, p, crate::services::object_changed::Action::Updated);
+            pid = Some(p.to_string());
         }
     }
 
@@ -824,37 +827,118 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
     }
 
     // 同步产品↔项目关联（轻量映射，供 LLM 检索用）
-    sync_project_products(&solution_id).ok();
+    if let Some(p) = &pid { sync_project_products(p).ok(); sync_solution_graph(p); }
 
     Ok(version)
 }
 
-/// 收集方案中使用的所有产品，写入 project_product_mapping
-fn sync_project_products(solution_id: &str) -> Result<(), String> {
-    let project_id = match database::get("SELECT project_id FROM solutions WHERE id=?", &[json!(solution_id)])
-        .ok().flatten().and_then(|r| r["project_id"].as_str().map(|s| s.to_string())) {
-        Some(pid) => pid,
-        None => return Ok(()),
-    };
+/// 收集项目所有方案中使用的所有产品，重写 project_product_mapping 与 business_relations
+fn sync_project_products(project_id: &str) -> Result<(), String> {
     let products = database::all(
         "SELECT DISTINCT si.product_id, si.product_name FROM solution_items si \
          JOIN solution_versions sv ON sv.id = si.solution_version_id \
-         WHERE sv.solution_id=? AND si.product_id IS NOT NULL AND si.product_id != ''",
-        &[json!(solution_id)]
+         JOIN solutions s ON s.id = sv.solution_id \
+         WHERE s.project_id=? AND si.product_id IS NOT NULL AND si.product_id != ''",
+        &[json!(project_id)]
     ).unwrap_or_default();
     // Clean old business_relations for this project
-    crate::services::business_relations::delete("PROJECT", &project_id, "PRODUCT", "", "belongs_to");
+    match database::run(
+        "DELETE FROM business_relations WHERE source_type='PROJECT' AND source_id=? AND target_type='PRODUCT' AND relation_type='belongs_to'",
+        &[json!(project_id)]
+    ) {
+        Ok(r) => log::info!("[业务关联] 删除: PROJECT[{}] → PRODUCT[*] (belongs_to) {} 行", project_id, r.changes),
+        Err(e) => log::info!("[业务关联] 删除失败: PROJECT[{}] → PRODUCT[*] (belongs_to): {}", project_id, e),
+    }
+    database::run("DELETE FROM project_product_mapping WHERE project_id=?", &[json!(project_id)]).ok();
     for p in &products {
         let product_id = match p["product_id"].as_str() { Some(pid) => pid, None => continue };
         let product_name = p["product_name"].as_str().unwrap_or("");
         database::run(
             "INSERT OR IGNORE INTO project_product_mapping(project_id,product_id,product_name) VALUES(?1,?2,?3)",
-            &[json!(&project_id), json!(product_id), json!(product_name)]
+            &[json!(project_id), json!(product_id), json!(product_name)]
         ).ok();
         let meta = serde_json::json!({"product_name": product_name});
-        crate::services::business_relations::upsert("PROJECT", &project_id, "PRODUCT", product_id, "belongs_to", &meta.to_string());
+        crate::services::business_relations::upsert("PROJECT", project_id, "PRODUCT", product_id, "belongs_to", &meta.to_string());
     }
     Ok(())
+}
+
+/// 按版本 ID 反查项目并重建方案图谱
+fn sync_graph_for_version(version_id: &str) {
+    if let Ok(Some(r)) = database::get("SELECT s.project_id FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE sv.id=?1", &[json!(version_id)]) {
+        if let Some(pid) = r["project_id"].as_str() { sync_solution_graph(pid); }
+    }
+}
+
+/// 重建项目的解决方案图谱边（幂等：先清后建）
+/// PROJECT -has_solution-> SOLUTION -has_version-> SOLUTION_VERSION -uses-> SOLUTION_ITEM -instance_of-> PRODUCT
+pub fn sync_solution_graph(project_id: &str) {
+    use crate::services::business_relations as br;
+    // 1. 清理该项目旧的图谱边（只清图谱关系，不动 belongs_to 等其他边）
+    database::run(
+        "DELETE FROM business_relations WHERE relation_type IN ('has_solution','has_version','uses','instance_of') AND (\
+         (source_type='PROJECT' AND source_id=?1) OR \
+         (source_type='SOLUTION' AND source_id IN (SELECT id FROM solutions WHERE project_id=?1)) OR \
+         (source_type='SOLUTION_VERSION' AND source_id IN (SELECT sv.id FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1)) OR \
+         (source_type='SOLUTION_ITEM' AND source_id IN (SELECT si.id FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1)))",
+        &[json!(project_id)]
+    ).ok();
+    // 2. PROJECT -has_solution-> SOLUTION
+    let solutions = database::all("SELECT id, name FROM solutions WHERE project_id=?1", &[json!(project_id)]).unwrap_or_default();
+    for s in &solutions {
+        let sid = s["id"].as_str().unwrap_or("");
+        if sid.is_empty() { continue; }
+        let meta = json!({"solution_name": s["name"].as_str().unwrap_or("")});
+        br::upsert("PROJECT", project_id, "SOLUTION", sid, "has_solution", &meta.to_string());
+    }
+    // 3. SOLUTION -has_version-> SOLUTION_VERSION（metadata 带金额/设备数）
+    let versions = database::all(
+        "SELECT sv.id, sv.solution_id, sv.version, sv.status, s.name AS solution_name, \
+         COALESCE(SUM(si.quantity*si.unit_price),0) AS amount, COUNT(si.id) AS item_count \
+         FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id \
+         LEFT JOIN solution_items si ON si.solution_version_id=sv.id \
+         WHERE s.project_id=?1 GROUP BY sv.id",
+        &[json!(project_id)]
+    ).unwrap_or_default();
+    for v in &versions {
+        let vid = v["id"].as_str().unwrap_or("");
+        let sol_id = v["solution_id"].as_str().unwrap_or("");
+        if vid.is_empty() || sol_id.is_empty() { continue; }
+        let meta = json!({
+            "version": v["version"].as_str().unwrap_or(""),
+            "status": v["status"].as_str().unwrap_or(""),
+            "solution_name": v["solution_name"].as_str().unwrap_or(""),
+            "amount": v["amount"].as_f64().unwrap_or(0.0),
+            "amount_unit": "元",
+            "item_count": v["item_count"].as_i64().unwrap_or(0),
+        });
+        br::upsert("SOLUTION", sol_id, "SOLUTION_VERSION", vid, "has_version", &meta.to_string());
+    }
+    // 4. SOLUTION_VERSION -uses-> SOLUTION_ITEM；SOLUTION_ITEM -instance_of-> PRODUCT
+    let items = database::all(
+        "SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit_price \
+         FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id \
+         JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 AND si.row_type='device'",
+        &[json!(project_id)]
+    ).unwrap_or_default();
+    for it in &items {
+        let iid = it["id"].as_str().unwrap_or("");
+        let vid = it["solution_version_id"].as_str().unwrap_or("");
+        if iid.is_empty() || vid.is_empty() { continue; }
+        let model = it["product_name"].as_str().unwrap_or("");
+        let meta = json!({
+            "model": model,
+            "device_name": it["device_name"].as_str().unwrap_or(""),
+            "quantity": it["quantity"].as_i64().unwrap_or(0),
+            "unit_price": it["unit_price"].as_f64().unwrap_or(0.0),
+            "price_unit": "元",
+        });
+        br::upsert("SOLUTION_VERSION", vid, "SOLUTION_ITEM", iid, "uses", &meta.to_string());
+        let product_id = it["product_id"].as_str().unwrap_or("");
+        if !product_id.is_empty() {
+            br::upsert("SOLUTION_ITEM", iid, "PRODUCT", product_id, "instance_of", &json!({"model": model}).to_string());
+        }
+    }
 }
 #[tauri::command] pub async fn solution_version_update_meta(version_id: String, data: Value) -> Result<(), String> {
     let mut fields: Vec<String> = Vec::new();
@@ -866,11 +950,12 @@ fn sync_project_products(solution_id: &str) -> Result<(), String> {
     values.push(json!(version_id));
     database::run(&format!("UPDATE solution_versions SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
     emit_for_version(&version_id);
+    sync_graph_for_version(&version_id);
     Ok(())
 }
-#[tauri::command] pub async fn solution_version_finalize(version_id: String, _data: Value) -> Result<Value, String> { database::run("UPDATE solution_versions SET status='final',updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(version_id)]).map_err(|e| e.to_string())?; emit_for_version(&version_id); database::save().map_err(|e| e.to_string())?; database::get("SELECT * FROM solution_versions WHERE id=?",&[json!(version_id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
+#[tauri::command] pub async fn solution_version_finalize(version_id: String, _data: Value) -> Result<Value, String> { database::run("UPDATE solution_versions SET status='final',updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(version_id)]).map_err(|e| e.to_string())?; emit_for_version(&version_id); sync_graph_for_version(&version_id); database::save().map_err(|e| e.to_string())?; database::get("SELECT * FROM solution_versions WHERE id=?",&[json!(version_id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
 #[tauri::command] pub async fn solution_version_save_draft(version_id: String, _data: Value) -> Result<Value, String> { database::run("UPDATE solution_versions SET updated_at=datetime('now', 'localtime') WHERE id=?",&[json!(version_id)]).map_err(|e| e.to_string())?; database::get("SELECT * FROM solution_versions WHERE id=?",&[json!(version_id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null)) }
-#[tauri::command] pub async fn solution_version_delete(version_id: String) -> Result<(), String> { emit_for_version(&version_id); database::run("DELETE FROM solution_items WHERE solution_version_id=?",&[json!(&version_id)]).ok(); database::run("DELETE FROM solution_versions WHERE id=?",&[json!(&version_id)]).map_err(|e| e.to_string())?; Ok(()) }
+#[tauri::command] pub async fn solution_version_delete(version_id: String) -> Result<(), String> { let pid = database::get("SELECT s.project_id FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE sv.id=?1", &[json!(&version_id)]).ok().flatten().and_then(|r| r["project_id"].as_str().map(|s| s.to_string())); emit_for_version(&version_id); database::run("DELETE FROM business_relations WHERE (source_type='SOLUTION_VERSION' AND source_id=?1) OR (target_type='SOLUTION_VERSION' AND target_id=?1) OR (source_type='SOLUTION_ITEM' AND source_id IN (SELECT id FROM solution_items WHERE solution_version_id=?1)) OR (target_type='SOLUTION_ITEM' AND target_id IN (SELECT id FROM solution_items WHERE solution_version_id=?1))",&[json!(&version_id)]).ok(); database::run("DELETE FROM solution_items WHERE solution_version_id=?",&[json!(&version_id)]).ok(); database::run("DELETE FROM solution_versions WHERE id=?",&[json!(&version_id)]).map_err(|e| e.to_string())?; if let Some(pid) = pid { sync_project_products(&pid).ok(); sync_solution_graph(&pid); } Ok(()) }
 
 /// 从方案版本 ID 反查项目 ID，触发项目重新物化
 fn emit_for_version(version_id: &str) {

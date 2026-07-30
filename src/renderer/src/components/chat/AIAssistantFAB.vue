@@ -35,18 +35,27 @@ async function loadNotificationStats() {
 }
 
 // ─── FAB Session History ──────────────────────────────────────
+const loadingMore = ref(false)
+const hasMore = ref(true)
+
+function mapHistoryMessage(m: any) {
+  return {
+    id: 'hist-' + m.id,
+    dbId: m.id,
+    role: m.role,
+    content: m.content,
+    timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
+  }
+}
+
 async function loadFabHistory() {
   try {
     await kbFabInitSession()
-    const result = await kbFabLoadHistory(50)
+    const result = await kbFabLoadHistory(10)
     if (result.success && result.messages) {
-      messages.value = result.messages.map((m: any) => ({
-        id: crypto.randomUUID(),
-        role: m.role,
-        content: m.content,
-        timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
-      }))
+      messages.value = result.messages.map(mapHistoryMessage)
       historyLoaded.value = true
+      hasMore.value = result.messages.length >= 10
       // 加载历史后渲染 markdown
       for (const msg of messages.value) {
         if (msg.role === 'assistant' && msg.content) {
@@ -57,6 +66,41 @@ async function loadFabHistory() {
   } catch (e) {
     console.error('[FAB] 加载历史失败:', e)
   }
+}
+
+// 滚动到顶部时加载更早的消息
+async function loadOlderMessages() {
+  const el = chatListRef.value
+  if (!el || loadingMore.value || !hasMore.value) return
+  const oldestDbId = messages.value.find((m: any) => m.dbId)?.dbId
+  if (!oldestDbId) { hasMore.value = false; return }
+  loadingMore.value = true
+  const prevHeight = el.scrollHeight
+  try {
+    const result = await kbFabLoadHistory(10, oldestDbId)
+    if (result.success && result.messages && result.messages.length > 0) {
+      const older = result.messages.map(mapHistoryMessage)
+      messages.value.unshift(...older)
+      for (const msg of older) {
+        if (msg.role === 'assistant' && msg.content) {
+          agent.renderMd(msg.content).then(h => { if (h && msg.id) agent.rendered.value[msg.id] = h })
+        }
+      }
+      nextTick(() => { el.scrollTop = el.scrollHeight - prevHeight })
+      hasMore.value = result.messages.length >= 10
+    } else {
+      hasMore.value = false
+    }
+  } catch (e) {
+    console.error('[FAB] 加载更早消息失败:', e)
+  }
+  loadingMore.value = false
+}
+
+function onChatScroll() {
+  const el = chatListRef.value
+  if (!el || el.scrollTop > 100) return
+  loadOlderMessages()
 }
 
 // ─── Position ─────────────────────────────────────────────────
@@ -212,7 +256,13 @@ onUnmounted(() => {
       </button>
 
       <!-- Messages (expanded only) -->
-      <div v-if="expanded" ref="chatListRef" class="fab-chat__body">
+      <div v-if="expanded" ref="chatListRef" class="fab-chat__body" @scroll="onChatScroll">
+          <div v-if="loadingMore" class="text-center py-1">
+            <span class="text-[10px] text-[#94a3b8]">加载中...</span>
+          </div>
+          <div v-else-if="!hasMore && messages.length > 0" class="text-center py-1">
+            <span class="text-[10px] text-[#c7c7cc]">没有更早的消息了</span>
+          </div>
           <div v-for="m in messages" :key="m.id" class="flex gap-2 items-start animate-fade-in mb-2.5"
             :class="m.role === 'user' ? 'flex-row-reverse' : ''">
             <div v-if="m.role === 'user'" class="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>

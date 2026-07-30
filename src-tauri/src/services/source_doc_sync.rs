@@ -115,10 +115,10 @@ fn extract_product(product_id: &str) -> (String, String) {
         specs.push(format!("标准规格：{}", p));
     }
     if let Some(f) = row["full_specs"].as_str().filter(|f| !f.is_empty()) {
-        specs.push(format!("完整规格：{}", f));
+        specs.push(f.to_string());
     }
     if !specs.is_empty() {
-        parts.push(format!("## 技术规格\n{}", specs.join("\n")));
+        parts.push(format!("## 技术参数\n{}", specs.join("\n")));
     }
     (title, parts.join("\n\n"))
 }
@@ -146,20 +146,6 @@ fn extract_project(project_id: &str) -> (String, String) {
     if !meta.is_empty() { parts.push(meta.join(" | ")); }
     if let Some(d) = row["description"].as_str().filter(|d| !d.is_empty()) {
         parts.push(d.to_string());
-    }
-    // 项目动态：倒序 + 限制 20 条 + 过滤空内容
-    if let Ok(dynamics) = crate::database::all(
-        "SELECT content, created_at FROM project_dynamics WHERE project_id=?1 AND content != '' ORDER BY created_at DESC LIMIT 20",
-        &[serde_json::json!(project_id)]
-    ) {
-        let dyn_str: Vec<String> = dynamics.iter().filter_map(|d| {
-            let c = d["content"].as_str().unwrap_or("");
-            let dt = d["created_at"].as_str().unwrap_or("");
-            if !c.is_empty() { Some(format!("- {} ({})", c, dt)) } else { None }
-        }).collect();
-        if !dyn_str.is_empty() {
-            parts.push(format!("## 项目动态\n{}", dyn_str.join("\n")));
-        }
     }
     (title, parts.join("\n\n"))
 }

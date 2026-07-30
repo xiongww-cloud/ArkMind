@@ -26,8 +26,10 @@ pub use kb_memory_commands::*;
 #[tauri::command] pub async fn kb_load_sessions() -> Result<Value, String> {
     let mut rows = database::all(
         "SELECT s.id, s.title, s.created_at, s.updated_at, \
-         (SELECT json_group_array(json_object('id',m.id,'role',m.role,'content',m.content,'created_at',m.created_at)) \
-          FROM chat_messages m WHERE m.session_id=s.id ORDER BY m.id) as messages \
+         (SELECT json_group_array(json_object('id', m.id, 'role', m.role, 'content', m.content, 'status', m.status, 'created_at', m.created_at)) \
+          FROM chat_messages m \
+          WHERE m.id IN (SELECT id FROM chat_messages WHERE session_id=s.id ORDER BY id DESC LIMIT 10) \
+          ORDER BY m.id ASC) as messages \
          FROM chat_sessions s WHERE s.id != 'fab-main-session' ORDER BY s.updated_at DESC LIMIT 100",
         &[],
     ).unwrap_or_default();
@@ -40,6 +42,26 @@ pub use kb_memory_commands::*;
         }
     }
     Ok(json!({"success":true,"sessions":rows}))
+}
+
+/// 按会话分页加载消息（游标：before_id，向前翻更早的消息）
+#[tauri::command] pub async fn kb_load_session_messages(session_id: String, before_id: Option<i64>, limit: Option<usize>) -> Result<Value, String> {
+    let limit = limit.unwrap_or(10);
+    let rows = match before_id {
+        Some(bid) => database::all(
+            "SELECT id, role, content, status, created_at FROM chat_messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+            &[json!(session_id), json!(bid), json!(limit)]
+        ).unwrap_or_default(),
+        None => database::all(
+            "SELECT id, role, content, status, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
+            &[json!(session_id), json!(limit)]
+        ).unwrap_or_default(),
+    };
+    // 反转为正序（从旧到新）
+    let messages: Vec<Value> = rows.into_iter().rev().map(|m| {
+        json!({"id": m["id"], "role": m["role"], "content": m["content"], "status": m["status"], "created_at": m["created_at"]})
+    }).collect();
+    Ok(json!({"success": true, "messages": messages}))
 }
 
 #[tauri::command] pub async fn kb_delete_session(session_id: String) -> Result<Value, String> {
@@ -62,15 +84,21 @@ pub async fn kb_fab_init_session() -> Result<Value, String> {
     Ok(json!({"success": true, "session_id": FAB_SESSION_ID}))
 }
 
-/// 加载 FAB 会话的历史消息
+/// 加载 FAB 会话的历史消息（支持 before_id 游标分页）
 #[tauri::command]
-pub async fn kb_fab_load_history(limit: Option<usize>) -> Result<Value, String> {
+pub async fn kb_fab_load_history(limit: Option<usize>, before_id: Option<i64>) -> Result<Value, String> {
     let limit = limit.unwrap_or(50);
-    let rows = database::all(
-        "SELECT id, role, content, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
-        &[json!(FAB_SESSION_ID), json!(limit)]
-    ).unwrap_or_default();
-    
+    let rows = match before_id {
+        Some(bid) => database::all(
+            "SELECT id, role, content, status, created_at FROM chat_messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+            &[json!(FAB_SESSION_ID), json!(bid), json!(limit)]
+        ).unwrap_or_default(),
+        None => database::all(
+            "SELECT id, role, content, status, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
+            &[json!(FAB_SESSION_ID), json!(limit)]
+        ).unwrap_or_default(),
+    };
+
     // 反转为正序（从旧到新）
     let messages: Vec<Value> = rows.into_iter().rev().map(|m| {
         json!({"id": m["id"], "role": m["role"], "content": m["content"], "created_at": m["created_at"]})
@@ -83,17 +111,14 @@ pub async fn kb_fab_load_history(limit: Option<usize>) -> Result<Value, String> 
 pub async fn kb_fab_save_message(data: Value) -> Result<Value, String> {
     let role = data["role"].as_str().unwrap_or("");
     let content = data["content"].as_str().unwrap_or("");
-    let metadata = data.get("metadata")
-        .filter(|m| !m.is_null())
-        .and_then(|m| serde_json::to_string(m).ok());
 
     if role.is_empty() || content.trim().is_empty() {
         return Ok(json!({"success": true}));
     }
 
     database::run(
-        "INSERT INTO chat_messages(session_id, role, content, metadata) VALUES(?1, ?2, ?3, ?4)",
-        &[json!(FAB_SESSION_ID), json!(role), json!(content), json!(metadata)]
+        "INSERT INTO chat_messages(session_id, role, content) VALUES(?1, ?2, ?3)",
+        &[json!(FAB_SESSION_ID), json!(role), json!(content)]
     ).map_err(|e| e.to_string())?;
 
     // 更新会话时间戳
@@ -103,4 +128,23 @@ pub async fn kb_fab_save_message(data: Value) -> Result<Value, String> {
     ).ok();
 
     Ok(json!({"success": true}))
+}
+
+/// 启动时清理：每个 session 最多保留 max_compressed 条 compressed 消息，清理空 session
+pub fn cleanup_chat_messages(max_compressed_per_session: i64) {
+    // 每个 session 最多保留 max_compressed_per_session 条 compressed 消息（删最老的）
+    database::run(
+        "DELETE FROM chat_messages WHERE id IN (
+            SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id DESC) as rn
+                FROM chat_messages WHERE status='compressed'
+            ) WHERE rn > ?1
+        )",
+        &[json!(max_compressed_per_session)],
+    ).ok();
+    // 清理没有任何消息的空 session
+    database::run(
+        "DELETE FROM chat_sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM chat_messages) AND id != 'fab-main-session'",
+        &[]
+    ).ok();
 }

@@ -52,41 +52,29 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
     let max_iter = data["maxIterations"].as_i64().map(|n| n as i32);
     let session_id = data["sessionId"].as_str().map(String::from);
 
-    // ★ 保存 user 消息到 DB（发送前）
-    if let Some(ref sid) = session_id {
-        let user_content = query.clone();
-        let _ = crate::database::run(
-            "INSERT INTO chat_messages(session_id, role, content, metadata) VALUES(?1, 'user', ?2, NULL)",
-            &[json!(sid), json!(user_content)],
-        );
-    }
-
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, Some(app_handle.clone()), false, session_id.clone()).await;
         match result {
             Ok(v) => {
-                // ★ 保存 assistant 消息到 DB：content=最终回答，metadata=tool_calls+tool_results+context_docs
+                // ★ 保存 assistant 消息到 DB（纯内容，无 metadata）
                 if let Some(ref sid) = session_id {
                     let answer = v["answer"].as_str().unwrap_or("");
-                    let mut meta = serde_json::Map::new();
-                    meta.insert("role".to_string(), json!("assistant"));
-                    meta.insert("content".to_string(), json!(answer));
-                    // 合并所有轮次的 tool_calls 和 tool_results
+                    let _ = crate::database::run(
+                        "INSERT INTO chat_messages(session_id, role, content) VALUES(?1, 'assistant', ?2)",
+                        &[json!(sid), json!(answer)],
+                    );
+                    // ★ 保存本轮工具数据到 session 级别（覆盖式，不含 content/role）
+                    let mut tool_meta = serde_json::Map::new();
                     if let Some(tool_log) = v.get("tool_log").and_then(|v| v.as_array()) {
                         let (tc, tr) = convert_tool_log(tool_log);
-                        if !tc.is_empty() { meta.insert("tool_calls".to_string(), json!(tc)); }
-                        if !tr.is_empty() { meta.insert("tool_results".to_string(), json!(tr)); }
+                        if !tc.is_empty() { tool_meta.insert("tool_calls".to_string(), json!(tc)); }
+                        if !tr.is_empty() { tool_meta.insert("tool_results".to_string(), json!(tr)); }
                     }
-                    if let Some(cd) = v.get("context_docs") { meta.insert("context_docs".to_string(), cd.clone()); }
-                    let assistant_metadata = serde_json::Value::Object(meta).to_string();
+                    if let Some(cd) = v.get("context_docs") { tool_meta.insert("context_docs".to_string(), cd.clone()); }
+                    let tool_meta_str = serde_json::Value::Object(tool_meta).to_string();
                     let _ = crate::database::run(
-                        "INSERT INTO chat_messages(session_id, role, content, metadata) VALUES(?1, 'assistant', ?2, ?3)",
-                        &[json!(sid), json!(answer), json!(assistant_metadata)],
-                    );
-                    // 更新会话时间戳
-                    let _ = crate::database::run(
-                        "UPDATE chat_sessions SET updated_at=datetime('now','localtime') WHERE id=?1",
-                        &[json!(sid)],
+                        "UPDATE chat_sessions SET tool_metadata=?1, updated_at=datetime('now','localtime') WHERE id=?2",
+                        &[json!(tool_meta_str), json!(sid)],
                     );
                 }
                 let _ = app_handle.emit("agent:done", &v);

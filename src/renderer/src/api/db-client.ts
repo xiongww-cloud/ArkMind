@@ -329,11 +329,12 @@ export async function pipelineBrowseSource(sourceType?: string, limit?: number):
 export async function pipelineGetSourceContent(id: number): Promise<PipelineSourceContent> { return invoke('pipeline_get_source_content', { id }) }
 export async function kbSaveSessions(sessions: KbSession[]): Promise<SuccessResponse> { return invoke('kb_save_sessions', { data: { sessions } }) }
 export async function kbLoadSessions(): Promise<KbLoadSessionsResult> { return invoke('kb_load_sessions') }
+export async function kbLoadSessionMessages(sessionId: string, beforeId?: number, limit?: number): Promise<{success: boolean; messages?: any[]}> { return invoke('kb_load_session_messages', { sessionId, beforeId: beforeId || null, limit: limit || 10 }) }
 export async function kbDeleteSession(sessionId: string): Promise<SuccessResponse> { return invoke('kb_delete_session', { sessionId }) }
 
 // ─── FAB Session API ─────────────────────────────────────────────
 export async function kbFabInitSession(): Promise<{success: boolean; session_id?: string}> { return invoke('kb_fab_init_session') }
-export async function kbFabLoadHistory(limit?: number): Promise<{success: boolean; messages?: ChatMessage[]}> { return invoke('kb_fab_load_history', { limit: limit || null }) }
+export async function kbFabLoadHistory(limit?: number, beforeId?: number): Promise<{success: boolean; messages?: ChatMessage[]}> { return invoke('kb_fab_load_history', { limit: limit || null, beforeId: beforeId || null }) }
 export async function kbFabSaveMessage(data: {role: string; content: string; metadata?: unknown}): Promise<SuccessResponse> { return invoke('kb_fab_save_message', { data }) }
 
 // ─── Sprite Window API ───────────────────────────────────────────

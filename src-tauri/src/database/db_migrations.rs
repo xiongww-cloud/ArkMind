@@ -198,6 +198,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')))",
         "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id)",
         "ALTER TABLE chat_messages ADD COLUMN metadata TEXT DEFAULT NULL",
+        // message status: active（正常，进上下文）/ compressed（已压缩，不进上下文，前端可展示）
+        "ALTER TABLE chat_messages ADD COLUMN status TEXT DEFAULT 'active'",
         // push_pipeline debounce
         "ALTER TABLE knowledge_push_queue ADD COLUMN debounce_until TEXT DEFAULT NULL",
         // 预计下单时间
@@ -206,6 +208,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE chat_sessions ADD COLUMN session_state TEXT DEFAULT NULL",
         // context metadata: 压缩摘要存储在 session 级别
         "ALTER TABLE chat_sessions ADD COLUMN context_metadata TEXT DEFAULT NULL",
+        // tool metadata: 最新轮次的 tool_calls/tool_results 存储在 session 级别（替代 chat_messages.metadata）
+        "ALTER TABLE chat_sessions ADD COLUMN tool_metadata TEXT DEFAULT NULL",
         // 清理旧的 session_cache 表（如果存在）
         "DROP TABLE IF EXISTS session_cache",
         // 精灵窗口位置
@@ -225,6 +229,35 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     if has_company_col {
         conn.execute_batch("ALTER TABLE partners RENAME COLUMN company TO address").ok();
         log::info!("[数据库] partners.company → address 迁移完成");
+    }
+
+    // ★ 更新 source_data 中产品的"完整规格"为直接内容（移除前缀）
+    let updated = conn.execute(
+        "UPDATE source_data SET content = REPLACE(content, '完整规格：', '') WHERE source_type = 'PRODUCT' AND content LIKE '%完整规格：%'", []
+    ).unwrap_or(0);
+    if updated > 0 {
+        log::info!("[数据库] 更新了 {} 条产品的 source_data（移除完整规格前缀）", updated);
+    }
+    // ★ 清理之前误加的 "Params: " 前缀
+    let updated2 = conn.execute(
+        "UPDATE source_data SET content = REPLACE(content, 'Params: ', '') WHERE source_type = 'PRODUCT' AND content LIKE '%Params: %'", []
+    ).unwrap_or(0);
+    if updated2 > 0 {
+        log::info!("[数据库] 清理了 {} 条产品的 source_data（移除 Params: 前缀）", updated2);
+    }
+
+    // ★ 插入默认输出规则到 policies 表
+    let has_default_rules: bool = conn.query_row(
+        "SELECT 1 FROM policies WHERE id='default-output-rules'",
+        [], |_| Ok(true),
+    ).unwrap_or(false);
+    if !has_default_rules {
+        let default_rules = "- 思考过程禁止出现在最终回答中\n- 禁止提及工具名称\n- 禁止在回答中添加时间戳（上下文中的时间戳仅供你参考时间顺序）\n- 来自记忆：标注「根据记忆」，简要说明记忆内容要点\n- 来自知识库：标注「根据资料」，具体说明参考了哪些文档或对象（如产品名称、项目名称等）\n- 多个来源时，逐一列出每个来源\n- 当用户要求查找某个产品的参数时，应首先直接给出产品的参数原文，然后在参数原文之后，可以加上分析、提醒或建议等额外内容。\n- 日期范围用「至」代替「~」，使用口语化表达";
+        conn.execute(
+            "INSERT INTO policies (id, content, updated_at) VALUES ('default-output-rules', ?1, datetime('now','localtime'))",
+            rusqlite::params![default_rules],
+        ).ok();
+        log::info!("[数据库] 插入默认输出规则到 policies 表");
     }
 
     // ★ 迁移渠道/厂商数据到映射表（从 direct project_id 到 many-to-many mapping）
@@ -273,30 +306,43 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     let _ = conn.execute_batch("DROP TABLE IF EXISTS vendor_contacts;");
     let _ = conn.execute_batch("DROP TABLE IF EXISTS customer_contacts;");
 
-    // ★ 迁移项目-合作伙伴映射到 business_relations（metadata 包含 selected_contact_id 和 remark）
-    let _ = conn.execute_batch("
-        -- 迁移渠道映射
-        INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
-        SELECT hex(randomblob(16)), 'CHANNEL', channel_id, 'PROJECT', project_id, 'belongs_to',
-               json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
-               created_at, datetime('now','localtime')
-        FROM project_channel_mapping
-        WHERE channel_id IS NOT NULL AND project_id IS NOT NULL;
-        -- 迁移厂商映射
-        INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
-        SELECT hex(randomblob(16)), 'VENDOR', vendor_id, 'PROJECT', project_id, 'belongs_to',
-               json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
-               created_at, datetime('now','localtime')
-        FROM project_vendor_mapping
-        WHERE vendor_id IS NOT NULL AND project_id IS NOT NULL;
-        -- 迁移客户映射
-        INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
-        SELECT hex(randomblob(16)), 'CUSTOMER', customer_id, 'PROJECT', project_id, 'belongs_to',
-               json_object('remark', ''),
-               created_at, datetime('now','localtime')
-        FROM project_customer_mapping
-        WHERE customer_id IS NOT NULL AND project_id IS NOT NULL;
-    ");
+    // ★ 迁移项目-合作伙伴映射到 business_relations（仅首次执行，后续跳过）
+    let migration_done: bool = conn.query_row(
+        "SELECT COUNT(*) FROM system_config WHERE key='migration_br_mapping_done'",
+        [], |r| r.get::<_,i64>(0),
+    ).unwrap_or(0) > 0;
+
+    if !migration_done {
+        let _ = conn.execute_batch("
+            -- 迁移渠道映射
+            INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+            SELECT hex(randomblob(16)), 'CHANNEL', channel_id, 'PROJECT', project_id, 'belongs_to',
+                   json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
+                   created_at, datetime('now','localtime')
+            FROM project_channel_mapping
+            WHERE channel_id IS NOT NULL AND project_id IS NOT NULL;
+            -- 迁移厂商映射
+            INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+            SELECT hex(randomblob(16)), 'VENDOR', vendor_id, 'PROJECT', project_id, 'belongs_to',
+                   json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
+                   created_at, datetime('now','localtime')
+            FROM project_vendor_mapping
+            WHERE vendor_id IS NOT NULL AND project_id IS NOT NULL;
+            -- 迁移客户映射
+            INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+            SELECT hex(randomblob(16)), 'CUSTOMER', customer_id, 'PROJECT', project_id, 'belongs_to',
+                   json_object('remark', ''),
+                   created_at, datetime('now','localtime')
+            FROM project_customer_mapping
+            WHERE customer_id IS NOT NULL AND project_id IS NOT NULL;
+        ");
+        // 标记迁移完成
+        conn.execute(
+            "INSERT OR REPLACE INTO system_config (key, value) VALUES ('migration_br_mapping_done', '1')",
+            [],
+        ).ok();
+        log::info!("[迁移] business_relations 映射迁移完成");
+    }
 
     // ★ 处理 partner_contacts 表 schema 变更（移除 partner_id 列）
     let has_partner_id: bool = conn.query_row(

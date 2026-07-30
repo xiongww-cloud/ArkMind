@@ -119,7 +119,7 @@ export function useAgentChat() {
     stopTypewriter(msgId)
     if (!text) { msg.content = ''; msg.typewriterText = ''; msg.typewriterDone = true; return }
     const full = text.replace(/~/g, '～')
-    renderMd(full).then(h => { rendered.value[msgId] = h })
+    rendered.value[msgId] = ''  // 清空，等待逐字渲染
     let pos = 0
     msg.content = ''
     msg.typewriterText = ''
@@ -139,6 +139,7 @@ export function useAgentChat() {
         return
       }
       msg.typewriterText = full.slice(0, pos)
+      renderMd(msg.typewriterText).then(h => { rendered.value[msgId] = h })
     }, 8)
     typewriterTimers.set(msgId, timer)
   }

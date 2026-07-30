@@ -1,13 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import VueApexCharts from 'vue3-apexcharts'
-import { toast } from '@/composables/useToast'
-import { dangerConfirm } from '@/composables/useConfirm'
 import {
   kbDashboardStats,
-  pipelineClearKnowledge, pipelineClearAll,
-  pipelineRevectorize,
-  cleanupRetryFailed, cleanupOrphanData,
   kbPipelineDebug,
   pipelineDebugStatus, knowledgePipelineStatus,
 } from '@/api/db-client'
@@ -48,20 +43,6 @@ const weightDistChart = computed(() => {
   return { series: [{ name: '碎片数', data: d.map((x: any, i: number) => ({ x: i * 5, y: x.cnt || 0 })) }], categories: d.map((x: any) => x.label) }
 })
 const chartColors = ['#60a5fa','#fbbf24','#a78bfa','#34d399','#94a3b8','#f59e0b','#ec4899','#14b8a6']
-
-async function handleClearAll() { if (!(await dangerConfirm({ title: '重置全部数据', message: '确定重置全部数据？将重新从业务表抓取数据并重新物化知识。', confirmText: '重置' }))) return; try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }); await loadStats(); await loadPipeline() } catch (e) { console.error('[KG] clearAll failed:', e); toast({ message: '重置失败', type: 'error' }) } }
-async function handleClearKnowledge() { if (!(await dangerConfirm({ title: '重置知识管线', message: '确定重置知识碎片和向量缓存？将重新从源数据物化。', confirmText: '重置' }))) return; try { await pipelineClearKnowledge(); toast({ message: '已重置知识管线，正在重新物化', type: 'success' }); await loadStats(); await loadPipeline() } catch (e) { console.error('[KG] clearKnowledge failed:', e); toast({ message: '重置失败', type: 'error' }) } }
-async function handleOrphanCleanup() { try { await cleanupOrphanData(); toast({ message: '孤儿数据清理已完成', type: 'success' }); await loadStats() } catch (e) { console.error('[KG] orphanCleanup failed:', e); toast({ message: '清理失败', type: 'error' }) } }
-
-async function handleRevectorize() {
-  if (!(await dangerConfirm({ title: '重新向量化', message: '将清除所有现有向量数据并重新向量化。这可能需要较长时间，确定继续？', confirmText: '重新向量化' }))) return
-  try {
-    const result = await pipelineRevectorize()
-    toast({ message: result.message || '已启动重新向量化', type: 'success' })
-    await loadStats()
-    await loadPipeline()
-  } catch (e) { console.error('[KG] revectorize failed:', e); toast({ message: '重新向量化失败', type: 'error' }) }
-}
 
 const debugData = ref<any>(null)
 async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch (e) { console.error('[KG] loadDebug failed:', e) } }
@@ -174,17 +155,6 @@ onUnmounted(() => {
           </div>
         </div>
         <p v-else class="text-[11px] text-surface-300 text-center py-4">加载中...</p>
-      </div>
-      <!-- 操作按钮 -->
-      <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-        <h3 class="text-[12px] font-semibold text-surface-600 mb-3">系统操作</h3>
-        <div class="flex flex-wrap gap-2">
-          <button @click="handleRevectorize" class="px-3 py-1 text-[11px] rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重新向量化</button>
-          <button @click="handleClearKnowledge" class="px-3 py-1 text-[11px] rounded-lg border border-amber-300 text-amber-600 hover:bg-amber-50 transition">重置知识管线</button>
-          <button @click="handleClearAll" class="px-3 py-1 text-[11px] rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重置全部数据</button>
-          <span class="w-px h-6 bg-surface-200 self-center" />
-          <button @click="handleOrphanCleanup" class="px-3 py-1 text-[11px] rounded-lg border border-purple-300 text-purple-600 hover:bg-purple-50 transition">清理孤儿数据</button>
-        </div>
       </div>
       <!-- 清理队列调试 -->
       <div v-if="debugData" class="bg-white rounded-2xl border border-surface-200 p-5 content-card">

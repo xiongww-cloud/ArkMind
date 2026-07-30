@@ -9,12 +9,14 @@ import { useUploadProgress } from '@/composables/useUploadProgress'
 import { fmtDate, formatSize, fileDisplayName, fileTypeColor } from '@/utils/format'
 import { fetchProjects, fetchTodos, fetchFiles, createTodo as apiCreateTodo, updateTodo as apiUpdateTodo, deleteTodo as apiDeleteTodo, toggleTodo as apiToggleTodo, previewFile, uploadFile, deleteFileFromDomain, fetchFilesByTodo, fetchFileTree } from '@/api/db-client'
 import TodoDetail from './TodoDetail.vue'
+import TodoCalendar from '@/components/todo/TodoCalendar.vue'
 
 interface Todo { id: string; title: string; content: string; done: boolean; createdAt: string; dueDate?: string; priority?: 'P1'|'P2'|'P3'; repeat?: 'daily'|'weekly'|'monthly'; projectId?: string; projectName?: string }
 interface Project { id:string; name:string }
 
 const listWidth = ref(260)
 const loading = ref(true)
+const viewMode = ref<'list' | 'calendar'>('list')
 
 const projects = ref<Project[]>([])
 const todos = ref<Todo[]>([])
@@ -242,6 +244,25 @@ async function handleCreate() {
   }
 }
 
+async function handleCreateWithDate(dateKey: string) {
+  try {
+    const r = await apiCreateTodo({ title: '新待办', dueDate: dateKey })
+    if (r?.todo) {
+      const t = r.todo
+      todos.value.unshift({
+        id: t.id, title: t.title || '新待办', content: t.content || '',
+        done: false, createdAt: t.created_at || new Date().toISOString(),
+        dueDate: t.due_date || dateKey, priority: t.priority || undefined,
+        repeat: t.repeat || undefined,
+        projectId: t.project_id || undefined, projectName: t.project_name || '',
+      })
+      selectedTodoId.value = t.id
+    }
+  } catch (e: any) {
+    toast({ message: '创建失败: ' + (e.message || e), type: 'error' })
+  }
+}
+
 async function updateTodoLocal(id: string, data: Partial<Todo>) {
   const idx = todos.value.findIndex(t => t.id === id)
   if (idx === -1) return
@@ -366,15 +387,26 @@ function isOverdue(t: Todo): boolean {
   <!-- ═══ Column 1: Todo List ═══ -->
   <div class="flex-shrink-0 flex flex-col overflow-hidden border-r border-surface-200" :style="{ width: listWidth + 'px' }">
     <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0">
-      <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">待办清单</span>
+      <div class="flex items-center gap-1.5">
+        <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">待办</span>
+        <div class="flex items-center bg-surface-100 rounded-md p-0.5">
+          <button @click="viewMode = 'list'" class="w-5 h-5 flex items-center justify-center rounded transition-all" :class="viewMode === 'list' ? 'bg-white text-brand-600 shadow-sm' : 'text-surface-400 hover:text-surface-600'" title="列表视图">
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3.75 6h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
+          </button>
+          <button @click="viewMode = 'calendar'" class="w-5 h-5 flex items-center justify-center rounded transition-all" :class="viewMode === 'calendar' ? 'bg-white text-brand-600 shadow-sm' : 'text-surface-400 hover:text-surface-600'" title="日历视图">
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/></svg>
+          </button>
+        </div>
+      </div>
       <div class="flex items-center gap-2">
-        <span class="text-[10px] text-surface-400 font-medium">{{ undoneTodos.length }}</span>
+        <span v-if="viewMode === 'list'" class="text-[10px] text-surface-400 font-medium">{{ undoneTodos.length }}</span>
         <button @click="handleCreate" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建待办">
           <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 4v16m8-8H4"/></svg>
         </button>
       </div>
     </div>
-    <div class="flex-1 overflow-y-auto p-2 space-y-1.5">
+    <!-- List View -->
+    <div v-if="viewMode === 'list'" class="flex-1 overflow-y-auto p-2 space-y-1.5">
       <div v-if="loading" class="text-center py-8">
         <p class="text-xs text-surface-400">加载中...</p>
       </div>
@@ -453,6 +485,10 @@ function isOverdue(t: Todo): boolean {
         </div>
       </div>
     </div>
+    <!-- Calendar View -->
+    <TodoCalendar v-if="viewMode === 'calendar'"
+      :todos="todos" :selectedTodoId="selectedTodoId"
+      @selectTodo="selectTodo" @toggleDone="toggleDone" @createTodo="handleCreateWithDate" />
   </div>
 
   <!-- ═══ Column 2: Todo Detail ═══ -->
@@ -514,9 +550,9 @@ function isOverdue(t: Todo): boolean {
                 <div class="ml-1.5 flex-1 min-w-0 flex items-center gap-1">
                   <p class="text-[10px] font-medium text-surface-700 truncate leading-tight cursor-pointer hover:text-blue-600 flex-1 min-w-0" :title="fileDisplayName(f)" @click="previewAttachment(f.id)">{{ fileDisplayName(f) }}</p>
                   <button @click.stop="insertAttachmentToEditor(f)" class="shrink-0 w-4.5 h-4.5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="插入到待办"><AppIcon name="file-plus" size="12"/></button>
-                </div>
-              </div>
-            </div>
+      </div>
+    </div>
+  </div>
           </div>
         </template>
         <div v-else class="h-48 flex flex-col items-center justify-center text-center px-6">

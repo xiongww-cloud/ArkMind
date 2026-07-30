@@ -4,7 +4,7 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
-import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbDeleteSession } from '@/api/db-client'
+import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbLoadSessionMessages, kbDeleteSession } from '@/api/db-client'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { useAgentChat, type ChatMessage as AgentChatMessage } from '@/composables/useAgentChat'
@@ -96,9 +96,11 @@ function newSession() {
 
 // ★ 启动时加载持久化会话
 onMounted(async () => {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
   if (!sessions.value.length) { newSession() }
   else if (!currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
+  // 初始化分页状态：初始不足 10 条的会话没有更早消息
+  for (const s of sessions.value) { sessionHasMore.value[s.id] = (s.messages?.length || 0) >= 10 }
   // 渲染当前会话的消息
   if (currentSessionId.value) { await selectSession(currentSessionId.value) }
   initialScrollDone = false
@@ -116,11 +118,13 @@ onActivated(async () => {
         createdAt: s.created_at || s.createdAt,
         messages: (s.messages || []).map((m: any) => {
           const { isThinking, typewriterText, typewriterDone, ...rest } = m
-          return { ...rest, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) }
+          return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) }
         })
       })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
     }
     if (sessions.value.length && !currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
+    // 初始化分页状态
+    for (const s of sessions.value) { sessionHasMore.value[s.id] = (s.messages?.length || 0) >= 10 }
   } catch {}
   initialScrollDone = false
   nextTick(() => scrollToBottomIfNear())
@@ -192,6 +196,47 @@ const showWorkspaceIdx = ref<number | null>(null)
 const feedScrollRef = ref<HTMLElement|null>(null)
 const isRefining = ref(false)
 const sidebarOpen = ref(true)
+
+// ─── 消息分页加载 ────────────────────────────────────────────
+const loadingMore = ref(false)
+const sessionHasMore = ref<Record<string, boolean>>({})
+
+async function loadOlderMessages() {
+  const el = feedScrollRef.value
+  const session = currentSession.value
+  if (!el || !session || loadingMore.value) return
+  const oldestDbId = session.messages.find((m: any) => m.dbId)?.dbId
+  if (sessionHasMore.value[session.id] === false) return
+  loadingMore.value = true
+  const prevHeight = el.scrollHeight
+  try {
+    const r = await kbLoadSessionMessages(session.id, oldestDbId, 10)
+    if (r?.success && Array.isArray(r.messages) && r.messages.length > 0) {
+      const older = r.messages.map((m: any) => {
+        const { isThinking, typewriterText, typewriterDone, ...rest } = m
+        return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.created_at ? new Date(rest.created_at).getTime() : Date.now() }
+      })
+      session.messages.unshift(...older)
+      // 渲染旧消息的 markdown
+      for (const m of older) {
+        if (m.role === 'assistant' && m.content && !m.isThinking) {
+          renderMessageContent(m.id || '', m.content)
+        }
+      }
+      nextTick(() => { el.scrollTop = el.scrollHeight - prevHeight })
+      sessionHasMore.value[session.id] = r.messages.length >= 10
+    } else {
+      sessionHasMore.value[session.id] = false
+    }
+  } catch {}
+  loadingMore.value = false
+}
+
+function onFeedScroll() {
+  const el = feedScrollRef.value
+  if (!el || el.scrollTop > 100) return
+  loadOlderMessages()
+}
 
 let unlistenProgress: (() => void) | null = null
 let unlistenRoundThought: (() => void) | null = null
@@ -414,19 +459,16 @@ onUnmounted(() => {
 
   <!-- Main Chat -->
   <div class="flex-1 flex flex-col min-w-0 relative bg-surface-50/30">
-    <!-- Top Bar -->
-    <div class="h-10 border-b border-surface-200 bg-white flex items-center justify-between px-4 flex-shrink-0">
-      <div class="flex items-center gap-2">
-        <button @click="sidebarOpen = !sidebarOpen" class="w-6 h-6 flex items-center justify-center rounded-lg text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-all" title="切换侧栏">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
-        </button>
-        <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">{{ currentSession?.name || '售前 AI 工作台' }}</span>
-      </div>
-    </div>
-
     <!-- Messages Feed -->
-    <div ref="feedScrollRef" class="flex-1 overflow-y-auto px-6 py-6 space-y-5 scrollbar-thin pb-28">
+    <div ref="feedScrollRef" class="flex-1 overflow-y-auto px-6 py-6 space-y-5 scrollbar-thin" @scroll="onFeedScroll">
       <template v-if="currentSession">
+        <!-- 加载更早消息提示 -->
+        <div v-if="loadingMore" class="flex items-center justify-center py-2">
+          <span class="text-[11px] text-surface-400">加载中...</span>
+        </div>
+        <div v-else-if="currentSession.messages.length > 0 && sessionHasMore[currentSession.id] === false" class="flex items-center justify-center py-2">
+          <span class="text-[11px] text-surface-300">没有更早的消息了</span>
+        </div>
         <!-- Empty State -->
         <div v-if="currentSession.messages.length === 0" class="flex flex-col items-center justify-center h-full text-center px-8 py-16">
           <div class="w-20 h-20 mb-6 rounded-3xl bg-gradient-to-br from-[#2563eb]/10 to-[#93c5fd]/10 flex items-center justify-center ring-1 ring-[#2563eb]/10">
@@ -464,8 +506,8 @@ onUnmounted(() => {
       </template>
     </div>
 
-    <!-- Input Bar (floating over messages) -->
-    <div class="absolute bottom-0 left-0 right-0 z-10 px-4 pb-4 pt-10 bg-gradient-to-b from-transparent via-white/50 to-white">
+    <!-- Input Bar -->
+    <div class="flex-shrink-0 px-4 pb-4 pt-2 bg-surface-50/30">
       <div class="max-w-3xl mx-auto">
         <p class="text-[10px] text-surface-300 text-right mb-1.5 pr-1">↵ 发送 · Shift+↵ 换行</p>
         <div class="flex items-end gap-2 bg-white rounded-2xl border border-surface-200 px-3 py-2 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.02)] transition-all duration-200 focus-within:border-brand-300 focus-within:shadow-[0_0_0_3px_rgba(37,99,235,0.1),0_4px_12px_rgba(0,0,0,0.08)]">
@@ -540,26 +582,6 @@ onUnmounted(() => {
 </style>
 
 <style>
-.markdown-body { font-size: 12px; color: #3a3a3c; line-height: 1.65; }
-.markdown-body h1 { font-size: 1.1rem; font-weight: 700; margin: 0.8rem 0 0.4rem; color: #1d1d1f; border-bottom: 1px solid #e5e5ea; padding-bottom: 0.3rem; }
-.markdown-body h2 { font-size: 1rem; font-weight: 600; margin: 0.7rem 0 0.35rem; color: #1d1d1f; }
-.markdown-body h3 { font-size: 0.9rem; font-weight: 600; margin: 0.6rem 0 0.3rem; color: #3a3a3c; }
-.markdown-body p { margin: 0.4rem 0; }
-.markdown-body ul,.markdown-body ol { margin: 0.3rem 0; padding-left: 1.3rem; }
-.markdown-body li { margin: 0.15rem 0; }
-.markdown-body strong { font-weight: 600; color: #1d1d1f; }
-.markdown-body code { background: rgba(0,0,0,0.06); color: #e11d48; padding: 2px 5px; border-radius: 4px; font-size: 0.85em; font-family: 'SF Mono', 'Fira Code', monospace; }
-.markdown-body pre { background: #f8f9fa; color: #3a3a3c; padding: 12px 16px; border-radius: 8px; overflow-x: auto; margin: 10px 0; font-size: 0.8rem; border: 1px solid #e5e5ea; }
-.markdown-body pre code { background: none; color: inherit; padding: 0; }
-.markdown-body table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #e5e5ea; border-radius: 8px; overflow: hidden; margin: 12px 0; font-size: 12px; }
-.markdown-body th { background: #f8f9fa; color: #1d1d1f; font-weight: 600; padding: 8px 12px; border-bottom: 1px solid #e5e5ea; text-align: left; }
-.markdown-body td { padding: 8px 12px; border-bottom: 1px solid #f0f0f5; color: #3a3a3c; text-align: left; }
-.markdown-body tr:last-child td { border-bottom: none; }
-.markdown-body tr:hover td { background: #f8f9fa; }
-.markdown-body blockquote { border-left: 3px solid #2563eb; padding: 8px 14px; margin: 10px 0; color: #4a4a4f; background: linear-gradient(135deg, rgba(37,99,235,0.04), rgba(99,102,241,0.02)); border-radius: 0 8px 8px 0; font-style: italic; }
-.markdown-body a { color: #2563eb; text-decoration: none; }
-.markdown-body a:hover { text-decoration: underline; }
-
 /* macOS-style thin scrollbar */
 .scrollbar-thin::-webkit-scrollbar { width: 4px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }

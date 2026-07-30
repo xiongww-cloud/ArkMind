@@ -713,10 +713,10 @@ fn ingest_pending_products() {
             specs_lines.push(format!("标准规格：{}", specs));
         }
         if !full.is_empty() {
-            specs_lines.push(format!("完整规格：{}", full));
+            specs_lines.push(full.to_string());
         }
         if !specs_lines.is_empty() {
-            parts.push(format!("## 技术规格\n{}", specs_lines.join("\n")));
+            parts.push(format!("## 技术参数\n{}", specs_lines.join("\n")));
         }
         let content = parts.join("\n\n");
 

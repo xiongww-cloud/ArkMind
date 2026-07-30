@@ -122,6 +122,9 @@ pub fn run() {
             // Initialize business_relations table
             services::business_relations::init();
 
+            // 清理过期 compressed 消息：每 session 最多保留 50 条，清理空 session
+            commands::kb::cleanup_chat_messages(50);
+
             // ★ 首次启动注入使用指南到记忆系统
             services::user_guides::inject_if_needed();
 
@@ -301,7 +304,7 @@ pub fn run() {
             commands::storage_migrate, commands::storage_migrate_progress, commands::storage_default_path,
             // KB
             commands::kb_get_config, commands::kb_update_config, commands::kb_import_file, commands::kb_save_note,
-            commands::kb_search, commands::kb_delete, commands::kb_list_documents, commands::kb_chat, commands::kb_agent_chat, commands::agent_cancel, commands::kb_save_sessions, commands::kb_load_sessions, commands::kb_delete_session, commands::kb_fab_init_session, commands::kb_fab_load_history, commands::kb_fab_save_message,
+            commands::kb_search, commands::kb_delete, commands::kb_list_documents, commands::kb_chat, commands::kb_agent_chat, commands::agent_cancel, commands::kb_save_sessions, commands::kb_load_sessions, commands::kb_load_session_messages, commands::kb_delete_session, commands::kb_fab_init_session, commands::kb_fab_load_history, commands::kb_fab_save_message,
             commands::kb_diagnose, commands::kb_search_debug, commands::kb_data_browse, commands::kb_browse_parents, commands::kb_browse_vectors, commands::kb_inspect_fts5,
             commands::kb_fts5_inspector, commands::kb_get_table_chunks, commands::execute_production_rag,
             commands::kb_test_embedding, commands::kb_test_chat,
@@ -331,7 +334,7 @@ pub fn run() {
             // Sprite Window
             commands::create_sprite_window, commands::toggle_sprite_window, commands::close_sprite_window, commands::set_sprite_position,
             // Chat Window
-            commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::position_chat_near_sprite, commands::resize_chat_window_smooth,
+            commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::expand_chat_window,
             // Export
             commands::export_data, commands::import_data, commands::backup_all, commands::restore_all,
             commands::solution_download_excel,

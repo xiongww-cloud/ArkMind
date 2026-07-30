@@ -78,64 +78,111 @@ pub async fn set_sprite_position(app: AppHandle, x: f64, y: f64) -> Result<(), S
     Ok(())
 }
 
-/// 创建聊天窗口
+/// 创建聊天窗口（透明窗口，初始位于收起态：屏幕底部）
 #[tauri::command]
-pub async fn create_chat_window(app: AppHandle) -> Result<(), String> {
+pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("chat") {
         let _ = win.show();
         let _ = win.set_focus();
         return Ok(());
     }
 
-    let chat_w = 400.0_f64;
-    let chat_h = 60.0_f64;
+    let win_w = width.unwrap_or(620.0);
+    let win_h = height.unwrap_or(700.0);
 
-    // 屏幕水平居中，底部留100px
-    let (x, y) = if let Some(main_win) = app.get_webview_window("main") {
-        if let Ok(Some(monitor)) = main_win.primary_monitor() {
-            let scale = monitor.scale_factor();
-            let phys = monitor.size();
-            let screen_w = phys.width as f64 / scale;
-            let screen_h = phys.height as f64 / scale;
-            ((screen_w - chat_w) / 2.0, screen_h - chat_h - 100.0)
-        } else {
-            (100.0, 100.0)
-        }
-    } else {
-        (100.0, 100.0)
-    };
+    // 屏幕宽度（水平居中）
+    let screen_w = if let Some(main_win) = app.get_webview_window("main") {
+        main_win.primary_monitor().ok().flatten()
+            .map(|m| m.size().width as f64 / m.scale_factor())
+            .unwrap_or(1920.0)
+    } else { 1920.0 };
 
-    WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
-        .title("AI 助手")
-        .inner_size(chat_w, chat_h)
+    // 收起态：输入框在屏幕底部可见
+    let collapsed_y = collapsed_chat_y(&app);
+    let x = (screen_w - win_w) / 2.0;
+
+    let win = WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
+        .inner_size(win_w, win_h)
         .decorations(false)
         .transparent(true)
         .shadow(false)
-        .always_on_top(true)
         .resizable(false)
         .skip_taskbar(true)
         .visible(true)
-        .position(x, y)
+        .position(x, collapsed_y)
         .build()
+        .map_err(|e| e.to_string())?;
+
+    // 失焦自动隐藏（保留窗口，不销毁）
+    let handle = app.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(focused) = event {
+            if !focused {
+                if let Some(chat_win) = handle.get_webview_window("chat") {
+                    let _ = chat_win.hide();
+                    // ★ 关闭时清空展开状态
+                    let _ = handle.emit("chat:reset", ());
+                    // ★ 关闭时位置重置回收起态
+                    let scale = chat_win.scale_factor().unwrap_or(1.0);
+                    let cur_x = chat_win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
+                    let collapsed_y = collapsed_chat_y(&handle);
+                    let _ = chat_win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// 展开/收起聊天窗口（瞬时移动 Y 坐标，配合前端 CSS 动画同步）
+#[tauri::command]
+pub async fn expand_chat_window(app: AppHandle, expanded: bool) -> Result<(), String> {
+    let win = app.get_webview_window("chat").ok_or("chat window not found")?;
+    let scale = win.scale_factor().unwrap_or(1.0);
+
+    let collapsed_y = collapsed_chat_y(&app);
+    let delta = 564.0;  // = 窗口高 - 底部边距(68) - 输入栏高(48) - 顶部边距(20) + 修正 = 700-136
+    let expanded_y = collapsed_y - delta;
+
+    let target_y = if expanded { expanded_y } else { collapsed_y };
+
+    let cur_x = win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
+    win.set_position(tauri::LogicalPosition::new(cur_x, target_y))
         .map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
+/// 计算聊天窗口收起态的 Y 坐标（屏幕底 - 168）
+fn collapsed_chat_y(app: &AppHandle) -> f64 {
+    let screen_h = if let Some(main_win) = app.get_webview_window("main") {
+        main_win.primary_monitor().ok().flatten()
+            .map(|m| m.size().height as f64 / m.scale_factor())
+            .unwrap_or(1080.0)
+    } else { 1080.0 };
+    screen_h - 168.0
+}
+
 /// 切换聊天窗口显示/隐藏
 #[tauri::command]
-pub async fn toggle_chat_window(app: AppHandle) -> Result<(), String> {
+pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("chat") {
         if win.is_visible().unwrap_or(false) {
             let _ = win.hide();
+            // ★ 关闭时清空展开状态（下次打开无收起动画）
+            let _ = app.emit("chat:reset", ());
+            // ★ 关闭时位置重置回收起态（不可见，无动画）
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let cur_x = win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
+            let collapsed_y = collapsed_chat_y(&app);
+            let _ = win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
         } else {
             let _ = win.show();
             let _ = win.set_focus();
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let _ = app.emit("chat:reset", ());
         }
     } else {
-        create_chat_window(app).await?;
+        create_chat_window(app, width, height).await?;
     }
     Ok(())
 }
@@ -146,75 +193,5 @@ pub async fn close_chat_window(app: AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("chat") {
         let _ = win.close();
     }
-    Ok(())
-}
-
-/// 聊天窗口定位到精灵窗口旁边
-#[tauri::command]
-pub async fn position_chat_near_sprite(app: AppHandle) -> Result<(), String> {
-    let chat_win = app.get_webview_window("chat");
-    let sprite_win = app.get_webview_window("sprite");
-
-    if let (Some(chat), Some(sprite)) = (chat_win, sprite_win) {
-        if let (Ok(sprite_pos), Ok(sprite_size)) = (sprite.outer_position(), sprite.outer_size()) {
-            let x = sprite_pos.x as f64 + sprite_size.width as f64 + 10.0;
-            let y = sprite_pos.y as f64;
-            let _ = chat.set_position(tauri::LogicalPosition::new(x, y));
-        }
-    }
-    Ok(())
-}
-
-/// 平滑调整聊天窗口大小（宽高同时变化），底部居中固定
-#[tauri::command]
-pub async fn resize_chat_window_smooth(app: AppHandle, expanded: bool) -> Result<(), String> {
-    use std::time::Duration;
-
-    let win = app.get_webview_window("chat").ok_or("chat window not found")?;
-    let compact_w = 400.0_f64;
-    let compact_h = 60.0_f64;
-    let expanded_w = 600.0_f64;
-    let expanded_h = 640.0_f64;
-    let steps = 10u32;
-
-    let scale = win.scale_factor().unwrap_or(1.0);
-
-    // 动画开始前一次性获取中心X和底部Y（逻辑像素）
-    let (center_x, bottom_y) = if let Ok(pos) = win.outer_position() {
-        let cur_w = if let Ok(sz) = win.inner_size() {
-            sz.width as f64 / scale
-        } else {
-            if expanded { compact_w } else { expanded_w }
-        };
-        let cur_h = if let Ok(sz) = win.inner_size() {
-            sz.height as f64 / scale
-        } else {
-            if expanded { compact_h } else { expanded_h }
-        };
-        let lx = pos.x as f64 / scale;
-        let ly = pos.y as f64 / scale;
-        ((lx + cur_w / 2.0), (ly + cur_h))
-    } else {
-        (300.0, 700.0)
-    };
-
-    let from_w = if expanded { compact_w } else { expanded_w };
-    let from_h = if expanded { compact_h } else { expanded_h };
-    let to_w = if expanded { expanded_w } else { compact_w };
-    let to_h = if expanded { expanded_h } else { compact_h };
-
-    for i in 1..=steps {
-        let t = i as f64 / steps as f64;
-        let t = 1.0 - (1.0 - t).powi(3); // easeOutCubic
-        let cur_w = from_w + (to_w - from_w) * t;
-        let cur_h = from_h + (to_h - from_h) * t;
-        let new_x = center_x - cur_w / 2.0;
-        let new_y = bottom_y - cur_h;
-
-        let _ = win.set_position(tauri::LogicalPosition::new(new_x, new_y));
-        let _ = win.set_size(tauri::LogicalSize::new(cur_w, cur_h));
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
     Ok(())
 }
