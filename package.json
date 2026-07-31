@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "cmd /c \"set PDFIUM_STATIC_LIB_PATH=D:\\Projects\\ArkMind\\src-tauri\\bin && tauri build\"",
     "license-gen": "start tools/license-gen/index.html",
     "test": "vitest run",
     "test:watch": "vitest"

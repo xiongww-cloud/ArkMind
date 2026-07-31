@@ -103,11 +103,13 @@ export function useAgentChat() {
   const rendered = ref<Record<string, string>>({})
 
   // ── setThinkingProgress ──
+  const THINKING_SPINNER = '<span class="thinking-spinner"></span>'
   function setThinkingProgress(text: string) {
     thinkingProgress.value = text
-    renderedProgress.value = ''
     if (text) {
-      renderMd(text.replace(/~/g, '～')).then(h => { renderedProgress.value = h })
+      renderedProgress.value = THINKING_SPINNER + text.replace(/~/g, '～')
+    } else {
+      renderedProgress.value = ''
     }
   }
 
@@ -198,36 +200,42 @@ export function useAgentChat() {
     const { getMessage, scrollFn, onDone, onError, onStartAnswer, onFinish, sessionId } = options
 
     isChatting.value = true
-    setThinkingProgress('')
-
-    const presetText = pickRetrievalPhrase()
-    setThinkingProgress(presetText)
+    setThinkingProgress('思考中')
     scrollFn()
 
     try {
-      let hasRoundThought = false
-
       const unlistenProgress = await listen<{ msg: string }>('agent:progress', (ev) => {
-        if (!hasRoundThought) { setThinkingProgress(ev.payload.msg) }
+        setThinkingProgress(pickRetrievalPhrase())
         scrollFn()
       })
-      const unlistenRoundThought = await listen<{text?: string}>('agent:round-thought', (ev) => {
-        hasRoundThought = true
-        const msg = getMessage()
-        if (msg) {
-          msg.thinking = true
-          msg.isThinking = true
-        }
-        if (ev.payload.text && ev.payload.text.trim()) {
-          setThinkingProgress(ev.payload.text.trim())
-        } else {
-          setThinkingProgress(pickRetrievalPhrase())
+      // ★ 实时 token 流（打字机队列）
+      const tokenQueue: string[] = []
+      let tokenIdx = 0
+      let tokenFlushed = false
+      let lastRenderTime = 0
+      const flushTokenQueue = () => {
+        if (tokenFlushed) return; tokenFlushed = true
+        clearInterval(tokenTimer)
+        const msg = getMessage(); if (!msg) return
+        while (tokenIdx < tokenQueue.length) msg.content += tokenQueue[tokenIdx++]
+      }
+      const tokenTimer = setInterval(() => {
+        const msg = getMessage(); if (!msg) return
+        if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) setThinkingProgress(''); msg.content += tokenQueue[tokenIdx++] }
+        const now = Date.now()
+        if (msg.id && msg.content && now - lastRenderTime > 200) {
+          lastRenderTime = now
+          renderMd(msg.content.replace(/~/g, '～')).then(h => { rendered.value[msg.id!] = h })
         }
         scrollFn()
+      }, 15)
+      const unlistenToken = await listen<{ token: string }>('agent:token', (ev) => {
+        tokenQueue.push(ev.payload.token)
       })
 
       invoke('kb_agent_chat', { data: { query, sessionId: sessionId || undefined } }).catch((err) => {
         console.error('[AgentChat] invoke failed:', err)
+        flushTokenQueue()
         const msg = getMessage()
         if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = String(err) }
         isChatting.value = false
@@ -235,6 +243,7 @@ export function useAgentChat() {
       })
 
       const unlistenDone = await listen<any>('agent:done', async (ev) => {
+        flushTokenQueue()
         const result = ev.payload
         const msg = getMessage()
         if (msg) { msg.thinking = false; msg.isThinking = false }
@@ -260,15 +269,18 @@ export function useAgentChat() {
             if (objectRefs.length > 0) {
               const refsHtml = renderObjectReference({ objects: objectRefs })
               renderMd(finalAnswer.replace(/~/g, '～')).then(mdHtml => {
-                msg.content = finalAnswer
+                if (!msg.content) msg.content = finalAnswer
                 if (msg.id) rendered.value[msg.id!] = `<div class="object-references">${refsHtml}</div><div class="answer-content">${mdHtml}</div>`
               })
             } else {
-              // 普通 Markdown 渲染 + 打字机效果
-              startTypewriter(msg.id || '', finalAnswer, msg)
+              // 普通 Markdown 渲染
+              if (finalAnswer && !msg.content) msg.content = finalAnswer
+              renderMd(msg.content.replace(/~/g, '～')).then(h => {
+                if (msg && msg.id) rendered.value[msg.id!] = h
+              })
             }
           }
-          onDone?.(result, { finalAnswer, isRealStreaming: false, streamedContent: '', responseType })
+          onDone?.(result, { finalAnswer, isRealStreaming: true, streamedContent: msg?.content || '', responseType })
         } else {
           if (msg) { msg.content = result?.answer || result?.error || '请求失败' }
           onError?.(result?.error || result?.answer || '请求失败')
@@ -281,6 +293,7 @@ export function useAgentChat() {
       })
 
       const unlistenError = await listen<any>('agent:error', (ev) => {
+        flushTokenQueue()
         const msg = getMessage()
         if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = ev.payload.error || 'AI 服务异常' }
         isChatting.value = false
@@ -291,9 +304,10 @@ export function useAgentChat() {
       })
 
       function cleanup() {
+        clearInterval(tokenTimer)
         try {
           unlistenProgress()
-          unlistenRoundThought()
+          unlistenToken()
           unlistenDone()
           unlistenError()
         } catch {}

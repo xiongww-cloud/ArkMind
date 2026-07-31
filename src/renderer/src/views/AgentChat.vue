@@ -239,10 +239,9 @@ function onFeedScroll() {
 }
 
 let unlistenProgress: (() => void) | null = null
-let unlistenRoundThought: (() => void) | null = null
+let unlistenToken: (() => void) | null = null
 let unlistenDone: (() => void) | null = null
 let unlistenError: (() => void) | null = null
-let hasRoundThought = false
 
 async function confirmDeleteSession(id: string) {
   const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？此操作不可撤销。', confirmText: '删除' })
@@ -297,58 +296,74 @@ async function handleSendMessage() {
   agent.setThinkingProgress('')
   // ★ Real Cognitive Stream: 实时进度
   unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
-    if (!hasRoundThought) { agent.setThinkingProgress(ev.payload.msg) }
+    agent.setThinkingProgress(pickRetrievalPhrase())
     scrollToBottomIfNear()
   })
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
   session.messages.push(aiMsg); const aiIdx = session.messages.length - 1
-  // ★ 检索阶段固定文案：随机选一条，LLM 调用工具期间不再切换
-  const presetText = pickRetrievalPhrase()
-  aiMsg.content = presetText
-  agent.setThinkingProgress(presetText)
+  // ★ 初始默认"思考中"，工具调用时才切换预设文本
+  agent.setThinkingProgress('思考中')
+  // ★ 实时 token 流（打字机队列）
+  const tokenQueue: string[] = []
+  let tokenIdx = 0
+  let tokenFlushed = false
+  const flushTokenQueue = () => {
+    if (tokenFlushed) return; tokenFlushed = true
+    clearInterval(tokenTimer)
+    const msg = session.messages[aiIdx]; if (!msg) return
+    while (tokenIdx < tokenQueue.length) msg.content += tokenQueue[tokenIdx++]
+  }
+  let lastRenderTime = 0
+  const tokenTimer = setInterval(() => {
+    const msg = session.messages[aiIdx]; if (!msg) return
+    if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) agent.setThinkingProgress(''); msg.content += tokenQueue[tokenIdx++] }
+    const now = Date.now()
+    if (msg.id && msg.content && now - lastRenderTime > 200) {
+      lastRenderTime = now
+      renderMessageContent(msg.id, msg.content)
+    }
+    scrollToBottomIfNear()
+  }, 15)
+  unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
+    tokenQueue.push(ev.payload.token)
+  })
   nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
   try {
-    // ★ 工具轮结束：恢复预设文案，保持呼吸气泡
-    unlistenRoundThought = await listen<{text:string}>('agent:round-thought', (ev) => {
-      console.log('[FE] round-thought received')
-      hasRoundThought = true
-      const msg = session.messages[aiIdx]
-      msg.isThinking = true
-      if (ev.payload.text && ev.payload.text.trim()) { agent.setThinkingProgress(ev.payload.text.trim()) }
-      else { agent.setThinkingProgress(pickRetrievalPhrase()) }
-      scrollToBottomIfNear()
-    })
-
     // ★ 监听 agent:done 事件（后台任务完成时触发）
     unlistenDone = await listen<any>('agent:done', (ev) => {
       console.log('[FE] done received')
+      flushTokenQueue()
       const result = ev.payload
       const msg = session.messages[aiIdx]; msg.isThinking = false
       if (result.success) {
         const finalAnswer = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
         agent.setThinkingProgress('')
-        startTypewriter(msg, finalAnswer)
+        if (finalAnswer && !msg.content) msg.content = finalAnswer
+        renderMessageContent(msg.id || '', msg.content)
       } else { msg.error = result.answer || result.error || '失败' }
       agent.isChatting.value = false; scrollToBottomIfNear()
-      try { unlistenDone(); unlistenProgress(); unlistenRoundThought() } catch (e) { console.error('[KB] unlisten failed:', e) }
+      try { unlistenDone(); unlistenToken(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
 
     // ★ 监听 agent:error 事件
     unlistenError = await listen<any>('agent:error', (ev) => {
+      flushTokenQueue()
       const msg = session.messages[aiIdx]; msg.isThinking = false
       msg.error = ev.payload.error || 'AI 服务异常'
       agent.isChatting.value = false; scrollToBottomIfNear()
-      try { unlistenError(); unlistenDone(); unlistenProgress(); unlistenRoundThought() } catch {}
+      try { unlistenError(); unlistenDone(); unlistenToken(); unlistenProgress() } catch {}
     })
 
     // ★ 调用命令（立即返回，不等待结果）
     invoke('kb_agent_chat', { data: { query: q, sessionId: currentSessionId.value } }).catch((err) => {
       console.error('[KB] invoke failed:', err)
+      flushTokenQueue()
       const msg = session.messages[aiIdx]; msg.isThinking = false
       msg.error = String(err)
       agent.isChatting.value = false; scrollToBottomIfNear()
     })
   } catch (e: any) {
+    flushTokenQueue()
     const msg = session.messages[aiIdx]; msg.isThinking = false
     msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
     agent.isChatting.value = false; scrollToBottomIfNear()
@@ -437,7 +452,7 @@ async function openNotebookPicker(msgId: string) { savingMsgId.value = msgId; no
 onUnmounted(() => {
   stopAllTypewriters()
   unlistenProgress?.()
-  unlistenRoundThought?.()
+  unlistenToken?.()
   unlistenDone?.()
   unlistenError?.()
 })
@@ -489,9 +504,9 @@ onUnmounted(() => {
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
-              <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 shadow-sm w-full" :class="{ 'thinking-bubble': msg.isThinking }">
+              <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm w-full" :class="{ 'thinking-bubble': msg.isThinking }">
                 <div v-if="agent.isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || msg.content || '思考中'"></div>
-                <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || msg.content || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || msg.content || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || msg.content || '思考中'"></div>
+                <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || msg.content || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || msg.content || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || msg.content || agent.thinkingProgress.value || '思考中'"></div>
               </div>
               <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
                 <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3 h-3" /></button>
@@ -588,4 +603,10 @@ onUnmounted(() => {
 .scrollbar-thin::-webkit-scrollbar-thumb { background: #e5e5ea; border-radius: 4px; }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #c7c7cc; }
 .scrollbar-thin { scrollbar-width: thin; scrollbar-color: #e5e5ea transparent; }
+.thinking-spinner {
+  display: inline-block; width: 14px; height: 14px; vertical-align: middle; margin-right: 4px;
+  border: 2px solid #e5e5ea; border-top-color: #2563eb; border-radius: 50%;
+  animation: ts-spin 0.8s linear infinite;
+}
+@keyframes ts-spin { to { transform: rotate(360deg); } }
 </style>

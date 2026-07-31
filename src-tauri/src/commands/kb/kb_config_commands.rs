@@ -58,7 +58,13 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
             Ok(v) => {
                 // ★ 保存 assistant 消息到 DB（纯内容，无 metadata）
                 if let Some(ref sid) = session_id {
-                    let answer = v["answer"].as_str().unwrap_or("");
+                    let mut answer = v["answer"].as_str().unwrap_or("").to_string();
+                    // ★ 持久化兜底：剥离工具调用 XML 残留，避免污染历史上下文
+                    // 不过滤 ext_tool_ 文本（工具名可合法出现在答案中）
+                    // "<tool_call" 同时匹配 <tool_call> 和 <tool_calls>（前缀覆盖）
+                    if answer.contains("<tool_call") || answer.contains("<invoke") || answer.contains("DSML") {
+                        answer = crate::services::agent_workflow::clean_tool_markers(&answer, false);
+                    }
                     let _ = crate::database::run(
                         "INSERT INTO chat_messages(session_id, role, content) VALUES(?1, 'assistant', ?2)",
                         &[json!(sid), json!(answer)],

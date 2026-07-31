@@ -1,5 +1,2 @@
-[target.'cfg(target_os = "windows")'.env]
-PDFIUM_STATIC_LIB_PATH = "D:\\Projects\\ArkMind\\src-tauri\\bin"
-
-[target.'cfg(target_os = "macos")'.env]
-PDFIUM_STATIC_LIB_PATH = "/Users/x/Projects/ArkMind/src-tauri/bin"
+[env]
+PDFIUM_STATIC_LIB_PATH = { value = "D:\\Projects\\ArkMind\\src-tauri\\bin", force = true }

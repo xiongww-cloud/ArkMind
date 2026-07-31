@@ -447,6 +447,10 @@ async function addTimelineEvent() {
   }
 }
 
+async function refreshDynamics() {
+  dynamics.value = await projectStore.fetchProjectDynamics(projectId.value)
+}
+
 const tabIcons: Record<string, string> = {
   info: 'info',
   clock: 'clock',
@@ -710,6 +714,7 @@ watch(
               <button @click="logFilter = 'all'" class="h-6 px-2 rounded-md text-[11px] font-medium transition-colors" :class="logFilter === 'all' ? 'bg-blue-50 text-blue-600' : 'text-surface-400 hover:text-surface-600 hover:bg-surface-50'">全部</button>
               <button @click="logFilter = 'system'" class="h-6 px-2 rounded-md text-[11px] font-medium transition-colors" :class="logFilter === 'system' ? 'bg-blue-50 text-blue-600' : 'text-surface-400 hover:text-surface-600 hover:bg-surface-50'">系统日志</button>
               <button @click="logFilter = 'note'" class="h-6 px-2 rounded-md text-[11px] font-medium transition-colors" :class="logFilter === 'note' ? 'bg-blue-50 text-blue-600' : 'text-surface-400 hover:text-surface-600 hover:bg-surface-50'">用户日志</button>
+              <button @click="logFilter = 'ai'" class="h-6 px-2 rounded-md text-[11px] font-medium transition-colors" :class="logFilter === 'ai' ? 'bg-blue-50 text-blue-600' : 'text-surface-400 hover:text-surface-600 hover:bg-surface-50'">AI日志</button>
             </div>
           </div>
 
@@ -722,7 +727,7 @@ watch(
           </div>
 
           <div class="flex-1 overflow-y-auto min-h-0 pr-2 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-gray-300">
-            <Timeline :events="dynamics" :project-id="projectId" :log-filter="logFilter" />
+            <Timeline :events="dynamics" :project-id="projectId" :log-filter="logFilter" @refresh="refreshDynamics" />
           </div>
         </div>
       </div>

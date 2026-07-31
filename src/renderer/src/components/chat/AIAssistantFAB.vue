@@ -442,4 +442,10 @@ onUnmounted(() => {
   pointer-events: none;
   border-radius: inherit;
 }
+:deep(.thinking-spinner) {
+  display: inline-block; width: 14px; height: 14px; vertical-align: middle; margin-right: 4px;
+  border: 2px solid #e5e5ea; border-top-color: #2563eb; border-radius: 50%;
+  animation: ts-spin 0.8s linear infinite;
+}
+@keyframes ts-spin { to { transform: rotate(360deg); } }
 </style>

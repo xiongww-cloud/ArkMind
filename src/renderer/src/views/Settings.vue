@@ -965,47 +965,47 @@ onUnmounted(() => {
       <!-- ══════════ Row 1: 状态概览卡片 ══════════ -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
         <!-- AI 模型 -->
-        <div class="bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="w-8 h-8 rounded-lg bg-brand-50 flex items-center justify-center">
-              <AppIcon name="sparkles" size="16" class="text-brand-600" />
+        <div class="bg-white rounded-2xl border border-surface-200 p-3 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center gap-1.5 mb-1.5">
+            <div class="w-6 h-6 rounded-lg bg-brand-50 flex items-center justify-center">
+              <AppIcon name="sparkles" size="14" class="text-brand-600" />
             </div>
             <span class="text-[11px] text-surface-400">AI 模型</span>
           </div>
-          <div class="text-[20px] font-bold text-surface-900">{{ aiProviders.length + visionProviders.length + (vecConfigured ? 1 : 0) }}</div>
-          <div class="text-[10px] text-surface-400">个已配置</div>
+          <div class="text-[18px] font-bold text-surface-900">{{ aiProviders.length + visionProviders.length + (vecConfigured ? 1 : 0) }}<span class="text-[10px] font-normal text-surface-400 ml-1">个已配置</span></div>
         </div>
         <!-- 智能通知 -->
-        <div class="bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center">
-              <AppIcon name="bell" size="16" class="text-emerald-600" />
+        <div class="bg-white rounded-2xl border border-surface-200 p-3 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center gap-1.5 mb-1.5">
+            <div class="w-6 h-6 rounded-lg bg-emerald-50 flex items-center justify-center">
+              <AppIcon name="bell" size="14" class="text-emerald-600" />
             </div>
             <span class="text-[11px] text-surface-400">智能通知</span>
           </div>
-          <div class="text-[20px] font-bold" :class="notifyEnabled ? 'text-emerald-600' : 'text-surface-300'">{{ notifyEnabled ? '已启用' : '已关闭' }}</div>
-          <div class="text-[10px] text-surface-400">{{ notifyInterval === 0 ? '仅启动时' : intervalOptions.find(o => o.value === notifyInterval)?.label || '' }}</div>
+          <div class="flex items-baseline justify-between">
+            <div class="text-[18px] font-bold" :class="notifyEnabled ? 'text-emerald-600' : 'text-surface-300'">{{ notifyEnabled ? '已启用' : '已关闭' }}<span class="text-[10px] font-normal text-surface-400 ml-1">{{ notifyInterval === 0 ? '仅启动时' : intervalOptions.find(o => o.value === notifyInterval)?.label || '' }}</span></div>
+            <span v-if="notifyEnabled && loopStatus.running && loopStatus.next_check_at" class="text-[10px] text-surface-400 shrink-0">下次 {{ loopStatus.next_check_at.slice(11) || loopStatus.next_check_at }}</span>
+          </div>
         </div>
         <!-- 桌面精灵 -->
-        <div class="bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
-              <AppIcon name="chat-ai" size="16" class="text-indigo-600" />
+        <div class="bg-white rounded-2xl border border-surface-200 p-3 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center gap-1.5 mb-1.5">
+            <div class="w-6 h-6 rounded-lg bg-indigo-50 flex items-center justify-center">
+              <AppIcon name="chat-ai" size="14" class="text-indigo-600" />
             </div>
             <span class="text-[11px] text-surface-400">桌面精灵</span>
           </div>
-          <div class="text-[20px] font-bold" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-300'">{{ spriteEnabled ? '已启用' : '已关闭' }}</div>
+          <div class="text-[18px] font-bold" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-300'">{{ spriteEnabled ? '已启用' : '已关闭' }}</div>
         </div>
         <!-- 知识管线 -->
-        <div class="bg-white rounded-2xl border border-surface-200 p-4 shadow-sm hover:shadow-md transition-shadow">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center">
-              <AppIcon name="server" size="16" class="text-amber-600" />
+        <div class="bg-white rounded-2xl border border-surface-200 p-3 shadow-sm hover:shadow-md transition-shadow">
+          <div class="flex items-center gap-1.5 mb-1.5">
+            <div class="w-6 h-6 rounded-lg bg-amber-50 flex items-center justify-center">
+              <AppIcon name="server" size="14" class="text-amber-600" />
             </div>
             <span class="text-[11px] text-surface-400">知识管线</span>
           </div>
-          <div class="text-[20px] font-bold text-surface-900">{{ loopStatus.running ? '运行中' : '空闲' }}</div>
-          <div class="text-[10px] text-surface-400">{{ loopStatus.running && loopStatus.next_check_at ? '下次: ' + (loopStatus.next_check_at.slice(11) || loopStatus.next_check_at) : '' }}</div>
+          <div class="text-[18px] font-bold text-surface-900">就绪</div>
         </div>
       </div>
 

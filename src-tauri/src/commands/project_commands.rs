@@ -87,7 +87,7 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn project_dynamics_list_all() -> Result<Vec<Value>, String> { database::all("SELECT pd.id, pd.project_id, pd.type, pd.content, pd.operator, pd.created_at, p.name as project_name FROM project_dynamics pd JOIN projects p ON p.id=pd.project_id ORDER BY pd.created_at DESC LIMIT 30", &[]).map_err(|e| e.to_string()) }
 #[tauri::command] pub async fn project_dynamics_delete(dynamic_id: String) -> Result<(), String> {
     if let Ok(Some(r)) = database::get("SELECT project_id FROM project_dynamics WHERE id=?1",&[json!(&dynamic_id)]) {
-        database::run("DELETE FROM project_dynamics WHERE id=? AND type='note'", &[json!(dynamic_id)]).map_err(|e| e.to_string())?;
+        database::run("DELETE FROM project_dynamics WHERE id=? AND type IN ('note','ai')", &[json!(dynamic_id)]).map_err(|e| e.to_string())?;
         if let Some(pid) = r["project_id"].as_str() {
             let _ = pid;
         }
@@ -96,7 +96,7 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn project_dynamics_edit(dynamic_id: String, content: String) -> Result<(), String> {
     if let Ok(Some(r)) = database::get("SELECT project_id FROM project_dynamics WHERE id=?1",&[json!(&dynamic_id)]) {
-        database::run("UPDATE project_dynamics SET content=? WHERE id=? AND type='note'", &[json!(content), json!(dynamic_id)]).map_err(|e| e.to_string())?;
+        database::run("UPDATE project_dynamics SET content=? WHERE id=? AND type IN ('note','ai')", &[json!(content), json!(dynamic_id)]).map_err(|e| e.to_string())?;
         if let Some(pid) = r["project_id"].as_str() {
             let _ = pid;
         }

@@ -27,7 +27,7 @@ const editingId = ref(null)
 const editingVal = ref('')
 
 function startEdit(event) {
-  if (event.type !== 'note') return
+  if (event.type !== 'note' && event.type !== 'ai') return
   editingId.value = event._id
   editingVal.value = event.content || ''
 }
@@ -49,7 +49,7 @@ async function saveEdit(event) {
 }
 
 async function handleDelete(event) {
-  if (event.type !== 'note') return
+  if (event.type !== 'note' && event.type !== 'ai') return
   const ok = await dangerConfirm({ title: '删除日志', message: '确定删除这条日志？', confirmText: '删除' })
   if (!ok) return
   try {
@@ -75,8 +75,8 @@ async function handleDelete(event) {
 
         <!-- Icon -->
         <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
-          :class="event.type === 'system' ? 'bg-blue-50' : 'bg-amber-50'">
-          <AppIcon name="clock" class="w-2.5 h-2.5" :class="event.type === 'system' ? 'text-blue-400' : 'text-amber-500'" />
+          :class="event.type === 'system' ? 'bg-blue-50' : event.type === 'ai' ? 'bg-violet-50' : 'bg-amber-50'">
+          <AppIcon name="clock" class="w-2.5 h-2.5" :class="event.type === 'system' ? 'text-blue-400' : event.type === 'ai' ? 'text-violet-500' : 'text-amber-500'" />
         </div>
 
         <!-- Content area -->
@@ -94,8 +94,8 @@ async function handleDelete(event) {
           <p v-else class="text-xs text-surface-600 leading-relaxed">{{ event.content }}</p>
         </div>
 
-        <!-- Actions (user log only, hover) -->
-        <div v-if="event.type === 'note'" class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover/log:opacity-100 transition-opacity -mr-0.5">
+        <!-- Actions (user/AI log only, hover) -->
+        <div v-if="event.type === 'note' || event.type === 'ai'" class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover/log:opacity-100 transition-opacity -mr-0.5">
           <button @click.stop="startEdit(event)" class="btn-ghost !p-0.5 text-slate-300 hover:text-blue-600" title="编辑">
             <AppIcon name="edit" class="w-3 h-3" />
           </button>

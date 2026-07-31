@@ -257,7 +257,7 @@ onUnmounted(() => {
             </div>
             <div v-else class="bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
               <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
-              <div v-else class="markdown-body chat-md" v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || m.content || '思考中'"></div>
+              <div v-else class="markdown-body chat-md" v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || m.content || agent.thinkingProgress.value || '思考中'"></div>
             </div>
           </div>
         </div>
@@ -401,4 +401,10 @@ onUnmounted(() => {
   background-size: 200% 100%; animation: shimmer 1.8s ease-in-out infinite; pointer-events: none; border-radius: inherit;
 }
 @keyframes shimmer { 0% { background-position: 200% center; } 100% { background-position: -200% center; } }
+:deep(.thinking-spinner) {
+  display: inline-block; width: 14px; height: 14px; vertical-align: middle; margin-right: 4px;
+  border: 2px solid #e5e5ea; border-top-color: #2563eb; border-radius: 50%;
+  animation: ts-spin 0.8s linear infinite;
+}
+@keyframes ts-spin { to { transform: rotate(360deg); } }
 </style>

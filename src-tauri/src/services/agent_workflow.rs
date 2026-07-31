@@ -74,9 +74,14 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 3. 信息足够时立即停止检索
 ⚠️ 每次工具调用都会消耗预算。已获取的对象内容禁止重复获取。
 
-## 4. 工具调用协议
-工具调用必须使用 tool_calls 字段。
-禁止在 content 中输出任何工具调用文本（标签、函数调用、JSON 均禁止）。
+## 4. 工具调用协议（必须遵守）
+- 所有工具调用必须通过 tool_calls 字段返回，不得在 content 中输出
+- content 字段只能包含思考过程或最终回答
+- 禁止在 content 中出现以下内容：
+  - XML 标签：<tool_call>、<tool_calls>、<invoke> 等
+  - 函数调用：ext_tool_search(...)、ext_tool_object(...) 等
+  - JSON 格式：{"name": "ext_tool_xxx", ...}
+  - 工具名称、tool_call_id 等工具调用元数据
 
 ## 5. 工具选择规则
 - 搜索文档内容 → ext_tool_search
@@ -93,6 +98,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 - 管理策略 → ext_tool_manage_policy
 - 查看项目动态/日志 → ext_tool_object(type="PROJECT_DYNAMIC", field_filters=[{field:"project_id",op:"=",value:"..."}])，可加 created_at >= / <= 做时间范围过滤
 - 追加项目动态 → ext_tool_manage_project(action="add_dynamic", project_id="...", content="...")
+- 删除项目动态 → ext_tool_manage_project(action="delete_dynamic", dynamic_id="...")
 
 ## 6. 业务对象模型
 项目结构图谱：
@@ -982,7 +988,7 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_chunk_navigate","description":"在知识块间翻页。next=向后翻页，prev=向前翻页。用于阅读长文档的前后内容。⚠️ chunk_id 是8位短ID，来自 search() 结果的 ChunkID 字段。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID，必须来自 search() 结果的 ChunkID 字段"},"edge_type":{"type":"string","enum":["next","prev"],"description":"next=向后翻页；prev=向前翻页"},"radius":{"type":"integer","description":"返回块数量，默认10，最大20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_relations","description":"查询实体的关联对象（双向）。如：项目关联的方案(SOLUTION)/产品/合作伙伴/文件，方案关联的版本(SOLUTION_VERSION，metadata含金额（元）/设备数/状态)，版本关联的设备实例(SOLUTION_ITEM，metadata含型号/数量/单价（元）)，设备实例关联的产品(PRODUCT)。返回关联对象的名称、类型、ID及边metadata。联系人类型额外返回 phone/email/position。","parameters":{"type":"object","properties":{"entity_type":{"type":"string","description":"源实体类型：PROJECT/PRODUCT/SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/FILE"},"entity_id":{"type":"string","description":"源实体ID"},"target_type":{"type":"string","description":"目标类型过滤：SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/PRODUCT/FILE/NOTE/TODO/CHANNEL/VENDOR/CONTACT/CUSTOMER。不传返回所有关联"},"limit":{"type":"integer","description":"每页条数，默认20"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["entity_type","entity_id"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。查看待办请用 ext_tool_object(type=\"TODO\")。action=create/update/delete。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待标题(create必填)"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。查看项目请用 ext_tool_object(type=\"PROJECT\")。action=create/update/delete/add_dynamic。add_dynamic=追加项目动态/跟进记录（需project_id+content）。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","add_dynamic"]},"project_id":{"type":"string","description":"项目ID(update/delete/add_dynamic用)"},"name":{"type":"string","description":"项目名称(create用)"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"},"content":{"type":"string","description":"动态内容(add_dynamic必填)"},"dynamic_type":{"type":"string","description":"动态类型(add_dynamic用,默认note)：note=跟进记录/system=系统变更"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。查看项目请用 ext_tool_object(type=\"PROJECT\")。action=create/update/delete/add_dynamic/delete_dynamic。add_dynamic=追加项目动态（需project_id+content）。delete_dynamic=删除动态（需dynamic_id）。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","add_dynamic","delete_dynamic"]},"project_id":{"type":"string","description":"项目ID(update/delete/add_dynamic用)"},"name":{"type":"string","description":"项目名称(create用)"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"},"content":{"type":"string","description":"动态内容(add_dynamic必填)"},"dynamic_type":{"type":"string","description":"动态类型(add_dynamic用,默认ai)：ai=AI记录/note=用户记录/system=系统变更"},"dynamic_id":{"type":"string","description":"动态ID(delete_dynamic用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_partner","description":"管理合作伙伴（渠道/厂商/客户）。查看请用 ext_tool_object(type=\"CHANNEL/VENDOR/CUSTOMER\")。action=create/update/delete/link_project/unlink_project。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"partner_id":{"type":"string","description":"合作伙伴ID(update/delete/link_project/unlink_project用)"},"type":{"type":"string","description":"类型: CHANNEL/VENDOR/CUSTOMER(create用)"},"name":{"type":"string","description":"名称(create/update用)"},"phone":{"type":"string","description":"电话"},"address":{"type":"string","description":"地址"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人（归属于合作伙伴下的人员）。查看联系人请用 ext_tool_object(type=\"CONTACT\")。action=create/update/delete/link_project/unlink_project。创建联系人时必须提供 partner_id 指定所属合作伙伴。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"contact_id":{"type":"string","description":"联系人ID(update/delete/link_project/unlink_project用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"partner_id":{"type":"string","description":"所属合作伙伴ID(create必填)。联系人是合作伙伴下的人员，必须指定归属。"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_memory","description":"记录和检索长期记忆。action=create(创建记忆), action=update(更新记忆内容), action=delete(删除记忆), action=search(搜索记忆，不传query或传*可列出所有记忆)。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","search"],"description":"必填。search=搜索记忆，create=创建记忆，update=更新记忆，delete=删除记忆"},"content":{"type":"string","description":"记忆内容（create/update 必填）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条记忆内容数组"},"memory_id":{"type":"string","description":"记忆ID（update/delete 必填）"},"query":{"type":"string","description":"搜索关键词（search 用）。不传或传 * 可列出所有记忆"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
@@ -1098,6 +1104,30 @@ fn sanitize_content(content: &str) -> String {
     }).collect()
 }
 
+/// 从 content 中移除工具调用标记，返回干净的文本
+/// - DSML 标记（全角/半角/Unicode 变体）
+/// - <tool_calls>...</tool_calls> 块
+/// - <tool_call>...</tool_call> 块
+/// - 可选：ext_tool_xxx(...) 函数调用（strip_ext_tool=true 时）
+/// - 压缩连续空行
+pub fn clean_tool_markers(text: &str, strip_ext_tool: bool) -> String {
+    let mut out = text.to_string();
+    let re_dsml = regex::Regex::new(r"(?i)[|｜‖]*DSML[|｜‖]*").unwrap();
+    out = re_dsml.replace_all(&out, "").to_string();
+    let re_xml = regex::Regex::new(r"(?s)<tool_calls>.*?</tool_calls>").unwrap();
+    out = re_xml.replace_all(&out, "").to_string();
+    let re_tool_call = regex::Regex::new(r"(?s)<tool_call>.*?</tool_call>").unwrap();
+    out = re_tool_call.replace_all(&out, "").to_string();
+    if strip_ext_tool {
+        let re_tool = regex::Regex::new(r"(?s)ext_tool_\w+\s*\([^)]*\)").unwrap();
+        out = re_tool.replace_all(&out, "").to_string();
+    }
+    while out.contains("\n\n\n") {
+        out = out.replace("\n\n\n", "\n\n");
+    }
+    out.trim().to_string()
+}
+
 /// ★ 单请求流式调用：一次请求同时完成
 ///   - content 逐 token 流式输出到前端（agent:token / agent:start-answer）
 ///   - tool_calls delta 按 index 累积（工具调用决策）
@@ -1147,8 +1177,11 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
         tca: Vec<(String, String, String)>, // (id, name, arguments)
         usage: Option<Value>,
         count: u64,
+        token_buf: String,
+        token_buf_start: usize, // token_buf 在 full 中的起始位置
+        suppress_tokens: bool,
     }
-    let mut st = SseState { buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(), usage: None, count: 0 };
+    let mut st = SseState { buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(), usage: None, count: 0, token_buf: String::new(), token_buf_start: 0, suppress_tokens: false };
     let mut stream = resp.bytes_stream();
 
     // 尝试从 buffer 头部提取一个完整的 SSE JSON 并处理；返回 false 表示数据不完整
@@ -1168,12 +1201,33 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
                 if let Some(choices) = chunk["choices"].as_array() {
                     for c in choices {
                         let delta = &c["delta"];
-                        // content → 逐 token 流式输出到前端
+                        // content → 缓存并检测工具调用标记（用 st.full 检测，不受换行/切分影响）
                         if let Some(tok) = delta["content"].as_str() {
                             st.full.push_str(tok);
                             st.count += 1;
-                            if let Some(ref h) = app {
-                                let _ = h.emit("agent:token", json!({"token": tok}));
+                            st.token_buf.push_str(tok);
+                            if !st.suppress_tokens {
+                                // 检测工具调用标记："<tool_call" 同时匹配 "<tool_call>" 和 "<tool_calls>"（前缀覆盖）
+                                if st.full.contains("<tool_call") || st.full.contains("<invoke") {
+                                    // 发出标记前的剩余文本（如有），然后抑制后续全部内容
+                                    let marker = st.full.find("<tool_call")
+                                        .or_else(|| st.full.find("<invoke"))
+                                        .unwrap_or(0);
+                                    if marker > st.token_buf_start {
+                                        if let Some(ref h) = app {
+                                            let _ = h.emit("agent:token", json!({"token": &st.token_buf[..marker - st.token_buf_start]}));
+                                        }
+                                    }
+                                    st.suppress_tokens = true;
+                                    st.token_buf.clear();
+                                    st.token_buf_start = st.full.len();
+                                } else if st.token_buf.len() >= 50 || tok.contains('\n') {
+                                    if let Some(ref h) = app {
+                                        let _ = h.emit("agent:token", json!({"token": &st.token_buf}));
+                                    }
+                                    st.token_buf.clear();
+                                    st.token_buf_start = st.full.len();
+                                }
                             }
                         }
                         // reasoning_content → 累积并推送到前端显示思考过程
@@ -1216,7 +1270,15 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
     }
     // 流结束后处理剩余数据
     while try_process_one(&mut st, &app_handle) {}
-        log::info!("SSE stream end +{}ms tokens={} len={} tool_calls={}", t0.elapsed().as_millis(), st.count, st.full.len(), st.tca.len());
+    // 流结束后 flush 残余 buffer
+    if !st.suppress_tokens && !st.token_buf.is_empty() {
+        if let Some(ref h) = app_handle {
+            let _ = h.emit("agent:token", json!({"token": &st.token_buf}));
+        }
+        st.token_buf.clear();
+        st.token_buf_start = st.full.len();
+    }
+    log::info!("SSE stream end +{}ms tokens={} len={} tool_calls={}", t0.elapsed().as_millis(), st.count, st.full.len(), st.tca.len());
 
     let tool_calls: Vec<Value> = st.tca.into_iter()
         .filter(|(id, name, _)| !id.is_empty() || !name.is_empty())
@@ -1237,9 +1299,8 @@ async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<ta
     log::info!("[call_llm_without_tools] 被调用，messages 长度: {}", messages.len());
     let (content, _, _, _) = call_llm_streaming(messages, None, app_handle).await?;
     log::info!("[call_llm_without_tools] 返回: content_len={}", content.len());
-    // 过滤 DSML 残留
-    let re_dsml = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*[^\n]*").unwrap();
-    Ok(re_dsml.replace_all(&content, "").to_string())
+    // 过滤 DSML / 工具调用 XML 残留
+    Ok(clean_tool_markers(&content, false))
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2830,7 +2891,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         }
         
         log::info!("预算: {}/150 cost={}", budget, search_cost);
-        if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking","msg":"思考中..."})); } }
+        if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking","msg":"思考中..."})); let _ = h.emit("agent:progress", json!({"msg":"思考中..."})); } }
         // ★ 每轮注意力衰减（Residual 方式：new_score = old_score * 0.95 + gain）
         // gain 在 update_from_tool_result / UpdateObject effect 中通过 EMA 完成
         // 这里只做衰减，不做加分
@@ -2918,9 +2979,10 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         }
         let ac = ac_owned.as_str();
         let mut tcs: Option<Vec<Value>> = if tcs_streamed.is_empty() { None } else { Some(tcs_streamed) };
-        let mut cleaned_ac: Option<String> = None; // 清理后的 content（当 XML 解析失败时）
-        log::info!("[Agent] 解析完成: ac_len={}, tcs={}, has_xml_tool={}", 
-            ac.len(), 
+        // ★ 始终计算清理后的 content（剥离工具调用标记），后续所有展示/保存/判定都使用干净文本
+        let cleaned_ac = clean_tool_markers(ac, true);
+        log::info!("[Agent] 解析完成: ac_len={}, cleaned_len={}, tcs={}, has_xml_tool={}", 
+            ac.len(), cleaned_ac.len(),
             tcs.as_ref().map(|v| v.len()).unwrap_or(0),
             ac.contains("tool_calls") || ac.contains("<tool_call>")
         );
@@ -2933,38 +2995,24 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             } else if let Some(parsed) = parse_html_tool_calls(ac) {
                 log::info!("[LLM检索] 从 content 解析到 HTML 工具调用: {:?}", parsed);
                 tcs = Some(parsed);
-            } else if ac.contains("tool_calls") || ac.contains("invoke") {
-                // 解析失败：用正则移除 tool_calls 块，剩余内容作为最终答案
-                log::info!("[LLM检索] XML工具调用解析失败，尝试清理原始文本");
-                // 匹配所有 DSML 变体的 tool_calls 块（Unicode 感知，含闭合标签）
-                if let Ok(re) = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*tool_calls[^a-zA-Z0-9]*>.*?[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*tool_calls[^a-zA-Z0-9]*>") {
-                    let cleaned = re.replace_all(ac, "").trim().to_string();
-                    if !cleaned.is_empty() {
-                        log::info!("[LLM检索] 清理后内容长度: {}", cleaned.len());
-                        cleaned_ac = Some(cleaned);
-                    }
-                }
             }
         }
 
-        let effective_ac = cleaned_ac.as_deref().unwrap_or(ac);
+        let effective_ac = cleaned_ac.as_str();
+        // ★ 工具调用文本检测基于原始 ac（effective_ac 已清理，无法再检测到残留标记）
+        let has_tool_pattern = (ac.trim().starts_with('{') && ac.contains("tool_calls"))
+            || ac.contains("<tool_call")
+            || ac.starts_with("<invoke")
+            || (ac.contains("ext_tool_") && ac.contains("```"))
+            ;
         log::info!("[Agent] LLM 响应: len={}, tool_calls={}, has_tool_pattern={}", 
             effective_ac.len(), 
             tcs.as_ref().map(|v| v.len()).unwrap_or(0),
-            (effective_ac.trim().starts_with('{') && effective_ac.contains("tool_calls"))
-                || effective_ac.contains("<tool_call")
-                || effective_ac.starts_with("<invoke")
-                || (effective_ac.contains("ext_tool_") && effective_ac.contains("```"))
+            has_tool_pattern
         );
 
         match tcs {
             None => {
-                // ★ 检测：LLM 是否将工具调用以 JSON、XML 或代码块格式输出（而非通过 tool_calls 字段）
-                let has_tool_pattern = (effective_ac.trim().starts_with('{') && effective_ac.contains("tool_calls"))
-                    || effective_ac.contains("<tool_call")
-                    || effective_ac.starts_with("<invoke")
-                    || (effective_ac.contains("ext_tool_") && effective_ac.contains("```"))
-                    ;
                 if has_tool_pattern && tool_text_retry_count < 2 {
                     tool_text_retry_count += 1;
                     log::warn!("[Agent] 检测到 content 中包含工具调用文本 (第{}次)，追加提示重试", tool_text_retry_count);
@@ -2982,34 +3030,9 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                     log::info!("[Agent] 流式内容为空，回退补生成");
                     answer = call_llm_without_tools(&messages, &app_handle).await.unwrap_or_else(|e| { log::warn!("[Agent] 流式补生成失败，降级为纯文本回答: {e}"); format!("未能生成有效回答: {e}") });
                 }
-                // 清理 DSML 残留（流式原文可能含未解析的工具调用标记）
-                let re_dsml = regex::Regex::new(r"(?si)[^a-zA-Z0-9]*DSML[^a-zA-Z0-9]*[^\n]*").unwrap();
-                let before_dsml = answer.len();
-                answer = re_dsml.replace_all(&answer, "").to_string();
-                if before_dsml != answer.len() { log::warn!("[Agent] DSML 清理: {} → {} chars", before_dsml, answer.len()); }
-                // 清理工具调用残留（兜底，防止 LLM 将工具调用输出到 content）
-                // 清理 ext_tool_xxx(...) 函数调用
-                let re_tool = regex::Regex::new(r"(?s)ext_tool_\w+\s*\([^)]*\)").unwrap();
-                let before_tool = answer.len();
-                answer = re_tool.replace_all(&answer, "").to_string();
-                if before_tool != answer.len() { log::warn!("[Agent] Tool 清理: {} → {} chars", before_tool, answer.len()); }
-                // 清理 <tool_calls>...</tool_calls> XML 标签
-                let re_xml = regex::Regex::new(r"(?s)<tool_calls>.*?</tool_calls>").unwrap();
-                let before_xml = answer.len();
-                answer = re_xml.replace_all(&answer, "").to_string();
-                if before_xml != answer.len() { log::warn!("[Agent] XML 清理: {} → {} chars", before_xml, answer.len()); }
-                // 清理 <tool_call>...</tool_call> XML 标签（单数格式）
-                let re_tool_call = regex::Regex::new(r"(?s)<tool_call>.*?</tool_call>").unwrap();
-                let before_tc = answer.len();
-                answer = re_tool_call.replace_all(&answer, "").to_string();
-                if before_tc != answer.len() { log::warn!("[Agent] ToolCall 清理: {} → {} chars", before_tc, answer.len()); }
-                // 清理连续空行
-                while answer.contains("\n\n\n") {
-                    answer = answer.replace("\n\n\n", "\n\n");
-                }
                 answer = answer.trim().to_string();
 
-                // ★ 如果清理后为空，跳回主循环重新执行（允许工具调用）
+                // ★ 如果 cleaned 后为空（内容全部是工具调用标记），跳回主循环重新执行（允许工具调用）
                 if answer.is_empty() && !query.is_empty() {
                     if retry_count < 2 {
                         retry_count += 1;
@@ -3029,8 +3052,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"result_type":"answer","answer":answer,"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
-                // ★ 工具轮：本轮已流式输出的 interim 内容通知前端归置到思考区
-                if !effective_ac.trim().is_empty() { if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:round-thought", json!({"text": effective_ac})); } } }
+                // ★ 工具轮：不再向前端推送 interim 内容，检索期间保持预设文案
                 // ★ 预算检查：不足时强制回答（在工具调用之前检查）
                 if budget < search_cost {
                     if let Some(ref h) = app_handle {
@@ -3444,6 +3466,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             _ => None,
                         };
                         let _ = h.emit("agent:status", json!({"stage":"tool_start","tool":tc.function.name,"target":target.unwrap_or_default()}));
+                        let _ = h.emit("agent:progress", json!({"msg": format!("正在{}...", if tc.function.name.starts_with("ext_tool_search") { "检索知识库" } else if tc.function.name.starts_with("ext_tool_object") { "查询数据" } else { "处理中" })}));
                     }
                 }
                 // ═══ 并行工具调度：async 工具并行执行，sync 工具顺序执行 ═══
@@ -3945,7 +3968,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         };
                                         envelope.to_json()
                                     } else {
-                                        let dynamic_type = a["dynamic_type"].as_str().unwrap_or("note");
+                                        let dynamic_type = a["dynamic_type"].as_str().unwrap_or("ai");
                                         let event = json!({"type": dynamic_type, "content": content, "operator": "AI"});
                                         match block_on_async(crate::commands::project_commands::project_dynamics_add(project_id.to_string(), event)) {
                                             Ok(_) => {
@@ -3967,11 +3990,41 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         }
                                     }
                                 }
+                                "delete_dynamic" => {
+                                    let dynamic_id = a["dynamic_id"].as_str().unwrap_or("");
+                                    if dynamic_id.is_empty() {
+                                        let envelope = ToolResultEnvelope {
+                                            result_type: "object_delete_result".to_string(),
+                                            data: json!({"error": "delete_dynamic 需要提供 dynamic_id"}),
+                                            summary: Some("delete_dynamic 需要提供 dynamic_id。".to_string()),
+                                        };
+                                        envelope.to_json()
+                                    } else {
+                                        match block_on_async(crate::commands::project_commands::project_dynamics_delete(dynamic_id.to_string())) {
+                                            Ok(_) => {
+                                                let envelope = ToolResultEnvelope {
+                                                    result_type: "object_delete_result".to_string(),
+                                                    data: json!({"dynamic_id": dynamic_id, "deleted": true}),
+                                                    summary: Some("已删除动态记录。".to_string()),
+                                                };
+                                                envelope.to_json()
+                                            }
+                                            Err(e) => {
+                                                let envelope = ToolResultEnvelope {
+                                                    result_type: "object_delete_result".to_string(),
+                                                    data: json!({"error": e.to_string()}),
+                                                    summary: Some(format!("删除动态失败: {}", e)),
+                                                };
+                                                envelope.to_json()
+                                            }
+                                        }
+                                    }
+                                }
                                 _ => {
                                     let envelope = ToolResultEnvelope {
                                         result_type: "object_error".to_string(),
-                                        data: json!({"error": format!("未知操作「{}」。支持：create, update, delete, add_dynamic。", action)}),
-                                        summary: Some(format!("未知操作「{}」。支持：create, update, delete, add_dynamic。", action)),
+                                        data: json!({"error": format!("未知操作「{}」。支持：create, update, delete, add_dynamic, delete_dynamic。", action)}),
+                                        summary: Some(format!("未知操作「{}」。支持：create, update, delete, add_dynamic, delete_dynamic。", action)),
                                     };
                                     envelope.to_json()
                                 },
