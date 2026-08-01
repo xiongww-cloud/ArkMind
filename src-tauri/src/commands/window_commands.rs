@@ -104,7 +104,6 @@ pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Opti
     let win = WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
         .inner_size(win_w, win_h)
         .decorations(false)
-        .transparent(true)
         .shadow(false)
         .resizable(false)
         .skip_taskbar(true)
