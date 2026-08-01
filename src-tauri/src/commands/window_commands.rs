@@ -1,4 +1,8 @@
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder, WebviewUrl};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// 失焦自动隐藏监听器只绑定一次（窗口由配置创建，可能多次调用 create_chat_window）
+static CHAT_EVENT_SETUP: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 pub fn window_minimize(w: WebviewWindow) {
@@ -81,12 +85,36 @@ pub async fn set_sprite_position(app: AppHandle, x: f64, y: f64) -> Result<(), S
 /// 创建聊天窗口（透明窗口，初始位于收起态：屏幕底部）
 #[tauri::command]
 pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("chat") {
-        let _ = win.show();
-        let _ = win.set_focus();
-        return Ok(());
-    }
+    let win = if let Some(win) = app.get_webview_window("chat") {
+        win
+    } else {
+        // Fallback：手动创建（transparent 仅 Windows 生效，macOS 走配置路径）
+        let win_w = width.unwrap_or(620.0);
+        let win_h = height.unwrap_or(700.0);
+        let mut builder = WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
+            .inner_size(win_w, win_h)
+            .decorations(false)
+            .shadow(false)
+            .resizable(false)
+            .skip_taskbar(true)
+            .visible(true);
+        #[cfg(target_os = "windows")]
+        {
+            builder = builder.transparent(true);
+        }
+        builder.build().map_err(|e| e.to_string())?
+    };
 
+    position_chat_window_collapsed(&app, &win, width, height);
+    setup_chat_window_events(&app);
+    let _ = win.show();
+    let _ = win.set_focus();
+
+    Ok(())
+}
+
+/// 设置聊天窗口收起态位置（屏幕底部居中）
+fn position_chat_window_collapsed(app: &AppHandle, win: &WebviewWindow, width: Option<f64>, height: Option<f64>) {
     let win_w = width.unwrap_or(620.0);
     let win_h = height.unwrap_or(700.0);
 
@@ -98,40 +126,35 @@ pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Opti
     } else { 1920.0 };
 
     // 收起态：输入框在屏幕底部可见
-    let collapsed_y = collapsed_chat_y(&app);
+    let collapsed_y = collapsed_chat_y(app);
     let x = (screen_w - win_w) / 2.0;
 
-    let win = WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
-        .inner_size(win_w, win_h)
-        .decorations(false)
-        .shadow(false)
-        .resizable(false)
-        .skip_taskbar(true)
-        .visible(true)
-        .position(x, collapsed_y)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
+    let _ = win.set_position(tauri::LogicalPosition::new(x, collapsed_y));
+}
 
-    // 失焦自动隐藏（保留窗口，不销毁）
+/// 绑定失焦自动隐藏监听器（只绑定一次，窗口由配置创建可能复用）
+fn setup_chat_window_events(app: &AppHandle) {
+    if CHAT_EVENT_SETUP.swap(true, Ordering::Relaxed) { return; }
     let handle = app.clone();
-    win.on_window_event(move |event| {
-        if let tauri::WindowEvent::Focused(focused) = event {
-            if !focused {
-                if let Some(chat_win) = handle.get_webview_window("chat") {
-                    let _ = chat_win.hide();
-                    // ★ 关闭时清空展开状态
-                    let _ = handle.emit("chat:reset", ());
-                    // ★ 关闭时位置重置回收起态
-                    let scale = chat_win.scale_factor().unwrap_or(1.0);
-                    let cur_x = chat_win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
-                    let collapsed_y = collapsed_chat_y(&handle);
-                    let _ = chat_win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
+    if let Some(win) = app.get_webview_window("chat") {
+        win.on_window_event(move |event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if !focused {
+                    if let Some(chat_win) = handle.get_webview_window("chat") {
+                        let _ = chat_win.hide();
+                        // ★ 关闭时清空展开状态
+                        let _ = handle.emit("chat:reset", ());
+                        // ★ 关闭时位置重置回收起态
+                        let scale = chat_win.scale_factor().unwrap_or(1.0);
+                        let cur_x = chat_win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
+                        let collapsed_y = collapsed_chat_y(&handle);
+                        let _ = chat_win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
+                    }
                 }
             }
-        }
-    });
-
-    Ok(())
+        });
+    }
 }
 
 /// 展开/收起聊天窗口（瞬时移动 Y 坐标，配合前端 CSS 动画同步）
@@ -177,6 +200,9 @@ pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Opti
             let collapsed_y = collapsed_chat_y(&app);
             let _ = win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
         } else {
+            // ★ 显示前恢复到收起态位置 + 绑定失焦监听（配置窗口已存在，需要手动设置）
+            position_chat_window_collapsed(&app, &win, width, height);
+            setup_chat_window_events(&app);
             let _ = win.show();
             let _ = win.set_focus();
         }
