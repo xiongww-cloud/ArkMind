@@ -230,8 +230,8 @@ pub async fn get_sprite_enabled() -> Result<bool, String> {
 pub fn get_sprite_enabled_sync() -> Result<bool, String> {
     let row = database::get("SELECT sprite_enabled FROM system_config WHERE tenant_id='local-user'", &[]).map_err(|e| e.to_string())?;
     match row {
-        Some(r) => Ok(r["sprite_enabled"].as_i64().unwrap_or(1) != 0),
-        None => Ok(true),
+        Some(r) => Ok(r["sprite_enabled"].as_i64().unwrap_or(0) != 0),
+        None => Ok(false),
     }
 }
 

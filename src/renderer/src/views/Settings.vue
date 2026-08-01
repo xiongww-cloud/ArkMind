@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
@@ -191,12 +191,27 @@ async function handleBackupAll() {
       filters: [{ name: 'ZIP 文件', extensions: ['zip'] }],
     })
     if (!savePath) { isBackingUp.value = false; return }
+
+    // 复用上传进度弹窗显示备份进度
+    const task = uploadProgress.start('备份中...')
+
+    const { listen } = await import('@tauri-apps/api/event')
+    const unlisten = await listen('backup:progress', (event: any) => {
+      const { stage, step, total, name } = event.payload
+      if (stage === 'exporting') {
+        task.name = `备份中... ${name} (${step}/${total})`
+      }
+      if (stage === 'done') {
+        uploadProgress.done(task)
+        toast.success(`备份已保存到：${savePath}`)
+        unlisten()
+      }
+    })
+
     const { backupAll } = await import('@/api/db-client')
     const result = await backupAll(savePath)
-    if (result.success) {
-      toast.success(`备份已保存到：${savePath}`)
-    } else {
-      alert({ title: '备份失败', message: result.error || '未知错误' })
+    if (!result.success) {
+      uploadProgress.fail(task, result.error || '未知错误')
     }
   } catch (e) {
     alert({ title: '备份失败', message: (e && e.message) || '未知错误' })
@@ -220,12 +235,26 @@ async function handleRestoreAll() {
       multiple: false,
     })
     if (!filePath) { isRestoring.value = false; return }
+
+    // 复用上传进度弹窗显示恢复进度
+    const task = uploadProgress.start('恢复中...')
+
+    const { listen } = await import('@tauri-apps/api/event')
+    const unlisten = await listen('restore:progress', (event: any) => {
+      const { stage, step, total, name } = event.payload
+      if (stage === 'exporting') {
+        task.name = `恢复中... ${name} (${step}/${total})`
+      }
+      if (stage === 'done') {
+        uploadProgress.done(task)
+        unlisten()
+      }
+    })
+
     const { restoreAll } = await import('@/api/db-client')
     const result = await restoreAll(filePath as string)
-    if (result.success) {
-      toast.success('数据已恢复，应用即将自动重启...')
-    } else {
-      alert({ title: '恢复失败', message: result.error || '未知错误' })
+    if (!result.success) {
+      uploadProgress.fail(task, result.error || '未知错误')
     }
   } catch (e) {
     alert({ title: '恢复失败', message: (e && e.message) || '未知错误' })
@@ -630,7 +659,7 @@ const intervalOptions = [
 ]
 
 // ─── Sprite Settings ────────────────────────────────────────
-const spriteEnabled = ref(true)
+const spriteEnabled = ref(false)
 
 async function loadSpriteConfig() {
   try {
@@ -931,7 +960,7 @@ function clearAllLogs() {
 }
 
 // ─── Init ────────────────────────────────────────────────────────────────
-onMounted(async () => {
+onActivated(async () => {
   await Promise.all([
     loadStorageConfig(),
     loadLicense(),
@@ -944,9 +973,9 @@ onMounted(async () => {
   loopStatusTimer = setInterval(loadLoopStatus, 600000)  // 10分钟刷新一次
 })
 
-onUnmounted(() => {
-  if (logTimer) clearInterval(logTimer)
-  if (loopStatusTimer) clearInterval(loopStatusTimer)
+onDeactivated(() => {
+  if (logTimer) { clearInterval(logTimer); logTimer = null }
+  if (loopStatusTimer) { clearInterval(loopStatusTimer); loopStatusTimer = null }
 })
 </script>
 

@@ -215,7 +215,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         // 精灵窗口位置
         "ALTER TABLE system_config ADD COLUMN sprite_position TEXT DEFAULT '{}'",
         // 精灵窗口开关
-        "ALTER TABLE system_config ADD COLUMN sprite_enabled INTEGER DEFAULT 1",
+        "ALTER TABLE system_config ADD COLUMN sprite_enabled INTEGER DEFAULT 0",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);

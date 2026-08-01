@@ -225,13 +225,15 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
 
 /// 一键备份：打包所有数据到单个 ZIP 文件
 #[tauri::command]
-pub async fn backup_all(save_path: String) -> Result<Value, String> {
+pub async fn backup_all(save_path: String, app_handle: tauri::AppHandle) -> Result<Value, String> {
+    let handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
         eprintln!("[备份] 开始一键备份 -> {}", save_path);
         let tmp = std::env::temp_dir().join(format!("arkmind_backup_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
 
         // 1. SQLite 数据库
+        let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":1,"total":4,"name":"数据库"}));
         eprintln!("[备份] 步骤 1/4: 复制数据库...");
         // ★ 先强制 WAL checkpoint，确保所有事务落盘，避免备份不一致
         let _ = crate::database::with_db(|conn| conn.pragma_update(None, "wal_checkpoint", "TRUNCATE"));
@@ -251,6 +253,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
         if shm_path.exists() { std::fs::copy(&shm_path, db_dir.join("arkmind.db-shm")).ok(); }
 
         // 2. 上传文件
+        let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":2,"total":4,"name":"文件"}));
         eprintln!("[备份] 步骤 2/4: 复制上传文件...");
         let files_dir = tmp.join("files");
         let files_path = crate::commands::file_commands::storage_base();
@@ -301,6 +304,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
         }
 
         // 3. 向量数据库
+        let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":3,"total":4,"name":"向量库"}));
         eprintln!("[备份] 步骤 3/4: 复制向量数据库...");
         let vectordb_path = crate::get_data_dir().join("lancedb");
         let vectordb_dir = tmp.join("vectordb");
@@ -321,6 +325,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
         std::fs::write(tmp.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap()).ok();
 
         // 5. 打包为 ZIP
+        let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":4,"total":4,"name":"打包"}));
         eprintln!("[备份] 步骤 4/4: 打包 ZIP 文件...");
         let zip_path = std::path::PathBuf::from(&save_path);
         create_zip_archive(&tmp, &zip_path).map_err(|e| e.to_string())?;
@@ -330,6 +335,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
         // 6. 清理临时目录
         std::fs::remove_dir_all(&tmp).ok();
 
+        let _ = handle.emit("backup:progress", json!({"stage":"done"}));
         Ok(json!({"success": true, "path": save_path}))
     }).await.map_err(|e| e.to_string())?
 }
@@ -337,6 +343,7 @@ pub async fn backup_all(save_path: String) -> Result<Value, String> {
 /// 一键恢复：从 ZIP 文件恢复所有数据（完成后自动重启应用）
 #[tauri::command]
 pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> Result<Value, String> {
+    let handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
         eprintln!("[恢复] 开始一键恢复 <- {}", backup_path);
         let zip_path = std::path::PathBuf::from(&backup_path);
@@ -346,6 +353,7 @@ pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> R
         std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
 
         // 1. 解压 ZIP
+        let _ = handle.emit("restore:progress", json!({"stage":"exporting","step":1,"total":4,"name":"解压"}));
         eprintln!("[恢复] 步骤 1/4: 解压备份文件...");
         let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -360,6 +368,7 @@ pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> R
         eprintln!("[恢复] 备份信息: {}", manifest_str.lines().next().unwrap_or(""));
 
         // 3. 恢复 SQLite 数据库
+        let _ = handle.emit("restore:progress", json!({"stage":"exporting","step":2,"total":4,"name":"数据库"}));
         eprintln!("[恢复] 步骤 2/4: 恢复数据库...");
         let db_dir = tmp.join("database");
         if db_dir.exists() {
@@ -383,6 +392,7 @@ pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> R
         }
 
         // 4. 恢复上传文件
+        let _ = handle.emit("restore:progress", json!({"stage":"exporting","step":3,"total":4,"name":"文件"}));
         eprintln!("[恢复] 步骤 3/4: 恢复上传文件...");
         let files_dir = tmp.join("files");
         if files_dir.exists() {
@@ -396,6 +406,7 @@ pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> R
         }
 
         // 5. 恢复向量数据库
+        let _ = handle.emit("restore:progress", json!({"stage":"exporting","step":4,"total":4,"name":"向量库"}));
         eprintln!("[恢复] 步骤 4/4: 恢复向量数据库...");
         let vectordb_dir = tmp.join("vectordb");
         if vectordb_dir.exists() {
@@ -410,6 +421,8 @@ pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> R
         // 6. 清理临时目录
         std::fs::remove_dir_all(&tmp).ok();
         eprintln!("[恢复] 完成! 应用即将自动重启...");
+
+        let _ = handle.emit("restore:progress", json!({"stage":"done"}));
 
         // ★ 延迟 1.5 秒后自动重启（让响应先送达前端）
         std::thread::spawn(move || {

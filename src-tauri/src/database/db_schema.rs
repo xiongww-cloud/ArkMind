@@ -68,7 +68,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             ai_config TEXT DEFAULT '{}', kb_config TEXT DEFAULT '{}',
             storage_cards TEXT DEFAULT '[]', active_card_id TEXT DEFAULT '',
             sprite_position TEXT DEFAULT '{}',
-            sprite_enabled INTEGER DEFAULT 1,
+            sprite_enabled INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
         CREATE TABLE IF NOT EXISTS notebooks (

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, nextTick } from 'vue'
 import VueApexCharts from 'vue3-apexcharts'
 import {
   kbDashboardStats,
@@ -29,7 +29,9 @@ const growthChart = computed(() => {
   const cutoffStr = cutoff.toISOString().slice(0, 10)
   const filtered = d.filter((x: any) => (x.label || '') >= cutoffStr)
   const data = filtered.length > 0 ? filtered : d.slice(-growthDays.value)
-  return { series: [{ name: '碎片数', data: data.map((x: any) => x.cnt) }], categories: data.map((x: any) => (x.label || '').slice(5)) }
+  let cumulative = 0
+  const cumulativeData = data.map((x: any) => { cumulative += x.cnt || 0; return cumulative })
+  return { series: [{ name: '累计碎片', data: cumulativeData }], categories: data.map((x: any) => (x.label || '').slice(5)) }
 })
 const byTypeChart = computed(() => {
   if (!stats.value?.by_type?.length) return null
@@ -57,7 +59,7 @@ function restoreScroll(pos: number) {
   const el = document.querySelector('#kg-root .overflow-y-auto')
   if (el) el.scrollTop = pos
 }
-onMounted(() => {
+onActivated(() => {
   loadStats()
   loadPipeline()
   refreshTimer = setInterval(() => {
@@ -65,8 +67,8 @@ onMounted(() => {
     Promise.all([loadStats(), loadPipeline()]).then(() => nextTick(() => restoreScroll(scrollPos)))
   }, 5000)
 })
-onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
+onDeactivated(() => {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
 })
 </script>
 <template>
@@ -105,7 +107,7 @@ onUnmounted(() => {
         </div>
         <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
           <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识增长趋势</h3>
-          <VueApexCharts v-if="growthChart" :key="'growth-' + chartVersion" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '新增碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false, mouseWheel: { enabled: false } } } }" />
+          <VueApexCharts v-if="growthChart" :key="'growth-' + chartVersion" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '累计碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false, mouseWheel: { enabled: false } } } }" />
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
       </div>

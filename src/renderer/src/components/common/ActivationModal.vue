@@ -13,15 +13,27 @@ const success = ref('')
 const codeCopied = ref(false)
 const loading = ref(true)
 
+async function fetchLicenseWithRetry(maxRetries = 3, delay = 500) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fetchLicenseStatus()
+    } catch (e) {
+      if (i < maxRetries - 1) await new Promise(r => setTimeout(r, delay))
+      else throw e
+    }
+  }
+}
+
 onMounted(async () => {
   try {
-    // 并行获取机器码和许可证状态
-    const [code, status] = await Promise.all([
-      getMachineCode(),
-      fetchLicenseStatus(),
-    ])
-    machineCode.value = code
-    // Only auto-dismiss if truly active (not expired)
+    machineCode.value = await getMachineCode()
+  } catch (e) {
+    console.error('获取机器码失败:', e)
+    error.value = '无法获取机器码，请重启应用后重试'
+  }
+
+  try {
+    const status = await fetchLicenseWithRetry()
     if (status.activated && status.status !== 'expired') {
       emit('activated')
       return
@@ -30,7 +42,8 @@ onMounted(async () => {
       error.value = '许可证已过期，请重新激活'
     }
   } catch (e) {
-    error.value = '无法获取机器码，请检查网络连接'
+    console.error('获取许可证状态失败:', e)
+    if (!error.value) error.value = '许可证状态查询失败，请重启应用后重试'
   } finally {
     loading.value = false
   }

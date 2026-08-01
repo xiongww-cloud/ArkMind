@@ -163,7 +163,7 @@ pub fn run() {
 
             // ★ 启动时根据开关显示精灵
             {
-                let sprite_enabled = commands::get_sprite_enabled_sync().unwrap_or(true);
+                let sprite_enabled = commands::get_sprite_enabled_sync().unwrap_or(false);
                 if sprite_enabled {
                     if let Some(win) = app.get_webview_window("sprite") {
                         // 恢复位置
@@ -193,7 +193,7 @@ pub fn run() {
                         "sprite" => {
                             let app_handle = app.clone();
                             tauri::async_runtime::spawn(async move {
-                                let current = commands::get_sprite_enabled_sync().unwrap_or(true);
+                                let current = commands::get_sprite_enabled_sync().unwrap_or(false);
                                 let _ = commands::set_sprite_enabled(!current, app_handle).await;
                             });
                         }

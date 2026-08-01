@@ -8,7 +8,7 @@ const { tasks, visible } = useUploadProgress()
   <Transition name="slide-up">
     <div
       v-if="visible"
-      class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] w-[260px] max-h-[180px] overflow-y-auto bg-white rounded-xl shadow-xl border border-gray-100 p-3 space-y-2"
+      class="fixed bottom-4 right-4 z-[9999] w-[260px] max-h-[180px] overflow-y-auto bg-white rounded-xl shadow-xl border border-gray-100 p-3 space-y-2"
     >
       <div v-for="t in tasks" :key="t.id" class="flex flex-col gap-1">
         <div class="flex items-center justify-between">
