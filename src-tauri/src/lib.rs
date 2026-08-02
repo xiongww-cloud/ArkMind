@@ -361,6 +361,24 @@ pub fn run() {
             // Debug
             commands::save_agent_context, commands::get_agent_context,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Arkmind");
+        .build(tauri::generate_context!())
+        .expect("error while building Arkmind")
+        .run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            {
+                // macOS：点击 Dock 图标重新打开主窗口
+                if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+                    if !has_visible_windows {
+                        if let Some(win) = app_handle.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app_handle, event);
+            }
+        });
 }

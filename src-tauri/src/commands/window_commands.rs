@@ -1,25 +1,45 @@
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder, WebviewUrl};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// 将窗口设为 macOS 辅助窗口，不触发前台调度（Stage Manager）
+// 失焦自动隐藏监听器只绑定一次（窗口由配置创建，可能多次调用 create_chat_window）
+static CHAT_EVENT_SETUP: AtomicBool = AtomicBool::new(false);
+// 记录聊天打开前主窗口是否可见（macOS：打开聊天时隐藏主窗口，关闭时恢复）
+static MAIN_WAS_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+/// macOS：将窗口设为辅助窗口（不参与前台调度/Stage Manager 分组）
 #[cfg(target_os = "macos")]
 fn set_auxiliary_window(win: &WebviewWindow) {
     use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
     if let Ok(ns_window_ptr) = win.ns_window() {
         let ns_window: &NSWindow = unsafe { &*ns_window_ptr.cast() };
-        ns_window.setCollectionBehavior(
-            NSWindowCollectionBehavior::Auxiliary
+        let behavior = NSWindowCollectionBehavior::Auxiliary
             | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        );
+            | NSWindowCollectionBehavior::FullScreenAuxiliary;
+        ns_window.setCollectionBehavior(behavior);
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 fn set_auxiliary_window(_win: &WebviewWindow) {}
 
-// 失焦自动隐藏监听器只绑定一次（窗口由配置创建，可能多次调用 create_chat_window）
-static CHAT_EVENT_SETUP: AtomicBool = AtomicBool::new(false);
+/// 隐藏主窗口（记录可见状态，聊天关闭时恢复）
+fn hide_main_window(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let visible = main.is_visible().unwrap_or(false);
+        MAIN_WAS_VISIBLE.store(visible, Ordering::Relaxed);
+        if visible { let _ = main.hide(); }
+    }
+}
+
+/// 若聊天打开前主窗口可见，则恢复显示
+fn restore_main_window(app: &AppHandle) {
+    if MAIN_WAS_VISIBLE.load(Ordering::Relaxed) {
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.show();
+        }
+        MAIN_WAS_VISIBLE.store(false, Ordering::Relaxed);
+    }
+}
 
 #[tauri::command]
 pub fn window_minimize(w: WebviewWindow) {
@@ -114,22 +134,24 @@ pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Opti
     let win = if let Some(win) = app.get_webview_window("chat") {
         win
     } else {
-        // 代码创建聊天窗口（透明，macOS 依赖 macos-private-api feature）
+        // 代码创建聊天窗口（透明/浮窗层级，macOS 依赖 macos-private-api feature）
         let win_w = width.unwrap_or(620.0);
         let win_h = height.unwrap_or(700.0);
-        WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
+        let win = WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
             .inner_size(win_w, win_h)
             .decorations(false)
             .transparent(true)
+            .always_on_top(true)
             .shadow(false)
             .resizable(false)
             .skip_taskbar(true)
             .visible(true)
             .build()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        set_auxiliary_window(&win);
+        win
     };
 
-    set_auxiliary_window(&win);
     position_chat_window_collapsed(&app, &win, width, height);
     setup_chat_window_events(&app);
     let _ = win.show();
@@ -168,6 +190,8 @@ fn setup_chat_window_events(app: &AppHandle) {
                 if !focused {
                     if let Some(chat_win) = handle.get_webview_window("chat") {
                         let _ = chat_win.hide();
+                        // ★ 关闭时恢复主窗口（若聊天打开前可见）
+                        restore_main_window(&handle);
                         // ★ 关闭时清空展开状态
                         let _ = handle.emit("chat:reset", ());
                         // ★ 关闭时位置重置回收起态
@@ -217,6 +241,8 @@ pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Opti
     if let Some(win) = app.get_webview_window("chat") {
         if win.is_visible().unwrap_or(false) {
             let _ = win.hide();
+            // ★ 关闭时恢复主窗口（若聊天打开前可见）
+            restore_main_window(&app);
             // ★ 关闭时清空展开状态（下次打开无收起动画）
             let _ = app.emit("chat:reset", ());
             // ★ 关闭时位置重置回收起态（不可见，无动画）
@@ -225,13 +251,16 @@ pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Opti
             let collapsed_y = collapsed_chat_y(&app);
             let _ = win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
         } else {
-            // ★ 显示前恢复到收起态位置 + 绑定失焦监听（配置窗口已存在，需要手动设置）
+            // ★ 显示前隐藏主窗口（macOS：避免主窗口被带到前台）+ 恢复收起态位置 + 绑定失焦监听
+            hide_main_window(&app);
             position_chat_window_collapsed(&app, &win, width, height);
             setup_chat_window_events(&app);
             let _ = win.show();
             let _ = win.set_focus();
         }
     } else {
+        // 聊天窗口不存在，先隐藏主窗口再创建显示
+        hide_main_window(&app);
         create_chat_window(app, width, height).await?;
     }
     Ok(())

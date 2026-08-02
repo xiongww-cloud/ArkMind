@@ -641,7 +641,7 @@ const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
 import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, type LoopStatus } from '@/api/notification-client'
-import { getSpriteEnabled, setSpriteEnabled } from '@/api/db-client'
+import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
@@ -671,6 +671,21 @@ async function toggleSprite() {
   try {
     await setSpriteEnabled(spriteEnabled.value)
   } catch {}
+}
+
+async function clearSpriteChat() {
+  const ok = await dangerConfirm({
+    title: '清空精灵对话',
+    message: '确定清空桌面精灵的所有聊天记录？此操作不可撤销。',
+    confirmText: '清空',
+  })
+  if (!ok) return
+  try {
+    await kbDeleteSession('fab-main-session')
+    toast.success('精灵对话已清空')
+  } catch (e) {
+    toast.error('清空失败')
+  }
 }
 
 async function loadNotifyConfig() {
@@ -1195,6 +1210,13 @@ onDeactivated(() => {
                   <input type="checkbox" v-model="spriteEnabled" class="sr-only peer" @change="toggleSprite">
                   <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
                 </label>
+              </div>
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">清空对话记录</p>
+                  <p class="text-[10px] text-surface-400">删除精灵的所有聊天历史</p>
+                </div>
+                <button class="h-7 px-3 text-[11px] font-medium rounded-lg border border-red-300 text-red-500 hover:bg-red-50 transition" @click="clearSpriteChat">清空</button>
               </div>
             </div>
           </div>

@@ -125,7 +125,6 @@ async function expandChat() {
 
 async function collapseChat() {
   if (!expanded.value || animating.value) return
-  showClearMenu.value = false
   animating.value = true
   expanded.value = false
   await sleep(500)   // 等消息区收起
@@ -181,38 +180,6 @@ async function send() {
 async function stopAgent() {
   await agent.stopAgent(() => messages.value)
   scrollChat()
-}
-
-// ─── 长按发送按钮 → 清空对话 ────────────────────────────────
-let longPressTimer: ReturnType<typeof setTimeout> | null = null
-const showClearMenu = ref(false)
-const LONG_PRESS_MS = 500
-
-function onSendPointerDown(e: PointerEvent) {
-  if (e.button !== 0 || agent.isChatting.value || !inputText.value.trim()) return
-  longPressTimer = setTimeout(() => {
-    showClearMenu.value = true
-  }, LONG_PRESS_MS)
-}
-
-function onSendPointerUp() {
-  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null }
-}
-
-function onSendPointerLeave() {
-  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null }
-}
-
-async function clearChat() {
-  showClearMenu.value = false
-  messages.value = []
-  agent.rendered.value = {}
-  try {
-    const { kbDeleteSession } = await import('@/api/db-client')
-    await kbDeleteSession('fab-main-session')
-  } catch (e) {
-    console.error('[Chat] 删除会话失败:', e)
-  }
 }
 
 // ─── 拖拽（仅收起态可用）───────────────────────────────────
@@ -308,15 +275,9 @@ onUnmounted(() => {
       <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" title="停止">
         <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
       </button>
-      <button v-else @click.stop="send"
-        @pointerdown="onSendPointerDown" @pointerup="onSendPointerUp" @pointerleave="onSendPointerLeave"
-        :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">
+      <button v-else @click.stop="send" :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">
         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
       </button>
-      <!-- 长按清空对话浮层 -->
-      <div v-if="showClearMenu" class="clear-menu" @click.self="showClearMenu = false" @pointerdown.stop>
-        <button @click="clearChat" class="clear-menu-item">清空对话</button>
-      </div>
     </div>
   </div>
 </div>
@@ -446,32 +407,4 @@ onUnmounted(() => {
   animation: ts-spin 0.8s linear infinite;
 }
 @keyframes ts-spin { to { transform: rotate(360deg); } }
-/* ─── 长按清空对话浮层 ─── */
-.clear-menu {
-  position: absolute;
-  bottom: calc(100% + 4px);
-  right: 0;
-  background: white;
-  border: 1px solid #e5e5ea;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-  padding: 4px;
-  z-index: 10;
-}
-.clear-menu-item {
-  display: block;
-  width: 100%;
-  padding: 6px 12px;
-  font-size: 11px;
-  color: #ef4444;
-  border-radius: 6px;
-  white-space: nowrap;
-  border: none;
-  background: none;
-  cursor: pointer;
-  text-align: left;
-}
-.clear-menu-item:hover {
-  background: #fef2f2;
-}
 </style>
