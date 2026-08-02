@@ -12,7 +12,8 @@ static MAIN_WAS_VISIBLE: AtomicBool = AtomicBool::new(false);
 fn set_auxiliary_window(app: &AppHandle, label: &str) {
     let app = app.clone();
     let label = label.to_string();
-    let _ = app.run_on_main_thread(move || {
+    // 方法接收者用克隆，move 闭包持有 app 副本
+    let _ = app.clone().run_on_main_thread(move || {
         use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
         if let Some(win) = app.get_webview_window(&label) {
             if let Ok(ptr) = win.ns_window() {
