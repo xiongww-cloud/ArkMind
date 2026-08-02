@@ -162,6 +162,9 @@ pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Opti
             .resizable(false)
             .skip_taskbar(true)
             .visible(true)
+            // macOS 隐藏窗口时禁用后台节流，避免 webview 挂起导致 chat:reset 未处理、
+            // 重新显示时以旧的展开态渲染（出现打开/收起动画）
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
             .build()
             .map_err(|e| e.to_string())?;
         set_auxiliary_window(&app, "chat");
