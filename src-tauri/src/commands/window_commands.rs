@@ -210,7 +210,8 @@ fn setup_chat_window_events(app: &AppHandle) {
                     let handle = handle.clone();
                     tauri::async_runtime::spawn(async move {
                         if let Some(chat_win) = handle.get_webview_window("chat") {
-                            // ★ 关闭前先收起：窗口可见时 webview 活跃，chat:reset 立即生效
+                            // ★ 关闭前先收起：窗口可见时 webview 活跃，chat:reset 立即生效，
+                            //   等处理完再隐藏，避免重开时以展开态渲染出现动画
                             let _ = handle.emit("chat:reset", ());
                             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                             let _ = chat_win.hide();
@@ -262,7 +263,7 @@ pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Opti
     if let Some(win) = app.get_webview_window("chat") {
         if win.is_visible().unwrap_or(false) {
             // ★ 关闭前先收起：窗口可见时 webview 活跃，chat:reset 立即生效，
-            //   等处理完再隐藏，避免重开时以展开态渲染出现动画
+            //   等处理完再隐藏，避免重开时以展开态渲染出现打开/收起动画
             let _ = app.emit("chat:reset", ());
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             let _ = win.hide();

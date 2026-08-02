@@ -137,7 +137,7 @@ async function collapseChat() {
 
 // ─── 窗口控制 ──────────────────────────────────────────────
 async function hideWindow() {
-  // 先收起（窗口可见，DOM 立即更新），再隐藏，避免重开时以展开态渲染
+  // 先收起（窗口可见，DOM 立即更新），再隐藏，避免重开时以展开态渲染出现动画
   noAnimate.value = true
   expanded.value = false
   inputAtBottom.value = false
