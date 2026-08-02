@@ -1295,12 +1295,33 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
 }
 
 /// 流式补生成（无工具）：用于强制总结等路径；答案逐 token 输出到前端
+/// 若 LLM 回复清理后为空（疑似工具调用残留），自动重试重新请求，避免检索/回答中断
 async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<tauri::AppHandle>) -> Result<String, String> {
-    log::info!("[call_llm_without_tools] 被调用，messages 长度: {}", messages.len());
-    let (content, _, _, _) = call_llm_streaming(messages, None, app_handle).await?;
-    log::info!("[call_llm_without_tools] 返回: content_len={}", content.len());
-    // 过滤 DSML / 工具调用 XML 残留
-    Ok(clean_tool_markers(&content, false))
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0u32;
+    let mut retry_msgs: Vec<ChatMessage> = messages.to_vec();
+    loop {
+        attempt += 1;
+        log::info!("[call_llm_without_tools] 被调用（第{}次），messages 长度: {}", attempt, retry_msgs.len());
+        let (content, _, _, _) = call_llm_streaming(&retry_msgs, None, app_handle).await?;
+        log::info!("[call_llm_without_tools] 返回: content_len={}", content.len());
+        // 过滤 DSML / 工具调用 XML 残留
+        let cleaned = clean_tool_markers(&content, false);
+        if !cleaned.trim().is_empty() {
+            return Ok(cleaned);
+        }
+        if attempt >= MAX_ATTEMPTS {
+            log::warn!("[call_llm_without_tools] 重试{}次后仍为空，返回兜底文案", attempt);
+            return Ok("已根据已有信息完成总结。".to_string());
+        }
+        // ★ 重新发送请求：追加纯文本提示，强制模型输出普通文本
+        log::warn!("[call_llm_without_tools] 第{}次回复为空（疑似工具调用残留），重新请求 LLM", attempt);
+        retry_msgs.push(ChatMessage {
+            role: MessageRole::User,
+            content: Some("你的上一条回复只包含工具调用标记（tool_call/DSML/XML），没有任何可用文本。请用纯文本直接回答，严禁输出任何工具调用标记、XML 或 DSML 格式。".into()),
+            tool_calls: None, tool_call_id: None, name: None, reasoning_content: None,
+        });
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

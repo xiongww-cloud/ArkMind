@@ -339,6 +339,8 @@ async function handleSendMessage() {
         const finalAnswer = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
         agent.setThinkingProgress('')
         if (finalAnswer && !msg.content) msg.content = finalAnswer
+        // ★ 兜底：无论何种情况都确保气泡有内容，避免 isThinking=false + 空内容导致气泡消失
+        if (!msg.content) msg.content = result.answer || '（无回复内容）'
         renderMessageContent(msg.id || '', msg.content)
       } else { msg.error = result.answer || result.error || '失败' }
       agent.isChatting.value = false; scrollToBottomIfNear()
