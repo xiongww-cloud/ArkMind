@@ -69,10 +69,18 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
     let files_pending: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='pending'", [], |r| r.get(0))).unwrap_or(0);
     let files_processing: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='processing'", [], |r| r.get(0))).unwrap_or(0);
     let files_failed: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='failed'", [], |r| r.get(0))).unwrap_or(0);
+    // 已完成文件 = file_assets 总数 − 队列中 FILE 任务数（成功任务会从队列删除）
+    let files_total: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM file_assets", [], |r| r.get(0))).unwrap_or(0);
+    let files_done = files_total - files_pending - files_processing - files_failed;
+    // 当前正在解析的文件（页级进度）
+    let current_file: Option<Value> = crate::database::get(
+        "SELECT f.original_name AS name, q.progress_page AS page, q.progress_total AS total FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id WHERE q.source_type='FILE' AND q.status='processing' ORDER BY q.id DESC LIMIT 1",
+        &[],
+    ).ok().flatten();
     Ok(json!({
         "knowledge": {"chunks":chunks,"parents":parents,"children":children,"vectorized":vectorized},
         "source": {"files":source_files,"notes":source_notes,"products":source_products,"projects":source_projects,"todos":source_todos,"total":source_total},
-        "fileParse": {"pending":files_pending,"processing":files_processing,"failed":files_failed},
+        "fileParse": {"done":files_done.max(0),"pending":files_pending,"processing":files_processing,"failed":files_failed,"total":files_total,"current":current_file},
     }))
 }
 
@@ -114,8 +122,12 @@ pub async fn pipeline_revectorize() -> Result<Value, String> {
 pub async fn pipeline_clear_all() -> Result<Value, String> {
     crate::services::knowledge_lifecycle::reset_pipeline();
     crate::database::run("DELETE FROM source_data", &[]).ok();
-    // 重置 knowledge_push_queue 中的文件任务
-    crate::database::run("UPDATE knowledge_push_queue SET status='pending', retry_count=0 WHERE source_type='FILE' AND status IN ('processing', 'failed')", &[]).ok();
+    // 重新入队所有已有文件（成功任务已从队列删除，需重新入队解析写入 source_data）
+    let _ = crate::database::run("DELETE FROM knowledge_push_queue WHERE source_type='FILE'", &[]);
+    let _ = crate::database::run(
+        "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) SELECT 'FILE', id, 'file_upload', 'pending' FROM file_assets",
+        &[],
+    );
     Ok(json!({"success":true,"message":"已清空所有管线数据"}))
 }
 
@@ -130,9 +142,12 @@ pub async fn pipeline_resync() -> Result<Value, String> {
              INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'TODO',t.id,t.title,'title: '||t.title||CASE WHEN COALESCE(t.content,'')!='' THEN CHAR(10)||'content: '||t.content ELSE '' END FROM todos t;"
         )
     }).ok();
-    let _ = crate::database::run("INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'FILE',id,id,'' FROM file_assets", &[]);
-    // 重置 knowledge_push_queue 中的文件任务
-    crate::database::run("UPDATE knowledge_push_queue SET status='pending', retry_count=0 WHERE source_type='FILE' AND status IN ('processing', 'failed')", &[]).ok();
+    // 重新入队所有已有文件（重新解析写入 source_data，而非插入空内容行）
+    let _ = crate::database::run("DELETE FROM knowledge_push_queue WHERE source_type='FILE'", &[]);
+    let _ = crate::database::run(
+        "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) SELECT 'FILE', id, 'file_upload', 'pending' FROM file_assets",
+        &[],
+    );
     let source_count: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM source_data", [], |r| r.get(0))).unwrap_or(0);
     crate::services::knowledge_pipeline::reset_sync_time();
     crate::services::knowledge_pipeline::start();
