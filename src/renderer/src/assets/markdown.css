@@ -21,7 +21,7 @@
 .markdown-body td { padding: 8px 12px; border-bottom: 1px solid #f0f0f5; color: #3a3a3c; text-align: left; }
 .markdown-body tr:last-child td { border-bottom: none; }
 .markdown-body tr:hover td { background: #f8f9fa; }
-.markdown-body blockquote { border-left: 3px solid #2563eb; padding: 8px 14px; margin: 10px 0; color: #4a4a4f; background: linear-gradient(135deg, rgba(37,99,235,0.04), rgba(99,102,241,0.02)); border-radius: 0 8px 8px 0; font-style: italic; }
+.markdown-body blockquote { border-left: 3px solid #2563eb; padding: 8px 14px; margin: 10px 0; color: #4a4a4f; background: linear-gradient(135deg, rgba(37,99,235,0.04), rgba(99,102,241,0.02)); border-radius: 0 8px 8px 0; font-style: italic; overflow-x: hidden; }
 .markdown-body a { color: #2563eb; text-decoration: none; }
 .markdown-body a:hover { text-decoration: underline; }
 .markdown-body hr { border: none; border-top: 1px solid #e5e5ea; margin: 0.8em 0; }
