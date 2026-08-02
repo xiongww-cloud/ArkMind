@@ -477,7 +477,7 @@ onUnmounted(() => {
   <!-- Main Chat -->
   <div class="flex-1 flex flex-col min-w-0 relative bg-surface-50/30">
     <!-- Messages Feed -->
-    <div ref="feedScrollRef" class="flex-1 overflow-y-auto px-6 py-6 space-y-5 scrollbar-thin" @scroll="onFeedScroll">
+    <div ref="feedScrollRef" class="flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 space-y-5 scrollbar-thin" @scroll="onFeedScroll">
       <template v-if="currentSession">
         <!-- 加载更早消息提示 -->
         <div v-if="loadingMore" class="flex items-center justify-center py-2">

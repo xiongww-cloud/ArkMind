@@ -338,6 +338,7 @@ onUnmounted(() => {
 .messages-scroll {
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px;
   user-select: text;
   scrollbar-width: thin;
