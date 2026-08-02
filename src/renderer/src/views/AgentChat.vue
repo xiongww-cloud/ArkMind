@@ -573,6 +573,10 @@ onUnmounted(() => {
 .animate-bounce { animation: bounce 1.2s infinite ease-in-out; }
 .animate-fade-in { animation: fadeIn 0.3s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+/* LLM 聊天气泡 markdown 段落去外边距，与用户气泡等高 */
+.markdown-body :deep(p) {
+  margin: 0;
+}
 .thinking-bubble {
   position: relative;
   overflow: hidden;
