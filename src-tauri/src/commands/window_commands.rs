@@ -45,7 +45,12 @@ fn set_sprite_window_behavior(app: &AppHandle, label: &str) {
                     | NSWindowCollectionBehavior::FullScreenAuxiliary;
                 ns_window.setCollectionBehavior(behavior);
                 // 允许非 key 窗口响应第一次点击（无需先聚焦）
-                ns_window.setAcceptsFirstMouse(true);
+                // objc2-app-kit 无 setAcceptsFirstMouse 绑定，使用 runtime 消息发送
+                unsafe {
+                    use objc2::msg_send;
+                    use objc2::sel;
+                    let _: () = msg_send![ns_window, setAcceptsFirstMouse: true];
+                }
             }
         }
     });
