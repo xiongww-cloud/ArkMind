@@ -33,7 +33,7 @@ pub fn init() {
                     CREATE UNIQUE INDEX idx_br_unique ON business_relations(source_type, source_id, target_type, target_id, relation_type);
                 ")
             });
-            println!("[业务关联] 表已重建，UNIQUE 约束已添加");
+            log::info!("[业务关联] 表已重建，UNIQUE 约束已添加");
         }
     } else {
         // 创建新表（带 UNIQUE 约束）
@@ -97,7 +97,7 @@ fn cleanup_duplicates() {
         .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
 
     if before > after {
-        println!("[业务关联] 已清理 {} 条重复数据", before - after);
+        log::info!("[业务关联] 已清理 {} 条重复数据", before - after);
     }
 }
 

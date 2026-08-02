@@ -30,5 +30,5 @@ pub fn enqueue_push(source_type: &str, source_id: &str, operation: &str) {
         ),
         &[json!(source_type), json!(source_id), json!(operation)],
     );
-    println!("[推送管线] 入队: {}/{} ({})", source_type, source_id, operation);
+    log::info!("[推送管线] 入队: {}/{} ({})", source_type, source_id, operation);
 }

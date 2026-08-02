@@ -192,7 +192,7 @@ async fn import_sync_document(
         }
     }
 
-    if total > 0 { println!("[AI同步] 切片: {} 个父块 → {} 个子块 (adaptive)", parent_entries_len, total); }
+    if total > 0 { log::info!("[AI同步] 切片: {} 个父块 → {} 个子块 (adaptive)", parent_entries_len, total); }
     Ok(total)
 }
 
@@ -292,7 +292,7 @@ pub async fn materialize_and_store(
         .map_err(|e| format!("import_sync_document 失败: {}", e))?;
 
     if n > 0 {
-        println!("[物化] 已更新: {}:{} ({} 个块)", source_type, source_id, n);
+        log::info!("[物化] 已更新: {}:{} ({} 个块)", source_type, source_id, n);
     }
 
     Ok(n)

@@ -17,16 +17,19 @@ static INGESTION_RUNNING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
 const MAX_CONCURRENT: usize = 5;
 
+/// 任务错误前缀：带此前缀的错误不参与任务级重试，直接标记为 failed（如视觉模型解析失败）
+pub const NON_RETRYABLE_PREFIX: &str = "__NO_RETRY__";
+
 // ═══════════════════════════════════════════════════════════════
 // 启动与主循环
 // ═══════════════════════════════════════════════════════════════
 
 pub fn start(_app_handle: tauri::AppHandle) {
     if INGESTION_RUNNING.swap(true, Ordering::AcqRel) {
-        println!("[数据中台] 已在运行中，忽略重复启动");
+        log::info!("[数据中台] 已在运行中，忽略重复启动");
         return;
     }
-    println!("[数据中台] v4 启动完成 | 统一入口: knowledge_push_queue | 并发: {} | 支持: change/file_upload/delete", MAX_CONCURRENT);
+    log::info!("[数据中台] v4 启动完成 | 统一入口: knowledge_push_queue | 并发: {} | 支持: change/file_upload/delete", MAX_CONCURRENT);
 
     std::thread::spawn(move || {
         ingestion_loop();
@@ -40,7 +43,16 @@ fn ingestion_loop() {
         &[],
     ).map(|r| r.changes).unwrap_or(0);
     if reset_count > 0 {
-        println!("[数据中台] 冷启动：已重置 {} 个崩溃残留任务", reset_count);
+        log::info!("[数据中台] 冷启动：已重置 {} 个崩溃残留任务", reset_count);
+    }
+
+    // 冷启动：将上次 failed 的任务重置为 pending（重启后自动重试）
+    let retry_failed = crate::database::run(
+        "UPDATE knowledge_push_queue SET status='pending', retry_count=0, last_error='', debounce_until=NULL WHERE status='failed'",
+        &[],
+    ).map(|r| r.changes).unwrap_or(0);
+    if retry_failed > 0 {
+        log::info!("[数据中台] 冷启动：已重置 {} 个失败任务为待重试", retry_failed);
     }
 
     // 清理孤立的 file_parse_cache 数据（没有对应任务的缓存）
@@ -51,12 +63,12 @@ fn ingestion_loop() {
         &[],
     ).map(|r| r.changes).unwrap_or(0);
     if cache_cleaned > 0 {
-        println!("[数据中台] 冷启动：已清理 {} 条孤立缓存", cache_cleaned);
+        log::info!("[数据中台] 冷启动：已清理 {} 条孤立缓存", cache_cleaned);
     }
 
     loop {
         if !INGESTION_RUNNING.load(Ordering::Acquire) {
-            println!("[数据中台] 收到停止信号，退出轮询");
+            log::info!("[数据中台] 收到停止信号，退出轮询");
             break;
         }
 
@@ -109,13 +121,13 @@ fn process_push_queue_non_blocking() {
     }
 
     let task_count = tasks.len();
-    println!("[数据中台] 本次处理 {} 条待推送变更（当前活跃 {}/{})", task_count, current_active, MAX_CONCURRENT);
+    log::info!("[数据中台] 本次处理 {} 条待推送变更（当前活跃 {}/{})", task_count, current_active, MAX_CONCURRENT);
 
     // 创建线程处理所有任务（不等待完成）
     for (idx, task) in tasks.into_iter().enumerate() {
         // 检查并发槽位
         if ACTIVE_TASKS.load(Ordering::Relaxed) >= MAX_CONCURRENT {
-            println!("[数据中台] 并发槽位已满，剩余任务等待下一轮");
+            log::info!("[数据中台] 并发槽位已满，剩余任务等待下一轮");
             break;
         }
 
@@ -125,16 +137,34 @@ fn process_push_queue_non_blocking() {
         let source_id = task["source_id"].as_str().unwrap_or("").to_string();
         let operation = task["operation"].as_str().unwrap_or("").to_string();
 
-        println!("[数据中台] → 启动任务 {}/{} ({}) [线程 {}/{}]", source_type, source_id, operation, idx + 1, task_count);
+        log::info!("[数据中台] → 启动任务 {}/{} ({}) [线程 {}/{}]", source_type, source_id, operation, idx + 1, task_count);
 
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
             process_task_with_retry(task);
             let elapsed = start.elapsed().as_millis();
             ACTIVE_TASKS.fetch_sub(1, Ordering::SeqCst);
-            println!("[数据中台] ← 完成任务 {}/{} (耗时 {}ms) [剩余活跃 {}]", source_type, source_id, elapsed, ACTIVE_TASKS.load(Ordering::Relaxed));
+            log::info!("[数据中台] ← 完成任务 {}/{} (耗时 {}ms) [剩余活跃 {}]", source_type, source_id, elapsed, ACTIVE_TASKS.load(Ordering::Relaxed));
         });
     }
+}
+
+/// 检查任务对应的业务对象是否仍存在（未知类型保守返回 true 不拦截）
+fn task_target_exists(source_type: &str, source_id: &str) -> bool {
+    let sql = match source_type {
+        "FILE" => "SELECT 1 FROM file_assets WHERE id=?1",
+        "NOTE" => "SELECT 1 FROM notes WHERE note_id=?1",
+        "PRODUCT" => "SELECT 1 FROM products WHERE id=?1",
+        "PROJECT" => "SELECT 1 FROM projects WHERE id=?1",
+        "TODO" => "SELECT 1 FROM todos WHERE id=?1",
+        "CONTACT" => "SELECT 1 FROM partner_contacts WHERE id=?1",
+        "CHANNEL" => "SELECT 1 FROM partners WHERE id=?1 AND type='CHANNEL'",
+        "VENDOR" => "SELECT 1 FROM partners WHERE id=?1 AND type='VENDOR'",
+        "CUSTOMER" => "SELECT 1 FROM partners WHERE id=?1 AND type='CUSTOMER'",
+        "CHAT" => "SELECT 1 FROM chat_sessions WHERE id=?1",
+        _ => return true,
+    };
+    crate::database::get(sql, &[json!(source_id)]).ok().flatten().is_some()
 }
 
 /// 处理单个任务（带重试逻辑）
@@ -167,11 +197,29 @@ fn process_task_with_retry(task: serde_json::Value) {
                 "DELETE FROM knowledge_push_queue WHERE id=?1",
                 &[json!(id)],
             );
-            println!("[数据中台] ✓ {}/{} ({})", source_type, source_id, operation);
+            log::info!("[数据中台] ✓ {}/{} ({})", source_type, source_id, operation);
         }
         Err(e) => {
+            // 失败重试前检查对象是否存在；对象已删除则任务无意义，直接删除任务
+            if operation != "delete" && !task_target_exists(&source_type, &source_id) {
+                let _ = crate::database::run(
+                    "DELETE FROM knowledge_push_queue WHERE id=?1",
+                    &[json!(id)],
+                );
+                log::info!("[数据中台] ✗ {}/{} 对象已删除，删除无效任务", source_type, source_id);
+                return;
+            }
+            // 不可重试错误（如视觉模型解析失败）：直接标记 failed，不做任务级重试
+            if e.starts_with(NON_RETRYABLE_PREFIX) {
+                let _ = crate::database::run(
+                    "UPDATE knowledge_push_queue SET status='failed', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+                    &[json!(retry_count + 1), json!(&e), json!(id)],
+                );
+                log::info!("[数据中台] ✗ {}/{} 不可重试失败: {}", source_type, source_id, e);
+                return;
+            }
             // 失败：退回 pending 或标记 failed
-            if retry_count + 1 >= 10 {
+            if retry_count + 1 >= 3 {
                 let _ = crate::database::run(
                     "UPDATE knowledge_push_queue SET status='failed', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
                     &[json!(retry_count + 1), json!(&e), json!(id)],
@@ -182,7 +230,7 @@ fn process_task_with_retry(task: serde_json::Value) {
                     "UPDATE knowledge_push_queue SET status='pending', debounce_until=datetime('now','localtime','+5 seconds'), retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
                     &[json!(retry_count + 1), json!(&e), json!(id)],
                 );
-                log::info!("[数据中台] ⚠ {}/{} 重试 {}/10: {}", source_type, source_id, retry_count + 1, e);
+                log::info!("[数据中台] ⚠ {}/{} 重试 {}/3: {}", source_type, source_id, retry_count + 1, e);
             }
         }
     }
@@ -226,7 +274,7 @@ fn process_file_upload(file_id: &str, source_type: &str, source_id: &str) -> Res
 // ═══════════════════════════════════════════════════════════════
 
 fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: &str) -> Result<(), String> {
-    use crate::services::file_parser::{get_pdf_page_count, pdfium_render_page, ocr_image_sync, has_real_text, crop_image_uri};
+    use crate::services::file_parser::{get_pdf_page_count, pdfium_render_page, ocr_image_sync_result, has_real_text, crop_image_uri, OcrOutcome};
 
     let file_id = row["id"].as_str().unwrap_or("").to_string();
     if file_id.is_empty() {
@@ -252,7 +300,7 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
     let total_pages = get_pdf_page_count(&path)
         .ok_or("无法获取PDF页数")?;
 
-    println!("[数据中台] {} PDF 流式解析 ({} 页)", log_tag, total_pages);
+    log::info!("[数据中台] {} PDF 流式解析 ({} 页)", log_tag, total_pages);
 
     // 更新任务进度总数
     let _ = crate::database::run(
@@ -291,7 +339,7 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
                 }
                 full_text.push_str(&text);
             }
-            println!("[数据中台] {} 第 {}/{} 页: 使用缓存", log_tag, page_num + 1, total_pages);
+            log::info!("[数据中台] {} 第 {}/{} 页: 使用缓存", log_tag, page_num + 1, total_pages);
         } else {
             // 渲染当前页
             let image_uri = match pdfium_render_page(&path, page_num) {
@@ -302,15 +350,34 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
                 }
             };
 
-            // OCR 当前页
+            // OCR 当前页（内部最多重试 3 次）
             let cropped = crop_image_uri(&image_uri, 0.04, 0.04).unwrap_or_else(|| image_uri.clone());
-            let ocr_text = ocr_image_sync(&cropped);
+            let ocr_outcome = ocr_image_sync_result(&cropped);
 
-            // 保存到缓存
-            let _ = crate::database::run(
-                "INSERT OR REPLACE INTO file_parse_cache(file_id, page_num, ocr_text) VALUES(?1, ?2, ?3)",
-                &[json!(&file_id), json!(page_num), json!(&ocr_text)],
-            );
+            match &ocr_outcome {
+                OcrOutcome::Failed(e) => {
+                    // 视觉模型解析失败（已重试 3 次）→ 整文件失败，不写入 source_data
+                    log::info!("[数据中台] {} 第 {}/{} 页 OCR 失败: {}", log_tag, page_num + 1, total_pages, e);
+                    return Err(format!("{}{} 第 {}/{} 页视觉模型解析失败: {}", NON_RETRYABLE_PREFIX, log_tag, page_num + 1, total_pages, e));
+                }
+                OcrOutcome::Blank => {
+                    // 空白页：跳过，不缓存、不判定失败
+                    log::info!("[数据中台] {} 第 {}/{} 页: 空白页，跳过", log_tag, page_num + 1, total_pages);
+                }
+                OcrOutcome::Ok(ocr_text) => {
+                    // 仅当有真实文本时写入缓存（修复缓存投毒）
+                    if has_real_text(ocr_text) {
+                        let _ = crate::database::run(
+                            "INSERT OR REPLACE INTO file_parse_cache(file_id, page_num, ocr_text) VALUES(?1, ?2, ?3)",
+                            &[json!(&file_id), json!(page_num), json!(ocr_text)],
+                        );
+                        if !full_text.is_empty() {
+                            full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", page_num + 1));
+                        }
+                        full_text.push_str(ocr_text);
+                    }
+                }
+            }
 
             // 更新进度
             let _ = crate::database::run(
@@ -318,14 +385,7 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
                 &[json!(page_num + 1), json!(source_id), json!(source_type)],
             );
 
-            if has_real_text(&ocr_text) {
-                if !full_text.is_empty() {
-                    full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", page_num + 1));
-                }
-                full_text.push_str(&ocr_text);
-            }
-
-            println!("[数据中台] {} 第 {}/{} 页: OCR 完成 ({} 字符)", log_tag, page_num + 1, total_pages, ocr_text.len());
+            log::info!("[数据中台] {} 第 {}/{} 页: OCR 完成", log_tag, page_num + 1, total_pages);
         }
     }
 
@@ -348,7 +408,7 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
         &[json!(&file_id)],
     );
 
-    println!("[数据中台] {} PDF 流式解析完成 ({} 字符)", log_tag, clean_text.len());
+    log::info!("[数据中台] {} PDF 流式解析完成 ({} 字符)", log_tag, clean_text.len());
     Ok(())
 }
 
@@ -397,7 +457,7 @@ fn process_pdf_text_only(file_id: &str, path: &str, _total_pages: u16, source_ty
         &[json!(file_id)],
     );
 
-    println!("[数据中台] {} PDF 文本提取完成 ({} 字符)", log_tag, clean_text.len());
+    log::info!("[数据中台] {} PDF 文本提取完成 ({} 字符)", log_tag, clean_text.len());
     Ok(())
 }
 
@@ -406,7 +466,7 @@ fn process_pdf_text_only(file_id: &str, path: &str, _total_pages: u16, source_ty
 // ═══════════════════════════════════════════════════════════════
 
 fn process_cleanup(source_type: &str, source_id: &str) -> Result<(), String> {
-    println!("[数据中台] 开始清理: {}/{}", source_type, source_id);
+    log::info!("[数据中台] 开始清理: {}/{}", source_type, source_id);
 
     // 1. 获取关联的 chunk_ids（用于清理 vector_cache 和 LanceDB）
     let chunk_ids: Vec<i64> = crate::database::all(
@@ -457,7 +517,7 @@ fn process_cleanup(source_type: &str, source_id: &str) -> Result<(), String> {
         &[json!(source_type), json!(source_id)],
     );
 
-    println!("[数据中台] 清理完成: {}/{}", source_type, source_id);
+    log::info!("[数据中台] 清理完成: {}/{}", source_type, source_id);
     Ok(())
 }
 
@@ -488,7 +548,7 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
         format!("{}KB", file_size / 1024)
     };
 
-    println!("[数据摄入中台] {} 开始处理 ({}, {})", log_tag, ext, size_fmt);
+    log::info!("[数据摄入中台] {} 开始处理 ({}, {})", log_tag, ext, size_fmt);
 
     // ── 文件可用性检查 ──
     if path.is_empty() || !std::path::Path::new(&path).exists() {
@@ -503,9 +563,13 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     let parse_elapsed = parse_start.elapsed().as_millis();
 
     if !parse_result.success || parse_result.text.is_empty() {
-        return Err(format!("智能解析失败 (耗时 {}ms, 后缀={})", parse_elapsed, ext));
+        return Err(if !parse_result.error.is_empty() {
+            parse_result.error
+        } else {
+            format!("智能解析失败 (耗时 {}ms, 后缀={})", parse_elapsed, ext)
+        });
     }
-    println!(
+    log::info!(
         "[数据摄入中台] {} 智能解析完成 → raw_text={} 字符 (耗时 {}ms)",
         log_tag,
         parse_result.text.len(),
@@ -521,7 +585,7 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     .flatten()
     .is_some();
     if !file_still_exists {
-        println!("[数据摄入中台] {} 解析完成但文件已被删除，跳过摄入", log_tag);
+        log::info!("[数据摄入中台] {} 解析完成但文件已被删除，跳过摄入", log_tag);
         return Ok(());
     }
 
@@ -543,7 +607,7 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
             parse_result.text.len()
         ));
     }
-    println!(
+    log::info!(
         "[数据摄入中台] {} 文本清洗完成 → clean_text={} 字符 (压缩 {:.1}%, 耗时 {}μs)",
         log_tag,
         clean_text.len(),
@@ -562,7 +626,7 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
         &[json!(&file_id)],
     );
     if check.is_ok() && check.unwrap().is_some() {
-        println!(
+        log::info!(
             "[数据摄入中台] {} 写入 source_data 完成 ({} 字符)",
             log_tag,
             clean_text.len()
@@ -571,7 +635,7 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
         log::info!("[数据摄入中台] {} source_data 写入后验证失败!", log_tag);
     }
 
-    println!(
+    log::info!(
         "[数据摄入中台] {} 处理完成 >>> 清洗后 {} 字符",
         log_tag,
         clean_text.len()
@@ -659,7 +723,7 @@ fn ingest_pending_notes() {
             &[json!(&note_id), json!(&title), json!(&md_content)],
         );
         crate::services::ai_sync::trigger_sync("notes", &note_id);
-        println!(
+        log::info!(
             "[数据中台] 📝 笔记 {} 已摄入 ({} 字符)",
             &note_id[..note_id.len().min(8)],
             md_content.len()
@@ -728,7 +792,7 @@ fn ingest_pending_products() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'PRODUCT',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='PRODUCT' AND source_id=?1)",
             &[json!(&prod_id), json!(&name), json!(&clean)],
         );
-        println!(
+        log::info!(
             "[数据中台] 📦 产品 {} 已摄入 ({} 字符)",
             &prod_id[..prod_id.len().min(8)],
             clean.len()
@@ -804,7 +868,7 @@ fn ingest_pending_projects() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'PROJECT',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='PROJECT' AND source_id=?1)",
             &[json!(&proj_id), json!(&name), json!(&clean)],
         );
-        println!(
+        log::info!(
             "[数据中台] 📁 项目 {} 已摄入 ({} 字符)",
             &proj_id[..proj_id.len().min(8)],
             clean.len()
@@ -851,7 +915,7 @@ fn ingest_pending_todos() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'TODO',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='TODO' AND source_id=?1)",
             &[json!(&id), json!(title), json!(&md_content)],
         );
-        println!(
+        log::info!(
             "[数据中台] 📋 待办 {} 已摄入 ({} 字符)",
             &id[..id.len().min(8)],
             md_content.len()
@@ -884,7 +948,7 @@ pub fn cleanup_orphan_source_data() {
         .flatten()
         .and_then(|r| r["cnt"].as_i64())
         .unwrap_or(0);
-    println!(
+    log::info!(
         "[数据中台] 孤儿扫描前: knowledge_chunks={}, source_data={}, vector_cache={}",
         kc_count, sd_count, vc_count
     );
@@ -898,7 +962,7 @@ pub fn cleanup_orphan_source_data() {
     .flatten()
     .and_then(|r| r["cnt"].as_i64())
     .unwrap_or(0);
-    println!(
+    log::info!(
         "[数据中台] 发现 {} 条孤儿 knowledge_chunks",
         orphan_count
     );
@@ -915,7 +979,7 @@ pub fn cleanup_orphan_source_data() {
             "DELETE FROM knowledge_chunks WHERE NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type=knowledge_chunks.source_type AND sd.source_id=knowledge_chunks.source_id)",
             &[],
         ) {
-            Ok(r) => println!(
+            Ok(r) => log::info!(
                 "[数据中台] 已清理 knowledge_chunks: {} 行",
                 r.changes
             ),
@@ -928,7 +992,7 @@ pub fn cleanup_orphan_source_data() {
         "DELETE FROM vector_cache WHERE chunk_id NOT IN (SELECT id FROM knowledge_chunks)",
         &[],
     ) {
-        Ok(r) if r.changes > 0 => println!(
+        Ok(r) if r.changes > 0 => log::info!(
             "[数据中台] 孤儿 vector_cache 清理: {} 行",
             r.changes
         ),
@@ -957,7 +1021,7 @@ pub fn cleanup_orphan_source_data() {
             source_type, id_col, table
         );
         match crate::database::run(&sql, &[]) {
-            Ok(r) if r.changes > 0 => println!(
+            Ok(r) if r.changes > 0 => log::info!(
                 "[数据中台] 孤儿 source_data 清理 ({}): {} 行",
                 source_type, r.changes
             ),
@@ -988,7 +1052,7 @@ pub fn cleanup_orphan_source_data() {
     .unwrap_or(0);
 
     if br_orphan_count > 0 {
-        println!("[数据中台] 发现 {} 条孤儿 business_relations", br_orphan_count);
+        log::info!("[数据中台] 发现 {} 条孤儿 business_relations", br_orphan_count);
         // 删除孤儿 business_relations
         match crate::database::run(
             "DELETE FROM business_relations WHERE \
@@ -1002,7 +1066,7 @@ pub fn cleanup_orphan_source_data() {
              (target_type='PROJECT' AND target_id NOT IN (SELECT id FROM projects))",
             &[],
         ) {
-            Ok(r) => println!("[数据中台] 已清理 business_relations 孤儿: {} 行", r.changes),
+            Ok(r) => log::info!("[数据中台] 已清理 business_relations 孤儿: {} 行", r.changes),
             Err(e) => log::info!("[数据中台] business_relations 孤儿清理失败: {}", e),
         }
     }

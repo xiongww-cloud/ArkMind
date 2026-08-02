@@ -103,7 +103,7 @@ impl DebouncedMaterializer {
         });
 
         let sched = Self { state, tx, materialize_permits };
-        println!(
+        log::info!(
             "[防抖调度器] 已启动 (窗口={}s, 并发={})",
             DEBOUNCE_WINDOW_SECS, MAX_CONCURRENT_MATERIALIZATIONS
         );
@@ -215,7 +215,7 @@ impl DebouncedMaterializer {
                     let ok =
                         crate::services::ai_sync::process_single_entity(&st, &sid).await;
                     if ok {
-                        println!("[防抖调度器] 已物化: {st}:{sid}");
+                        log::info!("[防抖调度器] 已物化: {st}:{sid}");
                     }
                     // 清除任务记录，为下一轮写入腾出空间
                     state_ref.remove(&key_clone);
@@ -245,7 +245,7 @@ impl DebouncedMaterializer {
 
             match msg {
                 Some(ControlMsg::Shutdown) | None => {
-                    println!("[防抖调度器] 已关闭");
+                    log::info!("[防抖调度器] 已关闭");
                     break;
                 }
                 Some(ControlMsg::Enqueue { .. }) => {

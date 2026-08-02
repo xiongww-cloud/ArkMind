@@ -17,10 +17,10 @@ static LAST_SYNC_TIME: Mutex<String> = Mutex::new(String::new());
 
 pub fn start() {
     if PIPELINE_RUNNING.swap(true, Ordering::AcqRel) {
-        println!("[知识管线] 已在运行中");
+        log::info!("[知识管线] 已在运行中");
         return;
     }
-    println!("[知识管线] Arkmind 知识管线启动 (v12.0 - 时间戳驱动)");
+    log::info!("[知识管线] Arkmind 知识管线启动 (v12.0 - 时间戳驱动)");
 
     // ── Step 1: 清理旧版触发器 ──
     cleanup_legacy_triggers();
@@ -63,7 +63,7 @@ pub fn reset_sync_time() {
         &[],
     ).ok();
     *LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner()) = "1970-01-01 00:00:00".to_string();
-    println!("[知识管线] 已重置同步时间戳，将重新物化所有对象");
+    log::info!("[知识管线] 已重置同步时间戳，将重新物化所有对象");
 }
 
 // ─── Startup helpers ──────────────────────────────────────────────
@@ -78,10 +78,10 @@ fn cleanup_legacy_triggers() {
             .collect();
         for name in &to_drop {
             let _ = crate::database::run(&format!("DROP TRIGGER IF EXISTS {}", name), &[]);
-            println!("[知识管线] 删除旧触发器: {}", name);
+            log::info!("[知识管线] 删除旧触发器: {}", name);
         }
         if !to_drop.is_empty() {
-            println!("[知识管线] 共删除 {} 个旧触发器", to_drop.len());
+            log::info!("[知识管线] 共删除 {} 个旧触发器", to_drop.len());
         }
     }
 }
@@ -95,7 +95,7 @@ fn init_sync_timestamp() {
     
     let mut last_sync = LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner());
     *last_sync = saved.unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
-    println!("[知识管线] 初始同步时间戳: {}", *last_sync);
+    log::info!("[知识管线] 初始同步时间戳: {}", *last_sync);
 }
 
 fn save_sync_timestamp(ts: &str) {
@@ -108,7 +108,7 @@ fn save_sync_timestamp(ts: &str) {
 fn clean_vector_cache() {
     match crate::database::run(
         "DELETE FROM vector_cache WHERE chunk_id NOT IN (SELECT id FROM knowledge_chunks)", &[],
-    ) { Ok(r) if r.changes > 0 => println!("[知识管线] 清理 {} 个过期向量缓存", r.changes), _ => {} }
+    ) { Ok(r) if r.changes > 0 => log::info!("[知识管线] 清理 {} 个过期向量缓存", r.changes), _ => {} }
     let vc_cnt: i64 = crate::database::with_db(|c|
         c.query_row("SELECT COUNT(*) FROM vector_cache", [], |r| r.get(0))).unwrap_or(0);
     let child_cnt: i64 = crate::database::with_db(|c|
@@ -119,7 +119,7 @@ fn clean_vector_cache() {
 fn auto_clean_trash() {
     match crate::database::run(
         "DELETE FROM notes WHERE deleted_at IS NOT NULL AND datetime(deleted_at,'+30 days')<datetime('now', 'localtime')", &[],
-    ) { Ok(r) if r.changes > 0 => println!("[知识管线] 回收站清理: {} 条笔记已永久删除", r.changes), _ => {} }
+    ) { Ok(r) if r.changes > 0 => log::info!("[知识管线] 回收站清理: {} 条笔记已永久删除", r.changes), _ => {} }
 }
 
 // ─── 3 independent polling loops ──────────────────────────────────
@@ -133,9 +133,9 @@ async fn sync_loop() {
         let changed = crate::services::knowledge_lifecycle::get_changed_since(&last_sync, 100);
         
         if !changed.is_empty() {
-            println!("[知识管线] 发现 {} 个变更对象（since {}）", changed.len(), last_sync);
+            log::info!("[知识管线] 发现 {} 个变更对象（since {}）", changed.len(), last_sync);
             for (source_type, source_id, _, updated_at) in &changed {
-                println!("[知识管线]   - {}/{} updated={}", source_type, source_id, updated_at);
+                log::info!("[知识管线]   - {}/{} updated={}", source_type, source_id, updated_at);
             }
             let mut max_updated = last_sync.clone();
             
@@ -148,7 +148,7 @@ async fn sync_loop() {
                     // 直接传入 source_type，由 materialize_and_store 内部处理类型转换
                     match crate::services::ai_sync::materialize_and_store(source_type, source_id, sd_id, content).await {
                         Ok(_) => {},
-                        Err(e) => eprintln!("[知识管线] 物化失败 {}/{}: {}", source_type, source_id, e),
+                        Err(e) => log::warn!("[知识管线] 物化失败 {}/{}: {}", source_type, source_id, e),
                     }
                 }
             }
@@ -174,13 +174,13 @@ async fn embed_loop() {
             match crate::services::hybrid_knowledge::vectorize_new_chunks(batch_size).await {
                 Ok(n) => { 
                     if n > 0 { 
-                        println!("[知识管线] 已向量化: {n} 个块"); 
+                        log::info!("[知识管线] 已向量化: {n} 个块"); 
                         had_work = true;
                     } else {
                         break; // 没有待处理的块，退出循环
                     }
                 }
-                Err(e) => { eprintln!("[知识管线] 向量化错误: {e}"); break; }
+                Err(e) => { log::warn!("[知识管线] 向量化错误: {e}"); break; }
             }
             tokio::task::yield_now().await;  // 让出 CPU，避免阻塞
         }
