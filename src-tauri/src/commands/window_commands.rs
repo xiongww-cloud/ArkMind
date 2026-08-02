@@ -33,19 +33,17 @@ pub async fn create_sprite_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    // Fallback：配置窗口未创建时手动创建（带上完整窗口属性）
-    let mut builder = WebviewWindowBuilder::new(&app, "sprite", WebviewUrl::App("sprite.html".into()))
+    // 代码创建精灵窗口（透明/置顶/无边框，macOS 依赖 macos-private-api feature）
+    WebviewWindowBuilder::new(&app, "sprite", WebviewUrl::App("sprite.html".into()))
         .inner_size(48.0, 74.0)
         .decorations(false)
+        .transparent(true)
         .always_on_top(true)
         .resizable(false)
         .skip_taskbar(true)
-        .shadow(false);
-    #[cfg(target_os = "windows")]
-    {
-        builder = builder.transparent(true);
-    }
-    builder.build().map_err(|e| e.to_string())?;
+        .shadow(false)
+        .build()
+        .map_err(|e| e.to_string())?;
 
     let _ = app.get_webview_window("sprite").map(|w| w.show());
     Ok(())
@@ -98,21 +96,19 @@ pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Opti
     let win = if let Some(win) = app.get_webview_window("chat") {
         win
     } else {
-        // Fallback：手动创建（transparent 仅 Windows 生效，macOS 走配置路径）
+        // 代码创建聊天窗口（透明，macOS 依赖 macos-private-api feature）
         let win_w = width.unwrap_or(620.0);
         let win_h = height.unwrap_or(700.0);
-        let mut builder = WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
+        WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
             .inner_size(win_w, win_h)
             .decorations(false)
+            .transparent(true)
             .shadow(false)
             .resizable(false)
             .skip_taskbar(true)
-            .visible(true);
-        #[cfg(target_os = "windows")]
-        {
-            builder = builder.transparent(true);
-        }
-        builder.build().map_err(|e| e.to_string())?
+            .visible(true)
+            .build()
+            .map_err(|e| e.to_string())?
     };
 
     position_chat_window_collapsed(&app, &win, width, height);

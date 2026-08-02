@@ -20,33 +20,6 @@
         "minHeight": 700,
         "decorations": false,
         "center": true
-      },
-      {
-        "label": "sprite",
-        "title": "",
-        "url": "sprite.html",
-        "width": 48,
-        "height": 74,
-        "decorations": false,
-        "transparent": true,
-        "shadow": false,
-        "alwaysOnTop": true,
-        "resizable": false,
-        "skipTaskbar": true,
-        "visible": false
-      },
-      {
-        "label": "chat",
-        "title": "",
-        "url": "chat.html",
-        "width": 620,
-        "height": 700,
-        "decorations": false,
-        "transparent": true,
-        "shadow": false,
-        "resizable": false,
-        "skipTaskbar": true,
-        "visible": false
       }
     ],
     "security": {
