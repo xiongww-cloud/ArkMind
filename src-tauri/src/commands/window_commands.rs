@@ -7,20 +7,28 @@ static CHAT_EVENT_SETUP: AtomicBool = AtomicBool::new(false);
 static MAIN_WAS_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 /// macOS：将窗口设为辅助窗口（不参与前台调度/Stage Manager 分组）
+/// 注意：必须在主线程调用 AppKit API（使用 run_on_main_thread 调度）
 #[cfg(target_os = "macos")]
-fn set_auxiliary_window(win: &WebviewWindow) {
-    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-    if let Ok(ns_window_ptr) = win.ns_window() {
-        let ns_window: &NSWindow = unsafe { &*ns_window_ptr.cast() };
-        let behavior = NSWindowCollectionBehavior::Auxiliary
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::FullScreenAuxiliary;
-        ns_window.setCollectionBehavior(behavior);
-    }
+fn set_auxiliary_window(app: &AppHandle, label: &str) {
+    let app = app.clone();
+    let label = label.to_string();
+    let _ = app.run_on_main_thread(move || {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+        if let Some(win) = app.get_webview_window(&label) {
+            if let Ok(ptr) = win.ns_window() {
+                if ptr.is_null() { return; }
+                let ns_window: &NSWindow = unsafe { &*ptr.cast() };
+                let behavior = NSWindowCollectionBehavior::Auxiliary
+                    | NSWindowCollectionBehavior::Stationary
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary;
+                ns_window.setCollectionBehavior(behavior);
+            }
+        }
+    });
 }
 
 #[cfg(not(target_os = "macos"))]
-fn set_auxiliary_window(_win: &WebviewWindow) {}
+fn set_auxiliary_window(_app: &AppHandle, _label: &str) {}
 
 /// 隐藏主窗口（记录可见状态，聊天关闭时恢复）
 fn hide_main_window(app: &AppHandle) {
@@ -82,7 +90,7 @@ pub async fn create_sprite_window(app: AppHandle) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    set_auxiliary_window(&win);
+    set_auxiliary_window(&app, "sprite");
     let _ = win.show();
     Ok(())
 }
@@ -148,7 +156,7 @@ pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Opti
             .visible(true)
             .build()
             .map_err(|e| e.to_string())?;
-        set_auxiliary_window(&win);
+        set_auxiliary_window(&app, "chat");
         win
     };
 
