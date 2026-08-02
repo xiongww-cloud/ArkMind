@@ -44,6 +44,8 @@ fn set_sprite_window_behavior(app: &AppHandle, label: &str) {
                 let behavior = NSWindowCollectionBehavior::Stationary
                     | NSWindowCollectionBehavior::FullScreenAuxiliary;
                 ns_window.setCollectionBehavior(behavior);
+                // 允许非 key 窗口响应第一次点击（无需先聚焦）
+                ns_window.setAcceptsFirstMouse(true);
             }
         }
     });
