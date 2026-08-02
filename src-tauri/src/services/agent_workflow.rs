@@ -2952,7 +2952,8 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             messages.push(ChatMessage{role:MessageRole::User, content: Some(format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info)), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
         }
 
-        // ★ 调试：保存 context 到文件（供 debug_server.py 读取）
+        // ★ 调试：保存 context 到文件（供 debug_server.py 读取）—— 仅 debug 构建
+        #[cfg(debug_assertions)]
         {
             let context_json: Vec<Value> = messages.iter().filter_map(|m| {
                 serde_json::to_value(m).ok()
@@ -4891,7 +4892,8 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     }
             messages.push(ChatMessage{role:MessageRole::User, content: Some(format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info)), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
                 }
-                // ★ 调试：每轮工具调用后保存完整上下文
+                // ★ 调试：每轮工具调用后保存完整上下文 —— 仅 debug 构建
+                #[cfg(debug_assertions)]
                 {
                     let context_json: Vec<Value> = messages.iter().filter_map(|m| {
                         serde_json::to_value(m).ok()

@@ -358,8 +358,11 @@ pub fn run() {
             commands::notification_mark_all_read, commands::notification_delete, commands::notification_stats,
             commands::notification_config_get, commands::notification_config_update,
             commands::notification_loop_status,
-            // Debug
-            commands::save_agent_context, commands::get_agent_context,
+            // Debug（仅 debug 构建注册）
+            #[cfg(debug_assertions)]
+            commands::save_agent_context,
+            #[cfg(debug_assertions)]
+            commands::get_agent_context,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Arkmind")

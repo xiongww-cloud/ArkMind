@@ -1,3 +1,4 @@
+#![cfg(debug_assertions)]
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
