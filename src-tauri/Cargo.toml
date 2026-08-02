@@ -74,6 +74,11 @@ dirs = "5"
 opener = "0.7"
 regex = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
+version = "0.3"
+features = ["NSWindow"]
+default-features = false
+
 [dev-dependencies]
 tempfile = "3"
 

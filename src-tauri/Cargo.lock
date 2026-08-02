@@ -207,6 +207,7 @@ dependencies = [
  "infer 0.15.0",
  "lancedb",
  "log",
+ "objc2-app-kit",
  "once_cell",
  "opener",
  "pdf-extract",

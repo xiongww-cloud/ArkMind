@@ -1,6 +1,23 @@
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder, WebviewUrl};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// 将窗口设为 macOS 辅助窗口，不触发前台调度（Stage Manager）
+#[cfg(target_os = "macos")]
+fn set_auxiliary_window(win: &WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+    if let Ok(ns_window_ptr) = win.ns_window() {
+        let ns_window: &NSWindow = unsafe { &*ns_window_ptr.cast() };
+        ns_window.setCollectionBehavior(
+            NSWindowCollectionBehavior::Auxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_auxiliary_window(_win: &WebviewWindow) {}
+
 // 失焦自动隐藏监听器只绑定一次（窗口由配置创建，可能多次调用 create_chat_window）
 static CHAT_EVENT_SETUP: AtomicBool = AtomicBool::new(false);
 
@@ -34,7 +51,7 @@ pub async fn create_sprite_window(app: AppHandle) -> Result<(), String> {
     }
 
     // 代码创建精灵窗口（透明/置顶/无边框，macOS 依赖 macos-private-api feature）
-    WebviewWindowBuilder::new(&app, "sprite", WebviewUrl::App("sprite.html".into()))
+    let win = WebviewWindowBuilder::new(&app, "sprite", WebviewUrl::App("sprite.html".into()))
         .inner_size(48.0, 74.0)
         .decorations(false)
         .transparent(true)
@@ -45,7 +62,8 @@ pub async fn create_sprite_window(app: AppHandle) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let _ = app.get_webview_window("sprite").map(|w| w.show());
+    set_auxiliary_window(&win);
+    let _ = win.show();
     Ok(())
 }
 
@@ -111,6 +129,7 @@ pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Opti
             .map_err(|e| e.to_string())?
     };
 
+    set_auxiliary_window(&win);
     position_chat_window_collapsed(&app, &win, width, height);
     setup_chat_window_events(&app);
     let _ = win.show();
