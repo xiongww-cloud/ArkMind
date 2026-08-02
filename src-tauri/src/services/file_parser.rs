@@ -19,28 +19,75 @@ pub struct ParseResult { pub text: String, pub success: bool }
 // OCR via Vision API
 // ═══════════════════════════════════════════════════════════════
 
+/// 统一默认提示词
+const VISION_DEFAULT_PROMPT: &str = r#"你是一个精确的文档提取助手。请从图片中提取所有文字内容，转换为结构化 Markdown。
+
+## 输出规则
+
+### 1. 标题
+保留原文所有标题层级（# ## ###），标题后空一行再接正文。
+
+### 2. 表格必须转置为长表（最高优先级）
+表格通常「产品型号在列名、属性在行名」。输出时必须转置：
+每一行一个「对象 + 属性 + 值」，型号从列名提取到行首。
+
+格式：`{对象名} {属性名}={值}`
+
+示例输入：
+| 规格   | A型号 | B型号 |
+|--------|-------|-------|
+| 缓存   | 128GB | 256GB |
+
+示例输出：
+A型号 缓存=128GB
+B型号 缓存=256GB
+
+禁止输出原始表格（| 分隔）或把多个型号的值塞进同一行。
+
+### 3. 键值对
+原文为「字段名: 字段值」形式时，输出 `字段名=字段值`，每行一个。
+
+### 4. 数值与单位
+保留所有数值、型号、技术参数，必须携带原始单位（GB、Gbps、℃ 等）。
+单位紧贴数字，不加空格（128GB，不是 128 GB）。
+
+### 5. 多型号合并（尽力而为）
+若多个型号某属性值完全相同，可合并为 `A/B型号 属性=值` 减少冗余。
+若值不同，必须逐型号分行，禁止混写。
+
+### 6. 超长值拆分（尽力而为）
+过长的属性值按类别拆行，如协议拆为「（核心）」和「（可选）」两行。
+
+### 7. 特殊标记语义化
+原文的 * 等标记转为明确中文说明：FTP* → FTP（可选）。
+
+### 8. 语言
+输出语言与原文一致，不要翻译。
+
+### 9. 噪声过滤
+跳过页码、水印、页眉页脚、装饰性图标。
+
+### 10. 模糊内容
+看不清或被遮挡的文字用 [?] 标记，不要猜测。
+
+### 11. 特殊字符
+保留公式、数学符号、希腊字母。
+
+### 12. 多列布局
+双栏文档先完整提取第一栏，再提取第二栏，禁止混排。"#;
+
 /// 视觉模型配置
 pub struct VisionConfig {
     base_url: String,
     api_key: String,
     model: String,
     api_format: String, // "openai" or "dashscope"
-    prompt: String,
-}
-
-impl VisionConfig {
-    /// 统一默认提示词
-    fn default_prompt(_api_format: &str) -> &'static str {
-        "从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 每个标题后面必须换行，标题和正文之间空一行；3. 表格内容提炼为简洁的文本段落，每条规格独立一行；4. 不要输出原始表格格式；5. 保留所有数值、型号、技术参数；6. 每个特性用一句话概括"
-    }
 }
 
 /// 视觉模型适配器：每个 api_format + model_name 定义自己的请求构建、响应解析和文本后处理
 trait VisionAdapter {
     fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str) -> Value;
     fn parse_response(&self, body: &Value) -> String;
-    #[allow(dead_code)]
-    fn default_prompt(&self) -> &'static str;
     /// 模型专属输出文本归一化（在 parse_response 之后调用）
     fn post_process(&self, text: &str) -> String {
         text.to_string() // default: no-op
@@ -56,7 +103,7 @@ impl VisionAdapter for OpenaiAdapter {
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": base64_data_uri}},
-                    {"type": "text", "text": &cfg.prompt}
+                    {"type": "text", "text": VISION_DEFAULT_PROMPT}
                 ]
             }],
             "max_tokens": 4096,
@@ -65,9 +112,6 @@ impl VisionAdapter for OpenaiAdapter {
     }
     fn parse_response(&self, body: &Value) -> String {
         body["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string()
-    }
-    fn default_prompt(&self) -> &'static str {
-        "从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 每个标题后面必须换行，标题和正文之间空一行；3. 表格内容提炼为简洁的文本段落，每条规格独立一行；4. 不要输出原始表格格式；5. 保留所有数值、型号、技术参数；6. 每个特性用一句话概括"
     }
 }
 
@@ -81,7 +125,7 @@ impl VisionAdapter for DashscopeAdapter {
                     "role": "user",
                     "content": [
                         {"image": base64_data_uri},
-                        {"text": &cfg.prompt}
+                        {"text": VISION_DEFAULT_PROMPT}
                     ]
                 }]
             },
@@ -95,9 +139,6 @@ impl VisionAdapter for DashscopeAdapter {
             .and_then(|v| v["text"].as_str())
             .unwrap_or("")
             .to_string()
-    }
-    fn default_prompt(&self) -> &'static str {
-        "从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 每个标题后面必须换行，标题和正文之间空一行；3. 表格内容提炼为简洁的文本段落，每条规格独立一行；4. 不要输出原始表格格式；5. 保留所有数值、型号、技术参数；6. 每个特性用一句话概括"
     }
 }
 
@@ -140,7 +181,7 @@ impl VisionAdapter for Qwen3VlAdapter {
                     "role": "user",
                     "content": [
                         {"image": base64_data_uri},
-                        {"text": &cfg.prompt}
+                        {"text": VISION_DEFAULT_PROMPT}
                     ]
                 }]
             },
@@ -155,9 +196,6 @@ impl VisionAdapter for Qwen3VlAdapter {
             .and_then(|v| v["text"].as_str())
             .unwrap_or("")
             .to_string()
-    }
-    fn default_prompt(&self) -> &'static str {
-        "从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 每个标题后面必须换行，标题和正文之间空一行；3. 表格内容提炼为简洁的文本段落，每条规格独立一行；4. 不要输出原始表格格式；5. 保留所有数值、型号、技术参数；6. 每个特性用一句话概括"
     }
 
     fn post_process(&self, text: &str) -> String {
@@ -239,11 +277,7 @@ pub fn get_vision_config() -> Option<VisionConfig> {
     let api_key = provider["apiKey"].as_str()?.to_string();
     let model = provider["modelName"].as_str()?.to_string();
     let api_format = provider["apiFormat"].as_str().unwrap_or("openai").to_string();
-    let prompt = provider["prompt"].as_str()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| VisionConfig::default_prompt(&api_format).to_string());
-    Some(VisionConfig { base_url, api_key, model, api_format, prompt })
+    Some(VisionConfig { base_url, api_key, model, api_format })
 }
 
 /// 读取文件为 base64 编码的 data URI

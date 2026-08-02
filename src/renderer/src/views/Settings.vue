@@ -488,7 +488,7 @@ const visionActiveId = ref<string | null>(null)
 const visionPendingId = ref<string | null>(null)
 const showVisionModal = ref(false)
 const editingVision = ref<any>(null)
-const visionForm = ref({ apiKey: '', baseUrl: 'https://api.openai.com/v1', modelName: '', apiFormat: 'openai', prompt: '从文档图片中提取并组织关键信息，以结构化 Markdown 格式输出。规则：1. 保留所有标题层级（# ## ###）；2. 每个标题后面必须换行，标题和正文之间空一行；3. 表格内容提炼为简洁的文本段落，每条规格独立一行；4. 不要输出原始表格格式；5. 保留所有数值、型号、技术参数；6. 每个特性用一句话概括' })
+const visionForm = ref({ apiKey: '', baseUrl: 'https://api.openai.com/v1', modelName: '', apiFormat: 'openai' })
 const visionFormSaving = ref(false)
 const visionFormError = ref('')
 const visionSaving = ref(false)
@@ -510,7 +510,7 @@ function loadVisionConfig(config) {
 
 function openAddVision() {
   editingVision.value = null
-  visionForm.value = { apiKey: '', baseUrl: '', modelName: '', apiFormat: 'openai', prompt: '' }
+  visionForm.value = { apiKey: '', baseUrl: '', modelName: '', apiFormat: 'openai' }
   visionFormError.value = ''
   selectedVisionPreset.value = ''
   showVisionModal.value = true
@@ -518,7 +518,7 @@ function openAddVision() {
 
 function openEditVision(provider) {
   editingVision.value = provider
-  visionForm.value = { apiKey: provider.apiKey, baseUrl: provider.baseUrl, modelName: provider.modelName, apiFormat: provider.apiFormat || 'openai', prompt: provider.prompt || '' }
+  visionForm.value = { apiKey: provider.apiKey, baseUrl: provider.baseUrl, modelName: provider.modelName, apiFormat: provider.apiFormat || 'openai' }
   visionFormError.value = ''
   showVisionModal.value = true
 }
@@ -543,14 +543,13 @@ async function confirmVisionForm() {
         baseUrl: baseUrl.trim() || 'https://api.openai.com/v1',
         modelName: modelNameTrimmed,
         apiFormat: visionForm.value.apiFormat || 'openai',
-        prompt: visionForm.value.prompt?.trim() || '',
       }
       if (formKey.trim() && !formKey.includes('●●●●')) { updated.apiKey = formKey.trim() }
       visionProviders.value[idx] = updated
     }
   } else {
     const newId = 'vp_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)
-    visionProviders.value.push({ id: newId, name: modelNameTrimmed, apiKey: formKey.trim(), baseUrl: baseUrl.trim() || 'https://api.openai.com/v1', modelName: modelNameTrimmed, apiFormat: visionForm.value.apiFormat || 'openai', prompt: visionForm.value.prompt?.trim() || '' })
+    visionProviders.value.push({ id: newId, name: modelNameTrimmed, apiKey: formKey.trim(), baseUrl: baseUrl.trim() || 'https://api.openai.com/v1', modelName: modelNameTrimmed, apiFormat: visionForm.value.apiFormat || 'openai' })
     if (visionProviders.value.length === 1) { visionActiveId.value = visionProviders.value[0].id }
   }
   try {
