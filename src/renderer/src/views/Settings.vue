@@ -10,6 +10,7 @@ import {
   migrateFiles, pipelineClearVectors,
   pipelineClearKnowledge, pipelineClearAll,
   pipelineRevectorize, cleanupOrphanData,
+  pipelineDebugStatus, knowledgePipelineStatus,
   getLogs, clearLogs,
 } from '@/api/db-client'
 
@@ -714,6 +715,15 @@ async function saveNotifyConfig() {
 }
 
 // ─── Pipeline Management ──────────────────────────────────────
+const pipelineData = ref<any>(null)
+const pipelineRunning = ref(false)
+async function loadPipeline() {
+  try {
+    const [debug, status] = await Promise.all([pipelineDebugStatus(), knowledgePipelineStatus()])
+    pipelineData.value = debug
+    pipelineRunning.value = status?.running || false
+  } catch (e) { console.error('[Settings] loadPipeline failed:', e) }
+}
 async function handleRevectorize() {
   if (!(await dangerConfirm({ title: '重新向量化', message: '将清除所有现有向量数据并重新向量化。这可能需要较长时间，确定继续？', confirmText: '重新向量化' }))) return
   try { const r = await pipelineRevectorize(); toast({ message: r.message || '已启动重新向量化', type: 'success' }) }
@@ -974,6 +984,7 @@ function clearAllLogs() {
 }
 
 // ─── Init ────────────────────────────────────────────────────────────────
+let pipelineTimer: ReturnType<typeof setInterval> | null = null
 onActivated(async () => {
   await Promise.all([
     loadStorageConfig(),
@@ -982,14 +993,17 @@ onActivated(async () => {
     refreshLogs(),
     loadNotifyConfig(),
     loadLoopStatus(),
+    loadPipeline(),
   ])
   logTimer = setInterval(refreshLogs, 3000)
   loopStatusTimer = setInterval(loadLoopStatus, 600000)  // 10分钟刷新一次
+  pipelineTimer = setInterval(loadPipeline, 3000)
 })
 
 onDeactivated(() => {
   if (logTimer) { clearInterval(logTimer); logTimer = null }
   if (loopStatusTimer) { clearInterval(loopStatusTimer); loopStatusTimer = null }
+  if (pipelineTimer) { clearInterval(pipelineTimer); pipelineTimer = null }
 })
 </script>
 
@@ -1186,6 +1200,19 @@ onDeactivated(() => {
             </div>
           </div>
 
+          <!-- 运行日志 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">运行日志</h2>
+            </div>
+            <div class="p-5">
+              <div class="flex items-center justify-between mb-3">
+                <p class="text-[11px] text-surface-400">共 {{ logs.length }} 条日志</p>
+                <button @click="openLogModal" class="h-6 px-3 text-[11px] rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">查看</button>
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <!-- ──── 右栏 ──── -->
@@ -1285,26 +1312,60 @@ onDeactivated(() => {
 
           <!-- 知识管线管理 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
-            <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">知识管线管理</h2>
+            <div class="flex items-center gap-2 px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">知识管线管理</h2>
+              <span class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-50 text-emerald-600' : 'bg-surface-50 text-surface-400'">
+                <span class="w-1.5 h-1.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-500 animate-pulse' : 'bg-surface-300'"></span>
+                {{ pipelineRunning ? '运行中' : '空闲' }}
+              </span>
+            </div>
             <div class="p-5">
+              <div class="space-y-3 mb-4" v-if="pipelineData">
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <span class="text-[11px] text-surface-500">物化进度</span>
+                    <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.children ?? 0 }} / {{ pipelineData.source?.total ?? 0 }}</span>
+                  </div>
+                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full transition-all duration-500" :style="{ width: (pipelineData.source?.total ? Math.min(100, (pipelineData.knowledge?.children ?? 0) / pipelineData.source.total * 100) : 0) + '%', background: 'linear-gradient(90deg, #6366f1, #818cf8)' }"></div>
+                  </div>
+                  <div class="text-[10px] text-surface-400 mt-0.5 text-right">{{ pipelineData.source?.total ? ((pipelineData.knowledge?.children ?? 0) / pipelineData.source.total * 100).toFixed(1) : 0 }}%</div>
+                </div>
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <span class="text-[11px] text-surface-500">向量化进度</span>
+                    <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.vectorized ?? 0 }} / {{ pipelineData.knowledge?.children ?? 0 }}</span>
+                  </div>
+                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full transition-all duration-500" :style="{ width: (pipelineData.knowledge?.children ? Math.min(100, (pipelineData.knowledge?.vectorized ?? 0) / pipelineData.knowledge.children * 100) : 0) + '%', background: 'linear-gradient(90deg, #06b6d4, #22d3ee)' }"></div>
+                  </div>
+                  <div class="text-[10px] text-surface-400 mt-0.5 text-right">{{ pipelineData.knowledge?.children ? ((pipelineData.knowledge?.vectorized ?? 0) / pipelineData.knowledge.children * 100).toFixed(1) : 0 }}%</div>
+                </div>
+                <div v-if="(pipelineData.fileParse?.total ?? 0) > 0">
+                  <div class="flex items-center justify-between mb-1">
+                    <span class="text-[11px] text-surface-500">文件解析</span>
+                    <span class="text-[11px] font-mono text-surface-600">
+                      <span class="text-emerald-600">{{ pipelineData.fileParse?.done ?? 0 }}</span>
+                      <span class="text-surface-300 mx-0.5">/</span>
+                      <span>{{ pipelineData.fileParse?.total ?? 0 }}</span>
+                      <span v-if="pipelineData.fileParse?.failed" class="text-red-400 ml-1">({{ pipelineData.fileParse.failed }} 失败)</span>
+                    </span>
+                  </div>
+                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full transition-all duration-500" :style="{ width: ((pipelineData.fileParse?.total ? Math.min(100, (pipelineData.fileParse?.done ?? 0) / pipelineData.fileParse.total * 100) : 0) + '%'), background: 'linear-gradient(90deg, #f59e0b, #fbbf24)' }"></div>
+                  </div>
+                  <div class="flex items-center justify-between mt-1 text-[10px] text-surface-400">
+                    <span>{{ pipelineData.fileParse?.processing ? '正在解析 ' + (pipelineData.fileParse.current?.name || '文件') + ' — 第 ' + (pipelineData.fileParse.current?.page ?? 0) + '/' + (pipelineData.fileParse.current?.total ?? '--') + ' 页' : (pipelineData.fileParse?.pending ? '等待解析中...' : '空闲') }}</span>
+                    <span>{{ pipelineData.fileParse?.total ? ((pipelineData.fileParse?.done ?? 0) / pipelineData.fileParse.total * 100).toFixed(1) : 0 }}%</span>
+                  </div>
+                </div>
+              </div>
+              <p v-else class="text-[11px] text-surface-300 text-center py-4 mb-4">加载中...</p>
               <div class="flex flex-wrap gap-2 justify-end">
                 <button @click="handleRevectorize" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重新向量化</button>
                 <button @click="handleClearKnowledge" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-amber-300 text-amber-600 hover:bg-amber-50 transition">重置知识管线</button>
                 <button @click="handleClearAll" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重置全部数据</button>
                 <button @click="handleOrphanCleanup" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-purple-300 text-purple-600 hover:bg-purple-50 transition">清理孤儿数据</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- 运行日志 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
-            <div class="px-5 pt-5 pb-0">
-              <h2 class="text-[13px] font-semibold text-surface-700">运行日志</h2>
-            </div>
-            <div class="p-5">
-              <div class="flex items-center justify-between mb-3">
-                <p class="text-[11px] text-surface-400">共 {{ logs.length }} 条日志</p>
-                <button @click="openLogModal" class="h-6 px-3 text-[11px] rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">查看</button>
               </div>
             </div>
           </div>

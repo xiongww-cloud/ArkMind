@@ -4,22 +4,12 @@ import VueApexCharts from 'vue3-apexcharts'
 import {
   kbDashboardStats,
   kbPipelineDebug,
-  pipelineDebugStatus, knowledgePipelineStatus,
 } from '@/api/db-client'
 
 const stats = ref<any>(null)
-const pipelineData = ref<any>(null)
-const pipelineRunning = ref(false)
 const growthDays = ref(30)
 const chartVersion = ref(0)
 async function loadStats() { try { const r = await kbDashboardStats(); if (r?.success) { stats.value = r; chartVersion.value++ } } catch (e) { console.error('[KG] loadStats failed:', e) } }
-async function loadPipeline() {
-  try {
-    const [debug, status] = await Promise.all([pipelineDebugStatus(), knowledgePipelineStatus()])
-    pipelineData.value = debug
-    pipelineRunning.value = status?.running || false
-  } catch (e) { console.error('[KG] loadPipeline failed:', e) }
-}
 function setGrowthDays(d: number) { growthDays.value = d }
 
 const growthChart = computed(() => {
@@ -61,10 +51,9 @@ function restoreScroll(pos: number) {
 }
 onActivated(() => {
   loadStats()
-  loadPipeline()
   refreshTimer = setInterval(() => {
     const scrollPos = saveScroll()
-    Promise.all([loadStats(), loadPipeline()]).then(() => nextTick(() => restoreScroll(scrollPos)))
+    loadStats().then(() => nextTick(() => restoreScroll(scrollPos)))
   }, 5000)
 })
 onDeactivated(() => {
@@ -110,53 +99,6 @@ onDeactivated(() => {
           <VueApexCharts v-if="growthChart" :key="'growth-' + chartVersion" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '累计碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false, mouseWheel: { enabled: false } } } }" />
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
-      </div>
-      <!-- 知识管线 -->
-      <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-        <div class="flex items-center gap-2 mb-4">
-          <h3 class="text-[12px] font-semibold text-surface-600">知识管线</h3>
-          <span class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-50 text-emerald-600' : 'bg-surface-50 text-surface-400'">
-            <span class="w-1.5 h-1.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-500 animate-pulse' : 'bg-surface-300'"></span>
-            {{ pipelineRunning ? '运行中' : '空闲' }}
-          </span>
-        </div>
-        <div class="space-y-3" v-if="pipelineData">
-          <div>
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] text-surface-500">物化进度</span>
-              <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.children ?? 0 }} / {{ pipelineData.source?.total ?? 0 }}</span>
-            </div>
-            <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
-              <div class="h-full rounded-full transition-all duration-500" :style="{ width: (pipelineData.source?.total ? Math.min(100, (pipelineData.knowledge?.children ?? 0) / pipelineData.source.total * 100) : 0) + '%', background: 'linear-gradient(90deg, #6366f1, #818cf8)' }"></div>
-            </div>
-            <div class="text-[10px] text-surface-400 mt-0.5 text-right">{{ pipelineData.source?.total ? ((pipelineData.knowledge?.children ?? 0) / pipelineData.source.total * 100).toFixed(1) : 0 }}%</div>
-          </div>
-          <div>
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] text-surface-500">向量化进度</span>
-              <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.vectorized ?? 0 }} / {{ pipelineData.knowledge?.children ?? 0 }}</span>
-            </div>
-            <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
-              <div class="h-full rounded-full transition-all duration-500" :style="{ width: (pipelineData.knowledge?.children ? Math.min(100, (pipelineData.knowledge?.vectorized ?? 0) / pipelineData.knowledge.children * 100) : 0) + '%', background: 'linear-gradient(90deg, #06b6d4, #22d3ee)' }"></div>
-            </div>
-            <div class="text-[10px] text-surface-400 mt-0.5 text-right">{{ pipelineData.knowledge?.children ? ((pipelineData.knowledge?.vectorized ?? 0) / pipelineData.knowledge.children * 100).toFixed(1) : 0 }}%</div>
-          </div>
-          <div v-if="(pipelineData.fileParse?.pending ?? 0) + (pipelineData.fileParse?.done ?? 0) + (pipelineData.fileParse?.failed ?? 0) > 0">
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] text-surface-500">文件解析</span>
-              <span class="text-[11px] font-mono text-surface-600">
-                <span class="text-emerald-600">{{ pipelineData.fileParse?.done ?? 0 }}</span>
-                <span class="text-surface-300 mx-0.5">/</span>
-                <span>{{ (pipelineData.fileParse?.done ?? 0) + (pipelineData.fileParse?.pending ?? 0) }}</span>
-                <span v-if="pipelineData.fileParse?.failed" class="text-red-400 ml-1">({{ pipelineData.fileParse.failed }} 失败)</span>
-              </span>
-            </div>
-            <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
-              <div class="h-full rounded-full transition-all duration-500" :style="{ width: (((pipelineData.fileParse?.done ?? 0) + (pipelineData.fileParse?.pending ?? 0)) ? Math.min(100, (pipelineData.fileParse?.done ?? 0) / ((pipelineData.fileParse?.done ?? 0) + (pipelineData.fileParse?.pending ?? 0)) * 100) : 0) + '%', background: 'linear-gradient(90deg, #f59e0b, #fbbf24)' }"></div>
-            </div>
-          </div>
-        </div>
-        <p v-else class="text-[11px] text-surface-300 text-center py-4">加载中...</p>
       </div>
       <!-- 清理队列调试 -->
       <div v-if="debugData" class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
