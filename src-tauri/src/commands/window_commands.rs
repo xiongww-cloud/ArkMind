@@ -46,10 +46,15 @@ fn set_sprite_window_behavior(app: &AppHandle, label: &str) {
                 ns_window.setCollectionBehavior(behavior);
                 // 允许非 key 窗口响应第一次点击（无需先聚焦）
                 // objc2-app-kit 无 setAcceptsFirstMouse 绑定，使用 runtime 消息发送
+                // setAcceptsFirstMouse: 期望 id 参数，用 NSNumber 包装 bool
                 unsafe {
                     use objc2::msg_send;
                     use objc2::sel;
-                    let _: () = msg_send![ns_window, setAcceptsFirstMouse: true];
+                    use objc2::runtime::Class;
+                    if let Some(ns_number_cls) = Class::get("NSNumber") {
+                        let accepts: *mut objc2::runtime::Object = msg_send![ns_number_cls, numberWithBool: 1_i8];
+                        let _: () = msg_send![ns_window, setAcceptsFirstMouse: accepts];
+                    }
                 }
             }
         }
