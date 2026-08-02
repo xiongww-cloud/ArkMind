@@ -299,7 +299,7 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     let adapter = get_adapter(&cfg.api_format, &cfg.model);
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 
