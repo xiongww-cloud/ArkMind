@@ -207,16 +207,20 @@ fn setup_chat_window_events(app: &AppHandle) {
         win.on_window_event(move |event| {
             if let tauri::WindowEvent::Focused(focused) = event {
                 if !focused {
-                    if let Some(chat_win) = handle.get_webview_window("chat") {
-                        // ★ 先重置前端展开状态，再隐藏窗口
-                        let _ = handle.emit("chat:reset", ());
-                        let _ = chat_win.hide();
-                        // ★ 关闭时位置重置回收起态
-                        let scale = chat_win.scale_factor().unwrap_or(1.0);
-                        let cur_x = chat_win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
-                        let collapsed_y = collapsed_chat_y(&handle);
-                        let _ = chat_win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
-                    }
+                    let handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(chat_win) = handle.get_webview_window("chat") {
+                            // ★ 关闭前先收起：窗口可见时 webview 活跃，chat:reset 立即生效
+                            let _ = handle.emit("chat:reset", ());
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            let _ = chat_win.hide();
+                            // ★ 关闭时位置重置回收起态
+                            let scale = chat_win.scale_factor().unwrap_or(1.0);
+                            let cur_x = chat_win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
+                            let collapsed_y = collapsed_chat_y(&handle);
+                            let _ = chat_win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
+                        }
+                    });
                 }
             }
         });
@@ -257,8 +261,10 @@ fn collapsed_chat_y(app: &AppHandle) -> f64 {
 pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("chat") {
         if win.is_visible().unwrap_or(false) {
-            // ★ 先重置前端展开状态，再隐藏窗口
+            // ★ 关闭前先收起：窗口可见时 webview 活跃，chat:reset 立即生效，
+            //   等处理完再隐藏，避免重开时以展开态渲染出现动画
             let _ = app.emit("chat:reset", ());
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             let _ = win.hide();
             // ★ 关闭时位置重置回收起态（不可见，无动画）
             let scale = win.scale_factor().unwrap_or(1.0);

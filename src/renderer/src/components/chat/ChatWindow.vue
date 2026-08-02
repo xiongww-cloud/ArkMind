@@ -137,6 +137,13 @@ async function collapseChat() {
 
 // ─── 窗口控制 ──────────────────────────────────────────────
 async function hideWindow() {
+  // 先收起（窗口可见，DOM 立即更新），再隐藏，避免重开时以展开态渲染
+  noAnimate.value = true
+  expanded.value = false
+  inputAtBottom.value = false
+  animating.value = false
+  await nextTick()
+  noAnimate.value = false
   try {
     await invoke('toggle_chat_window')  // 隐藏而非销毁，保留输入文本
   } catch (err) {
