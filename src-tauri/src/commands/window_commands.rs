@@ -29,6 +29,29 @@ fn set_auxiliary_window(app: &AppHandle, label: &str) {
 #[cfg(not(target_os = "macos"))]
 fn set_auxiliary_window(_app: &AppHandle, _label: &str) {}
 
+/// macOS：精灵窗口行为（Stationary + FullScreenAuxiliary，不含 Auxiliary 以确保能接收鼠标事件）
+/// 注意：必须在主线程调用 AppKit API
+#[cfg(target_os = "macos")]
+fn set_sprite_window_behavior(app: &AppHandle, label: &str) {
+    let app = app.clone();
+    let label = label.to_string();
+    let _ = app.clone().run_on_main_thread(move || {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+        if let Some(win) = app.get_webview_window(&label) {
+            if let Ok(ptr) = win.ns_window() {
+                if ptr.is_null() { return; }
+                let ns_window: &NSWindow = unsafe { &*ptr.cast() };
+                let behavior = NSWindowCollectionBehavior::Stationary
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary;
+                ns_window.setCollectionBehavior(behavior);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_sprite_window_behavior(_app: &AppHandle, _label: &str) {}
+
 #[tauri::command]
 pub fn window_minimize(w: WebviewWindow) {
     let _ = w.minimize();
@@ -71,18 +94,7 @@ pub async fn create_sprite_window(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     // 精灵窗口：Stationary（不出现在 Mission Control）但不含 Auxiliary，确保能接收鼠标事件
-    #[cfg(target_os = "macos")]
-    {
-        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-        if let Ok(ptr) = win.ns_window() {
-            if !ptr.is_null() {
-                let ns_window: &NSWindow = unsafe { &*ptr.cast() };
-                let behavior = NSWindowCollectionBehavior::Stationary
-                    | NSWindowCollectionBehavior::FullScreenAuxiliary;
-                ns_window.setCollectionBehavior(behavior);
-            }
-        }
-    }
+    set_sprite_window_behavior(&app, "sprite");
     let _ = win.show();
     Ok(())
 }
