@@ -261,6 +261,8 @@ pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Opti
         } else {
             // ★ 先重置前端展开状态，再显示窗口（避免展开→收起动画）
             let _ = app.emit("chat:reset", ());
+            // emit 是 fire-and-forget，需要等待前端处理完毕再显示窗口
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             position_chat_window_collapsed(&app, &win, width, height);
             setup_chat_window_events(&app);
             let _ = win.show();
