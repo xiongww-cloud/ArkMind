@@ -367,12 +367,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 // macOS：点击 Dock 图标重新打开主窗口
-                if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
-                    if !has_visible_windows {
-                        if let Some(win) = app_handle.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
+                if let tauri::RunEvent::Reopen { .. } = event {
+                    if let Some(win) = app_handle.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
                     }
                 }
             }
