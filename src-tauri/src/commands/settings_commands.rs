@@ -251,17 +251,23 @@ pub async fn set_sprite_enabled(enabled: bool, app: tauri::AppHandle) -> Result<
     }
 
     // 立即控制窗口显示/隐藏
-    if let Some(win) = app.get_webview_window("sprite") {
-        if enabled {
+    if enabled {
+        // 窗口不存在时先创建
+        if app.get_webview_window("sprite").is_none() {
+            let _ = crate::commands::window_commands::create_sprite_window(app.clone()).await;
+        }
+        if let Some(win) = app.get_webview_window("sprite") {
             if let Ok(pos) = get_sprite_position_sync() {
                 let x = pos["x"].as_f64().unwrap_or(800.0);
                 let y = pos["y"].as_f64().unwrap_or(400.0);
                 let _ = win.set_position(tauri::LogicalPosition::new(x, y));
             }
+            let _ = win.set_always_on_top(true);
             let _ = win.show();
-        } else {
-            let _ = win.hide();
+            let _ = win.set_focus();
         }
+    } else if let Some(win) = app.get_webview_window("sprite") {
+        let _ = win.hide();
     }
 
     Ok(json!({ "success": true }))

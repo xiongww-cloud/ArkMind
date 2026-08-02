@@ -172,7 +172,15 @@ pub fn run() {
                             let y = pos["y"].as_f64().unwrap_or(400.0);
                             let _ = win.set_position(tauri::LogicalPosition::new(x, y));
                         }
+                        let _ = win.set_always_on_top(true);
                         let _ = win.show();
+                        let _ = win.set_focus();
+                    } else {
+                        // 配置窗口未创建时手动创建（macOS 兼容）
+                        let app_handle = app.handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = commands::window_commands::create_sprite_window(app_handle).await;
+                        });
                     }
                 }
             }

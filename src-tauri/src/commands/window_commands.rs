@@ -27,16 +27,25 @@ pub fn window_close(w: WebviewWindow) {
 #[tauri::command]
 pub async fn create_sprite_window(app: AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("sprite") {
+        let _ = win.set_always_on_top(true);
         let _ = win.show();
         let _ = win.set_focus();
         return Ok(());
     }
 
-    // 窗口属性已在 tauri.conf.json 中配置（transparent, decorations, shadow 等）
-    // 这里只需要创建并显示
-    WebviewWindowBuilder::new(&app, "sprite", WebviewUrl::App("sprite.html".into()))
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Fallback：配置窗口未创建时手动创建（带上完整窗口属性）
+    let mut builder = WebviewWindowBuilder::new(&app, "sprite", WebviewUrl::App("sprite.html".into()))
+        .inner_size(48.0, 74.0)
+        .decorations(false)
+        .always_on_top(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .shadow(false);
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.transparent(true);
+    }
+    builder.build().map_err(|e| e.to_string())?;
 
     let _ = app.get_webview_window("sprite").map(|w| w.show());
     Ok(())
@@ -55,6 +64,7 @@ pub async fn toggle_sprite_window(app: AppHandle) -> Result<(), String> {
                 let y = pos["y"].as_f64().unwrap_or(400.0);
                 let _ = win.set_position(tauri::LogicalPosition::new(x, y));
             }
+            let _ = win.set_always_on_top(true);
             let _ = win.show();
             let _ = win.set_focus();
         }
