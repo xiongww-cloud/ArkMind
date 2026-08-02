@@ -12,6 +12,7 @@ const agent = useAgentChat()
 const expanded = ref(false)
 const inputAtBottom = ref(false)
 const animating = ref(false)
+const noAnimate = ref(false)
 const inputText = ref('')
 const chatListRef = ref<HTMLElement | null>(null)
 const historyLoaded = ref(false)
@@ -221,10 +222,13 @@ onMounted(async () => {
   currentSpeechText.value = speechTexts[Math.floor(Math.random() * speechTexts.length)]
 
   unlistenReset = await listen('chat:reset', async () => {
-    // 关闭时直接清空展开状态（无动画），下次打开即为收起态
+    // 关闭/重新显示时禁用过渡，避免展开→收起动画（macOS 隐藏窗口时 transition 不推进，重新显示会播放）
+    noAnimate.value = true
     expanded.value = false
     inputAtBottom.value = false
     animating.value = false
+    await nextTick()
+    noAnimate.value = false
   })
 })
 
@@ -237,7 +241,7 @@ onUnmounted(() => {
 <!-- 全窗口透明覆盖层，点击空白处关闭（保留输入文本） -->
 <div class="chat-overlay" @click.self="hideWindow">
   <!-- 聊天面板（消息区+输入栏合一，flex 布局） -->
-  <div class="chat-body" :class="{ expanded: expanded, 'input-at-bottom': inputAtBottom }">
+  <div class="chat-body" :class="{ expanded: expanded, 'input-at-bottom': inputAtBottom, 'no-animate': noAnimate }">
     <!-- 消息区（展开时高度动画） -->
     <div class="chat-messages">
       <div ref="chatListRef" class="messages-scroll" @scroll="onChatScroll">
@@ -324,6 +328,11 @@ onUnmounted(() => {
 .chat-body.expanded .chat-messages {
   height: 500px;
   opacity: 1;
+}
+
+/* 重置/重开时禁用过渡（避免收起动画） */
+.chat-body.no-animate .chat-messages {
+  transition: none !important;
 }
 
 .messages-scroll {

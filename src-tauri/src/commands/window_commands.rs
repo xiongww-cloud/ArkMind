@@ -44,6 +44,8 @@ fn set_sprite_window_behavior(app: &AppHandle, label: &str) {
                 let behavior = NSWindowCollectionBehavior::Stationary
                     | NSWindowCollectionBehavior::FullScreenAuxiliary;
                 ns_window.setCollectionBehavior(behavior);
+                // 非激活/未聚焦时也接收鼠标移动事件，使 CSS :hover 无需先点击即可生效
+                ns_window.setAcceptsMouseMovedEvents(true);
             }
         }
     });
@@ -90,6 +92,8 @@ pub async fn create_sprite_window(app: AppHandle) -> Result<(), String> {
         .resizable(false)
         .skip_taskbar(true)
         .shadow(false)
+        // macOS：非激活窗口第一次点击直接传给 webview（避免先聚焦再点击）
+        .accept_first_mouse(true)
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -259,10 +263,8 @@ pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Opti
             let collapsed_y = collapsed_chat_y(&app);
             let _ = win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
         } else {
-            // ★ 先重置前端展开状态，再显示窗口（避免展开→收起动画）
+            // ★ 先重置前端展开状态，再显示窗口（前端 no-animate 禁用过渡，避免收起动画）
             let _ = app.emit("chat:reset", ());
-            // emit 是 fire-and-forget，需要等待前端处理完毕再显示窗口
-            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             position_chat_window_collapsed(&app, &win, width, height);
             setup_chat_window_events(&app);
             let _ = win.show();
