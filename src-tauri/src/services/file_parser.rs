@@ -13,7 +13,8 @@ use base64::Engine;
 use regex::Regex;
 use serde_json::{json, Value};
 
-pub struct ParseResult { pub text: String, pub success: bool }
+#[derive(Default)]
+pub struct ParseResult { pub text: String, pub success: bool, pub error: String }
 
 // ═══════════════════════════════════════════════════════════════
 // OCR via Vision API
@@ -59,7 +60,10 @@ B型号 缓存=256GB
 过长的属性值按类别拆行，如协议拆为「（核心）」和「（可选）」两行。
 
 ### 7. 特殊标记语义化
-原文的 * 等标记转为明确中文说明：FTP* → FTP（可选）。
+原文的 * 等脚注标记必须转为明确的中文括号说明，禁止在输出中保留 * 号。
+规则：查看原文底部是否有对应的脚注注释，将注释内容直接合并到行内。
+- 若有脚注文字：FTP* → FTP（具体含义取自原文脚注）
+- 若无脚注文字：标记含义不变，用括号包裹，如 RAID 10* → RAID 10（需确认）
 
 ### 8. 语言
 输出语言与原文一致，不要翻译。
@@ -560,44 +564,110 @@ fn try_macos_sips(path: &str) -> Option<Vec<String>> {
     if results.is_empty() { None } else { Some(results) }
 }
 
-/// 同步调用 OCR API 的阻塞封装（供同步 parse_file_smart 调用）
-pub fn ocr_image_sync(base64_uri: &str) -> String {
-    // 检查是否已在 tokio runtime 中，避免 "Cannot start a runtime from within a runtime" panic
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        // 已在 runtime 中，直接 block_on
-        match handle.block_on(ocr_with_vision_api(base64_uri)) {
-            Ok(text) => text,
+/// OCR 结果：区分文本 / 空白页 / 失败
+pub enum OcrOutcome {
+    Ok(String),
+    Blank,
+    Failed(String),
+}
+
+/// 将视觉模型返回的错误分类，返回 (是否可重试, 是否空白页)
+fn classify_ocr_error(err: &str) -> (bool, bool) {
+    // 空白页类错误：不重试、不判定失败
+    if err.contains("返回空内容")
+        || err.contains("仅返回版面坐标")
+        || err.contains("清洗后为空") {
+        return (false, true);
+    }
+    // 永久配置类错误：不重试、判定失败
+    if err.contains("未配置视觉模型")
+        || err.contains("HTTP 客户端创建失败") {
+        return (false, false);
+    }
+    // API 错误：按 HTTP 状态码判断（4xx 永久失败；5xx / 429 可重试）
+    if let Some(st) = err.find("API 错误 (HTTP ") {
+        let rest = &err[st + "API 错误 (HTTP ".len()..];
+        if let Some(code) = rest.split(')').next().and_then(|s| s.trim().parse::<u16>().ok()) {
+            if code == 429 || code >= 500 {
+                return (true, false);
+            }
+            return (false, false);
+        }
+    }
+    // 其余（请求失败 / 读取响应失败 / 响应不是JSON）→ 可重试
+    (true, false)
+}
+
+/// 同步调用视觉模型 API，最多重试 3 次（仅重试可恢复错误；空白页直接返回 Blank）
+pub fn ocr_image_sync_result(base64_uri: &str) -> OcrOutcome {
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_err = String::from("未知错误");
+    for attempt in 0..MAX_ATTEMPTS {
+        // 检查是否已在 tokio runtime 中，避免 "Cannot start a runtime from within a runtime" panic
+        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.block_on(ocr_with_vision_api(base64_uri))
+        } else {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    log::info!("[文件解析] tokio 运行时创建失败: {}", e);
+                    return OcrOutcome::Failed(format!("tokio 运行时创建失败: {}", e));
+                }
+            };
+            rt.block_on(ocr_with_vision_api(base64_uri))
+        };
+
+        match result {
+            Ok(text) => return OcrOutcome::Ok(text),
             Err(e) => {
-                log::info!("[文件解析] OCR 失败: {}", e);
-                String::new()
+                let (retryable, blank) = classify_ocr_error(&e);
+                if blank {
+                    log::info!("[文件解析] OCR 空白页: {}", e);
+                    return OcrOutcome::Blank;
+                }
+                last_err = e.clone();
+                if !retryable {
+                    log::info!("[文件解析] OCR 失败(不可重试): {}", e);
+                    return OcrOutcome::Failed(e);
+                }
+                log::info!("[文件解析] OCR 失败 第 {}/{} 次: {}", attempt + 1, MAX_ATTEMPTS, e);
+                if attempt + 1 < MAX_ATTEMPTS {
+                    // 退避：2s / 4s
+                    std::thread::sleep(std::time::Duration::from_secs(2 * (attempt as u64 + 1)));
+                }
             }
         }
-    } else {
-        // 不在 runtime 中，创建新 runtime
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(r) => r,
-            Err(e) => { log::info!("[文件解析] tokio 运行时创建失败: {}", e); return String::new(); }
-        };
-        match rt.block_on(ocr_with_vision_api(base64_uri)) {
-            Ok(text) => text,
-            Err(e) => {
-                log::info!("[文件解析] OCR 失败: {}", e);
-                String::new()
-            }
+    }
+    OcrOutcome::Failed(last_err)
+}
+
+/// 同步调用 OCR API 的阻塞封装（兼容旧调用，失败返回空字符串）
+#[allow(dead_code)]
+pub fn ocr_image_sync(base64_uri: &str) -> String {
+    match ocr_image_sync_result(base64_uri) {
+        OcrOutcome::Ok(text) => text,
+        OcrOutcome::Blank => String::new(),
+        OcrOutcome::Failed(e) => {
+            log::info!("[文件解析] OCR 失败: {}", e);
+            String::new()
         }
     }
 }
 
-/// 对图片文件执行 OCR：读取 → base64 → 视觉 API
-fn try_ocr_image(path: &str, mime: &str) -> String {
+/// 对图片文件执行 OCR（带重试），返回 Result 以便区分失败原因
+fn try_ocr_image_result(path: &str, mime: &str) -> Result<String, String> {
     match file_to_data_uri(path, mime) {
-        Some(uri) => ocr_image_sync(&uri),
+        Some(uri) => match ocr_image_sync_result(&uri) {
+            OcrOutcome::Ok(text) => Ok(text),
+            OcrOutcome::Blank => Err("图片为空内容或空白页".to_string()),
+            OcrOutcome::Failed(e) => Err(e),
+        },
         None => {
             log::info!("[文件解析] 图片读取失败: {}", path);
-            String::new()
+            Err(format!("图片读取失败: {}", path))
         }
     }
 }
@@ -670,10 +740,15 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
                 break;
             }
             let cropped = crop_image_uri(uri, 0.04, 0.04).unwrap_or_else(|| uri.clone());
-            let ocr_text = ocr_image_sync(&cropped);
-            if has_real_text(&ocr_text) {
-                if !full_text.is_empty() { full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); }
-                full_text.push_str(&ocr_text);
+            match ocr_image_sync_result(&cropped) {
+                OcrOutcome::Ok(text) => {
+                    if has_real_text(&text) {
+                        if !full_text.is_empty() { full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); }
+                        full_text.push_str(&text);
+                    }
+                }
+                OcrOutcome::Blank => {} // 空白页跳过
+                OcrOutcome::Failed(e) => log::info!("[文件解析] 第 {} 页 OCR 失败: {}", i + 1, e),
             }
         }
         return full_text;
@@ -695,7 +770,7 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
 }
 pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     if !std::path::Path::new(path).exists() {
-        return ParseResult { text: String::new(), success: false };
+        return ParseResult { text: String::new(), success: false, ..Default::default() };
     }
 
     // ── 读前 4KB 做嗅探 ──
@@ -710,37 +785,39 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
                 // PDF: OCR（pdfium + 视觉模型）优先 → pdfium 纯文本 → pdf-extract
                 let ocr_result = try_ocr_pdf(path);
                 if !ocr_result.is_empty() {
-                    return ParseResult { success: true, text: ocr_result };
+                    return ParseResult { success: true, text: ocr_result, ..Default::default() };
                 }
                 // 视觉模型未配置 → pdfium 纯文本
                 let pdfium_text = try_pdfium_extract(path);
                 if !pdfium_text.is_empty() {
-                    return ParseResult { success: true, text: pdfium_text };
+                    return ParseResult { success: true, text: pdfium_text, ..Default::default() };
                 }
                 log::info!("[文件解析] PDF 解析失败，回退到 pdf-extract");
                 let text = read_pdf(path);
-                return ParseResult { success: !text.is_empty(), text };
+                return ParseResult { success: !text.is_empty(), text, ..Default::default() };
             }
             "image/png" | "image/jpeg" | "image/webp" | "image/bmp" => {
-                let text = try_ocr_image(path, kind.mime_type());
-                return ParseResult { success: !text.is_empty(), text };
+                return match try_ocr_image_result(path, kind.mime_type()) {
+                    Ok(text) => ParseResult { success: true, text, ..Default::default() },
+                    Err(e) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: {}", crate::services::file_ingestion::NON_RETRYABLE_PREFIX, e) },
+                };
             }
             "application/zip" | "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                 // ZIP 基类：可能是 docx / xlsx / 纯 zip
                 // 优先尝试 DOCX（内部 XML），失败回退 XLSX
                 if let Ok(t) = read_docx(path) {
-                    return ParseResult { success: !t.is_empty(), text: t };
+                    return ParseResult { success: !t.is_empty(), text: t, ..Default::default() };
                 }
                 if let Ok(t) = read_xlsx(path) {
-                    return ParseResult { success: !t.is_empty(), text: t };
+                    return ParseResult { success: !t.is_empty(), text: t, ..Default::default() };
                 }
                 if let Ok(t) = read_pptx(path) {
-                    return ParseResult { success: !t.is_empty(), text: t };
+                    return ParseResult { success: !t.is_empty(), text: t, ..Default::default() };
                 }
             }
             "text/plain" | "text/csv" | "application/json" => {
                 let text = std::fs::read_to_string(path).unwrap_or_default();
-                return ParseResult { success: !text.is_empty(), text };
+                return ParseResult { success: !text.is_empty(), text, ..Default::default() };
             }
             _ => {} // 未知二进制 — 转入后缀路由
         }
@@ -764,12 +841,16 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
                 "webp" => "image/webp", "bmp" => "image/bmp",
                 _ => "image/png",
             };
-            try_ocr_image(path, mime)
+            return match try_ocr_image_result(path, mime) {
+                Ok(t) if !t.is_empty() => ParseResult { success: true, text: t, ..Default::default() },
+                Ok(_) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: OCR 未返回内容", crate::services::file_ingestion::NON_RETRYABLE_PREFIX) },
+                Err(e) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: {}", crate::services::file_ingestion::NON_RETRYABLE_PREFIX, e) },
+            };
         }
         _ => String::new(),
     };
     if !text.is_empty() {
-        return ParseResult { success: true, text };
+        return ParseResult { success: true, text, ..Default::default() };
     }
 
     // ── 轮询兜底：依次硬啃 PDF → DOCX → XLSX → TXT ──
@@ -777,11 +858,11 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     for try_parse in fallbacks {
         let t = try_parse(path);
         if !t.is_empty() && t.len() > 20 {
-            return ParseResult { success: true, text: t };
+            return ParseResult { success: true, text: t, ..Default::default() };
         }
     }
 
-    ParseResult { text: String::new(), success: false }
+    ParseResult { text: String::new(), success: false, ..Default::default() }
 }
 
 /// 兼容旧调用
