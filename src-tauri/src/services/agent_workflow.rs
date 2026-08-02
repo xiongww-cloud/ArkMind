@@ -2921,8 +2921,8 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
                 (text_len + tc_len) / 3
             }).sum();
             let budget_info = format!(
-                "当前会话工作记忆\n{}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
-                scratchpad, iters, search_cost, budget, status, context_tokens
+                "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
+                scratchpad, chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
             );
             // 移除上一轮的动态上下文消息
             if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
@@ -4860,9 +4860,9 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             .sum::<i64>());
                         (text_len + tc_len) / 3
                     }).sum();
-                    let budget_info = format!(
-                        "当前会话工作记忆\n{}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
-                        scratchpad, iters, search_cost, budget, status, context_tokens
+                     let budget_info = format!(
+                        "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
+                        scratchpad, chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
                     );
                     // 移除上一轮的动态上下文消息
                     if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
