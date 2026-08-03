@@ -23,25 +23,6 @@ const selectionStore = useSelectionStore()
 const { navigateTo } = useNavigation()
 
 // ═══════════════════════════════════════════════════════════════════
-// Platform detection
-// ═══════════════════════════════════════════════════════════════════
-const isMac = typeof navigator !== 'undefined' && (
-  navigator.platform.toUpperCase().indexOf('MAC') >= 0 ||
-  navigator.userAgent.toUpperCase().indexOf('MAC') >= 0
-)
-
-// ═══════════════════════════════════════════════════════════════════
-// Window controls
-// ═══════════════════════════════════════════════════════════════════
-async function minimizeWindow() { await invoke('plugin:window|minimize') }
-async function toggleMaximize() {
-  const isMax = await invoke<boolean>('plugin:window|is_maximized')
-  if (isMax) { await invoke('plugin:window|unmaximize') }
-  else { await invoke('plugin:window|maximize') }
-}
-async function closeWindow() { await invoke('plugin:window|close') }
-
-// ═══════════════════════════════════════════════════════════════════
 // Page title
 // ═══════════════════════════════════════════════════════════════════
 const pageTitle = computed(() => {
@@ -548,19 +529,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Window controls (macOS 使用原生红绿灯，隐藏自定义按钮) -->
-    <div v-if="!isMac" class="titlebar-controls">
-      <button class="titlebar-btn titlebar-btn--win" @click="minimizeWindow" title="最小化">
-        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 12h16"/></svg>
-      </button>
-      <button class="titlebar-btn titlebar-btn--win" @click="toggleMaximize" title="最大化/还原">
-        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/></svg>
-      </button>
-      <button class="titlebar-btn titlebar-btn--win titlebar-btn--close" @click="closeWindow" title="关闭">
-        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M6 18L18 6"/></svg>
-      </button>
-    </div>
-
     <!-- Quick note bubble — memo style -->
     <div v-if="quickNoteOpen" class="fixed inset-0 z-50" @click.self="closeWithSave">
       <div class="absolute w-[340px]" :style="{ top: quickNotePos.top + 'px', right: quickNotePos.right + 'px' }">
@@ -684,28 +652,6 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.titlebar-controls {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: -10px;
-}
-
-.titlebar-btn--win {
-  width: 32px;
-  height: 32px;
-  color: #94a3b8;
-}
-.titlebar-btn--win:hover {
-  background: #f1f5f9;
-  color: #475569;
-}
-
-.titlebar-btn--close:hover {
-  background: #fef2f2;
-  color: #ef4444;
 }
 
 /* ─── Quick note bubble ─── */
