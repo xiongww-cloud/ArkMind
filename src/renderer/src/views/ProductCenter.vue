@@ -23,9 +23,9 @@ const { sidebarWidth, listWidth, isResizing, onResizeStart } = useResizablePanel
 const seriesSearch = ref(''); const selectedSeriesId = ref<string|null>(null)
 const editingSeriesId = ref<string|null>(null); const seriesEditName = ref('')
 const collapsedSeries = ref<Set<string>>(new Set())
-const modalCollapsed = ref<Set<string>>(new Set())
+const modalCollapsed = ref<Record<string, boolean>>({})
 function toggleSeries(id: string) { if (collapsedSeries.value.has(id)) collapsedSeries.value.delete(id); else collapsedSeries.value.add(id); collapsedSeries.value = new Set(collapsedSeries.value) }
-function toggleModalSeries(id: string) { if (modalCollapsed.value.has(id)) modalCollapsed.value.delete(id); else modalCollapsed.value.add(id); modalCollapsed.value = new Set(modalCollapsed.value) }
+function toggleModalSeries(id: string) { const m = { ...modalCollapsed.value }; m[id] = !m[id]; modalCollapsed.value = m }
 function selectSeries(id: string|null) { selectedSeriesId.value = id; selectedProductId.value = null; store.selectSeries(id) }
 async function startAddSeries(parentId?: string|null) {
   let name = '新目录'
@@ -53,7 +53,7 @@ function buildTree(allSeries: any[], collapsed: Set<string>, q: string): any[] {
   const matchSet = new Set<string>()
   if (q) { function markUp(id: string|null) { while (id) { matchSet.add(id); const p = allSeries.find((x: any) => x.id === id); id = p?.parentId || null } }; for (const s of allSeries.filter((x: any) => x.name.toLowerCase().includes(q))) markUp(s.id) }
   function hasChildren(pid: string) { return ch.some((c: any) => c.parentId === pid && (!q || matchSet.has(c.id))) }
-  function buildChildren(parentId: string, depth: number): any[] { if (collapsed.has(parentId)) return []; const direct = ch.filter((c: any) => c.parentId === parentId && (!q || matchSet.has(c.id))); if (direct.length === 0) return []; return [...direct].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || (a.name || '').localeCompare(b.name || '')).flatMap((c: any) => { const subs = buildChildren(c.id, depth + 1); return [{ ...c, _depth: depth, _hasChildren: subs.length > 0 || hasChildren(c.id) }, ...subs] }) }
+  function buildChildren(parentId: string, depth: number): any[] { if (collapsed[parentId]) return []; const direct = ch.filter((c: any) => c.parentId === parentId && (!q || matchSet.has(c.id))); if (direct.length === 0) return []; return [...direct].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || (a.name || '').localeCompare(b.name || '')).flatMap((c: any) => { const subs = buildChildren(c.id, depth + 1); return [{ ...c, _depth: depth, _hasChildren: subs.length > 0 || hasChildren(c.id) }, ...subs] }) }
   const visibleRoots = roots.filter((r: any) => !q || matchSet.has(r.id))
   const uncat = visibleRoots.find((r: any) => r.name === UNCATEGORIZED_NAME && !r.parentId)
   const otherRoots = visibleRoots.filter((r: any) => r !== uncat).sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name))
@@ -241,7 +241,7 @@ async function openMaterialUpload() {
   assocMaterialId.value = null // clear associate mode
   materialFile.value = null; materialType.value = '彩页'; materialNote.value = ''
   materialAssoc.value = { productIds: [selectedProductId.value!], seriesIds: [] }
-  modalCollapsed.value = new Set((store.series as any[]).map((s: any) => s.id))
+  modalCollapsed.value = Object.fromEntries((store.series as any[]).map((s: any) => [s.id, true]))
   materialUploadOpen.value = true
 }
 async function handleFilePick() {
@@ -328,7 +328,7 @@ async function openAssocMaterial(m: any) {
   } catch (e) { console.error('getMaterialAssociations failed:', e); ids = [] }
   assocProductIds.value = ids
   materialAssoc.value = { productIds: [...ids], seriesIds: [] }
-  modalCollapsed.value = new Set((store.series as any[]).map((s: any) => s.id))
+  modalCollapsed.value = Object.fromEntries((store.series as any[]).map((s: any) => [s.id, true]))
   materialUploadOpen.value = true
 }
 async function saveAssociations() {
@@ -565,14 +565,14 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
               <template v-for="s in modalTree" :key="'mdl-'+s.id">
                 <div class="flex items-center gap-1.5 w-full px-2 py-1 text-xs cursor-pointer rounded hover:bg-surface-50" @click="toggleModalSeries(s.id)" :style="{ paddingLeft: `${8 + (s._depth||0) * 16}px` }">
                   <span class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0" @click.stop="toggleModalSeries(s.id)">
-                    <svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!modalCollapsed.has(s.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+                    <svg class="w-2.5 h-2.5 transition-transform duration-150" :class="modalCollapsed[s.id] ? '' : 'rotate-90'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
                   </span>
                   <div class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="materialAssoc.seriesIds.includes(s.id)?'bg-brand-500 border-brand-500 text-white':'border-surface-300'" @click.stop="toggleAssocSeries(s.id)">
                     <svg v-if="materialAssoc.seriesIds.includes(s.id)" class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
                   </div>
                   <AppIcon name="folder" size="13" class="text-surface-400"/><span class="truncate flex-1">{{ s.name }}</span><span class="text-[10px] text-surface-400">全部</span>
                 </div>
-                <template v-if="!modalCollapsed.has(s.id)">
+                <template v-if="!modalCollapsed[s.id]">
                   <div v-for="p in (store.products as any[]).filter((x: any) => (s.name === UNCATEGORIZED_NAME ? !x.seriesId : x.seriesId === s.id) && (!materialSearch || x.name.toLowerCase().includes(materialSearch.toLowerCase())))" :key="'mp-'+p.id" class="flex items-center gap-1.5 w-full py-1 text-[11px] cursor-pointer rounded hover:bg-surface-50" :style="{ paddingLeft: `${36 + (s._depth||0) * 16}px` }" :class="p.id === selectedProductId ? 'text-surface-400 cursor-default' : ''" @click="p.id !== selectedProductId && toggleAssocProduct(p.id)">
                     <div class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="materialAssoc.productIds.includes(p.id) || p.id === selectedProductId ?'bg-brand-500 border-brand-500 text-white':'border-surface-300'">
                       <svg v-if="materialAssoc.productIds.includes(p.id) || p.id === selectedProductId" class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
