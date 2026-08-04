@@ -95,7 +95,12 @@ onDeactivated(() => {
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>
         <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-          <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识增长趋势</h3>
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-[12px] font-semibold text-surface-600">知识增长趋势</h3>
+            <div class="flex items-center gap-0.5">
+              <button v-for="opt in [{d:7,l:'7天'},{d:30,l:'30天'},{d:90,l:'90天'},{d:180,l:'半年'},{d:365,l:'一年'}]" :key="opt.d" @click="setGrowthDays(opt.d)" class="px-2 py-0.5 rounded text-[10px] transition-colors" :class="growthDays===opt.d ? 'bg-blue-50 text-blue-600 font-medium' : 'text-surface-500 hover:bg-surface-50'">{{ opt.l }}</button>
+            </div>
+          </div>
           <VueApexCharts v-if="growthChart" :key="'growth-' + chartVersion" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '累计碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false, mouseWheel: { enabled: false } } } }" />
           <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
         </div>

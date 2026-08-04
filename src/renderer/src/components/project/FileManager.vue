@@ -32,9 +32,24 @@ const isFetching = ref(false)
 const allFolders = ref<any[]>([])
 const selectedFolderId = ref<string|null>(null)
 
-const showUploadForm = ref(false)
-const newFile = ref({ note: '', file: null, customName: '' })
-const uploadDragActive = ref(false)
+// ─── File name editing ───────────────────────────────────────────────────────
+const editingNameFileId = ref<string|null>(null)
+const editingNameValue = ref('')
+function startEditName(file: any) {
+  editingNameFileId.value = file.id
+  editingNameValue.value = file.displayName || file.custom_name || file.name || ''
+  nextTick(() => { const el = document.querySelector<HTMLInputElement>('[data-name-input]'); el?.focus(); el?.select() })
+}
+async function saveFileName(fileId: string) {
+  const v = editingNameValue.value.trim()
+  editingNameFileId.value = null
+  if (!v) return
+  const f = fileList.value.find((x: any) => x.id === fileId)
+  if (f && v !== (f.displayName || f.custom_name || f.name)) {
+    try { await updateFileMeta(fileId, { customName: v }); f.custom_name = v; f.name = v; toast({ message: '文件名已更新', type: 'success' }) } catch { toast({ message: '重命名失败', type: 'error' }) }
+  }
+}
+function cancelEditName() { editingNameFileId.value = null }
 
 // ─── Folder operations ──────────────────────────────────────────────────────
 async function loadFolders() {
@@ -258,69 +273,29 @@ onUnmounted(() => {
   if (dragFileTimer.value) clearTimeout(dragFileTimer.value)
 })
 
-// ─── Upload new file ──────────────────────────────────────────────────────────
+// ─── Upload new file (batch) ─────────────────────────────────────────────────
 async function triggerNewFile() {
-  newFile.value = { note: '', file: null, customName: '' }
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    const result = await open({ multiple: false, canCreateDirectories: false })
+    const result = await open({ multiple: true, canCreateDirectories: false })
     if (!result) return
-    const path = typeof result === 'string' ? result : (result as any).path || result
-    const name = path.replace(/^.*[\\\/]/, '')
-    newFile.value.file = { path, name }
-  } catch (e) { console.warn('文件选择失败', e); toast({ message: '文件选择仅支持桌面环境，请使用拖拽上传', type: 'error' }) }
-}
-function onUploadDragOver(e) { e.preventDefault(); uploadDragActive.value = true }
-function onUploadDragLeave() { uploadDragActive.value = false }
-function onUploadDrop(e) {
-  e.preventDefault()
-  uploadDragActive.value = false
-  const file = e.dataTransfer?.files?.[0]
-  if (file) {
-    const path = (file as any).path
-    if (path) {
-      newFile.value.file = { path, name: file.name }
-    } else {
-      toast({ message: '拖拽上传需要桌面环境支持，请点击选择文件', type: 'error' })
+    const paths: string[] = Array.isArray(result) ? result : [result as string]
+    if (paths.length === 0) return
+    const backendId = await projectStore.syncProjectToBackend(props.projectId)
+    const folderId = selectedFolderId.value && selectedFolderId.value !== '__uncategorized__' ? selectedFolderId.value : null
+    for (const filePath of paths) {
+      const name = filePath.replace(/^.*[\\\/]/, '')
+      const ext = name.includes('.') ? name.split('.').pop() || '' : ''
+      const task = upStart(name)
+      try {
+        await api.uploadFile({ filePath, fileExt: ext, entityType: 'project', entityId: backendId, customName: name, creator: authStore.currentUser.name, folderId })
+        upDone(task)
+      } catch (e: any) { upFail(task, e.message || '上传失败') }
     }
-  }
-}
-
-function uploadFile() {
-  if (!newFile.value.file) { toast({ message: '请选择一个文件', type: 'error' }); return }
-  const file = newFile.value.file
-  const ext = file.name?.includes('.') ? file.name.split('.').pop() || '' : ''
-  let rawName = newFile.value.customName || file.name || '未命名文件'
-  if (ext && !rawName.endsWith('.' + ext)) rawName += '.' + ext
-  const filePath = (file as any).path || file.name
-  const note = newFile.value.note || ''
-
-  if (!(file as any).path) {
-    toast({ message: '无法获取文件路径', type: 'error' }); return
-  }
-
-  // 关闭弹窗，异步上传（右下角进度条）
-  showUploadForm.value = false
-  newFile.value = { note: '', file: null, customName: '' }
-  const task = upStart(rawName)
-
-  projectStore.syncProjectToBackend(props.projectId).then(backendId =>
-    api.uploadFile({
-      filePath, fileExt: ext, entityType: 'project', entityId: backendId,
-      customName: rawName, note, creator: authStore.currentUser.name,
-      folderId: selectedFolderId.value && selectedFolderId.value !== '__uncategorized__' ? selectedFolderId.value : null,
-    })
-  ).then(() => {
-    return loadFiles()
-  }).then(() => {
-    return projectStore.addProjectDynamic(props.projectId, `上传了文件「${rawName}」`)
-  }).then(() => {
-    return projectStore.fetchProjectDynamics(props.projectId)
-  }).then(() => {
-    upDone(task)
-  }).catch(e => {
-    upFail(task, e.message || '上传失败')
-  })
+    await loadFiles()
+    await projectStore.addProjectDynamic(props.projectId, `上传了 ${paths.length} 个文件`)
+    await projectStore.fetchProjectDynamics(props.projectId)
+  } catch (e) { console.warn('文件选择失败', e); toast({ message: '文件选择仅支持桌面环境', type: 'error' }) }
 }
 
 // ─── Delete file — API-backed cascade delete + physical file removal ──────────
@@ -416,7 +391,7 @@ function getFileColor(fileName) {
       <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">目录</span>
       <button v-if="!isArchived" @click="$refs.folderTree?.startAddFolder()" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="新建目录"><AppIcon name="plus" size="12" stroke="2.5"/></button>
     </div>
-    <FolderTree ref="folderTree" :folders="allFolders" :selected-id="selectedFolderId" :project-id="projectId"
+    <FolderTree ref="folderTree" :folders="allFolders" :selected-id="selectedFolderId" :project-id="projectId" :external-drag-target-id="isDraggingFile ? dragTargetId : null"
       @select="(id) => selectedFolderId = id"
       @create="onFolderCreate"
       @rename="onFolderRename"
@@ -437,7 +412,7 @@ function getFileColor(fileName) {
           <AppIcon name="search" size="12" class="text-surface-400"/>
           <input v-model="searchQuery" type="text" class="w-[120px] bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索文件名..."/>
         </div>
-        <button v-if="!isArchived" @click="showUploadForm = true" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors"><AppIcon name="plus" size="10" stroke="2.5"/>上传文件</button>
+        <button v-if="!isArchived" @click="triggerNewFile" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors"><AppIcon name="plus" size="10" stroke="2.5"/>上传文件</button>
       </div>
     </div>
 
@@ -448,9 +423,10 @@ function getFileColor(fileName) {
         <div class="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[9px] font-bold tracking-wider" :class="getFileColor(file.name)">{{ (file.name || '').split('.').pop()?.toUpperCase() || 'FILE' }}</div>
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 min-w-0">
-            <p class="text-[12px] font-medium text-surface-800 truncate cursor-pointer hover:text-blue-600 transition-colors" :title="file.displayName || file.custom_name || file.name" @click="previewFile(file.id)">{{ file.displayName || file.custom_name || file.name }}</p>
-            <span class="text-[10px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatFileSize(file.file_size) }}</span>
-            <span class="text-[10px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatDateTime(file.updated_at || file.created_at) }}</span>
+            <input v-if="editingNameFileId === file.id" v-model="editingNameValue" data-name-input class="text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 w-full min-w-0" @keyup.enter="saveFileName(file.id)" @blur="saveFileName(file.id)" @keyup.escape="cancelEditName()"/>
+            <p v-else class="text-[12px] font-medium text-surface-800 truncate cursor-pointer hover:text-blue-600 transition-colors" :title="file.displayName || file.custom_name || file.name" @click="previewFile(file.id)">{{ file.displayName || file.custom_name || file.name }}</p>
+            <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatFileSize(file.file_size) }}</span>
+            <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatDateTime(file.updated_at || file.created_at) }}</span>
           </div>
           <!-- 标签行 -->
 
@@ -464,46 +440,13 @@ function getFileColor(fileName) {
           </div>
         </div>
         <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button v-if="!isArchived" @click.stop="startEditName(file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑文件名"><AppIcon name="edit" size="13"/></button>
           <button @click.stop="downloadFileFromId(file.id, file.displayName || file.name, (file.name || '').split('.').pop())" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="下载"><AppIcon name="download" size="12"/></button>
           <button v-if="!isArchived" @click.stop="deleteFile(file.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="trash" size="12"/></button>
         </div>
       </div>
     </div>
   </div>
-
-  <!-- Upload Modal -->
-  <Teleport to="body">
-    <Transition name="confirm-fade">
-      <div v-if="showUploadForm" class="fixed inset-0 z-[80] flex items-center justify-center">
-        <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" />
-        <div class="relative bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6 z-10">
-          <h3 class="text-lg font-semibold text-surface-800 mb-4">上传文件</h3>
-          <div class="space-y-4">
-            <div>
-              <label class="block text-xs font-medium text-surface-500 mb-1.5">选择文件 *</label>
-              <div @click="triggerNewFile" @dragover.prevent="onUploadDragOver" @dragenter.prevent="onUploadDragOver" @dragleave="onUploadDragLeave" @drop.prevent="onUploadDrop" class="border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors" :class="uploadDragActive ? 'border-blue-400 bg-blue-50/40' : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/30'">
-                <AppIcon name="upload" class="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                <p v-if="!newFile.file" class="text-xs text-slate-400">拖拽文件到此处或点击选择</p>
-                <p v-else class="text-xs text-blue-600 font-medium truncate">{{ newFile.file.name }}</p>
-              </div>
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-surface-500 mb-1.5">自定义文件名</label>
-              <input v-model="newFile.customName" type="text" class="input-field" placeholder="留空使用原始文件名" />
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-surface-500 mb-1.5">备注</label>
-              <input v-model="newFile.note" type="text" class="input-field" placeholder="文件说明" />
-            </div>
-          </div>
-          <div class="flex justify-end gap-3 mt-5 pt-4 border-t border-slate-100">
-            <button @click="showUploadForm = false" class="btn-secondary">取消</button>
-            <button @click="uploadFile" class="btn-primary"><AppIcon name="upload" class="w-3 h-3" /><span>上传</span></button>
-          </div>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
 
   <!-- Drag ghost -->
   <Teleport to="body">

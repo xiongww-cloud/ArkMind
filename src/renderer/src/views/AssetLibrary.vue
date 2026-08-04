@@ -14,7 +14,7 @@ import {
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 
 interface Folder { id: string; name: string; node_type: string; allow_children: boolean; file_count: number; parent_id?: string|null; _depth?: number; _hasChildren?: boolean }
-interface AssetFile { id: string; file_ext?: string; file_size: number; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_folder?: string|null }
+interface AssetFile { id: string; file_ext?: string; file_size: number; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_remark?: string; lib_folder?: string|null }
 
 const UNCATEGORIZED = '未分类' as const
 
@@ -90,6 +90,26 @@ async function confirmFileRename(f: AssetFile) {
 }
 function cancelFileRename() { editingFileId.value = null }
 
+// ─── File remark editing ────────────────────────────────────────────
+const editingRemarkFileId = ref<string|null>(null)
+const editingRemarkValue = ref('')
+function startEditRemark(f: AssetFile) {
+  editingRemarkFileId.value = f.id
+  editingRemarkValue.value = f.lib_remark || ''
+  import('vue').then(({ nextTick }) => nextTick(() => {
+    const el = document.querySelector<HTMLInputElement>('[data-lib-remark-input]')
+    el?.focus(); el?.select()
+  }))
+}
+async function saveRemark(f: AssetFile) {
+  const v = editingRemarkValue.value.trim()
+  editingRemarkFileId.value = null
+  if (v !== (f.lib_remark || '')) {
+    try { await updateFileMeta(f.id, { remark: v }); f.lib_remark = v } catch { toast({ message: '保存备注失败', type: 'error' }) }
+  }
+}
+function cancelEditRemark() { editingRemarkFileId.value = null }
+
 // ─── File type category mapping ─────────────────────────────────────
 const filterCategoryMap: Record<string, string[]> = {
   word:    ['doc','docx'],
@@ -145,7 +165,6 @@ const fileTypeColors: Record<string,string> = {
   zip: 'text-slate-600 bg-slate-50', rar: 'text-slate-600 bg-slate-50', '7z': 'text-slate-600 bg-slate-50',
   txt: 'text-gray-600 bg-gray-50', md: 'text-gray-600 bg-gray-50',
 }
-function fileTypeLabel(ext?: string): string { return ext?.toUpperCase() || '--' }
 function fileTypeColor(ext?: string): string { const key = ext?.toLowerCase() || ''; return fileTypeColors[key] || 'text-slate-500 bg-slate-50' }
 
 // ─── Upload ───────────────────────────────────────────────────────────
@@ -190,7 +209,7 @@ async function confirmAddFolder() {
   if (isDuplicateFolderName(n, undefined, addingParentId.value || null)) { toast({ message: '同级目录下已存在同名文件夹', type: 'error' }); addingSubmitting.value = false; return }
   addingSubmitting.value = true
   addingNew.value = false; const pid = addingParentId.value; addingParentId.value = null; newFolderName.value = ''
-  try { await createFolder(n, pid || null); await loadFolders(); toast({ message: '目录已创建', type: 'success' }) } catch (e: any) { toast({ message: '创建失败: ' + (e.message || ''), type: 'error' }) }
+  try { await createFolder(n, pid || null); await loadFolders(); if (pid) { const s = new Set(collapsedFolders.value); s.delete(pid); collapsedFolders.value = s }; toast({ message: '目录已创建', type: 'success' }) } catch (e: any) { toast({ message: '创建失败: ' + (e.message || ''), type: 'error' }) }
   addingSubmitting.value = false
 }
 function cancelAddFolder() { addingNew.value = false }
@@ -326,7 +345,7 @@ async function handleDelete(id: string) {
       <div class="px-2 py-1">
         <!-- 全部文件 -->
         <div>
-          <button @click="selectFolder(null)" :data-drop-target="'__root__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="selectedFolderId===null?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+          <button @click="selectFolder(null)" :data-drop-target="'__root__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="[selectedFolderId===null?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragTargetId==='__root__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
             <div v-if="selectedFolderId===null" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
             <AppIcon name="grid" size="13" class="flex-shrink-0"/>全部文件
           </button>
@@ -345,7 +364,7 @@ async function handleDelete(id: string) {
           </div>
 
           <!-- 正常目录节点 -->
-          <div v-else :data-drop-target="d.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedFolderId===d.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragFolderId===d.id?'opacity-30':'']" @click="selectFolder(d.id)" @mousedown="startFolderDrag($event, d.id)" :style="{ paddingLeft: `${12 + (d._depth||0) * 12}px` }">
+          <div v-else :data-drop-target="d.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedFolderId===d.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragFolderId===d.id?'opacity-30':'', isDragging && dragTargetId===d.id && dragFolderId!==d.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectFolder(d.id)" @mousedown="startFolderDrag($event, d.id)" :style="{ paddingLeft: `${12 + (d._depth||0) * 12}px` }">
             <div v-if="dragType==='folder' && dragInsert?.targetId===d.id && dragInsert?.side==='inside'" class="absolute inset-0 border-2 border-brand-400 rounded-lg pointer-events-none"></div>
             <div v-if="selectedFolderId===d.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
             <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
@@ -376,7 +395,7 @@ async function handleDelete(id: string) {
 
         <!-- 未分类 -->
         <div>
-          <button @click="selectFolder('__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="selectedFolderId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+          <button @click="selectFolder('__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="[selectedFolderId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragTargetId==='__uncategorized__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
             <div v-if="selectedFolderId==='__uncategorized__'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
             <span class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>未分类
@@ -419,10 +438,9 @@ async function handleDelete(id: string) {
     <div class="flex-1 overflow-y-auto p-2 space-y-1">
       <div v-for="f in filteredFiles" :key="f.id"
         class="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200 select-none"
-        :class="editingFileId === f.id ? 'cursor-default' : 'cursor-pointer'"
         @mousedown="startFileDrag($event, f.id)"
       >
-        <span class="inline-flex items-center justify-center px-1.5 py-0.5 rounded text-[9px] font-medium flex-shrink-0 w-[42px]" :class="fileTypeColor(f.file_ext)">{{ fileTypeLabel(f.file_ext) }}</span>
+        <div class="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[9px] font-bold tracking-wider" :class="fileTypeColor(f.file_ext)">{{ (f.file_ext || '').toUpperCase() || 'FILE' }}</div>
         <div class="flex-1 min-w-0">
           <template v-if="editingFileId === f.id">
             <input
@@ -436,8 +454,16 @@ async function handleDelete(id: string) {
             />
           </template>
           <template v-else>
-            <span class="text-[12px] text-surface-800 truncate block hover:text-blue-600 transition-colors" :title="fileDisplayName(f)" @click="!dragJustFinished && handlePreview(f.id)">{{ fileDisplayName(f) }}</span>
+            <span class="text-[12px] text-surface-800 truncate block hover:text-blue-600 transition-colors cursor-pointer" :title="fileDisplayName(f)" @click="!dragJustFinished && handlePreview(f.id)">{{ fileDisplayName(f) }}</span>
           </template>
+          <div v-if="editingRemarkFileId === f.id" class="mt-1">
+            <input v-model="editingRemarkValue" data-lib-remark-input class="w-full text-[11px] text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5" placeholder="输入备注..." @keyup.enter="saveRemark(f)" @blur="saveRemark(f)" @keyup.escape="cancelEditRemark()"/>
+          </div>
+          <div v-else class="mt-0.5 flex items-center gap-1">
+            <p v-if="f.lib_remark" class="text-[10px] text-surface-400 truncate cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">{{ f.lib_remark }}</p>
+            <p v-else class="text-[10px] text-surface-300 cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">无备注</p>
+            <button @click.stop="startEditRemark(f)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="编辑备注"><AppIcon name="edit" size="10"/></button>
+          </div>
         </div>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatSize(f.file_size) }}</span>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ (f.updated_at||f.created_at||'').slice(0,10) }}</span>

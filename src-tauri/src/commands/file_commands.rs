@@ -284,12 +284,12 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
     let files = if let Some(q) = query.filter(|q| !q.is_empty()) {
         let like = format!("%{}%", crate::database::escape_like(&q));
         database::all(
-            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 OR fa.file_ext LIKE ?1) ORDER BY fr.created_at DESC LIMIT 50",
+            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, fr.remark AS lib_remark, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 OR fa.file_ext LIKE ?1) ORDER BY fr.created_at DESC LIMIT 50",
             &[json!(like)]
         ).map_err(|e| e.to_string())?
     } else {
         database::all(
-            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' ORDER BY fr.created_at DESC LIMIT 200",
+            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, fr.remark AS lib_remark, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' ORDER BY fr.created_at DESC LIMIT 200",
             &[]
         ).map_err(|e| e.to_string())?
     };
@@ -312,7 +312,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
     let folders = database::all(&folder_sql, &folder_params).map_err(|e| e.to_string())?;
     let files = if let Some(p) = pid {
         database::all(
-            "SELECT fr.folder_id, fr.file_id, fa.file_ext, fa.file_size, fa.created_at, fr.custom_name AS name, fr.entity_type FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='project' AND fr.entity_id=? ORDER BY fr.custom_name",
+            "SELECT fr.folder_id, fr.file_id, fa.file_ext, fa.file_size, fa.created_at, fr.custom_name AS name, fr.description AS remark, fr.entity_type FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='project' AND fr.entity_id=? ORDER BY fr.custom_name",
             &[json!(p)]
         ).map_err(|e| e.to_string())?
     } else {
