@@ -728,7 +728,7 @@ async function handleImportProject() {
       <thead>
         <tr class="border-b border-surface-100 bg-surface-50 text-left">
           <th v-if="selectionMode" class="px-3 py-2 w-10 align-middle text-center"></th>
-          <th @click="toggleSort('name')" class="pl-5 pr-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none align-middle text-left w-[330px]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
+          <th @click="toggleSort('name')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none align-middle text-center w-[330px]">项目名称 <span class="ml-0.5 opacity-60">{{ sortIcon('name') }}</span></th>
           <th @click="toggleSort('status')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">阶段 <span class="ml-0.5 opacity-60">{{ sortIcon('status') }}</span></th>
           <th @click="toggleSort('budget')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[110px] align-middle text-left">金额 <span class="ml-0.5 opacity-60">{{ sortIcon('budget') }}</span></th>
           <th @click="toggleSort('expected_order_date')" class="px-3 py-2 text-[11px] font-medium text-surface-400 uppercase tracking-wide cursor-pointer hover:bg-surface-100 select-none w-[120px] align-middle text-left">预计下单 <span class="ml-0.5 opacity-60">{{ sortIcon('expected_order_date') }}</span></th>
@@ -749,13 +749,13 @@ async function handleImportProject() {
                 <AppIcon v-if="isProjectSelected(project.id)" name="check" class="w-2.5 h-2.5 text-white" />
               </div>
             </td>
-            <td class="pl-5 pr-3 py-2.5 align-middle text-left w-[330px]">
+            <td class="px-3 py-2.5 align-middle text-center w-[330px]">
               <template v-if="editingField?.projectId === project.id && editingField.field === 'name'">
                 <input v-model="editValue" type="text" maxlength="30" @blur="saveEdit(project)" @keyup.enter="saveEdit(project)" @keyup.escape="cancelEdit"
-                  class="w-full text-xs font-medium text-surface-800 bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200" autofocus />
+                  class="w-full text-xs font-medium text-surface-800 text-center bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200" autofocus />
               </template>
               <template v-else>
-                <div class="flex items-center gap-1 group/name">
+                <div class="flex items-center justify-center gap-1 group/name">
                   <span class="font-medium text-surface-800 truncate cursor-pointer hover:text-blue-600 transition-colors" @click="goToProject(project.id)">{{ project.name }}</span>
                   <button @click.stop="startEditName(project)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100 flex-shrink-0" title="编辑名称">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
