@@ -22,6 +22,8 @@ pub async fn vectorize_new_chunks(batch_size: usize) -> Result<usize, String> {
 
     let guard = lancedb_client::get_lancedb()?;
     if let Some(ref c) = *guard {
+        // 先删除同 rowid 旧行，消除"LanceDB 插入成功但 vector_cache 未写"崩溃点产生的重复向量
+        let _ = c.delete_chunks_by_rowids(&chunk_ids);
         c.insert_vectors_full(&chunk_ids, &vectors, &[], &[], &parent_ids, &[], &[], &[], &[], &[])?;
     }
 

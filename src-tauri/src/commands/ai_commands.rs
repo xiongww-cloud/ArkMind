@@ -59,6 +59,12 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
     let parents: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='parent'", [], |r| r.get(0))).unwrap_or(0);
     let children: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='child'", [], |r| r.get(0))).unwrap_or(0);
     let vectorized: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM vector_cache", [], |r| r.get(0))).unwrap_or(0);
+    // 向量化有效指标：排除空内容块（按设计永不向量化）和 vector_cache 孤儿
+    let children_nonempty: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='child' AND content != ''", [], |r| r.get(0))).unwrap_or(0);
+    let vectorized_valid: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM vector_cache WHERE chunk_id IN (SELECT id FROM knowledge_chunks WHERE chunk_type='child')", [], |r| r.get(0))).unwrap_or(0);
+    // 待向量化积压：有内容但未进 vector_cache 的子块（持续不降 = 队列卡死信号）
+    let embed_pending: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='child' AND content != '' AND id NOT IN (SELECT chunk_id FROM vector_cache)", [], |r| r.get(0))).unwrap_or(0);
+    let last_embed_error = crate::services::knowledge_pipeline::get_last_embed_error();
     let source_files: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM source_data WHERE source_type='FILE'", [], |r| r.get(0))).unwrap_or(0);
     let source_notes: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM source_data WHERE source_type='NOTE'", [], |r| r.get(0))).unwrap_or(0);
     let source_products: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM source_data WHERE source_type='PRODUCT'", [], |r| r.get(0))).unwrap_or(0);
@@ -78,7 +84,7 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
         &[],
     ).ok().flatten();
     Ok(json!({
-        "knowledge": {"chunks":chunks,"parents":parents,"children":children,"vectorized":vectorized},
+        "knowledge": {"chunks":chunks,"parents":parents,"children":children,"vectorized":vectorized,"childrenNonempty":children_nonempty,"vectorizedValid":vectorized_valid,"embedPending":embed_pending,"lastEmbedError":last_embed_error},
         "source": {"files":source_files,"notes":source_notes,"products":source_products,"projects":source_projects,"todos":source_todos,"total":source_total},
         "fileParse": {"done":files_done.max(0),"pending":files_pending,"processing":files_processing,"failed":files_failed,"total":files_total,"current":current_file},
     }))

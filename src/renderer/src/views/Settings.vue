@@ -1340,12 +1340,20 @@ onDeactivated(() => {
                 <div>
                   <div class="flex items-center justify-between mb-1">
                     <span class="text-[11px] text-surface-500">向量化进度</span>
-                    <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.vectorized ?? 0 }} / {{ pipelineData.knowledge?.children ?? 0 }}</span>
+                    <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0 }} / {{ pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children ?? 0 }}</span>
                   </div>
                   <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
-                    <div class="h-full rounded-full transition-all duration-500" :style="{ width: (pipelineData.knowledge?.children ? Math.min(100, (pipelineData.knowledge?.vectorized ?? 0) / pipelineData.knowledge.children * 100) : 0) + '%', background: 'linear-gradient(90deg, #06b6d4, #22d3ee)' }"></div>
+                    <div class="h-full rounded-full transition-all duration-500" :style="{ width: ((pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) ? Math.min(100, (pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0) / (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) * 100) : 0) + '%', background: 'linear-gradient(90deg, #06b6d4, #22d3ee)' }"></div>
                   </div>
-                  <div class="text-[10px] text-surface-400 mt-0.5 text-right">{{ pipelineData.knowledge?.children ? ((pipelineData.knowledge?.vectorized ?? 0) / pipelineData.knowledge.children * 100).toFixed(1) : 0 }}%</div>
+                  <div class="flex items-center justify-between mt-0.5 text-[10px]">
+                    <span :class="(pipelineData.knowledge?.embedPending ?? 0) > 0 ? 'text-amber-500 font-medium' : 'text-surface-400'">
+                      {{ (pipelineData.knowledge?.embedPending ?? 0) > 0 ? `待向量化 ${pipelineData.knowledge.embedPending} 块` : '全部已向量化' }}
+                    </span>
+                    <span class="text-surface-400">{{ (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) ? (((pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0) / (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children)) * 100).toFixed(1) : 0 }}%</span>
+                  </div>
+                  <div v-if="pipelineData.knowledge?.lastEmbedError" class="mt-1 text-[10px] text-red-500 truncate" :title="pipelineData.knowledge.lastEmbedError">
+                    向量化错误：{{ pipelineData.knowledge.lastEmbedError }}
+                  </div>
                 </div>
                 <div v-if="(pipelineData.fileParse?.total ?? 0) > 0">
                   <div class="flex items-center justify-between mb-1">
