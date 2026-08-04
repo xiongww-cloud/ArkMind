@@ -99,6 +99,13 @@ pub fn run() {
             let _ = match resp { Ok(r) => responder.respond(r), Err(_) => {} };
         })
         .setup(|app| {
+            // Windows: titleBarStyle Overlay 仅 macOS 生效，需运行时移除原生标题栏（自定义控件在 Header.vue）
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_decorations(false);
+                }
+            }
             // 开发环境下窗口启动后自动获取焦点
             #[cfg(debug_assertions)]
             {
