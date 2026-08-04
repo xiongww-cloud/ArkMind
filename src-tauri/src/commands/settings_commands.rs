@@ -272,3 +272,13 @@ pub async fn set_sprite_enabled(enabled: bool, app: tauri::AppHandle) -> Result<
 
     Ok(json!({ "success": true }))
 }
+
+#[tauri::command] pub async fn get_system_setting(key: String) -> Result<Value, String> {
+    let row = database::get("SELECT value FROM system_settings WHERE key=?", &[json!(key)]).map_err(|e| e.to_string())?;
+    Ok(json!({"key": key, "value": row.and_then(|r| r["value"].as_str().map(|s| s.to_string()))}))
+}
+
+#[tauri::command] pub async fn set_system_setting(key: String, value: String) -> Result<Value, String> {
+    database::run("INSERT OR REPLACE INTO system_settings(key, value, updated_at) VALUES(?1, ?2, datetime('now','localtime'))", &[json!(key), json!(value)]).map_err(|e| e.to_string())?;
+    Ok(json!({"success": true}))
+}

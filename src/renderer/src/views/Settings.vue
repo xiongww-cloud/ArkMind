@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, onDeactivated, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
+import GuideModal from '@/components/common/GuideModal.vue'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { useUploadProgress } from '@/composables/useUploadProgress'
@@ -17,6 +18,7 @@ import {
 // ─── Vite define: 替换为 Cargo.toml 中的版本号
 const appVersion = __APP_VERSION__
 const aiTab = ref('llm')
+const guideModalRef = ref<InstanceType<typeof GuideModal> | null>(null)
 const uploadProgress = useUploadProgress()
 
 // ─── License ──────────────────────────────────────────────────────────────
@@ -1017,6 +1019,10 @@ onDeactivated(() => {
           <h1 class="text-2xl font-bold tracking-tight text-surface-900">设置</h1>
           <p class="text-surface-400 text-[13px] mt-1">ArkMind v{{ appVersion }}</p>
         </div>
+        <button @click="guideModalRef?.open()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium border border-surface-200 text-surface-500 hover:border-brand-300 hover:text-brand-600 transition-colors">
+          <AppIcon name="lightbulb" size="13" />
+          使用指南
+        </button>
       </header>
 
       <!-- ══════════ Row 1: 状态概览卡片 ══════════ -->
@@ -1574,6 +1580,7 @@ onDeactivated(() => {
       </div>
     </Transition>
   </Teleport>
+  <GuideModal ref="guideModalRef" />
 </template>
 
 <style scoped>

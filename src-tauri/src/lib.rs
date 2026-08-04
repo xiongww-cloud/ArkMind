@@ -333,6 +333,7 @@ pub fn run() {
             commands::asset_get_latest_version, commands::asset_get_parsed_text, commands::asset_rerun_migration,
             // Settings
             commands::settings_get, commands::settings_update, commands::get_ai_config, commands::update_ai_config, commands::ai_test_provider, commands::ai_test_embedding,
+            commands::get_system_setting, commands::set_system_setting,
             commands::user_profile, commands::user_profile_update,
             // Sprite Position
             commands::save_sprite_position, commands::get_sprite_position,

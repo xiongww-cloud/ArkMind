@@ -189,6 +189,8 @@ export async function fetchSettings(): Promise<StorageConfig> { return invoke('s
 export async function updateSettings(data: Record<string,unknown>): Promise<{success: boolean}> { return invoke('settings_update', { data }) }
 export async function fetchAiConfig(): Promise<AiConfig> { return invoke('get_ai_config') }
 export async function updateAiConfig(data: Record<string,unknown>): Promise<{success: boolean}> { return invoke('update_ai_config', { data: { ai_config: JSON.stringify(data) } }) }
+export async function getSystemSetting(key: string): Promise<{key: string; value: string|null}> { return invoke('get_system_setting', { key }) }
+export async function setSystemSetting(key: string, value: string): Promise<{success: boolean}> { return invoke('set_system_setting', { key, value }) }
 
 // ─── Logs ──────────────────────────────────────────────────────
 export interface LogEntry { timestamp: string; level: string; module: string; message: string }

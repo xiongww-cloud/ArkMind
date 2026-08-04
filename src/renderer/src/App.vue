@@ -6,12 +6,14 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Toast from '@/components/common/Toast.vue'
 import UploadProgress from '@/components/common/UploadProgress.vue'
 import ActivationModal from '@/components/common/ActivationModal.vue'
+import GuideModal from '@/components/common/GuideModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import { listen } from '@tauri-apps/api/event'
 
 const sidebarCollapsed = ref(false)
 const authStore = useAuthStore()
 const showActivation = ref(false)
+const guideModalRef = ref<InstanceType<typeof GuideModal> | null>(null)
 let licensePollTimer = null
 
 function toggleSidebar() {
@@ -52,9 +54,22 @@ function onActivated() {
 
 const LICENSE_POLL_INTERVAL_MS = 5 * 60 * 1000
 
+async function checkGuide() {
+  try {
+    const { getSystemSetting } = await import('@/api/db-client')
+    const r = await getSystemSetting('guide_seen')
+    if (!r.value || r.value !== '1') {
+      guideModalRef.value?.open()
+    }
+  } catch (e) {
+    console.warn('Guide check failed:', e)
+  }
+}
+
 onMounted(() => {
   authStore.loadUser()
   checkActivation()
+  checkGuide()
   licensePollTimer = setInterval(pollLicenseStatus, LICENSE_POLL_INTERVAL_MS)
 })
 
@@ -83,5 +98,6 @@ onUnmounted(() => {
     <Toast />
     <UploadProgress />
     <ActivationModal v-if="showActivation" @activated="onActivated" />
+    <GuideModal ref="guideModalRef" />
   </div>
 </template>
