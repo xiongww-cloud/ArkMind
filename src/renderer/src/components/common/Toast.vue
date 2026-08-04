@@ -20,7 +20,7 @@ const typeStyles = {
       <div
         v-for="t in toasts"
         :key="t.id"
-        class="pointer-events-auto rounded-lg px-4 py-2 text-sm font-medium shadow-lg transition-all"
+        class="pointer-events-auto rounded-md px-3 py-1.5 text-xs font-medium shadow-lg transition-all"
         :class="typeStyles[t.type] || typeStyles.info"
       >
         {{ t.message }}

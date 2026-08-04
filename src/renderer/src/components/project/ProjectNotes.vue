@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onActivated, onUnmounted } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import { getTiptapExtensions } from '@/composables/useTiptapConfig'
 import { useProjectStore } from '@/stores/project'
@@ -21,6 +21,10 @@ const selectedNoteId = ref<string | null>(null)
 const selectedNote = computed(() => projectNotes.value.find(n => n.note_id === selectedNoteId.value))
 const editingNoteTitle = ref('')
 const lastSavedContent = ref('')
+
+onActivated(async () => {
+  await loadProjectNotes()
+})
 
 watch(selectedNote, (note) => { editingNoteTitle.value = note?.title || '' })
 
