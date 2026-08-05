@@ -914,3 +914,15 @@ fn import_contacts(data: &Value) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// 通用 buffer 写盘（供前端 exceljs 等生成的二进制内容保存到本地）
+#[tauri::command] pub async fn export_write_buffer(save_path: String, buffer: Vec<u8>) -> Result<Value, String> {
+    if save_path.is_empty() {
+        return Ok(json!({"success":false,"error":"未指定保存路径"}));
+    }
+    if buffer.is_empty() {
+        return Ok(json!({"success":false,"error":"文件内容为空"}));
+    }
+    std::fs::write(&save_path, &buffer).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(json!({"success":true,"savedPath":save_path}))
+}

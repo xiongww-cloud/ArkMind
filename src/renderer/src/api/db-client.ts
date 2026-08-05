@@ -284,6 +284,7 @@ export async function deleteVersion(versionId: string): Promise<void> { await in
 export async function updateSolutionVersionMeta(versionId: string, data: Record<string,unknown>): Promise<void> { await invoke('solution_version_update_meta', { versionId, data }) }
 export async function saveDraftVersion(versionId: string, data: Record<string,unknown>): Promise<VersionRow> { return invoke('solution_version_save_draft', { versionId, data }) }
 export async function solutionDownloadExcel(data: {buffer:number[];fileName:string}): Promise<{success:boolean;savedPath?:string;error?:string}> { const { save } = await import('@tauri-apps/plugin-dialog'); const sp = await save({ defaultPath: data.fileName, filters: [{name:'Excel',extensions:['xlsx']}] }); if(!sp) return {success:false,error:'cancelled'}; return invoke('solution_download_excel', { data: { buffer: data.buffer, savePath: sp } }) }
+export async function exportWriteBuffer(data: {buffer:number[];fileName:string}): Promise<{success:boolean;savedPath?:string;error?:string}> { const { save } = await import('@tauri-apps/plugin-dialog'); const sp = await save({ defaultPath: data.fileName, filters: [{name:'Excel',extensions:['xlsx']}] }); if(!sp) return {success:false,error:'cancelled'}; return invoke('export_write_buffer', { savePath: sp, buffer: data.buffer }) }
 
 // ─── KB ────────────────────────────────────────────────────────
 export async function kbGetConfig(): Promise<KbConfig> { return invoke('kb_get_config') }
