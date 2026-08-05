@@ -5,7 +5,7 @@ import { getTiptapExtensions } from '@/composables/useTiptapConfig'
 import { useProjectStore } from '@/stores/project'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
-import { formatDateTime } from '@/utils/time'
+import { formatDateTime, nowLocalDb, tsMillis } from '@/utils/time'
 import { fetchProjectNotes, createNote, updateNote, deleteNote, fetchProjects, notesV2Get } from '@/api/db-client'
 import AppIcon from '@/components/common/AppIcon.vue'
 import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
@@ -19,6 +19,10 @@ const projectStore = useProjectStore()
 const projectNotes = ref<any[]>([])
 const selectedNoteId = ref<string | null>(null)
 const selectedNote = computed(() => projectNotes.value.find(n => n.note_id === selectedNoteId.value))
+// 按更新时间降序排序，确保自动保存后笔记实时重排到顶部
+const sortedProjectNotes = computed(() =>
+  [...projectNotes.value].sort((a, b) => tsMillis(b.updated_at || b.created_at) - tsMillis(a.updated_at || a.created_at))
+)
 const editingNoteTitle = ref('')
 const lastSavedContent = ref('')
 
@@ -49,7 +53,7 @@ async function addProjectNote() {
     const backendId = await projectStore.syncProjectToBackend(props.projectId)
     const r: any = await createNote({ title: '', content: '', isDaily: false, projectIds: [backendId] })
     const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', excerpt: '',
-      updated_at: new Date().toISOString(), created_at: new Date().toISOString() }
+      updated_at: nowLocalDb(), created_at: nowLocalDb() }
     projectNotes.value.unshift(newNote)
     selectedNoteId.value = newNote.note_id
     editingNoteTitle.value = ''
@@ -136,10 +140,15 @@ function debouncedNoteSave(html: string) {
 }
 
 watch(selectedNote, async (note) => {
+  // C1 修复：切换笔记前先落盘旧笔记的待保存内容，避免防抖超时后写入新笔记的 note_id
+  if (noteSaveTimer) { clearTimeout(noteSaveTimer); noteSaveTimer = null; saveNoteContent() }
   editingNoteTitle.value = note?.title || ''
   if (!note) return
   try {
-    const r = await notesV2Get(note.note_id)
+    const targetId = note.note_id
+    const r = await notesV2Get(targetId)
+    // 防止快速切换时旧响应覆盖新选中的笔记
+    if (selectedNote.value?.note_id !== targetId) return
     const fullContent = r?.note?.content || ''
     lastSavedContent.value = fullContent
     nextTick(() => { noteEditor.value?.commands.setContent(fullContent, false) })
@@ -152,10 +161,10 @@ async function saveNoteContent(html?: string) {
   try {
     await updateNote({ noteId: selectedNote.value.note_id, content })
     lastSavedContent.value = content
-    // Update local excerpt
+    // Update local excerpt — Object.assign 原地修改，避免 spread 创建新对象触发 selectedNote watcher 重置编辑器光标
     const idx = projectNotes.value.findIndex(n => n.note_id === selectedNote.value?.note_id)
     if (idx !== -1) {
-      projectNotes.value[idx] = { ...projectNotes.value[idx], excerpt: content.replace(/<[^>]*>/g,'').slice(0,300) }
+      Object.assign(projectNotes.value[idx], { excerpt: content.replace(/<[^>]*>/g,'').slice(0,300), updated_at: nowLocalDb() })
     }
   } catch (e) { console.warn('保存笔记内容失败', e) }
 }
@@ -217,7 +226,7 @@ defineExpose({ closeNotePopups })
         <button @click="addProjectNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建笔记"><AppIcon name="plus" size="12" stroke="2.5"/></button>
       </div>
       <div class="flex-1 overflow-y-auto px-2 py-1 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full">
-        <div v-for="note in projectNotes" :key="note.note_id" @click="selectedNoteId = note.note_id"
+        <div v-for="note in sortedProjectNotes" :key="note.note_id" @click="selectedNoteId = note.note_id"
           class="flex items-center px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden hover:scale-[1.02] hover:z-10 select-none mb-1"
           :class="selectedNoteId === note.note_id ? 'bg-blue-50/70 border-brand-200 shadow-none scale-100' : 'border-surface-100 hover:border-surface-300 hover:shadow-md'">
           <div v-if="selectedNoteId === note.note_id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
@@ -228,7 +237,7 @@ defineExpose({ closeNotePopups })
           </div>
           <button @click.stop="removeProjectNote(note.note_id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"><AppIcon name="trash" size="13"/></button>
         </div>
-        <div v-if="projectNotes.length === 0" class="text-center py-10 text-surface-400 text-xs">暂无笔记</div>
+        <div v-if="sortedProjectNotes.length === 0" class="text-center py-10 text-surface-400 text-xs">暂无笔记</div>
       </div>
     </div>
 
@@ -296,7 +305,7 @@ defineExpose({ closeNotePopups })
               <AppIcon name="table-grid" size="15"/>
               <svg class="w-2 h-2 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
             </button>
-            <div v-if="tableMenuOpen" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-lg shadow-sm border border-surface-100 p-1 w-[92px]" @click.stop>
+            <div v-if="tableMenuOpen" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-lg shadow-sm border border-surface-100 p-1 w-[120px]" @click.stop>
               <div v-if="!noteEditor?.isActive('table')" class="space-y-1.5 mb-2">
                 <div class="flex items-center gap-1.5">
                   <span class="text-[11px] text-surface-500 w-4">行</span>

@@ -649,6 +649,30 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     // ★ 创建 notifications 和 notification_config 表
     create_notifications_tables(conn);
 
+    // ★ 归一化 notes 时间戳格式：存量 RFC3339（含 'T'）→ SQLite "YYYY-MM-DD HH:MM:SS" 本地格式。
+    //    排序按字符串字典序，混合格式会导致 space(0x20) < 'T'(0x54) 使同一天排序错乱。
+    //    datetime() 解析 RFC3339 带时区偏移 → 归一 UTC → 'localtime' 转回本地，等于原本地时刻。
+    //    幂等：转换后不含 'T'，下次启动不再命中。
+    for (col, idx_name) in [
+        ("updated_at", "idx_notes_updated_at"),
+        ("created_at", "idx_notes_created_at"),
+        ("deleted_at", "idx_notes_deleted"),
+    ] {
+        let migrated: i64 = conn
+            .execute(
+                &format!(
+                    "UPDATE notes SET {col}=datetime({col}, 'localtime') WHERE {col} LIKE '%T%' AND datetime({col}, 'localtime') IS NOT NULL"
+                ),
+                [],
+            )
+            .map(|n| n as i64)
+            .unwrap_or(0);
+        if migrated > 0 {
+            log::info!("[数据库] notes.{col} 时间戳格式归一化: {} 条 (RFC3339 → SQLite)", migrated);
+        }
+        let _ = conn.execute_batch(&format!("CREATE INDEX IF NOT EXISTS {idx_name} ON notes({col});"));
+    }
+
     Ok(())
 }
 

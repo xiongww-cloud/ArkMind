@@ -1,6 +1,7 @@
 import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { tsMillis } from '@/utils/time'
 import {
   fetchProjects, fetchTodos, fetchAllDynamics, fetchNotes,
   kbDashboardStats, kbProjectNoteIds,
@@ -347,7 +348,7 @@ export function useDashboardData() {
   const recentNotes = computed(() => {
     return [...allNotes.value]
       .filter((n: any) => !n.is_daily && !projectNoteIds.value.has(n.note_id) && n.excerpt && n.excerpt.replace(/<[^>]*>/g, '').trim())
-      .sort((a: any, b: any) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+      .sort((a: any, b: any) => tsMillis(b.updated_at) - tsMillis(a.updated_at))
       .slice(0, 5)
       .map((n: any) => ({
         id: n.note_id,

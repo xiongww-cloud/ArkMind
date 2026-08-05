@@ -46,3 +46,20 @@ export const formatRelativeTime = (isoString: string | null | undefined): string
   if (hours < 24) return `${hours} 小时前`
   return formatDateTime(isoString)
 }
+
+/**
+ * 当前本地时间，SQLite "YYYY-MM-DD HH:MM:SS" 格式。
+ * 全库（todos/projects/notes 等）统一使用此格式做字典序排序，
+ * 必须与后端 now_db() / datetime('now','localtime') 一致，禁止用 toISOString()（UTC 带 Z）。
+ */
+export const nowLocalDb = (): string => {
+  const d = new Date()
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/** 时间戳字符串 → 毫秒数（用于排序）。兼容 RFC3339 带时区 / SQLite localtime / ISO UTC。解析失败返回 0。 */
+export const tsMillis = (raw: string | null | undefined): number => {
+  if (!raw) return 0
+  const date = new Date(normalizeLocal(raw))
+  return isNaN(date.getTime()) ? 0 : date.getTime()
+}

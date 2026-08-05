@@ -68,7 +68,7 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
     let content = data["content"].as_str().unwrap_or("");
     let is_daily = data["isDaily"].as_bool().or_else(||data["isDaily"].as_i64().map(|n|n!=0)).unwrap_or(false);
     let notebook_id = data["notebookId"].as_str().map(|s|json!(s));
-    let ts = crate::time_utils::now_utc_rfc3339();
+    let ts = crate::time_utils::now_db();
     let project_ids: Vec<String> = data["projectIds"].as_array().map(|a|a.iter().filter_map(|v|v.as_str().map(String::from)).collect()).unwrap_or_default();
     database::with_db(|conn| {
         conn.execute("BEGIN",[])?;
@@ -89,7 +89,7 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
 #[tauri::command]
 pub async fn notes_update(data: Value) -> Result<Value, String> {
     let note_id = data["noteId"].as_str().ok_or("missing noteId")?;
-    let ts = crate::time_utils::now_utc_rfc3339();
+    let ts = crate::time_utils::now_db();
     let mut fields: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
     if let Some(v) = data["title"].as_str() { fields.push("title=?".into()); values.push(json!(v)); }
@@ -116,7 +116,9 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
 pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     database::run("UPDATE notes SET deleted_at=datetime('now', 'localtime'), notebook_id=NULL WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
     database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(&note_id)]).ok();
+    // 软删除即彻底清理：business_relations + 知识管线（恢复只入笔记本，不需要这些关联）
     crate::services::business_relations::delete_by_source("NOTE", &note_id);
+    crate::services::knowledge_lifecycle::notify_deleted("NOTE", &note_id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
     database::save().map_err(|e|e.to_string())?;
     Ok(json!({"success":true}))
@@ -127,6 +129,8 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
         None::<String>
     } else { Some(notebook_id) };
     database::run("UPDATE notes SET deleted_at=NULL, notebook_id=?, updated_at=datetime('now', 'localtime') WHERE note_id=?",&[json!(actual_nb),json!(&note_id)]).map_err(|e|e.to_string())?;
+    // 恢复笔记时通知知识库重新物化（软删除时未清理知识管线，恢复后需更新内容）
+    crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
     database::save().map_err(|e|e.to_string())?;
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))

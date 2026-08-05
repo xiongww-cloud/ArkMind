@@ -23,6 +23,7 @@ import {
 } from '@/api/db-client'
 import { useLinkModals } from '@/composables/useLinkModals'
 import { useUploadProgress } from '@/composables/useUploadProgress'
+import { nowLocalDb, tsMillis } from '@/utils/time'
 
 type ViewType = 'daily'|'orphan'|'notebook'|'trash'
 interface Note { note_id:string; id:string; title:string; excerpt:string; content?:string; is_daily:number; notebook_id?:string; deleted_at?:string; updated_at:string; created_at:string; tags?:any[] }
@@ -296,7 +297,7 @@ async function createDailyNote() {
   const today = getLocalDateStr()
   try {
     const r: any = await notesV2Create({ title: today, content: '', isDaily: true })
-    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: today, excerpt: '', is_daily: 1, notebook_id: null, updated_at: new Date().toISOString(), created_at: new Date().toISOString(), tags: [] }
+    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: today, excerpt: '', is_daily: 1, notebook_id: null, updated_at: nowLocalDb(), created_at: nowLocalDb(), tags: [] }
     notes.value.unshift(newNote)
     selectNote(newNote.note_id)
     dailyNoteCreated = true
@@ -344,8 +345,9 @@ const displayedNotes = computed(() => {
   let result = currentView.value === 'trash' ? trashNotes.value : notes.value
   const q = notebookSearch.value.toLowerCase().trim()
   if (q) result = result.filter(n => n.title.toLowerCase().includes(q) || (n.excerpt||'').toLowerCase().includes(q))
-  if (currentView.value === 'daily') result = [...result].sort((a,b) => (b.created_at||'').localeCompare(a.created_at||''))
-  else result = [...result].sort((a,b) => (b.updated_at||'').localeCompare(a.updated_at||''))
+  if (currentView.value === 'daily') result = [...result].sort((a,b) => tsMillis(b.created_at) - tsMillis(a.created_at))
+  else if (currentView.value === 'trash') result = [...result].sort((a,b) => tsMillis(b.deleted_at || b.updated_at) - tsMillis(a.deleted_at || a.updated_at))
+  else result = [...result].sort((a,b) => tsMillis(b.updated_at || b.created_at) - tsMillis(a.updated_at || a.created_at))
   return result
 })
 
@@ -373,9 +375,11 @@ async function doSave() {
   await notesV2Update({ noteId: selectedNoteId.value, title: editTitle.value, content: editContent.value })
   lastSavedSnapshot.value = snapshot
   // ★ Update local note card immediately (excerpt = truncated content)
+  // Object.assign 原地修改，避免 spread 创建新对象触发 selectedNote computed 引用变化
   const idx = notes.value.findIndex(n => n.note_id === selectedNoteId.value || n.id === selectedNoteId.value)
   if (idx !== -1) {
-    notes.value[idx] = { ...notes.value[idx], title: editTitle.value, excerpt: editContent.value.replace(/<[^>]*>/g,'').slice(0,300), updated_at: new Date().toISOString() }
+    // 统一 SQLite datetime 格式，确保排序按时间正确（后端 now_db 同格式）
+    Object.assign(notes.value[idx], { title: editTitle.value, excerpt: editContent.value.replace(/<[^>]*>/g,'').slice(0,300), updated_at: nowLocalDb() })
   }
   isDirty.value = false
 }
@@ -391,8 +395,10 @@ function selectNotebook(nid: string) {
   selectedProjectId.value = null; selectedNoteId.value = null
   loadAll()
 }
+let selectNoteSeq = 0
 function selectNote(id: string) {
   saveBeforeSwitch().then(async () => {
+    const seq = ++selectNoteSeq
     const src = currentView.value === 'trash' ? trashNotes.value : notes.value
     const n = src.find(x => x.note_id === id || x.id === id)
     if (!n) return
@@ -404,6 +410,7 @@ function selectNote(id: string) {
       noteContentLoading.value = true
       try {
         const r = await notesV2Get(id)
+        if (seq !== selectNoteSeq) return // 快速切换时丢弃旧响应
         const fullContent = r?.note?.content || ''
         editContent.value = fullContent
       } catch (e) {
@@ -418,6 +425,7 @@ function selectNote(id: string) {
     noteContentLoading.value = true
     try {
       const r = await notesV2Get(id)
+      if (seq !== selectNoteSeq) return // 快速切换时丢弃旧响应
       const fullContent = r?.note?.content || ''
       editContent.value = fullContent
       lastSavedSnapshot.value = JSON.stringify({ title: n.title || '', content: fullContent })
@@ -449,7 +457,7 @@ async function createNote() {
   if (currentView.value === 'notebook' && selectedNotebookId.value) payload.notebookId = selectedNotebookId.value
   try {
     const r: any = await notesV2Create(payload)
-    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', excerpt: '', is_daily: payload.isDaily ? 1 : 0, notebook_id: payload.notebookId || null, updated_at: new Date().toISOString(), created_at: new Date().toISOString(), tags: [] }
+    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', excerpt: '', is_daily: payload.isDaily ? 1 : 0, notebook_id: payload.notebookId || null, updated_at: nowLocalDb(), created_at: nowLocalDb(), tags: [] }
     notes.value.unshift(newNote)
     selectedNoteId.value = newNote.note_id
     editTitle.value = ''; editContent.value = ''; isDirty.value = false
@@ -533,6 +541,7 @@ function startNotebookDrag(e: MouseEvent, notebookId: string) {
 // Before the timer fires, mouseup cancels the drag (treat as click)
 function onDragUpPre(_e: MouseEvent) {
   document.removeEventListener('mouseup', onDragUpPre)
+  document.removeEventListener('mousemove', onDragMove)
   if (dragTimer.value) {
     clearTimeout(dragTimer.value)
     dragTimer.value = null
@@ -938,7 +947,7 @@ const restoreNotebookList = computed(() => {
               <svg class="w-2 h-2 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
               <span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">表格</span>
             </button>
-            <div v-if="tableMenuOpen" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-lg shadow-sm border border-surface-100 p-1 w-[92px]" @click.stop>
+            <div v-if="tableMenuOpen" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-lg shadow-sm border border-surface-100 p-1 w-[120px]" @click.stop>
               <div v-if="!editor?.isActive('table')" class="space-y-1.5 mb-2">
                 <div class="flex items-center gap-1.5">
                   <span class="text-[11px] text-surface-500 w-4">行</span>
