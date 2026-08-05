@@ -288,7 +288,7 @@ pub fn run() {
             commands::file_list_global,
             commands::file_move, commands::file_tree,
             commands::file_folder_create, commands::file_folder_rename, commands::file_folder_delete, commands::file_folder_move, commands::file_folder_reorder,
-            commands::file_add_note_mapping, commands::file_remove_note_mapping, commands::file_list_by_note,
+            commands::file_remove_note_mapping, commands::file_list_by_note,
             commands::file_add_todo_mapping, commands::file_remove_todo_mapping, commands::file_list_by_todo,
             commands::file_delete_from_domain,
             commands::file_list_all, commands::file_move_to_folder,

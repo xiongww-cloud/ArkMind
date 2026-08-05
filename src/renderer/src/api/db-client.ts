@@ -161,7 +161,6 @@ export async function listGlobalFiles(): Promise<FileRow[]> { return invoke('fil
 export async function listAllFiles(): Promise<FileRow[]> { return invoke('file_list_all') }
 export async function fetchFileTree(projectId?: string): Promise<FileTreeResult> { return invoke('file_tree', { projectId: projectId || null }) }
 export async function moveFile(data: { fileId: string; fromDomain: string; toDomain: string; toId?: string; toFolderId?: string }): Promise<FileMoveResult> { return invoke('file_move', { data }) }
-export async function addFileNoteMapping(fileId: string, noteId: string, fileName?: string): Promise<FileNoteMappingResult> { return invoke('file_add_note_mapping', { fileId, noteId, fileName: fileName || null }) }
 export async function removeFileNoteMapping(fileId: string, noteId: string): Promise<FileNoteMappingResult> { return invoke('file_remove_note_mapping', { fileId, noteId }) }
 export async function fetchFilesByNote(noteId: string): Promise<FileRow[]> { return invoke('file_list_by_note', { noteId }) }
 export async function addFileTodoMapping(fileId: string, todoId: string, fileName?: string): Promise<FileNoteMappingResult> { return invoke('file_add_todo_mapping', { fileId, todoId, fileName: fileName || null }) }

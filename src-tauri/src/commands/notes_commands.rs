@@ -147,6 +147,8 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM file_relations WHERE entity_type='note' AND entity_id=?",&[json!(&note_id)]).ok();
     crate::services::business_relations::delete_by_source("NOTE", &note_id);
+    // 清理以该笔记为目标的边（真实附件的 FILE→NOTE has_file 边，由 add_relation 写入）
+    database::run("DELETE FROM business_relations WHERE target_type='NOTE' AND target_id=?", &[json!(&note_id)]).ok();
     database::run("DELETE FROM notes WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
     database::save().map_err(|e|e.to_string())?;

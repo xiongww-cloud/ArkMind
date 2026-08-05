@@ -19,7 +19,7 @@ import {
   fetchNotebooks, createNotebook, updateNotebook, deleteNotebook,
   countNotesByNotebook,
   fetchProjects,
-  addFileNoteMapping, deleteFileFromDomain, fetchFilesByNote, uploadFile, previewFile, updateFileMeta,
+  deleteFileFromDomain, fetchFilesByNote, uploadFile, previewFile, updateFileMeta,
 } from '@/api/db-client'
 import { useLinkModals } from '@/composables/useLinkModals'
 import { useUploadProgress } from '@/composables/useUploadProgress'
@@ -87,9 +87,6 @@ function insertFileLink(f: any) {
     type: 'fileMention',
     attrs: { fileId, name: fname },
   }).insertContent(' ').run()
-  if (selectedNoteId.value && fileId) {
-    addFileNoteMapping(fileId, selectedNoteId.value, fname).catch(() => {})
-  }
   atOpen.value = false
 }
 
