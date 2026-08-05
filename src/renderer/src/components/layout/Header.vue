@@ -319,20 +319,6 @@ async function discardQuickNote() {
   quickNoteText.value = ''
 }
 
-// ── Auto-save on blur (with delay to allow close button to work) ──
-let blurTimer: ReturnType<typeof setTimeout> | null = null
-function onQuickBlur() {
-  blurTimer = setTimeout(() => {
-    if (quickNoteOpen.value && quickNoteText.value.trim()) {
-      saveQuickNote()
-      toast({ message: '已自动保存', type: 'success' })
-    }
-  }, 200)
-}
-function onQuickFocus() {
-  if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
-}
-
 // ── Notification center ──
 const unreadCount = ref(0)
 const showNotifications = ref(false)
@@ -379,7 +365,6 @@ onMounted(async () => {
 // 路由变化时刷新待办计数
 watch(() => route.path, () => loadQuickTodos())
 onUnmounted(() => {
-  if (blurTimer) clearTimeout(blurTimer)
   if (todoPollTimer) clearInterval(todoPollTimer)
   if (notifPollTimer) clearInterval(notifPollTimer)
   document.removeEventListener('mousedown', onDocumentMouseDown, true)
@@ -581,13 +566,11 @@ onUnmounted(() => {
             v-model="quickNoteText"
             class="quicknote-textarea"
             placeholder="随手记下想法、待办、灵感..."
-            @blur="onQuickBlur"
-            @focus="onQuickFocus"
           ></textarea>
 
           <!-- Footer hint -->
           <div class="quicknote-footer">
-            <span class="text-[10px] text-amber-400/60">✍ 失焦自动保存 · 右上角 × 丢弃</span>
+            <span class="text-[10px] text-amber-400/60">✍ 点击外部自动保存 · 右上角 × 丢弃</span>
           </div>
         </div>
       </div>
