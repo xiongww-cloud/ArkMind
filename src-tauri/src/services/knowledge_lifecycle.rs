@@ -78,9 +78,9 @@ pub fn cleanup_orphaned_fts5() {
 
 /// 获取指定游标之后变更的对象列表（供知识管线调用）
 /// 复合游标 (updated_at, rowid)：避免同一秒内超过 limit 条变更时边界行被永久跳过
-pub fn get_changed_since(since_ts: &str, since_rowid: i64, limit: i64) -> Vec<(i64, String, String, String, String)> {
+pub fn get_changed_since(since_ts: &str, since_rowid: i64, limit: i64) -> Vec<(i64, String, String, String)> {
     crate::database::all(
-        "SELECT rowid, source_type, source_id, content, updated_at FROM source_data \
+        "SELECT rowid, source_type, source_id, updated_at FROM source_data \
          WHERE (updated_at > ?1) OR (updated_at = ?1 AND rowid > ?2) \
          ORDER BY updated_at ASC, rowid ASC LIMIT ?3",
         &[json!(since_ts), json!(since_rowid), json!(limit)],
@@ -91,14 +91,14 @@ pub fn get_changed_since(since_ts: &str, since_rowid: i64, limit: i64) -> Vec<(i
         let rowid = r["rowid"].as_i64()?;
         let st = r["source_type"].as_str()?.to_string();
         let sid = r["source_id"].as_str()?.to_string();
-        let content = r["content"].as_str().unwrap_or("").to_string();
         let updated_at = r["updated_at"].as_str().unwrap_or("").to_string();
-        Some((rowid, st, sid, content, updated_at))
+        Some((rowid, st, sid, updated_at))
     })
     .collect()
 }
 
 /// 获取指定 source_data 的 id（供知识管线调用）
+#[allow(dead_code)]
 pub fn get_source_data_id(source_type: &str, source_id: &str) -> Option<String> {
     crate::database::get(
         "SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",

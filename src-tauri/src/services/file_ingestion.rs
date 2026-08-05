@@ -20,6 +20,22 @@ const MAX_CONCURRENT: usize = 5;
 /// 任务错误前缀：带此前缀的错误不参与任务级重试，直接标记为 failed（如视觉模型解析失败）
 pub const NON_RETRYABLE_PREFIX: &str = "__NO_RETRY__";
 
+/// 任务错误前缀：不支持的文件格式，标记为 unsupported 终态（不重试、冷启动不重置）
+pub const UNSUPPORTED_PREFIX: &str = "__UNSUPPORTED__";
+
+/// 有真实解析器的文件后缀白名单（与 file_parser::parse_file_smart 的路由一致）
+const SUPPORTED_PARSE_EXTS: &[&str] = &[
+    "txt", "md", "csv", "json",
+    "docx", "xlsx", "xls", "pptx", "ppt",
+    "pdf",
+    "png", "jpg", "jpeg", "webp", "bmp",
+];
+
+fn is_supported_parse_ext(ext: &str) -> bool {
+    let e = ext.trim_start_matches('.').to_lowercase();
+    SUPPORTED_PARSE_EXTS.contains(&e.as_str())
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 启动与主循环
 // ═══════════════════════════════════════════════════════════════
@@ -140,10 +156,15 @@ fn process_push_queue_non_blocking() {
         log::info!("[数据中台] → 启动任务 {}/{} ({}) [线程 {}/{}]", source_type, source_id, operation, idx + 1, task_count);
 
         std::thread::spawn(move || {
+            // H12: RAII guard 确保 panic 时 ACTIVE_TASKS 也能递减，防止管线永久停摆
+            struct TaskGuard;
+            impl Drop for TaskGuard {
+                fn drop(&mut self) { ACTIVE_TASKS.fetch_sub(1, Ordering::SeqCst); }
+            }
+            let _guard = TaskGuard;
             let start = std::time::Instant::now();
             process_task_with_retry(task);
             let elapsed = start.elapsed().as_millis();
-            ACTIVE_TASKS.fetch_sub(1, Ordering::SeqCst);
             log::info!("[数据中台] ← 完成任务 {}/{} (耗时 {}ms) [剩余活跃 {}]", source_type, source_id, elapsed, ACTIVE_TASKS.load(Ordering::Relaxed));
         });
     }
@@ -209,6 +230,15 @@ fn process_task_with_retry(task: serde_json::Value) {
                 log::info!("[数据中台] ✗ {}/{} 对象已删除，删除无效任务", source_type, source_id);
                 return;
             }
+            // 不支持的文件格式：标记 unsupported 终态，不参与重试，冷启动也不重置
+            if e.starts_with(UNSUPPORTED_PREFIX) {
+                let _ = crate::database::run(
+                    "UPDATE knowledge_push_queue SET status='unsupported', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+                    &[json!(retry_count + 1), json!(&e), json!(id)],
+                );
+                log::info!("[数据中台] ✗ {}/{} {}", source_type, source_id, e.trim_start_matches(UNSUPPORTED_PREFIX));
+                return;
+            }
             // 不可重试错误（如视觉模型解析失败）：直接标记 failed，不做任务级重试
             if e.starts_with(NON_RETRYABLE_PREFIX) {
                 let _ = crate::database::run(
@@ -241,8 +271,7 @@ fn process_task_with_retry(task: serde_json::Value) {
 // ═══════════════════════════════════════════════════════════════
 
 fn process_change(source_type: &str, source_id: &str) -> Result<(), String> {
-    crate::services::source_doc_sync::sync_entity(source_type, source_id);
-    Ok(())
+    crate::services::source_doc_sync::sync_entity(source_type, source_id)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -401,6 +430,8 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
 
     // 写入 source_data
     crate::database::file_sync_to_source_data(&file_id, &clean_text);
+    // O6: 文件写入 source_data 后立即触发防抖物化
+    crate::services::debounced_sync::SCHEDULER.enqueue("FILE", &file_id);
 
     // 清理临时缓存
     let _ = crate::database::run(
@@ -450,6 +481,8 @@ fn process_pdf_text_only(file_id: &str, path: &str, _total_pages: u16, source_ty
 
     // 写入 source_data
     crate::database::file_sync_to_source_data(file_id, &clean_text);
+    // O6: 文件写入 source_data 后立即触发防抖物化
+    crate::services::debounced_sync::SCHEDULER.enqueue("FILE", file_id);
 
     // 清理临时缓存
     let _ = crate::database::run(
@@ -563,6 +596,10 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     let parse_elapsed = parse_start.elapsed().as_millis();
 
     if !parse_result.success || parse_result.text.is_empty() {
+        // 后缀不在解析器白名单内且暴力兜底也失败 → 不支持的格式，终态不再重试
+        if !is_supported_parse_ext(&ext) {
+            return Err(format!("{}不支持的文件格式: .{}", UNSUPPORTED_PREFIX, ext));
+        }
         return Err(if !parse_result.error.is_empty() {
             parse_result.error
         } else {
@@ -602,6 +639,10 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     };
 
     if clean_text.trim().is_empty() {
+        // 非白名单后缀清洗后无有效内容 → 视为不支持，终态不再重试
+        if !is_supported_parse_ext(&ext) {
+            return Err(format!("{}不支持的文件格式: .{}（清洗后无有效文本）", UNSUPPORTED_PREFIX, ext));
+        }
         return Err(format!(
             "清洗后无有效文本 (原始 {} 字符)",
             parse_result.text.len()
@@ -619,6 +660,8 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     // ③ 写入 source_data
     // ════════════════════════════════════════
     crate::database::file_sync_to_source_data(&file_id, &clean_text);
+    // O6: 文件写入 source_data 后立即触发防抖物化
+    crate::services::debounced_sync::SCHEDULER.enqueue("FILE", &file_id);
 
     // 验证写入是否成功
     let check = crate::database::get(
@@ -722,7 +765,7 @@ fn ingest_pending_notes() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'NOTE',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='NOTE' AND source_id=?1)",
             &[json!(&note_id), json!(&title), json!(&md_content)],
         );
-        crate::services::ai_sync::trigger_sync("notes", &note_id);
+        crate::services::debounced_sync::SCHEDULER.enqueue("NOTE", &note_id);
         log::info!(
             "[数据中台] 📝 笔记 {} 已摄入 ({} 字符)",
             &note_id[..note_id.len().min(8)],
@@ -792,6 +835,7 @@ fn ingest_pending_products() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'PRODUCT',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='PRODUCT' AND source_id=?1)",
             &[json!(&prod_id), json!(&name), json!(&clean)],
         );
+        crate::services::debounced_sync::SCHEDULER.enqueue("PRODUCT", &prod_id);
         log::info!(
             "[数据中台] 📦 产品 {} 已摄入 ({} 字符)",
             &prod_id[..prod_id.len().min(8)],
@@ -868,6 +912,7 @@ fn ingest_pending_projects() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'PROJECT',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='PROJECT' AND source_id=?1)",
             &[json!(&proj_id), json!(&name), json!(&clean)],
         );
+        crate::services::debounced_sync::SCHEDULER.enqueue("PROJECT", &proj_id);
         log::info!(
             "[数据中台] 📁 项目 {} 已摄入 ({} 字符)",
             &proj_id[..proj_id.len().min(8)],
@@ -915,6 +960,7 @@ fn ingest_pending_todos() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'TODO',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='TODO' AND source_id=?1)",
             &[json!(&id), json!(title), json!(&md_content)],
         );
+        crate::services::debounced_sync::SCHEDULER.enqueue("TODO", &id);
         log::info!(
             "[数据中台] 📋 待办 {} 已摄入 ({} 字符)",
             &id[..id.len().min(8)],

@@ -7,11 +7,11 @@
 /// content 为空时跳过写入。
 ///
 /// 副作用：通过全局防抖调度器将实体加入物化队列（5 秒静默窗口）。
-pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &str, content: &str) {
-    if content.trim().is_empty() { return; }
+pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &str, content: &str) -> Result<(), String> {
+    if content.trim().is_empty() { return Ok(()); }
     let clean = crate::services::file_parser::sanitize_chars(content);
-    if clean.trim().is_empty() { return; }
-    let _ = crate::database::run(
+    if clean.trim().is_empty() { return Ok(()); }
+    crate::database::run(
         "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,?2,?3,?4,?5,datetime('now','localtime')) \
          ON CONFLICT(source_type,source_id) DO UPDATE SET title=excluded.title, content=excluded.content, updated_at=CASE WHEN content!=excluded.content THEN excluded.updated_at ELSE updated_at END",
         &[
@@ -21,13 +21,12 @@ pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &st
             serde_json::json!(title),
             serde_json::json!(&clean),
         ],
-    );
+    ).map_err(|e| format!("写入 source_data 失败: {}", e))?;
 
-    // ★ 触发防抖物化 + 独立打标（不依赖物化）
-    let st_lower = source_type.to_lowercase();
-    let queue_type = if st_lower.ends_with('s') { st_lower.clone() } else { format!("{}s", st_lower) };
-    _ = &queue_type; // 保留以备后用
-    
+    // ★ 触发防抖物化（事件驱动，替代 sync_loop 10s 轮询等待）
+    crate::services::debounced_sync::SCHEDULER.enqueue(source_type, source_id);
+
+    Ok(())
 }
 
 /// 删除实体对应的 source_data 记录
@@ -41,7 +40,7 @@ pub fn delete_entity_source_doc(source_type: &str, source_id: &str) {
 
 /// 根据 source_type 和 source_id 从业务表提取数据，同步到 source_data
 /// 替代 SQLite 触发器逻辑
-pub fn sync_entity(source_type: &str, source_id: &str) {
+pub fn sync_entity(source_type: &str, source_id: &str) -> Result<(), String> {
     let (title, content) = match source_type {
         "NOTE" => extract_note(source_id),
         "PRODUCT" => extract_product(source_id),
@@ -55,15 +54,15 @@ pub fn sync_entity(source_type: &str, source_id: &str) {
         "CUSTOMER" => extract_customer(source_id),
         _ => {
             log::info!("[源文档同步] 未知 source_type: {}", source_type);
-            return;
+            return Ok(());
         }
     };
     if content.trim().is_empty() {
         log::info!("[源文档同步] 内容为空，跳过: {}/{}", source_type, source_id);
-        return;
+        return Ok(());
     }
     log::info!("[源文档同步] 同步: {}/{} ({})", source_type, source_id, title);
-    sync_entity_to_source_docs(source_type, source_id, &title, &content);
+    sync_entity_to_source_docs(source_type, source_id, &title, &content)
 }
 
 fn extract_note(note_id: &str) -> (String, String) {

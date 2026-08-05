@@ -17,20 +17,36 @@
 //!   - WAL 模式保证写入与读取无冲突
 
 use dashmap::DashMap;
+use once_cell::sync::Lazy;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Semaphore};
+
+/// 全局防抖物化调度器实例（在 Tauri setup 中显式 `Lazy::force` 初始化，
+/// 确保 tokio runtime 就绪时调用 spawn()）
+pub static SCHEDULER: Lazy<Arc<DebouncedMaterializer>> =
+    Lazy::new(|| DebouncedMaterializer::spawn());
 
 // ═══════════════════════════════════════════════════════════════════
 // Constants
 // ═══════════════════════════════════════════════════════════════════
 
 /// 防抖窗口：此时间内连续写入不触发物化
-const DEBOUNCE_WINDOW_SECS: u64 = 30;
+const DEBOUNCE_WINDOW_SECS: u64 = 5;
 
 /// 最大并发物化数。SQLite 全局 Mutex 串行化所有 DB 操作，
 /// 此处限制避免过多任务同时排队等待锁。
 const MAX_CONCURRENT_MATERIALIZATIONS: usize = 4;
+
+/// 单实体物化最大重试次数（失败后按退避间隔重试）
+const MAX_MATERIALIZE_RETRIES: u32 = 5;
+
+/// 物化失败后的退避重试间隔
+const RETRY_BACKOFF_SECS: u64 = 30;
+
+/// 重试跟踪队列上限（O9：防止海量失败实体导致内存无界增长；
+/// 超限放弃的实体由 sync_loop 兜底重新入队）
+const MAX_RETRY_TRACKED: usize = 10000;
 
 // ═══════════════════════════════════════════════════════════════════
 // Types
@@ -47,15 +63,16 @@ enum DebounceState {
     Pending(Instant),
 
     /// 正在执行物化管线（切片 + FTS5 + LanceDB）。
-    /// 此状态下拒绝一切并发请求，后续写入自动排入下一周期。
-    Processing,
+    /// O5: dirty=true 表示物化期间收到新的写入，完成后需立即重新入队物化最新内容
+    Processing { dirty: bool },
 }
 
 /// 控制通道消息
 enum ControlMsg {
     /// 入队或重置倒计时
-    Enqueue { source_type: String, source_id: String },
+    Enqueue,
     /// 优雅关闭
+    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -79,14 +96,26 @@ pub struct DebouncedMaterializer {
 
     /// 控制通道发送端。clone 后可在多线程中共享。
     tx: mpsc::UnboundedSender<ControlMsg>,
-
-    /// 并发令牌：限制同时进行的物化任务数量。
-    /// SQLite 使用全局 Mutex<Connection> 串行化写入，4 个并发任务
-    /// 可在排队时避免饥饿，同时不会产生过多无谓的锁竞争。
-    materialize_permits: Arc<Semaphore>,
 }
 
 impl DebouncedMaterializer {
+    /// 在任意上下文中启动后台 worker：
+    /// - 已有 tokio runtime 上下文（如单元测试）→ 直接用当前 handle
+    /// - 无 tokio 上下文（如 Tauri setup 主线程）→ 用 tauri async runtime
+    fn spawn_worker<F>(future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(future);
+            }
+            Err(_) => {
+                tauri::async_runtime::spawn(future);
+            }
+        }
+    }
+
     /// 创建调度器并启动后台 worker。
     ///
     /// worker 运行在独立的 tokio 任务中，由调用方的 tokio runtime 驱动。
@@ -95,14 +124,17 @@ impl DebouncedMaterializer {
         let state: Arc<DashMap<EntityKey, DebounceState>> = Arc::new(DashMap::new());
         let (tx, rx) = mpsc::unbounded_channel();
         let materialize_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_MATERIALIZATIONS));
+        let retries: Arc<DashMap<EntityKey, u32>> = Arc::new(DashMap::new());
 
         let worker_state = state.clone();
-        let worker_permits = materialize_permits.clone();
-        tokio::spawn(async move {
-            Self::worker_loop(worker_state, worker_permits, rx).await;
+        let worker_permits = materialize_permits;
+        let worker_retries = retries;
+        let worker_tx = tx.clone();
+        Self::spawn_worker(async move {
+            Self::worker_loop(worker_state, worker_permits, worker_retries, worker_tx, rx).await;
         });
 
-        let sched = Self { state, tx, materialize_permits };
+        let sched = Self { state, tx };
         log::info!(
             "[防抖调度器] 已启动 (窗口={}s, 并发={})",
             DEBOUNCE_WINDOW_SECS, MAX_CONCURRENT_MATERIALIZATIONS
@@ -115,13 +147,13 @@ impl DebouncedMaterializer {
     /// 幂等语义：
     ///   - 首次入队 → 插入 `Pending(now + 5s)`，通知 worker
     ///   - 重复入队（仍在 Pending）→ 更新 deadline 为 `now + 5s`，重置倒计时
-    ///   - 重复入队（正在 Processing）→ 忽略，物化完成后源数据已更新即自动下一轮
+    ///   - 重复入队（正在 Processing）→ O5: 标记 dirty，物化完成后立即重新入队
     ///
     /// 调用方无需关心返回值 — 入队操作是 fire-and-forget。
     pub fn enqueue(&self, source_type: &str, source_id: &str) {
         let key: EntityKey = (source_type.to_string(), source_id.to_string());
         let now = Instant::now();
-        let deadline = now + Duration::from_secs(5);
+        let deadline = now + Duration::from_secs(DEBOUNCE_WINDOW_SECS);
 
         // ── 快速路径：更新 DashMap ──
         match self.state.get_mut(&key) {
@@ -131,29 +163,24 @@ impl DebouncedMaterializer {
                         // ★ Upsert 核心：重置倒计时，不创建新任务
                         *entry = DebounceState::Pending(deadline);
                         // 通知 worker 重新计算最早截止时间
-                        let _ = self.tx.send(ControlMsg::Enqueue {
-                            source_type: source_type.to_string(),
-                            source_id: source_id.to_string(),
-                        });
+                        let _ = self.tx.send(ControlMsg::Enqueue);
                     }
-                    DebounceState::Processing => {
-                        // 已在处理中，无需动作。
-                        // 当物化完成后 worker 会删除该键，后续写入自动进入新周期。
+                    DebounceState::Processing { .. } => {
+                        // O5: 物化期间收到新写入 → 标记 dirty，完成后立即重新物化最新内容
+                        *entry = DebounceState::Processing { dirty: true };
                     }
                 }
             }
             None => {
                 self.state
                     .insert(key.clone(), DebounceState::Pending(deadline));
-                let _ = self.tx.send(ControlMsg::Enqueue {
-                    source_type: source_type.to_string(),
-                    source_id: source_id.to_string(),
-                });
+                let _ = self.tx.send(ControlMsg::Enqueue);
             }
         }
     }
 
     /// 优雅关闭调度器及其 worker。
+    #[allow(dead_code)]
     pub fn shutdown(&self) {
         let _ = self.tx.send(ControlMsg::Shutdown);
     }
@@ -164,6 +191,12 @@ impl DebouncedMaterializer {
         self.state.len()
     }
 
+    /// 检查实体是否已在调度器跟踪中（Pending 或 Processing）。
+    /// 供 sync_loop 兜底 enqueue 时跳过已入队实体，避免重置其防抖窗口。
+    pub fn is_tracked(&self, source_type: &str, source_id: &str) -> bool {
+        self.state.contains_key(&(source_type.to_string(), source_id.to_string()))
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Worker internals
     // ═══════════════════════════════════════════════════════════════
@@ -172,6 +205,8 @@ impl DebouncedMaterializer {
     async fn worker_loop(
         state: Arc<DashMap<EntityKey, DebounceState>>,
         permits: Arc<Semaphore>,
+        retries: Arc<DashMap<EntityKey, u32>>,
+        tx: mpsc::UnboundedSender<ControlMsg>,
         mut rx: mpsc::UnboundedReceiver<ControlMsg>,
     ) {
         loop {
@@ -193,13 +228,15 @@ impl DebouncedMaterializer {
             // ── 派发到期任务（受并发令牌限制） ──
             for key in &due_keys {
                 // 原子切换状态：Pending → Processing
-                state.insert(key.clone(), DebounceState::Processing);
+                state.insert(key.clone(), DebounceState::Processing { dirty: false });
 
                 let st = key.0.clone();
                 let sid = key.1.clone();
                 let state_ref = state.clone();
                 let key_clone = key.clone();
                 let permits_ref = permits.clone();
+                let retries_ref = retries.clone();
+                let tx_ref = tx.clone();
 
                 tokio::spawn(async move {
                     // ★ 获取并发令牌后再执行物化
@@ -207,7 +244,7 @@ impl DebouncedMaterializer {
                     // 二次确认：当前实体是否仍在 Processing 状态
                     // （极端场景下 worker 可能在获取令牌前被意外唤醒重复派发）
                     if let Some(entry) = state_ref.get(&key_clone) {
-                        if !matches!(*entry, DebounceState::Processing) {
+                        if !matches!(*entry, DebounceState::Processing { .. }) {
                             return;
                         }
                     }
@@ -215,10 +252,49 @@ impl DebouncedMaterializer {
                     let ok =
                         crate::services::ai_sync::process_single_entity(&st, &sid).await;
                     if ok {
-                        log::info!("[防抖调度器] 已物化: {st}:{sid}");
+                        retries_ref.remove(&key_clone);
+                        // O5: 物化期间收到新写入（dirty）→ 立即重新入队物化最新内容
+                        let was_dirty = state_ref.get(&key_clone)
+                            .map_or(false, |e| matches!(*e, DebounceState::Processing { dirty: true }));
+                        state_ref.remove(&key_clone);
+                        if was_dirty {
+                            state_ref.insert(
+                                key_clone.clone(),
+                                DebounceState::Pending(
+                                    Instant::now() + Duration::from_secs(DEBOUNCE_WINDOW_SECS),
+                                ),
+                            );
+                            let _ = tx_ref.send(ControlMsg::Enqueue);
+                            log::info!("[防抖调度器] 已物化，期间有新写入，重新排队: {st}:{sid}");
+                        } else {
+                            log::info!("[防抖调度器] 已物化: {st}:{sid}");
+                        }
+                    } else {
+                        // 物化失败 → 记录重试次数，按退避间隔重新排队
+                        let mut n = retries_ref.entry(key_clone.clone()).or_insert(0);
+                        // O9: 重试队列达到上限时放弃新失败实体（已跟踪的继续重试）
+                        if *n == 0 && retries_ref.len() >= MAX_RETRY_TRACKED {
+                            state_ref.remove(&key_clone);
+                            log::warn!("[防抖调度器] 重试队列已满，放弃（sync_loop 兜底）: {st}:{sid}");
+                        } else {
+                            *n += 1;
+                            let count = *n;
+                            if count >= MAX_MATERIALIZE_RETRIES {
+                                retries_ref.remove(&key_clone);
+                                state_ref.remove(&key_clone);
+                                log::error!("[防抖调度器] 物化失败 {count} 次，放弃: {st}:{sid}");
+                            } else {
+                                state_ref.insert(
+                                    key_clone.clone(),
+                                    DebounceState::Pending(
+                                        Instant::now() + Duration::from_secs(RETRY_BACKOFF_SECS),
+                                    ),
+                                );
+                                log::warn!("[防抖调度器] 物化失败，{count}/{MAX_MATERIALIZE_RETRIES} 次后重试: {st}:{sid}");
+                                let _ = tx_ref.send(ControlMsg::Enqueue);
+                            }
+                        }
                     }
-                    // 清除任务记录，为下一轮写入腾出空间
-                    state_ref.remove(&key_clone);
                     // _permit 在此处 drop，释放并发槽位
                 });
             }
@@ -248,7 +324,7 @@ impl DebouncedMaterializer {
                     log::info!("[防抖调度器] 已关闭");
                     break;
                 }
-                Some(ControlMsg::Enqueue { .. }) => {
+                Some(ControlMsg::Enqueue) => {
                     // 回到循环顶部重新扫描截止时间
                 }
             }

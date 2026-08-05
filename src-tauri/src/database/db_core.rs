@@ -65,6 +65,20 @@ pub(crate) fn all(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<V
     })
 }
 
+/// 在事务中执行闭包：成功提交，失败回滚。
+/// ⚠ 闭包内必须使用传入的 Transaction 执行 SQL，不能调用 database::run/all/get
+///   （它们会再次锁定全局连接 → 死锁）。
+pub(crate) fn transaction<T>(f: impl FnOnce(&mut rusqlite::Transaction) -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    let mut db = DB.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = db.as_mut().ok_or_else(|| rusqlite::Error::InvalidPath("Database not initialized".into()))?;
+    let mut tx = conn.transaction()?;
+    let result = f(&mut tx);
+    match result {
+        Ok(v) => { tx.commit()?; Ok(v) }
+        Err(e) => { let _ = tx.rollback(); Err(e) }
+    }
+}
+
 pub(crate) fn get(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<Option<serde_json::Value>> {
     all(sql, params).map(|rows| rows.into_iter().next())
 }

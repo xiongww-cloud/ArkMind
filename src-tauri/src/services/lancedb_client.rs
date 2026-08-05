@@ -206,6 +206,22 @@ impl LanceDBClient {
         }
         Ok(items)
     }
+
+    /// 扫描所有向量记录的 rowid（孤儿清理用）
+    pub fn scan_all_rowids(&self) -> Result<Vec<i64>, String> {
+        if !self.table_exists()? { return Ok(Vec::new()); }
+        let table = sync_run(self.db.open_table(&self.table_name).execute(), "open")?;
+        let stream = sync_run(table.query().execute(), "scan")?;
+        let batches = collect(stream)?;
+        let mut ids = Vec::new();
+        for b in batches {
+            let rids = b.column_by_name("rowid").ok_or("no rowid")?.as_any().downcast_ref::<Int64Array>().ok_or("cast")?;
+            for i in 0..b.num_rows() {
+                ids.push(rids.value(i));
+            }
+        }
+        Ok(ids)
+    }
 }
 
 static LANCEDB: Lazy<Mutex<Option<LanceDBClient>>> = Lazy::new(|| Mutex::new(None));

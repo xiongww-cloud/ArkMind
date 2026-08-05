@@ -12,7 +12,6 @@ use serde_json::json;
 
 static PIPELINE_RUNNING: AtomicBool = AtomicBool::new(false);
 static LAST_SYNC_TIME: Mutex<String> = Mutex::new(String::new());
-static FAILED_RETRY: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 static LAST_EMBED_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 /// 最近一次向量化错误（供设置页管线状态展示）
@@ -34,6 +33,31 @@ fn format_cursor(ts: &str, rowid: i64) -> String { format!("{}|{}", ts, rowid) }
 
 // ─── Entry point ──────────────────────────────────────────────────
 
+/// 启动时清理 LanceDB 孤儿向量（rowid 不在 knowledge_chunks 中）。
+/// LanceDB delete 是全表重写（单次 ~6s），故只在启动时批量执行一次，
+/// 物化热路径不再逐个删除孤儿向量。
+pub fn cleanup_orphan_vectors() {
+    if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
+        if let Some(ref c) = *g {
+            let Ok(all_rowids) = c.scan_all_rowids() else { return; };
+            if all_rowids.is_empty() { return; }
+            let chunk_ids: std::collections::HashSet<i64> = crate::database::all(
+                "SELECT id FROM knowledge_chunks WHERE chunk_type='child'", &[]
+            ).unwrap_or_default().iter()
+                .filter_map(|r| r["id"].as_i64())
+                .collect();
+            let orphans: Vec<i64> = all_rowids.into_iter()
+                .filter(|id| !chunk_ids.contains(id))
+                .collect();
+            if orphans.is_empty() { return; }
+            match c.delete_chunks_by_rowids(&orphans) {
+                Ok(_) => log::info!("[知识管线] 启动清理 LanceDB 孤儿向量: {} 条", orphans.len()),
+                Err(e) => log::warn!("[知识管线] LanceDB 孤儿向量清理失败: {}", e),
+            }
+        }
+    }
+}
+
 pub fn start() {
     if PIPELINE_RUNNING.swap(true, Ordering::AcqRel) {
         log::info!("[知识管线] 已在运行中");
@@ -52,6 +76,9 @@ pub fn start() {
 
     // ── Step 3: Vector cache consistency check ──
     clean_vector_cache();
+
+    // ── Step 3.5: 启动时批量清理 LanceDB 孤儿向量（物化热路径已移除逐条删除） ──
+    cleanup_orphan_vectors();
 
     // ── Step 4: Trash auto-cleanup ──
     auto_clean_trash();
@@ -82,7 +109,6 @@ pub fn reset_sync_time() {
         &[],
     ).ok();
     *LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner()) = format_cursor("1970-01-01 00:00:00", 0);
-    FAILED_RETRY.lock().unwrap_or_else(|e| e.into_inner()).clear();
     log::info!("[知识管线] 已重置同步游标，将重新物化所有对象");
 }
 
@@ -144,41 +170,10 @@ fn auto_clean_trash() {
 
 // ─── 3 independent polling loops ──────────────────────────────────
 
-/// 同步循环：每 10s 通过 get_changed_since 接口获取变更，创建/更新 knowledge_chunks + FTS5
+/// 同步循环：每 10s 扫描 source_data 变更并入队到防抖物化调度器（事件驱动物化）
 async fn sync_loop() {
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
-
-        // ── 优先重试上轮物化失败的对象（失败不推进游标之外的兜底） ──
-        let retry_list: Vec<(String, String)> = FAILED_RETRY.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if !retry_list.is_empty() {
-            log::info!("[知识管线] 重试 {} 个物化失败对象", retry_list.len());
-            for (source_type, source_id) in &retry_list {
-                let row = crate::database::get(
-                    "SELECT id, content FROM source_data WHERE source_type=?1 AND source_id=?2",
-                    &[json!(source_type), json!(source_id)],
-                ).ok().flatten();
-                match row {
-                    Some(r) => {
-                        let sd_id = r["id"].as_str().unwrap_or("").to_string();
-                        let content = r["content"].as_str().unwrap_or("").to_string();
-                        match crate::services::ai_sync::materialize_and_store(source_type, source_id, sd_id, &content).await {
-                            Ok(_) => {
-                                FAILED_RETRY.lock().unwrap_or_else(|e| e.into_inner())
-                                    .retain(|(t, i)| !(t == source_type && i == source_id));
-                                log::info!("[知识管线] 重试成功: {}/{}", source_type, source_id);
-                            },
-                            Err(e) => log::warn!("[知识管线] 重试仍失败 {}/{}: {}", source_type, source_id, e),
-                        }
-                    }
-                    None => {
-                        // 源数据已删除，从重试列表移除
-                        FAILED_RETRY.lock().unwrap_or_else(|e| e.into_inner())
-                            .retain(|(t, i)| !(t == source_type && i == source_id));
-                    }
-                }
-            }
-        }
 
         let cursor = LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let (since_ts, since_rowid) = parse_cursor(&cursor);
@@ -186,34 +181,23 @@ async fn sync_loop() {
 
         if !changed.is_empty() {
             log::info!("[知识管线] 发现 {} 个变更对象（since {}|{}）", changed.len(), since_ts, since_rowid);
-            for (_, source_type, source_id, _, updated_at) in &changed {
+            for (_, source_type, source_id, updated_at) in &changed {
                 log::info!("[知识管线]   - {}/{} updated={}", source_type, source_id, updated_at);
             }
             let mut last_ts = since_ts.clone();
             let mut last_rowid = since_rowid;
 
-            for (rowid, source_type, source_id, content, updated_at) in &changed {
-                // 获取 source_data_id
-                if let Some(sd_id) = crate::services::knowledge_lifecycle::get_source_data_id(source_type, source_id) {
-                    // 直接传入 source_type，由 materialize_and_store 内部处理类型转换
-                    match crate::services::ai_sync::materialize_and_store(source_type, source_id, sd_id, content).await {
-                        Ok(_) => {},
-                        Err(e) => {
-                            log::warn!("[知识管线] 物化失败 {}/{}: {}（已加入重试队列）", source_type, source_id, e);
-                            let mut failed = FAILED_RETRY.lock().unwrap_or_else(|e| e.into_inner());
-                            if !failed.iter().any(|(t, i)| t == source_type && i == source_id) {
-                                failed.push((source_type.clone(), source_id.clone()));
-                            }
-                        },
-                    }
+            for (rowid, source_type, source_id, updated_at) in &changed {
+                // 事件驱动：入队到防抖物化调度器（source_data 已写入，调度器负责物化 + 失败重试）
+                // is_tracked 检查避免重置已入队实体的防抖窗口
+                if !crate::services::debounced_sync::SCHEDULER.is_tracked(source_type, source_id) {
+                    crate::services::debounced_sync::SCHEDULER.enqueue(source_type, source_id);
                 }
-                // 无论成败都推进游标（失败的由重试队列兜底，避免毒丸阻塞）
-                // 行按 (updated_at, rowid) 升序，最后处理的即最大游标
+                // 行按 (updated_at, rowid) 升序，最后处理的即最大游标；enqueue 为 fire-and-forget，游标正常推进
                 last_ts = updated_at.clone();
                 last_rowid = *rowid;
             }
 
-            // 更新同步游标（复合：时间戳 + rowid，防止同秒边界跳行）
             let new_cursor = format_cursor(&last_ts, last_rowid);
             *LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner()) = new_cursor.clone();
             save_sync_cursor(&new_cursor);
@@ -224,14 +208,17 @@ async fn sync_loop() {
 }
 
 /// 向量化循环：持续处理直到没有待向量化的块
+/// O7: 批大小 20；错误指数退避（1s→60s），避免打爆失败 API
 async fn embed_loop() {
+    let mut backoff = 1u64;
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
-        
+
         // 持续处理直到没有待向量化的块
         let mut had_work = false;
-        for _ in 0..10 {  // 每轮最多处理 10 批（50 个块）
-            let batch_size = 5;
+        let mut had_error = false;
+        for _ in 0..10 {  // 每轮最多处理 10 批（200 个块）
+            let batch_size = 20;
             match crate::services::hybrid_knowledge::vectorize_new_chunks(batch_size).await {
                 Ok(n) => {
                     if n > 0 {
@@ -245,16 +232,22 @@ async fn embed_loop() {
                 Err(e) => {
                     log::warn!("[知识管线] 向量化错误: {e}");
                     set_last_embed_error(Some(format!("{}（{}）", e, chrono::Local::now().format("%H:%M:%S"))));
+                    had_error = true;
                     break;
                 }
             }
             tokio::task::yield_now().await;  // 让出 CPU，避免阻塞
         }
-        
-        // 如果有工作，快速继续；否则等待 10 秒
-        if had_work {
+
+        // 有工作 → 快速继续；有错误 → 指数退避；空闲 → 常规轮询
+        if had_error {
+            tokio::time::sleep(Duration::from_secs(backoff)).await;
+            backoff = (backoff * 2).min(60);
+        } else if had_work {
+            backoff = 1;
             tokio::time::sleep(Duration::from_secs(1)).await;
         } else {
+            backoff = 1;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     }
