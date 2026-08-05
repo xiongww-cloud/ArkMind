@@ -254,7 +254,7 @@ function startFileDrag(e: MouseEvent, fid: string) {
   dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'file'; dragFileId.value = fid; dragStarted.value = true }, 300)
   document.addEventListener('mouseup', onDragUpPre)
 }
-function onDragUpPre() { document.removeEventListener('mouseup', onDragUpPre); if (dragTimer.value) { clearTimeout(dragTimer.value); dragTimer.value = null }; if (isDragging.value) onDragUp() }
+function onDragUpPre() { document.removeEventListener('mouseup', onDragUpPre); document.removeEventListener('mousemove', onDragMove); if (dragTimer.value) { clearTimeout(dragTimer.value); dragTimer.value = null }; if (isDragging.value) onDragUp() }
 function onDragMove(e: MouseEvent) {
   dragX.value = e.clientX; dragY.value = e.clientY
   const el = document.elementFromPoint(e.clientX, e.clientY)

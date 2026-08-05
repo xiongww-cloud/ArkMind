@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onDeactivated, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import GuideModal from '@/components/common/GuideModal.vue'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
@@ -14,6 +14,7 @@ import {
   pipelineDebugStatus, knowledgePipelineStatus,
   getLogs, clearLogs,
 } from '@/api/db-client'
+import { openUrl } from '@tauri-apps/plugin-opener'
 
 // ─── Vite define: 替换为 Cargo.toml 中的版本号
 const appVersion = __APP_VERSION__
@@ -798,7 +799,8 @@ async function saveVecConfig() {
     await updateAiConfig({
       embedding: {
         baseUrl: vecForm.value.baseUrl.trim() || 'https://api.openai.com/v1',
-        apiKey: vecForm.value.apiKey.trim(),
+        // C5 修复：空密钥或掩码 key 不写回，避免清空已保存的真实密钥
+        ...(vecForm.value.apiKey.trim() && !vecForm.value.apiKey.includes('●') ? { apiKey: vecForm.value.apiKey.trim() } : {}),
         modelName: newModelName,
       },
     })
@@ -1286,6 +1288,22 @@ onDeactivated(() => {
                 </div>
                 <button class="btn-secondary text-[11px]" :disabled="isRestoring" @click="handleRestoreAll">{{ isRestoring ? '恢复中...' : '一键恢复' }}</button>
               </div>
+              <!-- Domain Selector Modal -->
+              <Teleport to="body"><Transition name="modal-fade"><div v-if="showDomainSelector" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="showDomainSelector=false">
+                <div class="bg-white rounded-xl shadow-xl w-[380px] max-h-[80vh] overflow-y-auto" @click.stop>
+                  <div class="flex items-center px-5 py-3 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">选择导出范围</h3></div>
+                  <div class="p-5 space-y-2">
+                    <label v-for="d in selectedDomains" :key="d.key" class="flex items-center gap-2 cursor-pointer py-1">
+                      <input type="checkbox" v-model="d.selected" class="w-3.5 h-3.5 rounded border-surface-300 text-brand-600" />
+                      <span class="text-[11px] text-surface-600">{{ d.label }}</span>
+                    </label>
+                  </div>
+                  <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-surface-100">
+                    <button @click="showDomainSelector=false" class="btn-secondary text-xs">取消</button>
+                    <button @click="handleExportData" class="btn-primary text-xs" :disabled="isExporting">{{ isExporting ? '导出中...' : '确定导出' }}</button>
+                  </div>
+                </div>
+              </div></Transition></Teleport>
               <hr class="border-surface-100 my-1" />
               <!-- License -->
               <div v-if="licenseActivated">
@@ -1363,6 +1381,7 @@ onDeactivated(() => {
                       <span class="text-surface-300 mx-0.5">/</span>
                       <span>{{ pipelineData.fileParse?.total ?? 0 }}</span>
                       <span v-if="pipelineData.fileParse?.failed" class="text-red-400 ml-1">({{ pipelineData.fileParse.failed }} 失败)</span>
+                      <span v-if="pipelineData.fileParse?.unsupported" class="text-surface-400 ml-1">({{ pipelineData.fileParse.unsupported }} 不支持)</span>
                     </span>
                   </div>
                   <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
@@ -1417,7 +1436,7 @@ onDeactivated(() => {
               </div>
             </div>
             <div v-if="selectedPreset">
-              <a :href="LLM_PRESETS.find(p => p.name === selectedPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
+              <a :href="LLM_PRESETS.find(p => p.name === selectedPreset)?.website ?? ''" @click.prevent="openUrl(LLM_PRESETS.find(p => p.name === selectedPreset)?.website ?? '').catch(() => toast({ message: '打开官网失败', type: 'error' }))" class="text-[10px] text-blue-500 hover:underline cursor-pointer">🌐 访问官网获取 API Key</a>
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
@@ -1470,7 +1489,7 @@ onDeactivated(() => {
               </div>
             </div>
             <div v-if="selectedVisionPreset">
-              <a :href="VISION_PRESETS.find(p => p.name === selectedVisionPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
+              <a :href="VISION_PRESETS.find(p => p.name === selectedVisionPreset)?.website ?? ''" @click.prevent="openUrl(VISION_PRESETS.find(p => p.name === selectedVisionPreset)?.website ?? '').catch(() => toast({ message: '打开官网失败', type: 'error' }))" class="text-[10px] text-blue-500 hover:underline cursor-pointer">🌐 访问官网获取 API Key</a>
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>
@@ -1523,7 +1542,7 @@ onDeactivated(() => {
               </div>
             </div>
             <div v-if="selectedVecPreset">
-              <a :href="VEC_PRESETS.find(p => p.name === selectedVecPreset)?.website" target="_blank" class="text-[10px] text-blue-500 hover:underline">🌐 访问官网获取 API Key</a>
+              <a :href="VEC_PRESETS.find(p => p.name === selectedVecPreset)?.website ?? ''" @click.prevent="openUrl(VEC_PRESETS.find(p => p.name === selectedVecPreset)?.website ?? '').catch(() => toast({ message: '打开官网失败', type: 'error' }))" class="text-[10px] text-blue-500 hover:underline cursor-pointer">🌐 访问官网获取 API Key</a>
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">Base URL</label>

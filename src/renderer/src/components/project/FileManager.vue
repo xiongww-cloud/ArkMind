@@ -128,7 +128,7 @@ function startFileDrag(e: MouseEvent, fileId: string) {
   dragFileTimer.value = setTimeout(() => { isDraggingFile.value = true; dragFileId.value = fileId; dragStarted.value = true }, 300)
   document.addEventListener('mouseup', onFileDragUpPre)
 }
-function onFileDragUpPre() { document.removeEventListener('mouseup', onFileDragUpPre); if (dragFileTimer.value) { clearTimeout(dragFileTimer.value); dragFileTimer.value = null }; if (isDraggingFile.value) onFileDragUp() }
+function onFileDragUpPre() { document.removeEventListener('mouseup', onFileDragUpPre); document.removeEventListener('mousemove', onFileDragMove); if (dragFileTimer.value) { clearTimeout(dragFileTimer.value); dragFileTimer.value = null }; if (isDraggingFile.value) onFileDragUp() }
 function onFileDragMove(e: MouseEvent) {
   dragX.value = e.clientX; dragY.value = e.clientY
   const el = document.elementFromPoint(e.clientX, e.clientY)
