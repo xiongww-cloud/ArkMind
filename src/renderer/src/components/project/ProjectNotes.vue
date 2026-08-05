@@ -30,6 +30,9 @@ onActivated(async () => {
   await loadProjectNotes()
 })
 
+// 子 tab 用 v-if 切换会销毁重建组件，onActivated 不触发，需挂载即加载
+watch(() => props.projectId, () => { loadProjectNotes() }, { immediate: true })
+
 watch(selectedNote, (note) => { editingNoteTitle.value = note?.title || '' })
 
 async function saveNoteTitle() {
