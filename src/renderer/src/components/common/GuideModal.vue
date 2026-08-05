@@ -7,10 +7,11 @@ import { setSystemSetting } from '@/api/db-client'
 const router = useRouter()
 
 const show = ref(false)
-const step = ref(0)
+const current = ref(0)
 
 interface GuideAction { label: string; path: string; icon: string; primary?: boolean }
-interface GuideStep {
+interface GuideChapter {
+  group: string
   icon: string
   iconBg: string
   iconColor: string
@@ -20,41 +21,25 @@ interface GuideStep {
   actions?: GuideAction[]
 }
 
-const steps: GuideStep[] = [
+const chapters: GuideChapter[] = [
+  // ─── 入门 ────────────────────────────────────────────────────────────
   {
+    group: '入门',
     icon: 'home', iconBg: 'bg-brand-50', iconColor: 'text-brand-600',
-    title: '欢迎来到方舟智库',
-    content: `欢迎使用 ArkMind 方舟智库。这是一款帮你「攒知识、用 AI」的桌面软件。\n\n你平时在软件里记录的项目、客户、产品、笔记、文件、待办……这些内容，都会自动沉淀成你自己的知识积累，越用越有价值。`,
-  },
-  {
-    icon: 'sparkles', iconBg: 'bg-purple-50', iconColor: 'text-purple-600',
-    title: 'AI 能帮你做什么',
-    content: `配好 AI 之后，它能做三件大事：\n\n① 精准回答 — 基于你软件里的真实数据回答，不瞎猜。比如「这个客户去年签了多少钱」。\n\n② 帮你操作软件 — 直接说需求，AI 帮你动手完成。比如「新建一个待办」「把 XX 项目状态改成商机」「添加一个客户联系方式」。它只会在你授权的范围内操作，重要改动都会先跟你确认。\n\n③ 整理与总结 — 帮你查资料、归纳要点、写总结，像一位熟悉你全部业务的助手。`,
-  },
-  {
-    icon: 'settings', iconBg: 'bg-blue-50', iconColor: 'text-blue-600',
-    title: '配置 AI 需要 3 样东西',
-    content: `在「系统设置 → AI 模型配置」里配置 3 类模型：\n\n① 语言模型（必配）— AI 的大脑，负责理解和回答。推荐：小米 MiMo V2.5\n② 视觉模型（可选）— 让它看懂图片、扫描件和 PDF 文档里的内容。推荐：小米 MiMo V2.5\n③ 向量模型（必配）— 把内容建索引，让 AI 快速找到你的资料。推荐：硅基流动 bge-m3\n\n每类只需填三项：接口地址、密钥、模型名称。有推荐预设一键填入，还能先测试连接再保存。`,
-  },
-  {
-    icon: 'archive', iconBg: 'bg-emerald-50', iconColor: 'text-emerald-600',
-    title: '知识是怎么沉淀的',
-    content: `软件会把你录入的项目、笔记、文件等资料，自动整理成「知识碎片」，存入你的个人知识库。\n\nAI 回答问题时，会先从你的知识库里检索相关内容，再结合它们给你精准答案。内容越多、越完整，AI 就越懂你。\n\n提示：知识库有「衰减机制」，长期不用的内容会逐渐淡化。重要信息 AI 会帮你记住（见下一步）。`,
-  },
-  {
-    icon: 'lightbulb', iconBg: 'bg-amber-50', iconColor: 'text-amber-600',
-    title: '把它当成一位新同事',
-    content: `和 AI 相处，就像和一位新同事相处——它会记住你，也会听你的规矩。\n\n它会主动记住：不用刻意教它。对话中你提到的设备知识、客户偏好、怎么称呼你……它觉得重要就会默默记下来，下次聊天自然用上。\n\n它会守你的规矩：你也可以交代它工作习惯，它会一直照做。比如「以后回答时先列要点，再展开说明」「我是做安防集成的，推荐设备时优先考虑性价比」。\n\n它记住的东西、立下的规矩，随时都能调整，直接开口就行：\n· 「你记住了哪些内容？」\n· 「你现在有哪些规矩？」\n· 「把 XX 那条改成……」「忘掉 XX 那条」\n\n相处越久，它越懂你。`,
-  },
-  {
-    icon: 'bell', iconBg: 'bg-rose-50', iconColor: 'text-rose-600',
-    title: '智能通知 —— AI 替你盯着业务',
-    content: `AI 会定期扫描你的数据，发现值得关注的事情时主动提醒你（点右上角铃铛查看）：\n\n· 待办到期：快到截止日期的任务\n· 投标/签约节点：临近的关键时间点\n· 项目停滞：长时间没进展的项目\n· 重要洞察：AI 分析出的业务要点\n\n你可以在「系统设置 → 智能通知」里开关提醒、设置检查频率（每 30 分钟到 24 小时）。也可以直接对 AI 说「帮我创建一条通知」或「查看通知」。`,
-  },
-  {
-    icon: 'play', iconBg: 'bg-cyan-50', iconColor: 'text-cyan-600',
-    title: '开始使用',
-    content: '一切就绪！从这里可以快速到达任何功能，开始你的知识积累之旅。',
+    title: '快速上手',
+    content: `欢迎使用 ArkMind 方舟智库——一款帮你「攒知识、用 AI」的桌面软件。三步上手：
+
+① 配置 AI（必做）— 打开「系统设置 → AI 模型配置」，填好三类模型的接口地址、密钥、模型名称：
+· 语言模型：AI 的大脑，负责理解和回答。推荐：小米 MiMo V2.5
+· 向量模型：给内容建索引，让 AI 快速找到你的资料。推荐：硅基流动 bge-m3
+· 视觉模型（可选）：让 AI 看懂图片、扫描件和 PDF。推荐：小米 MiMo V2.5
+每类模型都有推荐预设可一键填入，可先「测试连接」再保存。
+
+② 录入业务数据 — 项目、客户、产品、笔记、文件、待办……平时怎么用就怎么录，内容会自动沉淀成你的知识库。
+
+③ 开始使用 AI — 在「智能问答」里直接问：「这个客户去年签了多少钱」「帮我把 XX 项目状态改成商机」。它基于你的真实数据回答，也能帮你动手操作软件。
+
+左侧目录可以随时跳到任意功能的详细说明。`,
     actions: [
       { label: '去配置 AI', path: '/settings', icon: 'settings', primary: true },
       { label: '新建项目', path: '/projects', icon: 'folder-open' },
@@ -71,23 +56,286 @@ const steps: GuideStep[] = [
       '这份指南以后可以随时重新打开：系统设置 → 右上角「使用指南」。',
     ],
   },
+  // ─── 功能模块 ────────────────────────────────────────────────────────
+  {
+    group: '功能模块',
+    icon: 'dashboard', iconBg: 'bg-blue-50', iconColor: 'text-blue-600',
+    title: '总览',
+    content: `打开软件第一眼看到的驾驶舱，一屏掌握业务全貌。
+
+① 顶部统计条 — 项目、联系人、客户、产品、笔记、文件、知识碎片的总数，点任意一项直接跳转对应页面。
+
+② 五张核心指标卡 — 活跃项目、管道金额（含本月新增和环比）、本月中标（个数/金额/胜率）、未来 30 天预计下单、紧急事项。
+
+③ 图表区 — 项目阶段漏斗、阶段金额分布、近 6 个月新增与中标趋势、客户金额 Top5。
+
+④ 右侧三栏 — 待办事项（点进去直达）、关键截止日期（投标/下单，红色脉冲表示紧急）、最近笔记。
+
+⑤ 知识库概览 — 知识碎片冷热分布和增长趋势。
+
+逻辑说明：
+· 「紧急事项」= 已逾期的待办 + 2 天内要投标的项目。
+· 「预计下单」只统计填了预计下单日期、且未中标/已下单/未丢单/未归档的项目。
+· 所有数据实时计算，不需要手动刷新。`,
+  },
+  {
+    group: '功能模块',
+    icon: 'folder-open', iconBg: 'bg-emerald-50', iconColor: 'text-emerald-600',
+    title: '项目库',
+    content: `所有项目的一张大表：筛选、排序、就地编辑，都在这里完成。
+
+基本用法：
+· 新建项目：填名称、金额、客户、阶段；阶段选「投标」时会要求填投标时间；重名会提示。
+· 筛选：搜索框（名称/描述/客户/负责人），可按阶段、金额区间、更新时间、预计下单季度组合过滤。
+· 排序：点表头（名称/阶段/金额/预计下单/更新时间）切换升降序。
+· 就地编辑：鼠标悬停名称旁的铅笔改名字；点阶段下拉直接换阶段；点金额、预计下单日期直接改，不用进详情页。
+· 导入导出：勾选多个项目可打包导出为一个 .ark 文件；也能导入别人发你的 .ark 项目包。
+
+逻辑说明：
+· 你改状态、金额、日期时，软件会自动往该项目的「日志」里写一条动态记录。
+· 列表默认只显示"你的"项目（你是负责人、或没有负责人）。
+· 点某一行进入项目详情，切换页面再回来时滚动位置会保留。`,
+  },
+  {
+    group: '功能模块',
+    icon: 'template', iconBg: 'bg-indigo-50', iconColor: 'text-indigo-600',
+    title: '项目详情',
+    content: `点开一个项目后进入的工作台，顶部 6 个标签页管理这个项目的方方面面。
+
+① 详情 — 名称、阶段、金额、描述、预计下单都可直接改；投标倒计时（≤3 天变红，过期变紫）。下方是客户、渠道、供应商三个面板：可以关联已有伙伴、给每个伙伴写备注、管理联系人。
+
+② 文件 — 项目专属文件夹：建目录、上传、预览、下载、备注、打标签、拖拽移动文件到目录。
+
+③ 笔记 — 项目专属笔记，带完整富文本编辑器，右侧面板可以直接把项目文件插进笔记里。
+
+④ 待办 — 项目专属待办，新建时自动关联到当前项目。
+
+⑤ 方案 — 报价方案制作（重点）：
+· 一个项目可以有多个方案清单，每个清单保存多个历史版本（V1.0、V1.1……）。
+· 平时编辑都在"草稿"上进行，草稿自动保存、刷新不丢。
+· 产品型号列有联想输入，直接搜产品库里的型号。
+· 点「保存版本」把草稿归档成正式版本，可打标签（降本减配/增项扩容等）。
+· 支持导出 PMS Excel；也能导入华为 SCT/eDesigner 报价单，软件会把服务费按比例自动摊到硬件上，生成预览确认后写入。
+
+⑥ 日志 — 这个项目发生的一切：系统日志（自动记录）、用户日志（手动写）、AI 日志。
+
+逻辑说明：
+· 详情页所有字段改动都会自动写日志，日志页大部分是机器生成的。
+· 删除项目会级联删除它的方案、版本和文件关联，删除前有确认提示。`,
+  },
+  {
+    group: '功能模块',
+    icon: 'cube', iconBg: 'bg-amber-50', iconColor: 'text-amber-600',
+    title: '产品库',
+    content: `产品资料的三栏工作台：左边系列目录、中间产品列表、右边产品详情。
+
+基本用法：
+· 目录：可以无限层级建子目录、改名、删除；「未分类」是系统目录，固定在最下面。
+· 拖拽：按住 300 毫秒开始拖——目录拖到目录上/下=排序，拖进目录=移动层级；产品拖到目录上=归类。
+· 产品详情：双击名字改名（全库查重）；产品描述、技术参数直接编辑，松手 0.6 秒后自动保存。
+· 物料：给产品上传彩页、白皮书、检测报告等资料，上传时必须关联至少一个产品；同一个物料可以关联多个产品（勾选目录会连带选中目录下所有产品）。
+
+Excel 导入导出：
+· 导出：一键把全部产品导出为 Excel（两列：产品名称、技术参数）。
+· 导入：选择 Excel 文件后会先弹出预览——共解析多少条、多少条可导入、多少条同名会跳过；选好目标目录再导入。同名产品只跳过、不覆盖。
+
+逻辑说明：
+· 物料上传是后台进行的，上传进度看右下角全局进度条。
+· 从全局搜索跳过来时，会自动展开对应目录并定位到产品。`,
+  },
+  {
+    group: '功能模块',
+    icon: 'archive', iconBg: 'bg-cyan-50', iconColor: 'text-cyan-600',
+    title: '资料库',
+    content: `全局文件仓库：所有上传的文件在这里统一管理。
+
+基本用法：
+· 目录：左侧建多级文件夹，支持拖拽排序和移动层级；「未分类」放没归类的文件。
+· 文件：按类型筛选（Word/Excel/PPT/图片等）、按名称搜索；点文件名直接预览，可以改名、写备注、下载、删除。
+· 整理：把文件拖到文件夹上就能移动过去；上传时会存进当前选中的文件夹。
+
+逻辑说明（重要）：
+· 文件上传后，后台会自动解析文字内容，喂给知识库——之后 AI 问答就能搜到文件里的内容。
+· PDF 按页解析，中断后下次会接着上次进度继续。
+· 扫描件 PDF 和图片里的文字需要靠「视觉模型」做 OCR 识别。如果没配视觉模型，这类文件解析不出来。
+· 解析进度和失败原因去「系统设置 → 知识管线管理」查看（文件解析进度条）。不支持的格式会标记为"不支持"，不会反复重试。`,
+  },
+  {
+    group: '功能模块',
+    icon: 'file-doc', iconBg: 'bg-violet-50', iconColor: 'text-violet-600',
+    title: '笔记库',
+    content: `三栏笔记应用：笔记本树 → 笔记列表 → 富文本编辑器。
+
+基本用法：
+· 闪记：进入「闪记」视图会自动创建今天的笔记（标题就是日期），随手记今天的事。昨天的空白闪记会被自动清理。
+· 笔记本：可以建多级子笔记本；删除笔记本时里面的笔记会进回收站。
+· 编辑器：标题、加粗/斜体/下划线、列表、任务清单、表格、分割线、代码块、插入时间。
+· 回收站：删掉的笔记在这里，可以恢复到指定笔记本，或永久删除。
+
+附件与 @ 链接（两个独立的东西）：
+· 附件：右侧附件面板管理"附着在笔记上的文件"——上传、预览、插进正文、删除。附件会写入知识图谱，并随笔记一起导出。
+· @ 插入链接：只是正文里的引用卡片（项目/文件），点卡片直达目标——不会产生附件、不写知识图谱。
+
+逻辑说明：
+· 自动保存：停止输入 3 秒后自动保存；切换笔记/页面时也会保存。内容没变化不会重复保存。
+· 回收站的笔记 30 天后自动清空。
+· 点笔记里的项目引用卡片，会以弹窗形式直接打开项目详情，不用跳转页面。`,
+  },
+  {
+    group: '功能模块',
+    icon: 'list', iconBg: 'bg-rose-50', iconColor: 'text-rose-600',
+    title: '待办',
+    content: `任务管理：列表 + 日历两种视图，支持优先级、重复任务和附件。
+
+基本用法：
+· 视图切换：列表视图按状态分组；日历视图按月看分布，点某天可以直接在那一天建待办。
+· 优先级：高/中/低（P1/P2/P3），用颜色区分；逾期的日期会标红。
+· 重复任务：截止日期那里可以选每天/每周/每月重复。
+· 详情：点进待办可以写富文本内容、关联项目、加附件；关联项目后还能看到项目里的文件。
+· 已完成：列表底部的折叠抽屉，点勾选可以撤销完成。
+
+逻辑说明：
+· 排序规则：有日期的按截止日升序，没日期的按优先级排。
+· 重复任务完成后，截止日会自动滚到下一期，不会消失。
+· 内容编辑 3 秒后自动保存。
+· 待办到期前，AI 会通过智能通知提醒你。`,
+  },
+  {
+    group: '功能模块',
+    icon: 'users', iconBg: 'bg-teal-50', iconColor: 'text-teal-600',
+    title: '通讯录',
+    content: `客户、渠道、供应商的统一管理：三个标签页，用法完全一致。
+
+基本用法：
+· 左侧公司列表：按名称/地址/电话/联系人搜索，角标显示联系人数量。
+· 右侧公司信息：名称、电话、地址、备注都可以点铅笔就地编辑，回车保存。
+· 联系人：每家公司下可以加多个联系人（姓名/职位/电话/邮箱/备注），职位有常用预设（总经理/经理等）一键填入。
+· 删除公司会连带删除它下面的所有联系人，删除前有确认。
+
+逻辑说明：
+· 在项目详情里把这家公司关联为渠道/客户/供应商后，通讯录里它的「项目」一栏会自动显示关联的项目名。
+· 建议把伙伴信息录完整——AI 回答"这个客户去年签了多少钱"之类问题时，靠的就是这些数据。`,
+  },
+  // ─── AI 与系统 ───────────────────────────────────────────────────────
+  {
+    group: 'AI 与系统',
+    icon: 'network', iconBg: 'bg-fuchsia-50', iconColor: 'text-fuchsia-600',
+    title: '知识库页面',
+    content: `你的知识库体检报告：这里能看到 AI 脑子里装了多少东西。
+
+基本用法：
+· 四张统计卡：知识对象、知识碎片、热点碎片、冷碎片。
+· 分布图：对象按类型分布（文件/笔记/产品/项目……）、碎片按类型分布。
+· 遗忘曲线：碎片的数量和"有效权重"的关系——长期不被用到的内容权重会逐渐下降。
+· 增长趋势：知识碎片随时间的累积曲线，可以切换 7 天到一年的时间范围。
+
+逻辑说明：
+· 这个页面每 5 秒自动刷新一次，也可以当知识管线的实时监控看。
+· 「遗忘」不是删除——内容还在，只是 AI 检索时的优先级降低了。真正重要的内容 AI 会主动记住（见智能问答章节）。
+· 如果碎片数量长时间不涨，说明知识管线可能卡住了，去「系统设置 → 知识管线管理」看看。`,
+  },
+  {
+    group: 'AI 与系统',
+    icon: 'chat-ai', iconBg: 'bg-purple-50', iconColor: 'text-purple-600',
+    title: '智能问答',
+    content: `AI 助手的主战场：基于你的知识库对话。
+
+基本用法：
+· 会话：左侧可以开多个会话、改名、删除；第一句话会自动成为会话标题。
+· 提问：直接输入，回车发送，Shift+回车换行。回答逐字流式输出，中途可以点「停止」。
+· 每条回答下面可以一键复制答案；回答里的项目/待办引用卡片，点卡片直达对应页面。
+
+它会记住你：
+· 对话中你提到的设备知识、客户偏好、怎么称呼你……它觉得重要就会默默记下来，下次自然用上。
+· 你也可以给它立规矩：「以后回答先列要点再展开」「推荐设备优先考虑性价比」。
+· 随时开口调整：「你记住了哪些内容？」「把 XX 那条改成……」「忘掉 XX 那条」。
+
+逻辑说明：
+· 会话存在本地，换电脑可以用「系统设置 → 数据导出」带走。
+· 它和桌面精灵是两套独立会话，互不影响。
+· 它能帮你操作软件（建待办、改状态、加联系人），重要改动会先跟你确认。`,
+  },
+  {
+    group: 'AI 与系统',
+    icon: 'bolt', iconBg: 'bg-orange-50', iconColor: 'text-orange-600',
+    title: '桌面精灵',
+    content: `常驻桌面的小助手：不占地方，随时开聊。
+
+基本用法：
+· 点击精灵：打开/收起聊天窗。
+· 拖动精灵：挪到屏幕任意位置，位置会被记住，下次启动自动还原。
+· 状态动画：思考时天线闪烁、回答时点头、有新通知时跳动提醒你。
+· 聊天窗：点窗口外会自动收起，输入了一半的内容不会丢；往上滚可以加载更早的记录。
+
+逻辑说明：
+· 精灵的对话和「智能问答」页面是两套独立会话。
+· 开关在「系统设置 → 桌面精灵」，也可以在那里清空精灵的对话记录。`,
+  },
+  {
+    group: 'AI 与系统',
+    icon: 'search', iconBg: 'bg-sky-50', iconColor: 'text-sky-600',
+    title: '全局搜索与快捷入口',
+    content: `顶部标题栏藏着几个高频工具，不用进页面就能干活。
+
+① 全局搜索（顶部搜索框）— 搜项目、产品、笔记、待办、文件……一次搜全部，结果按类型分组，点击直接跳转到对应位置。
+
+② 快速待办（待办图标）— 下拉看当前未完成的待办，可以直接勾选完成或删除，点 + 号快速新建。
+
+③ 快速闪记（笔记图标）— 随手记一句话，自动写进今天的闪记笔记里（带时间戳）。写错了可以一键丢弃。
+
+④ 通知铃铛 — AI 发现的提醒都在这里：待办到期、投标截止、项目停滞、AI 洞察。点通知可以展开详情、跳到对应项目或待办；右上角一键全部已读。
+
+逻辑说明：
+· 通知由后台智能通知循环定期生成，频率在「系统设置 → 智能通知」里调（30 分钟到 24 小时）。
+· 有新通知时桌面精灵也会跳动提醒。`,
+  },
+  {
+    group: 'AI 与系统',
+    icon: 'settings', iconBg: 'bg-slate-100', iconColor: 'text-slate-600',
+    title: '系统设置',
+    content: `软件的控制中心：模型、通知、数据、许可证都在这里。
+
+① AI 模型配置 — 语言/视觉/向量三类模型。语言模型可以配多家（随时切换默认）；每家有推荐预设一键填入，先测试连接再保存。密钥只显示掩码，不会被回读。
+注意：更换向量模型后旧向量不兼容，软件会提示你清空并重新向量化。
+
+② 智能通知 — 开关 + 检查频率（仅启动时/30 分钟到 24 小时）。
+
+③ 数据管理 —
+· 导出数据：勾选范围（项目/产品/笔记/待办/文件/通讯录）导出为 .ark 包。
+· 导入数据：从 .ark 包恢复。
+· 一键备份：整个数据库 + 文件 + 向量库打包成 zip。
+· 一键恢复：用备份 zip 覆盖当前全部数据（操作前会确认，恢复后自动重启）。
+建议：定期一键备份，换电脑时用备份迁移。
+
+④ 知识管线管理 — 三条进度条：物化、向量化、文件解析，卡住时的自救按钮（重新向量化/重置管线/重置全部数据/清理孤儿数据）。
+
+⑤ 运行日志 — 软件运行日志，排查问题用，可以清空。
+
+⑥ 许可证 — 机器码 + 激活码激活，显示版本（基础版/高级版/AI增强版）和有效期。
+
+⑦ 桌面精灵 — 开关悬浮助手、清空它的对话记录。`,
+  },
 ]
 
-const totalSteps = steps.length
-const isFirst = computed(() => step.value === 0)
-const isLast = computed(() => step.value === totalSteps - 1)
-const currentStep = computed(() => steps[step.value])
+const groups = computed(() => {
+  const out: { name: string; items: { chapter: GuideChapter; index: number }[] }[] = []
+  chapters.forEach((c, i) => {
+    let g = out.find(x => x.name === c.group)
+    if (!g) { g = { name: c.group, items: [] }; out.push(g) }
+    g.items.push({ chapter: c, index: i })
+  })
+  return out
+})
 
-function open() { step.value = 0; show.value = true }
+const currentChapter = computed(() => chapters[current.value])
+
+function open() { current.value = 0; show.value = true }
 function close() { show.value = false }
-function next() { if (!isLast.value) step.value++ }
-function prev() { if (!isFirst.value) step.value-- }
 
 async function markSeen() {
   try { await setSystemSetting('guide_seen', '1') } catch (e) { console.error('[GuideModal] markSeen failed:', e) }
 }
 async function finish() { await markSeen(); close() }
-async function skip() { await markSeen(); close() }
 
 function goTo(path: string) {
   router.push(path)
@@ -104,73 +352,74 @@ defineExpose({ open })
       <div v-if="show" class="fixed inset-0 z-[9998] flex items-center justify-center">
         <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" />
 
-        <div class="relative bg-white rounded-2xl shadow-2xl border border-surface-200 w-full max-w-[520px] mx-4 overflow-hidden z-10">
+        <div class="relative bg-white rounded-2xl shadow-2xl border border-surface-200 w-full max-w-[760px] mx-4 overflow-hidden z-10 flex flex-col h-[580px]">
           <!-- Header -->
-          <div class="flex items-center justify-between px-6 pt-5 pb-1">
+          <div class="flex items-center justify-between px-6 pt-5 pb-3 border-b border-surface-100 shrink-0">
             <div class="flex items-center gap-2.5">
               <div class="w-8 h-8 rounded-lg overflow-hidden">
                 <img src="/icon.png" class="w-8 h-8 object-cover" alt="ArkMind" />
               </div>
               <span class="text-[13px] font-semibold text-surface-700">ArkMind 使用指南</span>
             </div>
-            <button @click="skip" class="w-7 h-7 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition-colors" title="关闭">
+            <button @click="finish" class="w-7 h-7 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition-colors" title="关闭">
               <AppIcon name="x" size="14" />
             </button>
           </div>
 
-          <!-- Step dots -->
-          <div class="flex items-center justify-center gap-1.5 pt-3 pb-1">
-            <span v-for="(s, i) in steps" :key="i" class="rounded-full transition-all duration-200"
-              :class="i === step ? 'w-4 h-1.5 bg-brand-500' : (i < step ? 'w-1.5 h-1.5 bg-brand-300' : 'w-1.5 h-1.5 bg-surface-200')" />
-          </div>
-
-          <!-- Content -->
-          <div class="px-6 py-5 min-h-[280px]">
-            <div class="flex items-center gap-3 mb-4">
-              <div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" :class="currentStep.iconBg">
-                <AppIcon :name="currentStep.icon" size="20" :class="currentStep.iconColor" />
+          <!-- Body: TOC + content -->
+          <div class="flex-1 flex min-h-0">
+            <!-- Left TOC -->
+            <div class="w-[168px] shrink-0 border-r border-surface-100 overflow-y-auto py-3 px-2 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full">
+              <div v-for="g in groups" :key="g.name" class="mb-3">
+                <p class="px-2 mb-1 text-[10px] font-semibold text-surface-300 uppercase tracking-wider">{{ g.name }}</p>
+                <button v-for="item in g.items" :key="item.index"
+                  @click="current = item.index"
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] text-left transition-colors mb-0.5"
+                  :class="current === item.index ? 'bg-brand-50 text-brand-700 font-medium' : 'text-surface-500 hover:bg-surface-50 hover:text-surface-700'">
+                  <AppIcon :name="item.chapter.icon" size="13" :class="current === item.index ? item.chapter.iconColor : 'text-surface-400'" />
+                  <span class="truncate">{{ item.chapter.title }}</span>
+                </button>
               </div>
-              <h3 class="text-[16px] font-bold text-surface-800">{{ currentStep.title }}</h3>
-            </div>
-            <p class="text-[13px] text-surface-600 leading-relaxed whitespace-pre-line">{{ currentStep.content }}</p>
-
-            <!-- Action buttons grid (action hub page) -->
-            <div v-if="currentStep.actions?.length" class="mt-4 grid grid-cols-3 gap-2">
-              <button v-for="a in currentStep.actions" :key="a.path"
-                @click="goTo(a.path)"
-                class="flex flex-col items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl border transition-colors"
-                :class="a.primary ? 'border-brand-300 bg-brand-50 text-brand-700 hover:bg-brand-100' : 'border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-surface-50 hover:text-brand-600'">
-                <AppIcon :name="a.icon" size="16" />
-                <span class="text-[11px] font-medium">{{ a.label }}</span>
-              </button>
             </div>
 
-            <!-- Tips -->
-            <div v-if="currentStep.tips?.length" class="mt-4 space-y-1.5">
-              <p v-for="(t, i) in currentStep.tips" :key="i" class="text-[11px] text-surface-400 leading-relaxed flex items-start gap-1.5">
-                <AppIcon name="lightbulb" size="11" class="flex-shrink-0 mt-0.5 text-amber-400" />
-                {{ t }}
-              </p>
+            <!-- Right content -->
+            <div class="flex-1 overflow-y-auto px-6 py-5 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full">
+              <div class="flex items-center gap-3 mb-4">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" :class="currentChapter.iconBg">
+                  <AppIcon :name="currentChapter.icon" size="20" :class="currentChapter.iconColor" />
+                </div>
+                <h3 class="text-[16px] font-bold text-surface-800">{{ currentChapter.title }}</h3>
+              </div>
+              <p class="text-[13px] text-surface-600 leading-relaxed whitespace-pre-line">{{ currentChapter.content }}</p>
+
+              <!-- Action buttons grid (action hub page) -->
+              <div v-if="currentChapter.actions?.length" class="mt-4 grid grid-cols-3 gap-2">
+                <button v-for="a in currentChapter.actions" :key="a.path"
+                  @click="goTo(a.path)"
+                  class="flex flex-col items-center justify-center gap-1.5 py-2.5 px-2 rounded-xl border transition-colors"
+                  :class="a.primary ? 'border-brand-300 bg-brand-50 text-brand-700 hover:bg-brand-100' : 'border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-surface-50 hover:text-brand-600'">
+                  <AppIcon :name="a.icon" size="16" />
+                  <span class="text-[11px] font-medium">{{ a.label }}</span>
+                </button>
+              </div>
+
+              <!-- Tips -->
+              <div v-if="currentChapter.tips?.length" class="mt-4 space-y-1.5">
+                <p v-for="(t, i) in currentChapter.tips" :key="i" class="text-[11px] text-surface-400 leading-relaxed flex items-start gap-1.5">
+                  <AppIcon name="lightbulb" size="11" class="flex-shrink-0 mt-0.5 text-amber-400" />
+                  {{ t }}
+                </p>
+              </div>
             </div>
           </div>
 
           <!-- Footer -->
-          <div class="flex items-center justify-between px-6 pb-5 pt-1">
-            <button @click="skip" class="text-[12px] text-surface-400 hover:text-surface-600 transition-colors">跳过</button>
-            <div class="flex items-center gap-2">
-              <button v-if="!isFirst" @click="prev"
-                class="px-3 py-1.5 rounded-lg text-[12px] text-surface-500 hover:bg-surface-100 transition-colors">
-                上一步
-              </button>
-              <button v-if="!isLast" @click="next"
-                class="px-4 py-1.5 rounded-lg text-[12px] font-medium bg-brand-600 text-white hover:bg-brand-700 transition-colors">
-                下一步
-              </button>
-              <button v-else @click="finish"
-                class="px-4 py-1.5 rounded-lg text-[12px] font-medium bg-brand-600 text-white hover:bg-brand-700 transition-colors">
-                完成
-              </button>
-            </div>
+          <div class="flex items-center justify-between px-6 py-3 border-t border-surface-100 shrink-0">
+            <span class="text-[11px] text-surface-300">{{ current + 1 }} / {{ chapters.length }}</span>
+            <button @click="finish"
+              class="px-4 py-1.5 rounded-lg text-[12px] font-medium bg-brand-600 text-white hover:bg-brand-700 transition-colors">
+              完成
+            </button>
           </div>
         </div>
       </div>
