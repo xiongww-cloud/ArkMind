@@ -233,15 +233,7 @@ export function useAgentChat() {
         tokenQueue.push(ev.payload.token)
       })
 
-      invoke('kb_agent_chat', { data: { query, sessionId: sessionId || undefined } }).catch((err) => {
-        console.error('[AgentChat] invoke failed:', err)
-        flushTokenQueue()
-        const msg = getMessage()
-        if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = String(err) }
-        isChatting.value = false
-        scrollFn()
-      })
-
+      // ★ invoke 已移至所有 listener 注册之后（见下方）
       const unlistenDone = await listen<any>('agent:done', async (ev) => {
         flushTokenQueue()
         const result = ev.payload
@@ -299,6 +291,17 @@ export function useAgentChat() {
         isChatting.value = false
         onError?.(ev.payload.error || 'AI 服务异常')
         onFinish?.()
+        scrollFn()
+        cleanup()
+      })
+
+      // ★ 先注册完所有 listener 再 invoke，避免 agent:done 在 listener 注册前发出导致事件丢失
+      invoke('kb_agent_chat', { data: { query, sessionId: sessionId || undefined } }).catch((err) => {
+        console.error('[AgentChat] invoke failed:', err)
+        flushTokenQueue()
+        const msg = getMessage()
+        if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = String(err) }
+        isChatting.value = false
         scrollFn()
         cleanup()
       })

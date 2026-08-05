@@ -65,6 +65,8 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn product_delete(id: String) -> Result<Value, String> {
     database::run("DELETE FROM file_relations WHERE entity_type='product' AND entity_id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::business_relations::delete_by_source("PRODUCT", &id);
+    // M2: 清理目标边（SOLUTION_ITEM-instance_of、PROJECT-belongs_to 等以 PRODUCT 为目标的关联）
+    database::run("DELETE FROM business_relations WHERE target_type='PRODUCT' AND target_id=?",&[json!(&id)]).ok();
     database::run("DELETE FROM products WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::knowledge_lifecycle::notify_deleted("PRODUCT", &id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Product, &id, crate::services::object_changed::Action::Deleted);

@@ -377,6 +377,11 @@ async function stopAgent() {
     const { agentCancel } = await import('@/api/db-client')
     await agentCancel()
     agent.isChatting.value = false
+    // C4 修复：停止时 unlisten 所有旧 listener，防止重发时重复处理
+    unlistenProgress?.(); unlistenProgress = null
+    unlistenToken?.(); unlistenToken = null
+    unlistenDone?.(); unlistenDone = null
+    unlistenError?.(); unlistenError = null
     // 更新最后一条 AI 消息
     const session = currentSession.value
     if (session) {

@@ -1450,7 +1450,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     let mut matched_sources: std::collections::HashSet<(String,String)> = std::collections::HashSet::new();
     if !keywords.is_empty() {
         let like = format!("%{}%", crate::database::escape_like(&keywords.join(" ")));
-        if let Ok(rows) = database::all("SELECT id,name,status FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
+        if let Ok(rows) = database::all("SELECT id,name,status FROM projects WHERE name LIKE ?1 ESCAPE '\\' ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
             for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PROJECT".into(), id.clone())); obj_head.push_str(&format!("[Object] Project: {} | Status: {} | source_id: PROJECT-{}\n",r["name"].as_str().unwrap_or(""),r["status"].as_str().unwrap_or(""),id)); }
         }
         if let Ok(rows) = database::all("SELECT id,name FROM products WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
@@ -2073,7 +2073,7 @@ fn resolve_project_id(project_id: &str) -> Option<String> {
     }
     // 再按名称查找
     database::get(
-        "SELECT id FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1",
+        "SELECT id FROM projects WHERE name LIKE ?1 ESCAPE '\\' ORDER BY LENGTH(name) ASC LIMIT 1",
         &[json!(format!("%{}%", crate::database::escape_like(clean_pid)))],
     )
     .ok()
@@ -2099,7 +2099,7 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
                 .ok().flatten().map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["title"].as_str().unwrap_or("").to_string()))
         } else if !t.trim().is_empty() {
             let like = format!("%{}%", crate::database::escape_like(t.trim()));
-            database::get("SELECT id,title FROM todos WHERE title LIKE ?1 ORDER BY created_at DESC LIMIT 1", &[json!(&like)])
+            database::get("SELECT id,title FROM todos WHERE title LIKE ?1 ESCAPE '\\' ORDER BY created_at DESC LIMIT 1", &[json!(&like)])
                 .ok().flatten().map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["title"].as_str().unwrap_or("").to_string()))
         } else { None }
     };
@@ -2399,7 +2399,7 @@ fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &st
                 if where_clauses.is_empty() {
                     for w in &search_words {
                         let like = format!("%{}%", crate::database::escape_like(w));
-                        where_clauses.push(format!("content LIKE ?{}", param_idx));
+                        where_clauses.push(format!("content LIKE ?{} ESCAPE '\\'", param_idx));
                         params.push(json!(like));
                         param_idx += 1;
                     }
@@ -3247,7 +3247,7 @@ fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limi
     if matched.is_empty() {
         let like = format!("%{}%", crate::database::escape_like(&q));
         if let Ok(rows) = database::all(
-            "SELECT source_type, source_id, title, content as preview, updated_at FROM source_data WHERE (title LIKE ?1 OR content LIKE ?1) AND (source_type=?2 OR ?2='') ORDER BY updated_at DESC",
+            "SELECT source_type, source_id, title, content as preview, updated_at FROM source_data WHERE (title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\') AND (source_type=?2 OR ?2='') ORDER BY updated_at DESC",
             &[json!(&like), json!(obj_type)],
         ) {
             for r in &rows {

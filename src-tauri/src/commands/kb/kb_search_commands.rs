@@ -10,13 +10,10 @@ use serde_json::{json, Value};
 #[tauri::command] pub async fn kb_delete(doc_id: String) -> Result<Value, String> {
     let parts: Vec<&str> = doc_id.splitn(2, '-').collect();
     if parts.len() == 2 {
-        let st = parts[0].to_uppercase().trim_end_matches('S').to_string();
-        let sid = parts[1];
-        if let Ok(Some(row)) = database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(sid)]) {
-            if let Some(sdid) = row["id"].as_i64() { database::run("DELETE FROM knowledge_chunks WHERE source_data_id=?", &[json!(sdid)]).ok(); }
-        }
+        let st = parts[0].to_uppercase();
+        // M3: 使用 notify_deleted 走完整清理链路（source_data + chunks + FTS + LanceDB）
+        crate::services::knowledge_lifecycle::notify_deleted(&st, parts[1]);
     }
-    database::run("DELETE FROM vector_cache WHERE chunk_id NOT IN (SELECT id FROM knowledge_chunks)",&[]).ok();
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn kb_list_documents(pid: Option<String>) -> Result<Value, String> {
@@ -64,7 +61,7 @@ use serde_json::{json, Value};
     let rows = if q.is_empty() {
         database::all("SELECT kc.rowid,kc.parent_id,kc.content,kc.chunk_index,kc.created_at FROM knowledge_chunks kc WHERE kc.chunk_type='child' ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?",&[json!(offset)]).unwrap_or_default()
     } else {
-        database::all("SELECT kc.rowid,kc.parent_id,kc.content,kc.chunk_index,kc.created_at FROM knowledge_chunks kc WHERE kc.chunk_type='child' AND kc.content LIKE ?1 ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?2",&[json!(format!("%{}%",crate::database::escape_like(&q))), json!(offset)]).unwrap_or_default()
+        database::all("SELECT kc.rowid,kc.parent_id,kc.content,kc.chunk_index,kc.created_at FROM knowledge_chunks kc WHERE kc.chunk_type='child' AND kc.content LIKE ?1 ESCAPE '\\' ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?2",&[json!(format!("%{}%",crate::database::escape_like(&q))), json!(offset)]).unwrap_or_default()
     };
     let total: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='child'",[],|r|r.get(0))).unwrap_or(0);
     Ok(json!({"success":true,"rows":rows,"total":total,"page":p}))
@@ -74,7 +71,7 @@ use serde_json::{json, Value};
     let rows = if q.is_empty() {
         database::all("SELECT kc.rowid,kc.content,kc.doc_title,kc.chunk_index,kc.source_data_id,kc.created_at,sd.source_type FROM knowledge_chunks kc LEFT JOIN source_data sd ON sd.id=kc.source_data_id WHERE kc.chunk_type='parent' ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?",&[json!(offset)]).unwrap_or_default()
     } else {
-        database::all("SELECT kc.rowid,kc.content,kc.doc_title,kc.chunk_index,kc.source_data_id,kc.created_at,sd.source_type FROM knowledge_chunks kc LEFT JOIN source_data sd ON sd.id=kc.source_data_id WHERE kc.chunk_type='parent' AND kc.content LIKE ?1 ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?2",&[json!(format!("%{}%",crate::database::escape_like(&q))), json!(offset)]).unwrap_or_default()
+        database::all("SELECT kc.rowid,kc.content,kc.doc_title,kc.chunk_index,kc.source_data_id,kc.created_at,sd.source_type FROM knowledge_chunks kc LEFT JOIN source_data sd ON sd.id=kc.source_data_id WHERE kc.chunk_type='parent' AND kc.content LIKE ?1 ESCAPE '\\' ORDER BY kc.created_at DESC LIMIT 50 OFFSET ?2",&[json!(format!("%{}%",crate::database::escape_like(&q))), json!(offset)]).unwrap_or_default()
     };
     let total: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_chunks WHERE chunk_type='parent'",[],|r|r.get(0))).unwrap_or(0);
     Ok(json!({"success":true,"rows":rows,"total":total,"page":p}))
@@ -173,7 +170,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
 #[tauri::command]
 pub async fn ext_tool_get_project_context(query_name: String) -> Result<String, String> {
     if query_name.trim().is_empty() { return Ok("请提供项目名称".into()); }
-    let projects = database::all("SELECT id,name,status,owner,budget,bid_time,description,created_at,updated_at FROM projects WHERE name LIKE ?1 ORDER BY LENGTH(name) ASC LIMIT 1",&[json!(format!("%{}%",crate::database::escape_like(query_name.trim())))]).unwrap_or_default();
+    let projects = database::all("SELECT id,name,status,owner,budget,bid_time,description,created_at,updated_at FROM projects WHERE name LIKE ?1 ESCAPE '\\' ORDER BY LENGTH(name) ASC LIMIT 1",&[json!(format!("%{}%",crate::database::escape_like(query_name.trim())))]).unwrap_or_default();
     let proj = match projects.first() { Some(p) => p, None => return Ok(format!("未找到匹配「{}」的项目", query_name)) };
     let project_id = proj["id"].as_str().unwrap_or("");
     let bom: Vec<Value> = database::all("SELECT si.product_name,si.quantity,si.description,sv.version,s.name as solution_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1 AND sv.status='final' ORDER BY sv.updated_at DESC,si.sort_order ASC",&[json!(project_id)]).unwrap_or_default().into_iter().map(|r| json!({"product_model":r["product_name"].as_str().unwrap_or(""),"quantity":r["quantity"].as_i64().unwrap_or(0),"spec":r["description"].as_str().unwrap_or(""),"solution":r["solution_name"].as_str().unwrap_or("")})).collect();

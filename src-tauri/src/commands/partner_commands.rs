@@ -133,11 +133,19 @@ pub async fn partner_delete(partner_id: String) -> Result<Value, String> {
     let contact_ids: Vec<String> = database::all("SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?", &[json!(clean_id)]).unwrap_or_default()
         .into_iter().filter_map(|r| r["contact_id"].as_str().map(String::from)).collect();
     for cid in &contact_ids {
-        crate::services::knowledge_lifecycle::notify_deleted("CONTACT", cid);
-        crate::services::source_doc_sync::delete_entity_source_doc("CONTACT", cid);
-        crate::services::business_relations::delete_by_source("CONTACT", cid);
-        database::run("DELETE FROM partner_contact_mapping WHERE contact_id=?", &[json!(cid)]).ok();
-        database::run("DELETE FROM partner_contacts WHERE id=?", &[json!(cid)]).ok();
+        // M4: 先删当前伙伴的映射
+        database::run("DELETE FROM partner_contact_mapping WHERE partner_id=? AND contact_id=?", &[json!(clean_id), json!(cid)]).ok();
+        database::run("DELETE FROM contact_project_mapping WHERE contact_id=?", &[json!(cid)]).ok();
+        // M4: 检查联系人是否还挂在其他伙伴下，只有无其他映射时才删除联系人本身
+        let other_mappings: i64 = database::with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM partner_contact_mapping WHERE contact_id=?", rusqlite::params![cid], |r| r.get(0)
+        )).unwrap_or(0);
+        if other_mappings == 0 {
+            crate::services::knowledge_lifecycle::notify_deleted("CONTACT", cid);
+            crate::services::source_doc_sync::delete_entity_source_doc("CONTACT", cid);
+            crate::services::business_relations::delete_by_source("CONTACT", cid);
+            database::run("DELETE FROM partner_contacts WHERE id=?", &[json!(cid)]).ok();
+        }
     }
     database::run("DELETE FROM partner_contact_mapping WHERE partner_id=?",&[json!(clean_id)]).ok();
     let changes = database::run("DELETE FROM partners WHERE id=?",&[json!(clean_id)]).map_err(|e| e.to_string())?;

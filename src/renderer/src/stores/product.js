@@ -158,10 +158,8 @@ export const useProductStore = defineStore('product', () => {
       // Normalize: if called with a string (series ID), wrap as { seriesId }
       if (typeof params === 'string') params = { seriesId: params }
       if (!params) params = {}
-      // 未分类需要包含 series_id 为空的旧数据，后端精确查询会漏掉，改为前端过滤
-      if (selectedSeriesId.value && selectedSeriesId.value !== uncategorizedSeriesId.value) {
-        params.seriesId = params.seriesId || selectedSeriesId.value
-      }
+      // H10 修复：始终拉全量产品，不在后端按 seriesId 过滤
+      // 否则 products.value 会丢失其他目录的数据，导致 isDuplicateName 查重绕过、Excel 导入同名校验失效
       const data = await api.fetchProducts(params)
       products.value = (Array.isArray(data) ? data : []).map(p => ({ ...p, seriesId: p.series_id ?? p.seriesId ?? null, seriesName: p.series_name ?? p.seriesName ?? '' }))
     } catch (e) {

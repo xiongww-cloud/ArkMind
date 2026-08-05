@@ -67,6 +67,10 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM partner_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM contact_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
+    // M1: 清理项目附件 file_relations（项目文件成为孤儿）
+    database::run("DELETE FROM file_relations WHERE entity_type='project' AND entity_id=?", &[json!(&id)]).ok();
+    // M1: 清理项目目录（library_folders 成为孤儿）
+    database::run("DELETE FROM library_folders WHERE project_id=?", &[json!(&id)]).ok();
     // 清理解决方案图谱边（has_version/uses/instance_of 以方案/版本/设备为源，PROJECT 源边由下方统一清理）
     database::run("DELETE FROM business_relations WHERE relation_type IN ('has_version','uses','instance_of') AND ((source_type='SOLUTION' AND source_id IN (SELECT id FROM solutions WHERE project_id=?1)) OR (source_type='SOLUTION_VERSION' AND source_id IN (SELECT sv.id FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1)) OR (source_type='SOLUTION_ITEM' AND source_id IN (SELECT si.id FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id WHERE s.project_id=?1)))", &[json!(&id)]).ok();
     database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?))", &[json!(&id)]).ok();

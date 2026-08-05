@@ -42,6 +42,10 @@ pub fn storage_base() -> String {
 pub fn invalidate_storage_base() { *STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()) = None; }
 
 pub fn flat_disk_path(hash: &str) -> String {
+    // 校验 hash 格式：只允许十六进制字符，防止路径穿越（如 "../../../evil"）
+    if hash.is_empty() || hash.contains('/') || hash.contains('\\') || hash.contains("..") {
+        return String::new();
+    }
     std::path::Path::new(storage_base().trim_end_matches(&['\\','/'][..]))
         .join(hash)
         .to_string_lossy()
@@ -284,7 +288,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
     let files = if let Some(q) = query.filter(|q| !q.is_empty()) {
         let like = format!("%{}%", crate::database::escape_like(&q));
         database::all(
-            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, fr.remark AS lib_remark, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 OR fa.file_ext LIKE ?1) ORDER BY fr.created_at DESC LIMIT 50",
+            "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name AS lib_gn, fr.custom_name AS lib_cn, fr.description AS lib_desc, fr.remark AS lib_remark, lfl.folder_id AS lib_folder, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id LEFT JOIN library_file_locations lfl ON lfl.file_id = fa.id WHERE fr.entity_type='library' AND (fr.custom_name LIKE ?1 ESCAPE '\\' OR fa.file_ext LIKE ?1 ESCAPE '\\') ORDER BY fr.created_at DESC LIMIT 50",
             &[json!(like)]
         ).map_err(|e| e.to_string())?
     } else {
@@ -437,7 +441,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn file_folder_delete(id: String) -> Result<Value, String> {
     if id.is_empty() { return Ok(json!({"success":false,"error":"参数缺失"})); }
     let subs: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM library_folders WHERE parent_id=?", rusqlite::params![&id], |r| r.get(0))).unwrap_or(0);
-    let files: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM library_file_locations WHERE file_id IN (SELECT file_id FROM library_file_locations WHERE file_id=? AND folder_id=?)", rusqlite::params![&id], |r| r.get(0))).unwrap_or(0);
+    let files: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM library_file_locations WHERE folder_id=?", rusqlite::params![&id], |r| r.get(0))).unwrap_or(0);
     if subs > 0 || files > 0 { return Ok(json!({"success":false,"error":"文件夹不为空，请先清空内容"})); }
     database::run("DELETE FROM library_folders WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))

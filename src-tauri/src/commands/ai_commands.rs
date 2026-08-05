@@ -75,9 +75,10 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
     let files_pending: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='pending'", [], |r| r.get(0))).unwrap_or(0);
     let files_processing: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='processing'", [], |r| r.get(0))).unwrap_or(0);
     let files_failed: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='failed'", [], |r| r.get(0))).unwrap_or(0);
-    // 已完成文件 = file_assets 总数 − 队列中 FILE 任务数（成功任务会从队列删除）
+    let files_unsupported: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='unsupported'", [], |r| r.get(0))).unwrap_or(0);
+    // 已完成文件 = file_assets 总数 − 队列中 FILE 任务数（成功任务会从队列删除；unsupported 为终态视为完成）
     let files_total: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM file_assets", [], |r| r.get(0))).unwrap_or(0);
-    let files_done = files_total - files_pending - files_processing - files_failed;
+    let files_done = files_total - files_pending - files_processing - files_failed - files_unsupported;
     // 当前正在解析的文件（页级进度）
     let current_file: Option<Value> = crate::database::get(
         "SELECT f.original_name AS name, q.progress_page AS page, q.progress_total AS total FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id WHERE q.source_type='FILE' AND q.status='processing' ORDER BY q.id DESC LIMIT 1",
@@ -86,7 +87,7 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
     Ok(json!({
         "knowledge": {"chunks":chunks,"parents":parents,"children":children,"vectorized":vectorized,"childrenNonempty":children_nonempty,"vectorizedValid":vectorized_valid,"embedPending":embed_pending,"lastEmbedError":last_embed_error},
         "source": {"files":source_files,"notes":source_notes,"products":source_products,"projects":source_projects,"todos":source_todos,"total":source_total},
-        "fileParse": {"done":files_done.max(0),"pending":files_pending,"processing":files_processing,"failed":files_failed,"total":files_total,"current":current_file},
+        "fileParse": {"done":files_done.max(0),"pending":files_pending,"processing":files_processing,"failed":files_failed,"unsupported":files_unsupported,"total":files_total,"current":current_file},
     }))
 }
 
@@ -139,6 +140,8 @@ pub async fn pipeline_clear_all() -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn pipeline_resync() -> Result<Value, String> {
+    // M6: 先清空向量缓存和 LanceDB，防止残留陈旧向量
+    crate::services::knowledge_lifecycle::reset_pipeline();
     crate::database::run("DELETE FROM source_data", &[]).ok();
     crate::database::with_db(|conn| {
         conn.execute_batch(

@@ -25,7 +25,7 @@ pub async fn kb_memory_objects(query: String) -> Result<Value, String> {
     }
     if objects.is_empty() {
         if let Ok(rows) = database::all(
-            "SELECT source_type, source_id, title FROM source_data WHERE title LIKE ?1 OR content LIKE ?1 LIMIT 20",
+            "SELECT source_type, source_id, title FROM source_data WHERE title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\' LIMIT 20",
             &[json!(&like)],
         ) {
             for r in &rows {
@@ -100,7 +100,7 @@ pub async fn search_business(query: String) -> Result<Value, String> {
     let mut objects: Vec<Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     // projects
-    if let Ok(rows) = database::all("SELECT id, name FROM projects WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+    if let Ok(rows) = database::all("SELECT id, name FROM projects WHERE name LIKE ?1 ESCAPE '\\' LIMIT 10", &[json!(&like)]) {
         for r in &rows {
             let id = r["id"].as_str().unwrap_or("").to_string();
             let name = r["name"].as_str().unwrap_or("").to_string();
