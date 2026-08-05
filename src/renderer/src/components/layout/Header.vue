@@ -8,7 +8,7 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import NotificationPanel from '@/components/notification/NotificationPanel.vue'
 import { useSelectionStore } from '@/stores/selection'
 import { useNavigation } from '@/composables/useNavigation'
-import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Get, notesV2Delete, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData, lookupObjectNames } from '@/api/db-client'
+import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Get, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData, lookupObjectNames } from '@/api/db-client'
 import { notificationStats, notificationMarkAllRead } from '@/api/notification-client'
 import { toast } from '@/composables/useToast'
 
@@ -307,14 +307,9 @@ async function closeWithSave() {
   if (saved) toast({ message: '已保存至今日闪记', type: 'success' })
 }
 
-// ── Discard: delete ALL today's note content and close ──
+// ── Discard: only discard current input, never delete today's note ──
 async function discardQuickNote() {
-  if (todayNoteId.value) {
-    try {
-      await notesV2Delete(todayNoteId.value)
-    } catch { /* ignore */ }
-    todayNoteId.value = null
-  }
+  todayNoteId.value = null
   quickNoteOpen.value = false
   quickNoteText.value = ''
 }
@@ -554,8 +549,8 @@ onUnmounted(() => {
           <!-- Close X button -->
           <button
             @mousedown.prevent @click.stop="discardQuickNote"
-            class="absolute top-2.5 right-2.5 w-6 h-6 flex items-center justify-center rounded-md text-amber-400/70 hover:text-amber-700 hover:bg-amber-100/40 transition-colors z-10"
-            title="丢弃并关闭"
+            class="absolute top-2.5 right-2.5 w-6 h-6 flex items-center justify-center rounded-md text-stone-400 hover:text-stone-600 hover:bg-stone-100 transition-colors z-10"
+            title="丢弃输入并关闭"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M6 18L18 6"/></svg>
           </button>
@@ -570,7 +565,7 @@ onUnmounted(() => {
 
           <!-- Footer hint -->
           <div class="quicknote-footer">
-            <span class="text-[10px] text-amber-400/60">✍ 点击外部自动保存 · 右上角 × 丢弃</span>
+            <span class="text-[10px] text-stone-400/70">✍ 点击外部自动保存 · 右上角 × 丢弃</span>
           </div>
         </div>
       </div>
@@ -696,13 +691,28 @@ onUnmounted(() => {
 /* Memo card — must be relative for the rotated arrow to anchor on */
 .quicknote-card {
   position: relative;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  background: #fffdf9;
+  border: 1px solid #f0e6d2;
   border-radius: 14px;
   box-shadow:
-    0 12px 32px rgba(217, 119, 6, 0.1),
-    0 4px 12px rgba(217, 119, 6, 0.04);
+    0 12px 32px rgba(120, 84, 32, 0.08),
+    0 4px 12px rgba(120, 84, 32, 0.03);
   overflow: visible;
+}
+
+/* Top amber dash — sticky-note accent */
+.quicknote-card::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: #fbbf24;
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 /* Rotated square arrow — fuses with card */
@@ -713,9 +723,9 @@ onUnmounted(() => {
   width: 16px;
   height: 16px;
   transform: rotate(45deg);
-  background: #fffbeb;
-  border-top: 1px solid #fde68a;
-  border-left: 1px solid #fde68a;
+  background: #fffdf9;
+  border-top: 1px solid #f0e6d2;
+  border-left: 1px solid #f0e6d2;
   z-index: 2;
 }
 
@@ -726,7 +736,7 @@ onUnmounted(() => {
   padding: 18px 20px 14px;
   font-size: 13px;
   line-height: 1.8;
-  color: #92400e;
+  color: #44403c;
   background: transparent;
   border: none;
   outline: none;
@@ -734,8 +744,7 @@ onUnmounted(() => {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 .quicknote-textarea::placeholder {
-  color: #d97706;
-  opacity: 0.4;
+  color: #a8a29e;
   font-style: italic;
 }
 
