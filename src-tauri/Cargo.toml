@@ -1,6 +1,6 @@
 [package]
 name = "arkmind"
-version = "12.1.0"
+version = "12.6.0"
 description = "Arkmind 鏂硅垷鏅哄簱"
 authors = ["Arkmind Team"]
 edition = "2021"
@@ -20,6 +20,7 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 once_cell = "1"

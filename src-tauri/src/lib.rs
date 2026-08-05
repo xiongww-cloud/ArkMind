@@ -56,6 +56,13 @@ fn migrate_fix_is_daily_corruption() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 二次启动：恢复并聚焦主窗口（主窗口可能被关闭隐藏）
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -99,6 +106,8 @@ pub fn run() {
             let _ = match resp { Ok(r) => responder.respond(r), Err(_) => {} };
         })
         .setup(|app| {
+            // ★ 初始化防抖物化调度器（需 tokio runtime 就绪）
+            once_cell::sync::Lazy::force(&services::debounced_sync::SCHEDULER);
             // Windows: titleBarStyle Overlay 仅 macOS 生效，需运行时移除原生标题栏（自定义控件在 Header.vue）
             #[cfg(not(target_os = "macos"))]
             {
@@ -352,7 +361,7 @@ pub fn run() {
             // Chat Window
             commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::expand_chat_window,
             // Export
-            commands::export_data, commands::import_data, commands::backup_all, commands::restore_all,
+            commands::export_data, commands::import_data, commands::backup_all, commands::restore_all, commands::export_write_buffer,
             commands::solution_download_excel,
             // Todos
             commands::todos_list, commands::todos_create, commands::todos_update, commands::todos_delete,
