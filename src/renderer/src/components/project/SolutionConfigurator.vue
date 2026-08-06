@@ -377,7 +377,10 @@ async function preSave() {
       try {
         const createdMap = {} // modelLower → productId
         for (const model of uniqueModels) {
-          const created = await createProduct({ name: model, category: 'STORAGE' })
+          // 创建产品时带上该条目已填写的技术参数，避免产品库只有型号没有参数
+          const firstItem = unknown.find(i => i.model?.trim().toLowerCase() === model.toLowerCase())
+          const specs = firstItem?.mergedText || ''
+          const created = await createProduct({ name: model, fullSpecs: specs })
           if (created?.id) {
             createdMap[model.toLowerCase()] = created.id
             if (!(Array.isArray(gp.value) ? gp.value : []).find(p => p.id === created.id)) {
@@ -581,29 +584,45 @@ async function deleteVersionEntry(entry) {
 const copyToast = ref(false)
 let copyToastTimer = null
 
-function ctc() { if (li.value.length === 0) { alert({ message: '配置清单为空！请先添加设备。' }); return }; const hdr = '标准型号\t客户化名称\t单价\t数量\t单位\t小计\t技术参数要求'; const lb = im.value ? cpname.value + ' — 编辑中' : ir.value && vv.value ? cpname.value + ' — ' + vv.value.versionNum : cpname.value; const lns = ['项目：' + props.project.name + ' - 方案：' + lb, hdr]; li.value.forEach(item => { if (item.rowType === 'subnet') { lns.push('═══ ' + (item.name || '未命名子网') + ' ═══'); return }; const pn2 = item.model || gpn(item.productId) || '（未指定）'; const st2 = (item.unitPrice || 0) * (item.quantity || 0); const pt2 = item.mergedText ? item.mergedText.replace(/\n/g, '；') : ''; lns.push([pn2, item.customName || '-', item.unitPrice || 0, item.quantity || 0, item.unit, st2.toFixed(2), pt2].join('\t')) }); const ft2 = lns.join('\n'); navigator.clipboard.writeText(ft2).then(() => { copyToast.value = true; clearTimeout(copyToastTimer); copyToastTimer = setTimeout(() => { copyToast.value = false }, 1500) }).catch(() => { const ta = document.createElement('textarea'); ta.value = ft2; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); copyToast.value = true; clearTimeout(copyToastTimer); copyToastTimer = setTimeout(() => { copyToast.value = false }, 1500) }) }
+// 复制当前选中条目的技术参数
+function copyCurrentParams() {
+  const text = li.value[aii.value]?.mergedText || ''
+  if (!text) return
+  const showToast = () => { copyToast.value = true; clearTimeout(copyToastTimer); copyToastTimer = setTimeout(() => { copyToast.value = false }, 1500) }
+  navigator.clipboard.writeText(text).then(showToast).catch(() => {
+    const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); showToast()
+  })
+}
 
 const rpid = ref(null); const rv = ref(''); let planNameInput = null
 const editingContentVerId = ref(null)
 const editingContentVal = ref('')
-function secv(entry) { if (!entry || !entry.data) return; if (entry.type === 'draft') { editingContentVerId.value = '__draft__'; editingContentVal.value = entry.data.content || ''; return }; if (entry.type !== 'ver') return; const vid = entry.data.versionId || entry.data.id; if (!vid) return; editingContentVerId.value = vid; editingContentVal.value = entry.data.content || '' }
+function secv(entry) {
+  if (!entry || !entry.data) return
+  if (entry.type === 'draft') { editingContentVerId.value = '__draft__'; editingContentVal.value = entry.data.content || ''; return }
+  if (entry.type !== 'ver') return
+  const vid = entry.data.versionId || entry.data.id
+  if (!vid) return
+  editingContentVerId.value = vid
+  editingContentVal.value = entry.data.content || ''
+  // 失焦后自动聚焦输入框，确保 blur 语义可靠
+  nextTick(() => { (document.querySelector('[data-remark-input]') as HTMLInputElement)?.focus() })
+}
 async function svcv() {
   const verId = editingContentVerId.value
   const val = editingContentVal.value.trim()
-  if (!verId) { editingContentVerId.value = null; return }
-  // Handle draft editing (in-place, no backend call)
+  editingContentVerId.value = null  // 失焦立即退出编辑态，后台保存
+  if (!verId) return
   if (verId === '__draft__') {
     const draftEntry = ste.value.find(e => e.type === 'draft')
-    if (draftEntry) { draftEntry.data.content = val || '' }
-    editingContentVerId.value = null
+    if (draftEntry) draftEntry.data.content = val || ''
     return
   }
   const entry = ste.value.find(e => e.type === 'ver' && (e.data.versionId === verId || e.data.id === verId))
-  if (!entry) { editingContentVerId.value = null; return }
-  if (val === (entry.data.content || '')) { editingContentVerId.value = null; return }
+  if (!entry) return
+  if (val === (entry.data.content || '')) return
   entry.data.content = val
   try { await updateSolutionVersionMeta(verId, { content: val }) } catch (e) { console.warn('更新方案版本备注失败', e) }
-  nextTick(() => { editingContentVerId.value = null })
 }
 function ccvc() { editingContentVerId.value = null }
 async function anp() {
@@ -762,7 +781,7 @@ onUnmounted(() => {
             <!-- Row 2: Commit message / remark (click to edit) -->
             <div class="flex items-center gap-1 ml-4">
               <template v-if="editingContentVerId === (entry.data.versionId || entry.data.id)">
-                <input v-model="editingContentVal" @keyup.enter="svcv" @keyup.escape="ccvc" @blur="svcv" class="w-full text-[11px] bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200" placeholder="输入备注..." @click.stop />
+                <input v-model="editingContentVal" @keyup.enter="svcv" @keyup.escape="ccvc" @blur="svcv" data-remark-input class="w-full text-[11px] bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200" placeholder="输入备注..." @click.stop />
               </template>
               <span v-else @click.stop="secv(entry)" class="text-[11px] cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-surface-50 transition-colors flex-1 min-w-0 truncate" :class="entry.data.content ? 'text-surface-600' : 'text-surface-400 italic'">{{ entry.data.content || '点击添加版本说明' }}</span>
             </div>
@@ -899,7 +918,7 @@ onUnmounted(() => {
       <div class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0">
         <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">参数配置排版区</span>
         <div class="flex items-center gap-3">
-          <button v-if="aii !== null && li[aii]?.mergedText" @click="ctc" class="text-[#007aff] hover:underline text-xs font-medium"><AppIcon name="clipboard" class="w-3 h-3 inline-block mr-0.5 -mt-px" />复制</button>
+          <button v-if="aii !== null && li[aii]?.mergedText" @click="copyCurrentParams" class="text-[#007aff] hover:underline text-xs font-medium"><AppIcon name="clipboard" class="w-3 h-3 inline-block mr-0.5 -mt-px" />复制</button>
           <label v-if="im && aii !== null" class="flex items-center gap-1.5 cursor-pointer select-none">
             <input type="checkbox" v-model="li[aii].syncParams" class="w-3 h-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
             <span class="text-[11px] text-slate-500">更新产品参数</span>
