@@ -108,6 +108,16 @@ fn ingestion_loop() {
 
 /// 从 knowledge_push_queue 表获取待处理任务并并发执行（非阻塞）
 fn process_push_queue_non_blocking() {
+    // 自愈：重置卡在 processing 超过 5 分钟的条目为 pending（崩溃/静默失败残留自动恢复）
+    let stale_reset = crate::database::run(
+        "UPDATE knowledge_push_queue SET status='pending', retry_count=0, updated_at=datetime('now','localtime') \
+         WHERE status='processing' AND updated_at < datetime('now','localtime','-5 minutes')",
+        &[],
+    ).map(|r| r.changes).unwrap_or(0);
+    if stale_reset > 0 {
+        log::warn!("[数据中台] 自愈：重置 {} 个过期 processing 条目为 pending", stale_reset);
+    }
+
     // 检查是否还有并发槽位
     let current_active = ACTIVE_TASKS.load(Ordering::Relaxed);
     if current_active >= MAX_CONCURRENT {
@@ -213,12 +223,14 @@ fn process_task_with_retry(task: serde_json::Value) {
     // 处理结果
     match result {
         Ok(()) => {
-            // 成功：删除任务
-            let _ = crate::database::run(
+            // 成功：删除任务（必须确认删除成功，否则条目卡 processing 导致进度条永久不变）
+            match crate::database::run(
                 "DELETE FROM knowledge_push_queue WHERE id=?1",
                 &[json!(id)],
-            );
-            log::info!("[数据中台] ✓ {}/{} ({})", source_type, source_id, operation);
+            ) {
+                Ok(_) => log::info!("[数据中台] ✓ {}/{} ({})", source_type, source_id, operation),
+                Err(e) => log::error!("[数据中台] 删除队列条目失败 id={}: {}", id, e),
+            }
         }
         Err(e) => {
             // 失败重试前检查对象是否存在；对象已删除则任务无意义，直接删除任务
@@ -303,7 +315,7 @@ fn process_file_upload(file_id: &str, source_type: &str, source_id: &str) -> Res
 // ═══════════════════════════════════════════════════════════════
 
 fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: &str) -> Result<(), String> {
-    use crate::services::file_parser::{get_pdf_page_count, pdfium_render_page, ocr_image_sync_result, has_real_text, crop_image_uri, OcrOutcome};
+    use crate::services::file_parser::{get_pdf_page_count, pdfium_render_page, ocr_image_sync_result, has_real_text, OcrOutcome};
 
     let file_id = row["id"].as_str().unwrap_or("").to_string();
     if file_id.is_empty() {
@@ -344,77 +356,88 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
         return process_pdf_text_only(&file_id, &path, total_pages, source_type, source_id);
     }
 
-    let mut full_text = String::new();
+    // 按页号有序收集
+    let mut full_text_parts: Vec<Option<String>> = vec![None; total_pages as usize];
 
-    // 流式处理每一页
-    for page_num in 0..total_pages {
-        // 检查文件是否仍然存在
+    // 逐页流式处理（单文件内串行；多文件间的并行由调度层负责，避免视觉模型过载）
+    let mut page_num: u16 = 0;
+    while page_num < total_pages {
+        let p = page_num;
+        page_num += 1;
+
+        // 每页检查文件是否仍然存在
         if !std::path::Path::new(&path).exists() {
             log::info!("[数据中台] {} 文件已被删除，终止解析（已处理 {} / {} 页）", log_tag, page_num, total_pages);
             break;
         }
 
-        // 检查缓存中是否已有该页的OCR结果
+        // 跳过已有缓存结果的页
         let cached_text = crate::database::get(
             "SELECT ocr_text FROM file_parse_cache WHERE file_id=?1 AND page_num=?2",
-            &[json!(&file_id), json!(page_num)],
+            &[json!(&file_id), json!(p)],
         ).ok().flatten().and_then(|r| r["ocr_text"].as_str().map(|s| s.to_string()));
-
         if let Some(text) = cached_text {
-            // 已解析，使用缓存
             if has_real_text(&text) {
-                if !full_text.is_empty() {
-                    full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", page_num + 1));
-                }
-                full_text.push_str(&text);
+                full_text_parts[p as usize] = Some(text);
             }
-            log::info!("[数据中台] {} 第 {}/{} 页: 使用缓存", log_tag, page_num + 1, total_pages);
-        } else {
-            // 渲染当前页
-            let image_uri = match pdfium_render_page(&path, page_num) {
-                Some(uri) => uri,
-                None => {
-                    log::info!("[数据中台] {} 第 {}/{} 页渲染失败", log_tag, page_num + 1, total_pages);
-                    continue;
-                }
-            };
+            log::info!("[数据中台] {} 第 {}/{} 页: 使用缓存", log_tag, p + 1, total_pages);
+            continue;
+        }
 
-            // OCR 当前页（内部最多重试 3 次）
-            let cropped = crop_image_uri(&image_uri, 0.04, 0.04).unwrap_or_else(|| image_uri.clone());
-            let ocr_outcome = ocr_image_sync_result(&cropped);
+        let t_page = std::time::Instant::now();
+        let image_uri = match pdfium_render_page(&path, p) {
+            Some(uri) => uri,
+            None => {
+                log::info!("[数据中台] {} 第 {}/{} 页 OCR 失败: 渲染失败", log_tag, p + 1, total_pages);
+                return Err(format!("{}{} 第 {}/{} 页渲染失败", NON_RETRYABLE_PREFIX, log_tag, p + 1, total_pages));
+            }
+        };
+        let outcome = ocr_image_sync_result(&image_uri);
 
-            match &ocr_outcome {
-                OcrOutcome::Failed(e) => {
-                    // 视觉模型解析失败（已重试 3 次）→ 整文件失败，不写入 source_data
-                    log::info!("[数据中台] {} 第 {}/{} 页 OCR 失败: {}", log_tag, page_num + 1, total_pages, e);
-                    return Err(format!("{}{} 第 {}/{} 页视觉模型解析失败: {}", NON_RETRYABLE_PREFIX, log_tag, page_num + 1, total_pages, e));
-                }
-                OcrOutcome::Blank => {
-                    // 空白页：跳过，不缓存、不判定失败
-                    log::info!("[数据中台] {} 第 {}/{} 页: 空白页，跳过", log_tag, page_num + 1, total_pages);
-                }
-                OcrOutcome::Ok(ocr_text) => {
-                    // 仅当有真实文本时写入缓存（修复缓存投毒）
-                    if has_real_text(ocr_text) {
-                        let _ = crate::database::run(
-                            "INSERT OR REPLACE INTO file_parse_cache(file_id, page_num, ocr_text) VALUES(?1, ?2, ?3)",
-                            &[json!(&file_id), json!(page_num), json!(ocr_text)],
-                        );
-                        if !full_text.is_empty() {
-                            full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", page_num + 1));
-                        }
-                        full_text.push_str(ocr_text);
-                    }
+        match outcome {
+            OcrOutcome::Failed(e) => {
+                // 视觉模型解析失败（已重试 3 次）→ 整文件失败，不写入 source_data
+                log::info!("[数据中台] {} 第 {}/{} 页 OCR 失败: {}", log_tag, p + 1, total_pages, e);
+                return Err(format!("{}{} 第 {}/{} 页视觉模型解析失败: {}", NON_RETRYABLE_PREFIX, log_tag, p + 1, total_pages, e));
+            }
+            OcrOutcome::Blank => {
+                // 空白页：跳过，不缓存、不判定失败
+                log::info!("[数据中台] {} 第 {}/{} 页: 空白页，跳过", log_tag, p + 1, total_pages);
+            }
+            OcrOutcome::Ok(ocr_text) => {
+                // 仅当有真实文本时写入缓存（修复缓存投毒）
+                if has_real_text(&ocr_text) {
+                    let _ = crate::database::run(
+                        "INSERT OR REPLACE INTO file_parse_cache(file_id, page_num, ocr_text) VALUES(?1, ?2, ?3)",
+                        &[json!(&file_id), json!(p), json!(ocr_text)],
+                    );
+                    full_text_parts[p as usize] = Some(ocr_text.clone());
                 }
             }
+        }
+        // 更新进度（心跳：刷新 updated_at，避免长时间 OCR 被自愈误判为卡死而重复启动）
+        let _ = crate::database::run(
+            "UPDATE knowledge_push_queue SET progress_page=?1, updated_at=datetime('now','localtime') WHERE source_id=?2 AND source_type=?3",
+            &[json!(p + 1), json!(source_id), json!(source_type)],
+        );
+        log::info!("[数据中台] {} 第 {}/{} 页: OCR 完成 (整页耗时 {}ms)", log_tag, p + 1, total_pages, t_page.elapsed().as_millis());
+    }
 
-            // 更新进度
-            let _ = crate::database::run(
-                "UPDATE knowledge_push_queue SET progress_page=?1 WHERE source_id=?2 AND source_type=?3",
-                &[json!(page_num + 1), json!(source_id), json!(source_type)],
-            );
+    // Tier 1 修复：文件在解析过程中被删除 → 丢弃已解析部分，不写入 source_data
+    // （返回 Err 后，process_task_with_retry 会检查 task_target_exists 并删除无效任务）
+    if !std::path::Path::new(&path).exists() {
+        log::info!("[数据中台] {} 文件已被删除，丢弃已解析部分", log_tag);
+        return Err("文件已被删除".into());
+    }
 
-            log::info!("[数据中台] {} 第 {}/{} 页: OCR 完成", log_tag, page_num + 1, total_pages);
+    // 按页号组装 full_text
+    let mut full_text = String::new();
+    for (i, part) in full_text_parts.iter().enumerate() {
+        if let Some(text) = part {
+            if !full_text.is_empty() {
+                full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1));
+            }
+            full_text.push_str(text);
         }
     }
 
@@ -430,8 +453,6 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
 
     // 写入 source_data
     crate::database::file_sync_to_source_data(&file_id, &clean_text);
-    // O6: 文件写入 source_data 后立即触发防抖物化
-    crate::services::debounced_sync::SCHEDULER.enqueue("FILE", &file_id);
 
     // 清理临时缓存
     let _ = crate::database::run(
@@ -481,8 +502,6 @@ fn process_pdf_text_only(file_id: &str, path: &str, _total_pages: u16, source_ty
 
     // 写入 source_data
     crate::database::file_sync_to_source_data(file_id, &clean_text);
-    // O6: 文件写入 source_data 后立即触发防抖物化
-    crate::services::debounced_sync::SCHEDULER.enqueue("FILE", file_id);
 
     // 清理临时缓存
     let _ = crate::database::run(
@@ -660,8 +679,6 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     // ③ 写入 source_data
     // ════════════════════════════════════════
     crate::database::file_sync_to_source_data(&file_id, &clean_text);
-    // O6: 文件写入 source_data 后立即触发防抖物化
-    crate::services::debounced_sync::SCHEDULER.enqueue("FILE", &file_id);
 
     // 验证写入是否成功
     let check = crate::database::get(
@@ -765,7 +782,6 @@ fn ingest_pending_notes() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'NOTE',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='NOTE' AND source_id=?1)",
             &[json!(&note_id), json!(&title), json!(&md_content)],
         );
-        crate::services::debounced_sync::SCHEDULER.enqueue("NOTE", &note_id);
         log::info!(
             "[数据中台] 📝 笔记 {} 已摄入 ({} 字符)",
             &note_id[..note_id.len().min(8)],
@@ -835,7 +851,6 @@ fn ingest_pending_products() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'PRODUCT',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='PRODUCT' AND source_id=?1)",
             &[json!(&prod_id), json!(&name), json!(&clean)],
         );
-        crate::services::debounced_sync::SCHEDULER.enqueue("PRODUCT", &prod_id);
         log::info!(
             "[数据中台] 📦 产品 {} 已摄入 ({} 字符)",
             &prod_id[..prod_id.len().min(8)],
@@ -912,7 +927,6 @@ fn ingest_pending_projects() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'PROJECT',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='PROJECT' AND source_id=?1)",
             &[json!(&proj_id), json!(&name), json!(&clean)],
         );
-        crate::services::debounced_sync::SCHEDULER.enqueue("PROJECT", &proj_id);
         log::info!(
             "[数据中台] 📁 项目 {} 已摄入 ({} 字符)",
             &proj_id[..proj_id.len().min(8)],
@@ -960,7 +974,6 @@ fn ingest_pending_todos() {
             "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) SELECT ?1,'TODO',?1,?2,?3,datetime('now','localtime') WHERE NOT EXISTS (SELECT 1 FROM source_data WHERE source_type='TODO' AND source_id=?1)",
             &[json!(&id), json!(title), json!(&md_content)],
         );
-        crate::services::debounced_sync::SCHEDULER.enqueue("TODO", &id);
         log::info!(
             "[数据中台] 📋 待办 {} 已摄入 ({} 字符)",
             &id[..id.len().min(8)],

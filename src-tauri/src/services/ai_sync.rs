@@ -65,36 +65,9 @@ async fn import_sync_document(
 
     let prefix = chunk_prefix.unwrap_or("");
 
-    // ★ Skip if content hasn't changed: compare per-parent hashes
-    if let Some(ref sdid) = source_data_id {
-        let new_hashes: Vec<String> = parents.iter().map(|p| compute_content_hash(p)).collect();
-        let existing_hashes: Vec<String> = database::all(
-            "SELECT content_hash FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent' ORDER BY chunk_index",
-            &[json!(sdid)],
-        ).unwrap_or_default().iter()
-            .filter_map(|r| r["content_hash"].as_str().map(|s| s.to_string()))
-            .collect();
-        let unchanged = existing_hashes.len() == new_hashes.len()
-            && existing_hashes.iter().zip(new_hashes.iter()).all(|(a, b)| a == b);
-        if unchanged {
-            log::info!("[物化] 内容未改变，跳过: source_data_id={}", sdid);
-            return Ok(0);  // 内容未变，0 个块
-        }
-    }
-    // ★ 计算旧子块 rowid（事务外只读）
-    let old_rowids: Vec<i64> = if let Some(ref sdid) = source_data_id {
-        database::all(
-            "SELECT id FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='child'",
-            &[json!(sdid)],
-        ).unwrap_or_default().iter()
-            .filter_map(|r| r["id"].as_i64())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // ★ 逐父块写入（表格在 accumulate_adaptive_parents 中已被原子化处理）
-    //    但父块自身如果过大（> MAX_PARENT），按行拆分为多个子父块
+    // ★ 先构建 parent_entries（切分后的最终父块，含 head 前缀拆分）
+    //    去重必须比较真正入库的 parent_entries，而非切分前的 parents——
+    //    否则超长父块被拆后数量不一致，去重恒失败导致重复物化
     let mut parent_entries: Vec<(String, usize)> = Vec::new(); // (text, original_index)
     for (_pi, parent_text) in parents.iter().enumerate() {
         let lines: Vec<&str> = parent_text.lines().collect();
@@ -123,6 +96,34 @@ async fn import_sync_document(
         }
     }
     let parent_entries_len = parent_entries.len();
+
+    // ★ Skip if content hasn't changed: compare per-parent hashes
+    if let Some(ref sdid) = source_data_id {
+        let new_hashes: Vec<String> = parent_entries.iter().map(|(t, _)| compute_content_hash(t)).collect();
+        let existing_hashes: Vec<String> = database::all(
+            "SELECT content_hash FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent' ORDER BY chunk_index",
+            &[json!(sdid)],
+        ).unwrap_or_default().iter()
+            .filter_map(|r| r["content_hash"].as_str().map(|s| s.to_string()))
+            .collect();
+        let unchanged = existing_hashes.len() == new_hashes.len()
+            && existing_hashes.iter().zip(new_hashes.iter()).all(|(a, b)| a == b);
+        if unchanged {
+            log::info!("[物化] 内容未改变，跳过: source_data_id={}", sdid);
+            return Ok(0);  // 内容未变，0 个块
+        }
+    }
+    // ★ 计算旧子块 rowid（事务外只读）
+    let old_rowids: Vec<i64> = if let Some(ref sdid) = source_data_id {
+        database::all(
+            "SELECT id FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='child'",
+            &[json!(sdid)],
+        ).unwrap_or_default().iter()
+            .filter_map(|r| r["id"].as_i64())
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // O2: 删除旧块 + 插入新块在单个事务中执行（崩溃原子性，避免"删了未插"中间态）
     //     vector_cache 清理并入事务；LanceDB 清理放事务外（跨存储无法原子）

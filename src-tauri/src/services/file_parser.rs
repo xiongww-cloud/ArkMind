@@ -12,6 +12,15 @@ use crate::database;
 use base64::Engine;
 use regex::Regex;
 use serde_json::{json, Value};
+use once_cell::sync::Lazy;
+
+/// 共享视觉模型 HTTP 客户端（复用连接池，避免逐页重建 reqwest::Client）
+static VISION_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .expect("视觉模型 HTTP 客户端创建失败")
+});
 
 #[derive(Default)]
 pub struct ParseResult { pub text: String, pub success: bool, pub error: String }
@@ -21,41 +30,20 @@ pub struct ParseResult { pub text: String, pub success: bool, pub error: String 
 // ═══════════════════════════════════════════════════════════════
 
 /// 统一默认提示词
-const VISION_DEFAULT_PROMPT: &str = r#"你是一个精确的文档提取助手。请从图片中提取所有文字内容，转换为结构化 Markdown。
+const VISION_DEFAULT_PROMPT: &str = r#"你是一个精确的文档提取助手。从图片提取内容，输出紧凑、完整、便于检索的 Markdown。
+
+## 硬性约束
+1. 只输出提取内容本身，禁止任何开场白、结束语、解释、评论或与文档无关的文字。
+2. 同一信息在文档中重复出现时（如每页重复的公司名、口号、免责声明）只保留第一次。
 
 ## 输出规则
-
-### 1. 标题
-保留原文所有标题层级（# ## ###），标题后空一行再接正文。
-
-### 2. 表格转键值对（最高优先级）
-每个单元格必须带上所属型号标注，格式为「{型号}=值」，不同型号之间用分号分隔。
-✗ 错误：硬盘类型=SAS TLC SSD, SAS, NL-SAS，NVMe TLC SSD, SAS TLC SSD, SAS, NL-SAS
-✓ 正确：硬盘类型=5210: SAS TLC SSD, SAS, NL-SAS；5310: NVMe TLC SSD, SAS TLC SSD, SAS, NL-SAS；5510: 同5310；5610: 同5310
-
-值相同时可以用「同XXX」简写，避免大段重复。
-统一使用英文逗号分隔同型号内的多个值，使用中文分号分隔不同型号的值段。
-如果原文有列标题（表头），在输出开头完整列出，作为后续值段的对照锚点。
-
-### 3. 键值对
-原文为「字段名: 字段值」形式时，输出 `字段名=字段值`，每行一个。
-
-### 4. 数值与单位
-保留所有数值、型号、技术参数，必须携带原始单位（GB、Gbps、℃ 等）。
-数字和单位之间用空格隔开，如「2U」「256 GB」。
-
-### 5. 特殊符号
-原文中的特殊符号（如 *、-、/ 等）必须保留，并在片段末尾用【注】说明其含义。
-如从上下文推断不出则保留原符号并标注"含义待确认"。
-
-### 6. 噪声过滤
-跳过页码、水印、页眉页脚、装饰性图标。
-
-### 7. 模糊内容
-看不清或被遮挡的文字用 [?] 标记，不要猜测。
-
-### 8. 多列布局
-双栏文档先完整提取第一栏，再提取第二栏，禁止混排。"#;
+3. 标题：保留原文层级（# ## ###），文字尽量精炼。
+4. 表格：一律标准 Markdown 表格。首行必须是表头（列名=型号或维度），第二行必须是对齐分隔行；型号作表头列，不在数据中重复标注；禁止合并/嵌套单元格；相同值逐格填全，禁止「同上/同XXX」；单元格多值用英文逗号分隔。
+5. 数值与单位：保留所有数值、型号、编号与参数，必须携带原始单位（GB、Gbps、℃），数字与单位间空格（256 GB、2U）。
+6. 噪声：跳过页码、水印、页眉页脚、装饰图标。
+7. 模糊：看不清用 [?]，不猜测。
+8. 双栏：先完整提取第一栏再第二栏，禁止混排。
+9. 压缩：输出短于原文，删冗余修饰语与空行，但不得省略任何数值、型号、编号与技术参数。"#;
 
 /// 视觉模型配置
 pub struct VisionConfig {
@@ -275,10 +263,8 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     let cfg = get_vision_config().ok_or("未配置视觉模型，请在设置页配置视觉模型")?;
     let adapter = get_adapter(&cfg.api_format, &cfg.model);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()
-        .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+    // 复用共享客户端（避免每页重建 reqwest::Client 的开销）
+    let client = &*VISION_CLIENT;
 
     let body = adapter.build_request(&cfg, base64_data_uri);
 
@@ -293,9 +279,14 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
         req = req.header("Authorization", format!("Bearer {}", cfg.api_key));
     }
 
+    let t_send = std::time::Instant::now();
     let resp = req.send().await.map_err(|e| format!("请求失败: {}", e))?;
     let status = resp.status();
+    let send_ms = t_send.elapsed().as_millis();
+    let t_body = std::time::Instant::now();
     let resp_text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    let body_ms = t_body.elapsed().as_millis();
+    let t_parse = std::time::Instant::now();
     let resp_body: Value = serde_json::from_str(&resp_text).map_err(|_| {
         format!("响应不是JSON: {} (HTTP {})", &resp_text[..resp_text.len().min(500)], status)
     })?;
@@ -334,6 +325,10 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     if cleaned.trim().is_empty() {
         return Err("OCR 返回的内容清洗后为空".into());
     }
+    log::info!(
+        "[文件解析] 视觉API: send={}ms body={}ms process={}ms 状态={} 文本={}字符",
+        send_ms, body_ms, t_parse.elapsed().as_millis(), status, cleaned.len()
+    );
     Ok(cleaned)
 }
 
@@ -378,19 +373,22 @@ pub fn get_pdf_page_count(path: &str) -> Option<u16> {
     Some(doc.pages().len())
 }
 
-/// 渲染 PDF 单页为 base64 图片（150 DPI，JPEG 格式）
+/// 渲染 PDF 单页为 base64 图片（96 DPI，JPEG 格式）
 pub fn pdfium_render_page(path: &str, page_num: u16) -> Option<String> {
     use base64::Engine;
+    let t0 = std::time::Instant::now();
     let pdfium = try_load_pdfium()?;
     let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pdfium.load_pdf_from_file(path, None)))
         .ok()?.ok()?;
+    let t_load = t0.elapsed().as_millis();
     let pages = doc.pages();
     let page = pages.get(page_num).ok()?;
 
-    let scale = 150.0 / 72.0;
+    let scale = 96.0 / 72.0;
     let width = (page.width().value * scale) as i32;
     let height = (page.height().value * scale) as i32;
     let bitmap = page.render(width, height, None).ok()?;
+    let t_render = t0.elapsed().as_millis();
 
     // pdfium 输出 BGRA 格式，需要转换为 RGB
     let bgra = bitmap.as_raw_bytes();
@@ -400,9 +398,15 @@ pub fn pdfium_render_page(path: &str, page_num: u16) -> Option<String> {
     let img = image::RgbImage::from_raw(width as u32, height as u32, rgb)?;
 
     let mut jpeg_buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).ok()?;
+    // JPEG 质量降到 55，减小发给视觉模型的 payload（对 OCR 精度影响小）
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 55);
+    encoder.encode_image(&image::DynamicImage::ImageRgb8(img)).ok()?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
 
+    log::info!(
+        "[文件解析] 渲染页 {}: load={}ms render={}ms encode={}ms 图片={}KB",
+        page_num + 1, t_load, t_render, t0.elapsed().as_millis() - t_render, b64.len() / 1024
+    );
     Some(format!("data:image/jpeg;base64,{}", b64))
 }
 
@@ -580,6 +584,7 @@ pub fn ocr_image_sync_result(base64_uri: &str) -> OcrOutcome {
     const MAX_ATTEMPTS: u32 = 3;
     let mut last_err = String::from("未知错误");
     for attempt in 0..MAX_ATTEMPTS {
+        let t0 = std::time::Instant::now();
         // 检查是否已在 tokio runtime 中，避免 "Cannot start a runtime from within a runtime" panic
         let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.block_on(ocr_with_vision_api(base64_uri))
@@ -596,21 +601,25 @@ pub fn ocr_image_sync_result(base64_uri: &str) -> OcrOutcome {
             };
             rt.block_on(ocr_with_vision_api(base64_uri))
         };
+        let attempt_ms = t0.elapsed().as_millis();
 
         match result {
-            Ok(text) => return OcrOutcome::Ok(text),
+            Ok(text) => {
+                log::info!("[文件解析] OCR 成功 第 {} 次, 耗时 {}ms, 文本 {} 字符", attempt + 1, attempt_ms, text.len());
+                return OcrOutcome::Ok(text);
+            }
             Err(e) => {
                 let (retryable, blank) = classify_ocr_error(&e);
                 if blank {
-                    log::info!("[文件解析] OCR 空白页: {}", e);
+                    log::info!("[文件解析] OCR 空白页 (耗时 {}ms): {}", attempt_ms, e);
                     return OcrOutcome::Blank;
                 }
                 last_err = e.clone();
                 if !retryable {
-                    log::info!("[文件解析] OCR 失败(不可重试): {}", e);
+                    log::info!("[文件解析] OCR 失败(不可重试, 耗时 {}ms): {}", attempt_ms, e);
                     return OcrOutcome::Failed(e);
                 }
-                log::info!("[文件解析] OCR 失败 第 {}/{} 次: {}", attempt + 1, MAX_ATTEMPTS, e);
+                log::info!("[文件解析] OCR 失败 第 {}/{} 次 (耗时 {}ms): {}", attempt + 1, MAX_ATTEMPTS, attempt_ms, e);
                 if attempt + 1 < MAX_ATTEMPTS {
                     // 退避：2s / 4s
                     std::thread::sleep(std::time::Duration::from_secs(2 * (attempt as u64 + 1)));
@@ -647,28 +656,6 @@ fn try_ocr_image_result(path: &str, mime: &str) -> Result<String, String> {
             Err(format!("图片读取失败: {}", path))
         }
     }
-}
-
-/// 对 base64 data URI 图片进行裁剪：去掉顶部和底部指定比例（默认 8%）
-pub fn crop_image_uri(uri: &str, top_pct: f64, bottom_pct: f64) -> Option<String> {
-    // 支持 PNG 和 JPEG 格式
-    let (header, format, mime) = if uri.starts_with("data:image/jpeg;base64,") {
-        ("data:image/jpeg;base64,", image::ImageFormat::Jpeg, "image/jpeg")
-    } else {
-        ("data:image/png;base64,", image::ImageFormat::Png, "image/png")
-    };
-    let b64 = uri.strip_prefix(header)?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    let mut img = image::load_from_memory(&bytes).ok()?;
-    let (w, h) = (img.width(), img.height());
-    let top = (h as f64 * top_pct) as u32;
-    let bottom = (h as f64 * bottom_pct) as u32;
-    if top + bottom >= h { return None; }
-    let cropped = img.crop(0, top, w, h - top - bottom);
-    let mut buf = std::io::Cursor::new(Vec::new());
-    cropped.write_to(&mut buf, format).ok()?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
-    Some(format!("data:{};base64,{}", mime, b64))
 }
 
 /// 检查文本是否包含有效字符
@@ -716,8 +703,7 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
                 log::info!("[文件解析] 文件已被删除，终止 OCR（已处理 {} / {} 页）", i, uris.len());
                 break;
             }
-            let cropped = crop_image_uri(uri, 0.04, 0.04).unwrap_or_else(|| uri.clone());
-            match ocr_image_sync_result(&cropped) {
+            match ocr_image_sync_result(uri) {
                 OcrOutcome::Ok(text) => {
                     if has_real_text(&text) {
                         if !full_text.is_empty() { full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1)); }

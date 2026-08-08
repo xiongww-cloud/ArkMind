@@ -29,8 +29,8 @@ async fn embed_batch(chunks: &[(i64, String, String)]) -> Result<usize, String> 
 
     let guard = lancedb_client::get_lancedb()?;
     if let Some(ref c) = *guard {
-        // 先删除同 rowid 旧行，消除"LanceDB 插入成功但 vector_cache 未写"崩溃点产生的重复向量
-        let _ = c.delete_chunks_by_rowids(&chunk_ids);
+        // 纯追加写入。孤儿/重复向量被搜索 WHERE c.rowid=? JOIN knowledge_chunks 过滤，
+        // 不再逐批 delete（LanceDB delete = 全表重写，会拖垮向量化）
         c.insert_vectors_full(&chunk_ids, &vectors, &[], &[], &parent_ids, &[], &[], &[], &[], &[])?;
     }
 
@@ -51,8 +51,13 @@ pub async fn vectorize_new_chunks(batch_size: usize) -> Result<usize, String> {
     match embed_batch(&chunks).await {
         Ok(n) => Ok(n),
         Err(e) => {
-            // 拆单重试：本批有成功的 → API 正常，失败块为毒丸 → 跳过；
-            // 全部失败 → API 不可用 → 整体报错交由 embed_loop 退避重试
+            // API/网络不可用（超时、连接失败）→ 不拆单，直接返回错误交由 embed_loop 退避，
+            // 避免"批量超时 + 逐条重试"的超时灾难性放大（最多 批数×单条超时）
+            if e.contains("timed out") || e.contains("error sending request") || e.contains("connect") {
+                return Err(e);
+            }
+            // 否则可能为单条毒丸文本 → 拆单隔离：
+            // 本批有成功的 → API 正常，失败块为毒丸 → 跳过；全部失败 → 整体报错交由 embed_loop 退避
             let mut vectorized = 0usize;
             let mut failed_ids: Vec<i64> = Vec::new();
             let mut any_success = false;

@@ -33,9 +33,9 @@ fn format_cursor(ts: &str, rowid: i64) -> String { format!("{}|{}", ts, rowid) }
 
 // ─── Entry point ──────────────────────────────────────────────────
 
-/// 启动时清理 LanceDB 孤儿向量（rowid 不在 knowledge_chunks 中）。
-/// LanceDB delete 是全表重写（单次 ~6s），故只在启动时批量执行一次，
-/// 物化热路径不再逐个删除孤儿向量。
+/// 清理 LanceDB 孤儿向量（暂不在启动时执行——全表扫描/重写会与 embed_loop 争锁拖垮向量化。
+/// 孤儿向量被搜索过滤，无正确性影响；保留实现供未来空闲期懒清理复用）
+#[allow(dead_code)]
 pub fn cleanup_orphan_vectors() {
     if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
         if let Some(ref c) = *g {
@@ -65,33 +65,21 @@ pub fn start() {
     }
     log::info!("[知识管线] Arkmind 知识管线启动 (v12.0 - 时间戳驱动)");
 
-    // ── Step 1: 清理旧版触发器 ──
+    // ── Step 1: 快速初始化（毫秒级 DB 操作，循环启动前完成）──
+    //    游标由 sync_loop 自加载（幂等），start() 不再依赖调用顺序
     cleanup_legacy_triggers();
-
-    // ── Step 1.5: 清理 FTS5 孤儿条目 ──
     crate::services::knowledge_lifecycle::cleanup_orphaned_fts5();
-
-    // ── Step 2: 初始化同步时间戳 ──
-    init_sync_timestamp();
-
-    // ── Step 3: Vector cache consistency check ──
     clean_vector_cache();
-
-    // ── Step 3.5: 启动时批量清理 LanceDB 孤儿向量（物化热路径已移除逐条删除） ──
-    cleanup_orphan_vectors();
-
-    // ── Step 4: Trash auto-cleanup ──
     auto_clean_trash();
-
-    // ── Step 5: Persist WAL ──
     let _ = crate::database::save();
 
-    // ── Spawn 3 independent loops ──
+    // ── Step 2: 启动循环线程 ──
     std::thread::spawn(|| {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .enable_all()
             .build().expect("[知识管线] tokio 运行时创建失败");
+        log::info!("[知识管线] 循环线程启动");
         rt.block_on(async {
             tokio::join!(sync_loop(), embed_loop());
         });
@@ -132,16 +120,16 @@ fn cleanup_legacy_triggers() {
     }
 }
 
-fn init_sync_timestamp() {
-    // 从数据库加载上次同步游标（兼容旧格式纯时间戳）
-    let saved = crate::database::get(
+/// 从数据库加载上次同步游标（兼容旧格式纯时间戳）；无有效游标则返回初始游标。
+/// 幂等：sync_loop 每次迭代检测到游标未加载时调用，消除初始化顺序依赖。
+fn load_sync_cursor_from_db() -> String {
+    crate::database::get(
         "SELECT value FROM system_settings WHERE key='last_sync_time'",
         &[],
-    ).ok().flatten().and_then(|r| r["value"].as_str().map(String::from));
-
-    let mut last_sync = LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    *last_sync = saved.unwrap_or_else(|| format_cursor("1970-01-01 00:00:00", 0));
-    log::info!("[知识管线] 初始同步游标: {}", *last_sync);
+    ).ok().flatten()
+        .and_then(|r| r["value"].as_str().map(String::from))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format_cursor("1970-01-01 00:00:00", 0))
 }
 
 fn save_sync_cursor(cursor: &str) {
@@ -174,6 +162,16 @@ fn auto_clean_trash() {
 async fn sync_loop() {
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
+
+        // 自愈：游标未加载则从 DB 加载（幂等，消除对 start() 调用顺序的依赖）
+        // 静态 LAST_SYNC_TIME 初始为空；若 sync_loop 先于任何初始化运行，这里兜底加载持久化游标
+        {
+            let mut guard = LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.is_empty() {
+                *guard = load_sync_cursor_from_db();
+                log::info!("[知识管线] 同步游标已加载: {}", *guard);
+            }
+        }
 
         let cursor = LAST_SYNC_TIME.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let (since_ts, since_rowid) = parse_cursor(&cursor);
@@ -210,6 +208,7 @@ async fn sync_loop() {
 /// 向量化循环：持续处理直到没有待向量化的块
 /// O7: 批大小 20；错误指数退避（1s→60s），避免打爆失败 API
 async fn embed_loop() {
+    log::info!("[知识管线] embed_loop 启动");
     let mut backoff = 1u64;
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
@@ -217,8 +216,8 @@ async fn embed_loop() {
         // 持续处理直到没有待向量化的块
         let mut had_work = false;
         let mut had_error = false;
-        for _ in 0..10 {  // 每轮最多处理 10 批（200 个块）
-            let batch_size = 20;
+        for _ in 0..10 {  // 每轮最多处理 10 批（50 个块）
+            let batch_size = 5;
             match crate::services::hybrid_knowledge::vectorize_new_chunks(batch_size).await {
                 Ok(n) => {
                     if n > 0 {
@@ -247,6 +246,7 @@ async fn embed_loop() {
             backoff = 1;
             tokio::time::sleep(Duration::from_secs(1)).await;
         } else {
+            log::debug!("[知识管线] embed_loop 空闲，10s 后重查");
             backoff = 1;
             tokio::time::sleep(Duration::from_secs(10)).await;
         }

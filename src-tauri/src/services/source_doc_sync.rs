@@ -23,9 +23,7 @@ pub fn sync_entity_to_source_docs(source_type: &str, source_id: &str, title: &st
         ],
     ).map_err(|e| format!("写入 source_data 失败: {}", e))?;
 
-    // ★ 触发防抖物化（事件驱动，替代 sync_loop 10s 轮询等待）
-    crate::services::debounced_sync::SCHEDULER.enqueue(source_type, source_id);
-
+    // 纯轮询：不在此触发物化，sync_loop 每 10s 扫描 source_data 变更统一入队
     Ok(())
 }
 

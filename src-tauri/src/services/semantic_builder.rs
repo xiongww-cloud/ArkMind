@@ -340,6 +340,11 @@ pub fn markdown_table_to_kv(md: &str) -> String {
         sliced.extend_from_slice(&all_rows[ri + 1..]);
         header_kv_output(&sliced, md)
     } else {
+        // 表头识别失败 → 退化为记录模式，会丢失列名/型号映射；≥3 列时几乎可以肯定是规格表，打告警便于观测
+        if max_cols >= 3 && !all_rows.is_empty() {
+            let sample: String = all_rows[0].iter().take(3).map(|s| s.as_str()).collect::<Vec<_>>().join(" | ");
+            log::warn!("[物化] Markdown 表格未识别出表头，退化为记录模式（可能丢失列名/型号映射）: {}", sample);
+        }
         record_output(&all_rows, md)
     }
 }
