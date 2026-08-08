@@ -6,7 +6,6 @@ import { useAuthStore } from '@/stores/auth'
 import { confirm, dangerConfirm, alert } from '@/composables/useConfirm'
 import AppIcon from '@/components/common/AppIcon.vue'
 import AppRemark from '@/components/common/AppRemark.vue'
-import ServiceFeeAllocator from '@/components/project/ServiceFeeAllocator.vue'
 
 import * as api from '@/api/db-client'
 import { formatDateTime } from '@/utils/time'
@@ -25,16 +24,12 @@ const gparams = ref([])  // 参数列表 — 从后端加载
 // ─── 设备型号内联补全 (Inline Autocomplete) ─────────────────────────────────
 const isDeleting = ref(false)
 const showUploadModal = ref(false)
-const feeAllocator = ref(null)
-const feeStage = computed(() => feeAllocator.value?.stage || 'upload')
-const importFormat = ref('pms') // 'pms' | 'sct'
 
-// ─── PMS 格式导入 ──────────────────────────────────────────────────────────────
+// ─── Excel 格式导入 ──────────────────────────────────────────────────────────
 const pmsFileInput = ref(null)
 const pmsSelectedFile = ref(null) // 选中的文件，确认后才解析
 const isPMSImporting = ref(false)
 const pmsImportError = ref('')
-const pmsDragActive = ref(false)
 const pmsFileName = ref('')
 
 function triggerPMSFile() { pmsFileInput.value?.click() }
@@ -44,18 +39,6 @@ function onPMSFilePickedFromInput(e) {
   if (!file) return
   pmsSelectedFile.value = file
   pmsFileName.value = file.name
-}
-
-function onPMSDragOver(e) { e.preventDefault(); pmsDragActive.value = true }
-function onPMSDragLeave() { pmsDragActive.value = false }
-function onPMSDrop(e) {
-  e.preventDefault()
-  pmsDragActive.value = false
-  const file = e.dataTransfer?.files?.[0]
-  if (file) {
-    pmsSelectedFile.value = file
-    pmsFileName.value = file.name
-  }
 }
 
 function confirmPMSImport() {
@@ -110,43 +93,6 @@ async function handlePMSFile(file) {
   showUploadModal.value = false
   pmsSelectedFile.value = null
   pmsFileName.value = ''
-}
-
-function handleServiceFeeConfirm(result) {
-  const { hardwareItems, serviceItems, totalServiceFee } = result
-
-  // Inject hardware items into device list with composite pricing
-  for (const hw of hardwareItems) {
-    const model = hw.cleanModel || hw.rawName
-    // 自动匹配产品库中的已有设备，预填参数
-    const match = (Array.isArray(gp.value) ? gp.value : []).find(p =>
-      (p.name || '').toLowerCase() === (model || '').toLowerCase()
-    )
-    const allGparams = Array.isArray(gparams.value) ? gparams.value : []
-    const productParams = match ? allGparams.filter((p: any) => p.productId === match.id) : []
-    li.value.push({
-      uid: guid(),
-      productId: match?.id || '',
-      model,
-      customName: hw.customName || '',
-      unitPrice: hw.compositePrice || hw.unitPrice || 0,
-      quantity: hw.quantity || 1,
-      unit: hw.unit || '台',
-      params: productParams.map((p: any) => ({ ...p, mark: '' })),
-      mergedText: match?.full_specs || match?.standard_specs || '',
-      syncParams: match ? false : true,
-      _originalUnitPrice: hw.unitPrice || 0,
-      _allocatedAmount: hw.allocatedAmount || 0,
-    })
-  }
-
-  showUploadModal.value = false
-  pmsSelectedFile.value = null
-  pmsFileName.value = ''
-}
-
-function handleServiceFeeCancel() {
-  cancelImport()
 }
 
 function onDeviceKeydown(e) {
@@ -1005,76 +951,46 @@ onUnmounted(() => {
     <div v-if="showUploadModal" class="fixed inset-0 z-[80] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm" @click.self="cancelImport">
       <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 flex flex-col overflow-hidden transition-all duration-200">
         <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
-          <h3 class="text-sm font-semibold text-gray-800">导入 Excel</h3>
+          <h3 class="text-sm font-semibold text-gray-800">上传 Excel</h3>
           <button @click="cancelImport" class="text-gray-400 hover:text-gray-600">
             <AppIcon name="x" class="w-4 h-4" />
           </button>
         </div>
 
-        <!-- Format selector tabs -->
-        <div class="flex border-b border-gray-100 shrink-0">
-          <button @click="importFormat = 'pms'" class="flex-1 py-2.5 text-xs font-medium text-center transition-colors relative"
-            :class="importFormat === 'pms' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'">
-            PMS 格式
-            <div v-if="importFormat === 'pms'" class="absolute bottom-0 left-1/4 right-1/4 h-0.5 bg-blue-500 rounded-full" />
-          </button>
-          <button @click="importFormat = 'sct'" class="flex-1 py-2.5 text-xs font-medium text-center transition-colors relative"
-            :class="importFormat === 'sct' ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'">
-            华为 SCT 格式
-            <div v-if="importFormat === 'sct'" class="absolute bottom-0 left-1/4 right-1/4 h-0.5 bg-blue-500 rounded-full" />
+        <div class="p-6">
+          <div
+            @click="triggerPMSFile"
+            class="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors border-slate-200 hover:border-blue-400 hover:bg-blue-50/30"
+          >
+            <AppIcon name="upload" class="w-10 h-10 mx-auto mb-3 text-slate-300" />
+            <p v-if="!pmsFileName" class="text-sm text-slate-400">点击选择 Excel 文件</p>
+            <p v-else class="text-sm text-blue-600 font-medium truncate">{{ pmsFileName }}</p>
+          </div>
+          <div v-if="isPMSImporting" class="mt-4 flex items-center gap-2 text-xs text-blue-600 justify-center">
+            <AppIcon name="spinner" class="w-3.5 h-3.5 animate-spin" />
+            正在解析 Excel...
+          </div>
+          <div v-if="pmsImportError" class="mt-4 p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
+            {{ pmsImportError }}
+          </div>
+          <div class="mt-4 p-3 bg-slate-50 border border-slate-100 rounded-lg text-[11px] text-slate-500 leading-relaxed">
+            <p class="font-medium text-slate-600 mb-1">格式要求（.xlsx）</p>
+            <p>表头行须包含以下列，列顺序固定：</p>
+            <p class="mt-1 font-mono text-[10px]">A:序号 B:产品型号 C:产品参数 D:数量 E:单位 F:单价 G:小计</p>
+            <p class="mt-1">含「设备名称」列时：</p>
+            <p class="font-mono text-[10px]">A:序号 B:设备名称 C:产品型号 D:产品参数 E:数量 F:单位 G:单价 H:小计</p>
+            <p class="mt-1">· 序号列为数字，遇到「合计/总计」行停止解析</p>
+            <p>· 支持子网（序号列合并多行的单元格为子网名称，从属行自动归入该子网）</p>
+            <p>· 产品型号会自动匹配产品库，已有型号自动填入参数</p>
+          </div>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
+          <button @click="cancelImport" class="btn-secondary">取消</button>
+          <button @click="confirmPMSImport" :disabled="!pmsSelectedFile || isPMSImporting" class="btn-primary">
+            <AppIcon v-if="isPMSImporting" name="spinner" class="animate-spin w-3 h-3" />
+            <span>{{ isPMSImporting ? '解析中...' : '确认' }}</span>
           </button>
         </div>
-
-        <!-- PMS Import: drag-drop zone -->
-        <template v-if="importFormat === 'pms'">
-          <div class="p-6">
-            <div
-              @click="triggerPMSFile"
-              @dragover.prevent="onPMSDragOver"
-              @dragenter.prevent="onPMSDragOver"
-              @dragleave="onPMSDragLeave"
-              @drop.prevent="onPMSDrop"
-              class="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors"
-              :class="pmsDragActive ? 'border-blue-400 bg-blue-50/40' : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/30'"
-            >
-              <AppIcon name="upload" class="w-10 h-10 mx-auto mb-3 text-slate-300" :class="pmsDragActive ? 'text-blue-400' : ''" />
-              <p v-if="!pmsFileName" class="text-sm text-slate-400">拖拽 PMS 导出的 Excel 文件到此处</p>
-              <p v-else class="text-sm text-blue-600 font-medium truncate">{{ pmsFileName }}</p>
-              <p class="text-xs text-slate-400 mt-1">或点击选择文件</p>
-            </div>
-            <div v-if="isPMSImporting" class="mt-4 flex items-center gap-2 text-xs text-blue-600 justify-center">
-              <AppIcon name="spinner" class="w-3.5 h-3.5 animate-spin" />
-              正在解析 Excel...
-            </div>
-            <div v-if="pmsImportError" class="mt-4 p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
-              {{ pmsImportError }}
-            </div>
-          </div>
-          <!-- PMS footer buttons -->
-          <div class="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
-            <button @click="cancelImport" class="btn-secondary">取消</button>
-            <button @click="confirmPMSImport" :disabled="!pmsSelectedFile || isPMSImporting" class="btn-primary">
-              <AppIcon v-if="isPMSImporting" name="spinner" class="animate-spin w-3 h-3" />
-              <span>{{ isPMSImporting ? '解析中...' : '确认' }}</span>
-            </button>
-          </div>
-        </template>
-
-        <!-- SCT Import: ServiceFeeAllocator -->
-        <template v-else>
-          <div class="flex-1 overflow-hidden flex flex-col min-h-0">
-            <ServiceFeeAllocator
-              ref="feeAllocator"
-              @confirm="handleServiceFeeConfirm"
-              @cancel="handleServiceFeeCancel"
-            />
-          </div>
-          <!-- SCT footer buttons -->
-          <div class="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
-            <button @click="handleServiceFeeCancel" class="btn-secondary">取消</button>
-            <button @click="feeAllocator?.handleConfirm()" class="btn-primary">确认</button>
-          </div>
-        </template>
       </div>
     </div>
   </Teleport>

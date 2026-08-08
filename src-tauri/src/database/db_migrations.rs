@@ -649,6 +649,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     // ★ 创建 notifications 和 notification_config 表
     create_notifications_tables(conn);
 
+    // ★ notifications 增加 meta 列（结构化载荷预留）
+    let _ = conn.execute_batch("ALTER TABLE notifications ADD COLUMN meta TEXT DEFAULT '{}'");
+
     // ★ 归一化 notes 时间戳格式：存量 RFC3339（含 'T'）→ SQLite "YYYY-MM-DD HH:MM:SS" 本地格式。
     //    排序按字符串字典序，混合格式会导致 space(0x20) < 'T'(0x54) 使同一天排序错乱。
     //    datetime() 解析 RFC3339 带时区偏移 → 归一 UTC → 'localtime' 转回本地，等于原本地时刻。

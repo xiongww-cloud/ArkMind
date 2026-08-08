@@ -57,10 +57,8 @@ use serde_json::{json, Value}; use crate::database;
         let ext = f["file_ext"].as_str().unwrap_or("");
         let result = crate::services::file_parser::parse_file_with_hint(&path, ext);
         if result.success && !result.text.is_empty() {
-            // 写入 source_data
+            // 写入 source_data（纯轮询：sync_loop 扫描时统一入队物化）
             crate::database::file_sync_to_source_data(fid, &result.text);
-            // O6: 文件写入 source_data 后立即触发防抖物化
-            crate::services::debounced_sync::SCHEDULER.enqueue("FILE", fid);
             migrated += 1;
         }
     }

@@ -1180,8 +1180,9 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
         token_buf: String,
         token_buf_start: usize, // token_buf 在 full 中的起始位置
         suppress_tokens: bool,
+        done: bool, // 已收到 [DONE]，终止流读取
     }
-    let mut st = SseState { buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(), usage: None, count: 0, token_buf: String::new(), token_buf_start: 0, suppress_tokens: false };
+    let mut st = SseState { buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(), usage: None, count: 0, token_buf: String::new(), token_buf_start: 0, suppress_tokens: false, done: false };
     let mut stream = resp.bytes_stream();
 
     // 尝试从 buffer 头部提取一个完整的 SSE JSON 并处理；返回 false 表示数据不完整
@@ -1193,7 +1194,7 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
         let json_end = json_part.find("data:").unwrap_or(json_part.len());
         let json_str = json_part[..json_end].trim();
         if json_str.is_empty() { return false; }
-        if json_str.starts_with("[DONE]") { st.buf = st.buf[after_prefix + json_end..].to_string(); return true; }
+        if json_str.starts_with("[DONE]") { st.done = true; st.buf = st.buf[after_prefix + json_end..].to_string(); return true; }
         match serde_json::from_str::<Value>(json_str) {
             Ok(chunk) => {
                 st.buf = st.buf[after_prefix + json_end..].to_string();
@@ -1263,6 +1264,7 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
         st.buf.push_str(&String::from_utf8_lossy(&bytes));
         st.buf = st.buf.replace("\r\n", "\n");
         while try_process_one(&mut st, &app_handle) {}
+        if st.done { break; }
         if AGENT_CANCEL.load(Ordering::Acquire) {
             log::info!("SSE stream cancelled +{}ms tokens={}", t0.elapsed().as_millis(), st.count);
             return Err("cancelled".into());
@@ -4708,8 +4710,8 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                 }
                                 _ => { // create
                                     let ntype = a["type"].as_str().unwrap_or("llm_insight");
-                                    let title = a["title"].as_str().unwrap_or("");
-                                    let content = a["content"].as_str().unwrap_or("");
+                                    let title = crate::commands::notification_commands::sanitize_notification_text(a["title"].as_str().unwrap_or(""));
+                                    let content = crate::commands::notification_commands::sanitize_notification_text(a["content"].as_str().unwrap_or(""));
                                     let entity_type = a["entity_type"].as_str().unwrap_or("");
                                     let entity_id = a["entity_id"].as_str().unwrap_or("");
                                     let priority = a["priority"].as_str().unwrap_or("medium");

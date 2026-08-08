@@ -89,6 +89,29 @@ export async function parsePMSExcel(
 
     const items: DeviceItem[] = []
 
+    // ── 预扫描：检测 A 列（序号列）纵向合并单元格 → 子网范围 ──
+    const subnetRanges: Array<{ name: string; startRow: number; endRow: number }> = []
+    for (let r = 2; r <= ws.rowCount; r++) {
+      const cell = ws.getRow(r).getCell(colMap.sn)
+      if (cell.isMerged && cell.master === cell) {
+        const name = String(cell.value || '').trim()
+        if (name && !name.includes('合计') && !name.includes('总计')) {
+          let endRow = r
+          for (let r2 = r + 1; r2 <= ws.rowCount; r2++) {
+            const c2 = ws.getRow(r2).getCell(colMap.sn)
+            if (c2.isMerged && c2.master === cell) { endRow = r2 } else { break }
+          }
+          subnetRanges.push({ name, startRow: r, endRow })
+        }
+      }
+    }
+
+    const subnetStartRows = new Set(subnetRanges.map(s => s.startRow))
+    const rowToSubnet = new Map<number, { name: string; startRow: number; endRow: number }>()
+    for (const range of subnetRanges) {
+      for (let r = range.startRow; r <= range.endRow; r++) rowToSubnet.set(r, range)
+    }
+
     for (let r = 2; r <= ws.rowCount; r++) {
       const row = ws.getRow(r)
       const snCell = row.getCell(colMap.sn)
@@ -100,36 +123,34 @@ export async function parsePMSExcel(
         if (snStr.includes('合计') || snStr.includes('总计') || snStr === '合计：') break
       }
 
-      // 检测子网分隔行
-      const pmCell = row.getCell(colMap.pm)
-      const pmVal = pmCell.value
-      const snIsNumeric =
-        snVal !== null && snVal !== undefined && snVal !== '' && !isNaN(Number(snVal))
-
-      if (!snIsNumeric && (pmVal === null || pmVal === undefined || String(pmVal).trim() === '')) {
-        const subnetName =
-          snVal !== null && snVal !== undefined && snVal !== '' ? String(snVal).trim() : ''
-        if (subnetName && !subnetName.includes('合计') && !subnetName.includes('总计')) {
-          items.push({
-            uid: guid(),
-            rowType: 'subnet',
-            productId: '',
-            model: '',
-            customName: '',
-            unitPrice: 0,
-            quantity: 0,
-            unit: '',
-            params: [],
-            mergedText: '',
-            syncParams: false,
-            name: subnetName,
-          })
-        }
+      // 子网主单元格 → emit subnet
+      if (subnetStartRows.has(r)) {
+        const range = rowToSubnet.get(r)!
+        items.push({
+          uid: guid(),
+          rowType: 'subnet',
+          productId: '',
+          model: '',
+          customName: '',
+          unitPrice: 0,
+          quantity: 0,
+          unit: '',
+          params: [],
+          mergedText: '',
+          syncParams: false,
+          name: range.name,
+        })
         continue
       }
 
-      if (!snIsNumeric) continue
+      // 子网从属行或独立设备行
+      const subnet = rowToSubnet.get(r)
+      const snIsNumeric = snVal !== null && snVal !== undefined && snVal !== '' && !isNaN(Number(snVal))
 
+      // 不在子网范围内且序号不是数字 → 跳过（备注行等）
+      if (!subnet && !snIsNumeric) continue
+
+      const pmVal = row.getCell(colMap.pm).value
       const model = String(pmVal || '').trim()
       if (!model) continue
 
@@ -141,7 +162,6 @@ export async function parsePMSExcel(
       const unit = String(row.getCell(colMap.un).value || '台').trim() || '台'
       const up = parseFloat(String(row.getCell(colMap.up).value || '0')) || 0
 
-      // 自动匹配产品库
       const match = productList.find(
         (p) => (p.name || '').toLowerCase() === model.toLowerCase()
       )
