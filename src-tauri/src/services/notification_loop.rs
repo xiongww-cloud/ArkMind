@@ -128,6 +128,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             .unwrap_or_else(chrono::Local::now)
             .format("%Y-%m-%d %H:%M").to_string()
     });
+
     let context = build_initial_context(&since);
 
     // 无新数据时跳过 LLM 调用，直接更新检查时间
@@ -153,16 +154,17 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
          - 关键数据变化趋势、异常波动\n\
          - 多个项目/待办之间的冲突或风险\n\
          - 用户可能忽略的重要信息\n\
-         \n\
-         如果数据中没有值得用户关注的事项，回复\"暂无新发现\"。\n\
-         \n\
-         以下数据是距上次分析之后发生变化的业务数据，每行开头的ID是对象ID。\n\
-         如需查看某个对象的完整详情，可调用 ext_tool_object(id=[\"对象ID\"])。\n\
-         例如：ext_tool_object(id=[\"abc123def456\"]) 查看项目详情。\n\
-         如需其他业务数据（合作伙伴、联系人、文件、知识库等）辅助分析，可调用工具检索。\n\
-         {}\n\
-         \n\
-         最近通知：\n{}",
+          \n\
+          如果数据中没有值得用户关注的事项，回复\"暂无新发现\"。\n\
+          \n\
+          以下数据是距上次分析之后发生变化的业务数据，每行开头的ID是对象ID。\n\
+          如需查看某个对象的完整详情，可调用 ext_tool_object(id=[\"对象ID\"])。\n\
+          例如：ext_tool_object(id=[\"abc123def456\"]) 查看项目详情。\n\
+          重要：通知的标题和内容中禁止出现对象ID/UUID，只使用对象名称描述，例如「项目“XX项目”已停滞」。\n\
+          如需其他业务数据（合作伙伴、联系人、文件、知识库等）辅助分析，可调用工具检索。\n\
+          {}\n\
+          \n\
+          最近通知：\n{}",
         context, recent
     );
 

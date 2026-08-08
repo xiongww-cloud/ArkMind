@@ -35,11 +35,17 @@ async function renderMd(text: string): Promise<string> {
   } catch { return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 }
 
+const UUID_RE = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g
+
+function stripUuids(text: string): string {
+  return (text || '').replace(UUID_RE, '')
+}
+
 const renderedContent = ref<Record<string, string>>({})
 
 async function renderContent(n: Notification) {
   if (renderedContent.value[n.id]) return
-  renderedContent.value[n.id] = await renderMd(n.content)
+  renderedContent.value[n.id] = await renderMd(stripUuids(n.content))
 }
 
 async function loadNotifications() {
@@ -141,7 +147,7 @@ function onTitleEnter(e: MouseEvent, title: string) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="flex flex-col h-full select-text">
     <!-- List -->
     <div class="flex-1 overflow-y-auto">
       <div v-if="loading" class="p-6 text-center text-sm text-surface-400">加载中...</div>
@@ -159,9 +165,9 @@ function onTitleEnter(e: MouseEvent, title: string) {
             </span>
             <div class="flex-1 min-w-0 flex items-center gap-2">
               <div v-if="n.read === 0" class="w-2 h-2 rounded-full flex-shrink-0" :class="priorityDot[n.priority] || priorityDot.medium"></div>
-              <span @mouseenter="(e) => onTitleEnter(e, n.title)" @mouseleave="hideTip"
-                class="text-[13px] font-medium text-slate-800 truncate cursor-default"
-                :class="{ 'font-normal text-slate-500': n.read === 1 }">{{ n.title }}</span>
+              <span @mouseenter="(e) => onTitleEnter(e, stripUuids(n.title))" @mouseleave="hideTip"
+                class="text-[13px] font-medium text-slate-800 truncate cursor-default select-text"
+                :class="{ 'font-normal text-slate-500': n.read === 1 }">{{ stripUuids(n.title) }}</span>
             </div>
             <span class="text-[11px] text-slate-400 flex-shrink-0">{{ timeAgo(n.created_at) }}</span>
             <svg class="w-3 h-3 flex-shrink-0 text-slate-400 transition-transform duration-200"
@@ -172,7 +178,7 @@ function onTitleEnter(e: MouseEvent, title: string) {
           </button>
           <!-- Expanded content -->
           <div v-if="expandedId === n.id">
-            <div v-if="renderedContent[n.id]" class="notif-md px-4 pb-2 pl-14 text-[13px] text-slate-600 leading-relaxed" v-html="renderedContent[n.id]" />
+            <div v-if="renderedContent[n.id]" class="notif-md px-4 pb-2 pl-14 text-[13px] text-slate-600 leading-relaxed select-text" v-html="renderedContent[n.id]" />
             <div class="flex items-center gap-3 px-4 pb-2 pl-14">
               <button v-if="n.read === 0" @click.stop="markRead(n.id)" class="text-[11px] text-blue-600 hover:underline">标记已读</button>
               <button v-if="n.entity_id" @click.stop="goToEntity(n)" class="text-[11px] text-blue-600 hover:underline">查看详情</button>

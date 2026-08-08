@@ -1,6 +1,12 @@
 use crate::database;
 use serde_json::{json, Value};
 
+/// 剥除通知标题/内容中暴露的对象 UUID，避免泄露内部标识符
+pub(crate) fn sanitize_notification_text(text: &str) -> String {
+    let re = regex::Regex::new(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
+    re.replace_all(text, "").trim().to_string()
+}
+
 #[tauri::command]
 pub async fn notification_list(unread_only: Option<bool>) -> Result<Value, String> {
     let sql = if unread_only.unwrap_or(false) {
@@ -16,8 +22,8 @@ pub async fn notification_list(unread_only: Option<bool>) -> Result<Value, Strin
 pub async fn notification_create(data: Value) -> Result<Value, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let ntype = data["type"].as_str().unwrap_or("llm_insight");
-    let title = data["title"].as_str().unwrap_or("");
-    let content = data["content"].as_str().unwrap_or("");
+    let title = sanitize_notification_text(data["title"].as_str().unwrap_or(""));
+    let content = sanitize_notification_text(data["content"].as_str().unwrap_or(""));
     let entity_type = data["entity_type"].as_str().unwrap_or("");
     let entity_id = data["entity_id"].as_str().unwrap_or("");
     let priority = data["priority"].as_str().unwrap_or("medium");
