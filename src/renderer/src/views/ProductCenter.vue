@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, watch, onUnmounted, onActivated, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProductStore, UNCATEGORIZED_NAME } from '@/stores/product'
 import { useSelectionStore } from '@/stores/selection'
@@ -10,6 +10,7 @@ import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, get
 import { exportProductsToExcel, parseProductExcel } from '@/utils/productExcel'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import { useResizablePanels } from '@/composables/useResizablePanels'
+import { useMultiSelect } from '@/composables/useMultiSelect'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { formatDateTime } from '@/utils/time'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -27,7 +28,7 @@ const collapsedSeries = ref<Set<string>>(new Set())
 const modalCollapsed = ref<Record<string, boolean>>({})
 function toggleSeries(id: string) { if (collapsedSeries.value.has(id)) collapsedSeries.value.delete(id); else collapsedSeries.value.add(id); collapsedSeries.value = new Set(collapsedSeries.value) }
 function toggleModalSeries(id: string) { const m = { ...modalCollapsed.value }; m[id] = !m[id]; modalCollapsed.value = m }
-function selectSeries(id: string|null) { selectedSeriesId.value = id; selectedProductId.value = null; store.selectSeries(id) }
+function selectSeries(id: string|null) { selectedSeriesId.value = id; selectedProductId.value = null; clearMultiSelect(); store.selectSeries(id) }
 async function startAddSeries(parentId?: string|null) {
   let name = '新目录'
   let i = 1
@@ -62,7 +63,7 @@ function buildTree(allSeries: any[], collapsed: Set<string>, q: string): any[] {
     .concat(uncat ? [{ ...uncat, _depth: 0, _hasChildren: hasChildren(uncat.id) }, ...buildChildren(uncat.id, 1)] : [])
 }
 
-const seriesTree = computed(() => buildTree(store.series as any[], collapsedSeries.value, seriesSearch.value.toLowerCase().trim()))
+const seriesTree = computed(() => buildTree(store.series as any[], collapsedSeries.value, ''))
 const modalTree = computed(() => buildTree(store.series as any[], modalCollapsed.value, ''))
 
 const isDragging = ref(false); const dragType = ref<'series'|'product'|null>(null)
@@ -112,9 +113,15 @@ async function onDragUp() {
     if (!pId) return
     try {
       const newSeriesId = (tid === store.uncategorizedSeriesId || tid === '__root__') ? null : tid
-      await store.updateProduct(pId, { seriesId: newSeriesId })
+      const idsToMove = selectedCount.value > 1 && isSelected(pId)
+        ? [...selectedIds.value]
+        : [pId]
+      for (const rid of idsToMove) {
+        await store.updateProduct(rid, { seriesId: newSeriesId })
+      }
       await store.fetchProducts()
-      toast({ message: '产品已移动', type: 'success' })
+      clearMultiSelect()
+      toast({ message: idsToMove.length > 1 ? `已移动 ${idsToMove.length} 个产品` : '产品已移动', type: 'success' })
     } catch { toast({ message: '移动失败', type: 'error' }) }
   }
 }
@@ -125,6 +132,29 @@ const selectedProductId = ref<string|null>(null)
 const productListRef = ref<HTMLElement|null>(null)
 const filteredProducts = computed(() => { let r = store.products as any[]; if (selectedSeriesId.value) { if (selectedSeriesId.value === store.uncategorizedSeriesId) { r = r.filter((p: any) => !p.seriesId) } else { r = r.filter((p: any) => p.seriesId === selectedSeriesId.value) } }; const q = seriesSearch.value.toLowerCase().trim(); if (q) r = r.filter((p: any) => p.name.toLowerCase().includes(q)); return [...r].sort((a: any, b: any) => (b.updatedAt||b.createdAt||'').localeCompare(a.updatedAt||a.createdAt||'')) })
 function selectProduct(id: string|null) { selectedProductId.value = id }
+
+const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(filteredProducts)
+const pendingShiftDown = ref(false)
+
+function onProductMouseDown(e: MouseEvent, pid: string) {
+  if ((e.target as HTMLElement).closest('input')) return
+  if (e.shiftKey) {
+    e.preventDefault()
+    multiSelectRange(pid)
+    pendingShiftDown.value = true
+    return
+  }
+  pendingShiftDown.value = false
+  if (!isSelected(pid)) multiSelectSingle(pid)
+  startProductDrag(e, pid)
+}
+
+function onProductCardClick(e: MouseEvent, pid: string) {
+  if (e.shiftKey || pendingShiftDown.value) return
+  clearMultiSelect()
+  selectProduct(pid)
+}
+
 function isDuplicateName(name: string, excludeId?: string): boolean {
   if (!name.trim()) return false
   const q = name.trim().toLowerCase()
@@ -451,6 +481,7 @@ onMounted(async () => {
     })
   } catch (e) { console.warn('[ProductCenter] Failed to listen drag-drop:', e) }
 })
+onActivated(() => store.fetchProducts())
 // ★ 响应全局搜索跳转
 let processingSeq = 0
 watch(() => selectionStore.current.seq, async () => {
@@ -480,7 +511,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
     </div>
     <div class="shrink-0 px-3 py-1.5 border-b border-surface-100">
       <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
-        <AppIcon name="search" size="12" class="text-surface-400"/><input v-model="seriesSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索目录和产品..."/>
+        <AppIcon name="search" size="12" class="text-surface-400"/><input v-model="seriesSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索产品..."/>
       </div>
     </div>
     <div class="flex-1" style="overflow-y:auto;overflow-x:clip">
@@ -489,7 +520,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
         <template v-for="(s) in seriesTree" :key="s.id">
           <!-- Insertion line: above -->
           <div v-if="isDragging && dragType==='series' && dragInsert?.targetId===s.id && dragInsert?.side==='above'" class="insertion-line" :style="{ marginLeft: `${4 + (s._depth||0) * 16}px` }"></div>
-          <div v-if="editingSeriesId===s.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${12 + (s._depth||0) * 16}px` }"><span v-if="s.name !== UNCATEGORIZED_NAME && s._hasChildren" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedSeries.has(s.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span><span v-else-if="s.name !== UNCATEGORIZED_NAME" class="w-3 h-3 flex-shrink-0"></span><span v-else class="w-3 h-3 flex-shrink-0"></span><AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/><input data-series-edit v-model="seriesEditName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none" @keyup.enter="saveSeriesName(s.id)" @blur="saveSeriesName(s.id)"/></div>
+          <div v-if="editingSeriesId===s.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${12 + (s._depth||0) * 16}px` }"><span v-if="s.name !== UNCATEGORIZED_NAME && s._hasChildren" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedSeries.has(s.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span><span v-else-if="s.name !== UNCATEGORIZED_NAME" class="w-3 h-3 flex-shrink-0"></span><span v-else class="w-3 h-3 flex-shrink-0"></span><AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/><input data-series-edit v-model="seriesEditName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="saveSeriesName(s.id)" @blur="saveSeriesName(s.id)"/></div>
           <div v-else :data-drop-target="s.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedSeriesId===s.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragSeriesId===s.id?'opacity-30':'', isDragging && dragTargetId===s.id && dragSeriesId!==s.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectSeries(s.id)" @mousedown="startSeriesDrag($event, s.id)" :style="{ paddingLeft: `${12 + (s._depth||0) * 16}px` }">
             <div v-if="dragType==='series' && dragInsert?.targetId===s.id && dragInsert?.side==='inside'" class="absolute inset-0 border-2 border-brand-400 rounded-lg pointer-events-none"></div>
             <div v-if="selectedSeriesId===s.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
@@ -497,7 +528,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
             <span v-else-if="s.name !== UNCATEGORIZED_NAME" class="w-3 h-3 flex-shrink-0"></span>
             <span v-else class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/><span class="truncate flex-1">{{ s.name }}</span>
-            <template v-if="s.name !== UNCATEGORIZED_NAME"><span @click.stop="startAddSeries(s.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="plus" size="10"/></span><span @click.stop="startEditSeries(s.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span><span @click.stop="removeSeries(s.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="10"/></span></template>
+            <template v-if="s.name !== UNCATEGORIZED_NAME"><span @mousedown.stop @click.stop="startAddSeries(s.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="plus" size="10"/></span><span @mousedown.stop @click.stop="startEditSeries(s.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span><span @mousedown.stop @click.stop="removeSeries(s.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="10"/></span></template>
           </div>
           <!-- Insertion line: below -->
           <div v-if="isDragging && dragType==='series' && dragInsert?.targetId===s.id && dragInsert?.side==='below'" class="insertion-line" :style="{ marginLeft: `${4 + (s._depth||0) * 16}px` }"></div>
@@ -513,7 +544,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
     <div class="absolute right-[-3px] top-0 bottom-0 w-[6px] cursor-col-resize z-10 select-none" @mousedown="onResizeStart('list', $event)"></div>
     <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0"><span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">产品</span><div class="flex items-center gap-1"><button @click="handleExportProducts" :disabled="exportingProducts" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="导出产品到 Excel"><AppIcon name="download" size="12" stroke="2.5"/></button><button @click="triggerImportProducts" :disabled="importing" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="从 Excel 导入产品"><AppIcon name="upload" size="12" stroke="2.5"/></button><button @click="createProduct" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="plus" size="12" stroke="2.5"/></button></div><input ref="importFileRef" type="file" accept=".xlsx" class="hidden" @change="onImportFileChange"/></div>
     <div ref="productListRef" class="flex-1 overflow-y-auto p-2 space-y-1">
-      <div v-for="p in filteredProducts" :key="p.id" :data-product-id="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden select-none" :class="[selectedProductId===p.id?'bg-blue-50/70 border-brand-200 shadow-md scale-[1.02] z-10':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragProductId===p.id?'opacity-30':'']" @click="selectProduct(p.id)" @mousedown="startProductDrag($event, p.id)">
+      <div v-for="p in filteredProducts" :key="p.id" :data-product-id="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden select-none" :class="[selectedProductId===p.id || isSelected(p.id)?'bg-blue-50/70 border-brand-200 shadow-md scale-[1.02] z-10':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragProductId===p.id?'opacity-30':'']" @click="onProductCardClick($event, p.id)" @mousedown="onProductMouseDown($event, p.id)">
         <div v-if="selectedProductId===p.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
         <div class="flex-1 min-w-0"><p class="text-[12px] font-medium text-surface-800 truncate">{{ p.name||'未命名产品' }}</p><p class="text-[9px] text-surface-400 mt-0.5">{{ (p.updated_at||p.updatedAt||p.created_at||p.createdAt||'').slice(0,16) }}</p></div>
         <button @click.stop="deleteProduct(p.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 flex-shrink-0"><AppIcon name="trash" size="13"/></button>
@@ -534,8 +565,8 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
         <!-- Product model (editable via double-click) -->
         <div>
           <div class="flex items-center gap-2" @dblclick="startEditName">
-            <template v-if="editingName"><input id="pname" v-model="editName" class="flex-1 text-xs font-semibold text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5" @keyup.enter="saveName" @blur="saveName"/></template>
-            <template v-else><h2 class="text-lg font-semibold text-surface-600">{{ currentProduct?.name||'未命名' }}</h2><button @click="startEditName" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="edit" size="11"/></button></template>
+            <template v-if="editingName"><input id="pname" v-model="editName" class="flex-1 text-xs font-semibold text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text" @keyup.enter="saveName" @blur="saveName"/></template>
+            <template v-else><h2 class="text-lg font-semibold text-surface-600">{{ currentProduct?.name||'未命名' }}</h2><button @mousedown.stop @click="startEditName" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="edit" size="11"/></button></template>
           </div>
           <hr class="border-surface-200 mt-1.5"/>
         </div>
@@ -569,10 +600,11 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                     <input
                       v-model="editingMaterialName"
                       data-mat-rename-input
-                      class="w-full text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 pb-0.5"
+                      class="w-full text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text"
                       @keyup.enter="confirmRenameMaterial(m)"
                       @blur="confirmRenameMaterial(m)"
                       @click.stop
+                      @mousedown.stop
                       @keyup.escape="cancelRenameMaterial()"
                     />
                   </template>
@@ -581,7 +613,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                   </template>
                   <p class="text-[9px] text-surface-400 mt-0.5">{{ formatDateTime(m.created_at) }}</p>
                 </div>
-                <button @click.stop="startRenameMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="重命名"><AppIcon name="edit" size="13"/></button>
+                <button @mousedown.stop @click.stop="startRenameMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="重命名"><AppIcon name="edit" size="13"/></button>
                 <button @click.stop="handleDownloadMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="下载"><AppIcon name="download" size="13"/></button>
                 <button @click.stop="openAssocMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="关联产品"><AppIcon name="link" size="13"/></button>
                 <button @click.stop="handleDeleteMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="13"/></button>
@@ -597,7 +629,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
   </div>
 
   <!-- Drag ghost -->
-  <Teleport to="body"><div v-if="isDragging" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}"><template v-if="dragType === 'series'">{{ store.series.find(s => s.id === dragSeriesId)?.name || '目录' }}</template><template v-else>{{ store.products.find(p => p.id === dragProductId)?.name || '产品' }}</template></div></Teleport>
+  <Teleport to="body"><div v-if="isDragging" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}"><template v-if="dragType === 'series'">{{ store.series.find(s => s.id === dragSeriesId)?.name || '目录' }}</template><template v-else>{{ selectedCount > 1 ? `${selectedCount} 个产品` : `${store.products.find(p => p.id === dragProductId)?.name || '产品'} · Shift+点击可多选` }}</template></div></Teleport>
 
   <!-- Product Excel import dialog -->
   <Teleport to="body"><Transition name="modal-fade"><div v-if="importModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="importModalOpen=false">

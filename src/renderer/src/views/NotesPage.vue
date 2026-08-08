@@ -9,9 +9,10 @@ const ProjectDetail = defineAsyncComponent(() => import('@/views/ProjectDetail.v
 import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
 import AttachmentPanel from '@/components/notes/AttachmentPanel.vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
-import { Node } from '@tiptap/core'
+import RichTextToolbar from '@/components/common/RichTextToolbar.vue'
 import { getTiptapExtensions } from '@/composables/useTiptapConfig'
 import { useResizablePanels } from '@/composables/useResizablePanels'
+import { useMultiSelect } from '@/composables/useMultiSelect'
 import {
   notesV2ListAll, notesV2ListDaily, notesV2ListOrphan, notesV2ListTrash, notesV2ListArchive,
   notesV2ListByNotebook, notesV2Get, notesV2GetForTrash,
@@ -56,14 +57,6 @@ function focusNotebookEdit() { const el = document.querySelector<HTMLInputElemen
 // ═══════════════════════════════════════════════════════════════════
 // Tiptap Editor
 // ═══════════════════════════════════════════════════════════════════
-const headingLabel = ref('正文')
-const headingOpen = ref(false)
-const listOpen = ref(false)
-const alignOpen = ref(false)
-const alignLabel = ref('左对齐')
-const tableMenuOpen = ref(false)
-const tableRows = ref(3)
-const tableCols = ref(3)
 
 // ─── @ Link Selector ──────────────────────────────────────────────
 const atOpen = ref(false)
@@ -94,103 +87,17 @@ function insertFileLink(f: any) {
 
 const { projectModalId, closeProject } = useLinkModals()
 
-const TimeTag = Node.create({
-  name: 'timeTag',
-  group: 'inline',
-  inline: true,
-  content: 'text*',
-  parseHTML: () => [{ tag: 'span.time-tag' }],
-  renderHTML: () => ['span', { class: 'time-tag' }, 0],
-})
-
-
 const editor = useEditor({
   content: '',
-  extensions: getTiptapExtensions({ placeholder: '开始记录...', extraExtensions: [TimeTag] }),
+  extensions: getTiptapExtensions({ placeholder: '开始记录...' }),
   onUpdate: ({ editor: ed }) => {
     editContent.value = ed.getHTML()
     scheduleSave()
-  },
-  onSelectionUpdate: ({ editor: ed }) => {
-    if (ed.isActive('heading', { level: 1 })) headingLabel.value = '标题 1'
-    else if (ed.isActive('heading', { level: 2 })) headingLabel.value = '标题 2'
-    else if (ed.isActive('heading', { level: 3 })) headingLabel.value = '标题 3'
-    else headingLabel.value = '正文'
-    if (ed.isActive({ textAlign: 'right' })) alignLabel.value = '右对齐'
-    else if (ed.isActive({ textAlign: 'center' })) alignLabel.value = '居中'
-    else alignLabel.value = '左对齐'
   },
   editorProps: {
     attributes: { class: 'tiptap-editor' },
   },
 })
-
-// ─── Toolbar commands — each bound to editor.chain().focus() ───────
-function execFormat(cmd: string, val?: string) {
-  if (!editor.value) return
-  const ed = editor.value.chain().focus()
-  switch (cmd) {
-    case 'bold': ed.toggleBold().run(); break
-    case 'italic': ed.toggleItalic().run(); break
-    case 'underline': ed.toggleUnderline().run(); break
-    case 'strikeThrough': ed.toggleStrike().run(); break
-    case 'justifyLeft': ed.setTextAlign('left').run(); break
-    case 'justifyCenter': ed.setTextAlign('center').run(); break
-    case 'insertHorizontalRule': ed.setHorizontalRule().run(); break
-    case 'formatBlock': if (val === 'p') ed.setParagraph().run(); break
-    case 'insertTable': ed.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); break
-    case 'addColumnBefore': ed.addColumnBefore().run(); break
-    case 'addColumnAfter': ed.addColumnAfter().run(); break
-    case 'deleteColumn': ed.deleteColumn().run(); break
-    case 'addRowBefore': ed.addRowBefore().run(); break
-    case 'addRowAfter': ed.addRowAfter().run(); break
-    case 'deleteRow': ed.deleteRow().run(); break
-    case 'deleteTable': ed.deleteTable().run(); break
-  }
-}
-function insertHeading(level: number) {
-  editor.value?.chain().focus().toggleHeading({ level: level as 1|2|3 }).run()
-  headingOpen.value = false
-}
-function insertList(type: 'ul'|'ol') {
-  if (!editor.value) return
-  type === 'ul'
-    ? editor.value.chain().focus().toggleBulletList().run()
-    : editor.value.chain().focus().toggleOrderedList().run()
-}
-function toggleTaskList() {
-  editor.value?.chain().focus().toggleTaskList().run()
-  listOpen.value = false
-}
-function insertBlock(tag: string) {
-  if (!editor.value) return
-  if (tag === 'pre') editor.value.chain().focus().toggleCodeBlock().run()
-  else if (tag === 'blockquote') editor.value.chain().focus().toggleBlockquote().run()
-}
-
-function insertTime() {
-  if (!editor.value) return
-  const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  editor.value.chain().focus().insertContent({
-    type: 'timeTag',
-    content: [{ type: 'text', text: now }],
-  }).insertContent(' ').run()
-}
-
-function execAlign(dir: 'left'|'center'|'right') {
-  editor.value?.chain().focus().setTextAlign(dir).run()
-  alignLabel.value = dir === 'right' ? '右对齐' : dir === 'center' ? '居中' : '左对齐'
-  alignOpen.value = false
-}
-function insertTableCustom() {
-  const r = Math.max(1, Math.min(10, tableRows.value));
-  const c = Math.max(1, Math.min(8, tableCols.value));
-  editor.value?.chain().focus().insertTable({ rows: r, cols: c, withHeaderRow: true }).run();
-  tableMenuOpen.value = false;
-}
-function closePopups() { headingOpen.value = false; listOpen.value = false; alignOpen.value = false; tableMenuOpen.value = false }
-onMounted(() => document.addEventListener('click', closePopups))
-onUnmounted(() => document.removeEventListener('click', closePopups))
 
 // ═══════════════════════════════════════════════════════════════════
 // Data loading & CRUD (unchanged below)
@@ -320,16 +227,15 @@ function toggleNotebook(nbId: string) {
 }
 
 const notebookTree = computed(() => {
-  const q = notebookSearch.value.toLowerCase().trim()
-  const roots = notebooks.value.filter(n => !n.parentId && (!q || n.name.toLowerCase().includes(q)))
+  const roots = notebooks.value.filter(n => !n.parentId)
   const children = notebooks.value.filter(n => n.parentId)
   const collapsed = collapsedNotebooks.value
   function hasChildren(parentId: string): boolean {
-    return children.some(c => c.parentId === parentId && (!q || c.name.toLowerCase().includes(q)))
+    return children.some(c => c.parentId === parentId)
   }
   function getChildren(parentId: string, depth: number): any[] {
     if (collapsed.has(parentId)) return []
-    return [...children].filter(c => c.parentId === parentId && (!q || c.name.toLowerCase().includes(q)))
+    return [...children].filter(c => c.parentId === parentId)
       .sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || (a.name || '').localeCompare(b.name || ''))
       .flatMap(c => [{ ...c, _depth: depth, _hasChildren: hasChildren(c.id) }, ...getChildren(c.id, depth + 1)])
   }
@@ -347,6 +253,29 @@ const displayedNotes = computed(() => {
   else result = [...result].sort((a,b) => tsMillis(b.updated_at || b.created_at) - tsMillis(a.updated_at || a.created_at))
   return result
 })
+
+const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(displayedNotes as any)
+const pendingShiftDown = ref(false)
+
+function onNoteMouseDown(e: MouseEvent, nid: string) {
+  if ((e.target as HTMLElement).closest('input')) return
+  if (currentView.value !== 'notebook') { startNoteDrag(e, nid); return }
+  if (e.shiftKey) {
+    e.preventDefault()
+    multiSelectRange(nid)
+    pendingShiftDown.value = true
+    return
+  }
+  pendingShiftDown.value = false
+  if (!isSelected(nid)) multiSelectSingle(nid)
+  startNoteDrag(e, nid)
+}
+
+function onNoteCardClick(e: MouseEvent, nid: string) {
+  if (currentView.value === 'notebook' && (e.shiftKey || pendingShiftDown.value)) return
+  clearMultiSelect()
+  selectNote(nid)
+}
 
 // ─── View switching + auto-save ─────────────────────────────────────
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -390,6 +319,7 @@ function selectNotebook(nid: string) {
   saveBeforeSwitch()
   selectedNotebookId.value = nid; currentView.value = 'notebook'
   selectedProjectId.value = null; selectedNoteId.value = null
+  clearMultiSelect()
   loadAll()
 }
 let selectNoteSeq = 0
@@ -596,9 +526,15 @@ async function onDragUp(_e: MouseEvent) {
   if (type === 'note') {
     if (!noteId || noteId === targetId) return
     try {
-      await notesV2Update({ noteId, notebookId: targetId })
-      notes.value = notes.value.filter(n => n.note_id !== noteId && n.id !== noteId)
-      toast({ message: '笔记已移动', type: 'success' })
+      const idsToMove = selectedCount.value > 1 && isSelected(noteId)
+        ? [...selectedIds.value]
+        : [noteId]
+      for (const rid of idsToMove) {
+        await notesV2Update({ noteId: rid, notebookId: targetId })
+      }
+      notes.value = notes.value.filter(n => !idsToMove.includes(n.note_id) && !idsToMove.includes(n.id))
+      clearMultiSelect()
+      toast({ message: idsToMove.length > 1 ? `已移动 ${idsToMove.length} 条笔记` : '笔记已移动', type: 'success' })
     } catch { toast({ message: '移动失败', type: 'error' }) }
   } else {
     if (!notebookId || notebookId === targetId) return
@@ -754,7 +690,7 @@ const restoreNotebookList = computed(() => {
     <div class="shrink-0 px-3 py-1.5 border-b border-surface-100">
       <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
         <AppIcon name="search" size="12" class="text-surface-400 flex-shrink-0"/>
-        <input v-model="notebookSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索笔记、笔记本..."/>
+        <input v-model="notebookSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索笔记..."/>
       </div>
     </div>
 
@@ -774,7 +710,7 @@ const restoreNotebookList = computed(() => {
         <!-- Insertion line: above target -->
         <div v-if="isDragging && dragType==='notebook' && dragInsert?.targetId===nb.id && dragInsert?.side==='above'" class="insertion-line" :style="{ marginLeft: `${4 + (nb._depth || 0) * 16}px` }"></div>
         <div v-if="editingNotebookId===nb.id" class="flex items-center gap-1 px-2 py-1" :style="{ paddingLeft: `${12 + (nb._depth || 0) * 16 + 20}px` }">
-          <input ref="notebookNameRef" v-model="notebookEditName" class="flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-brand-400" @keyup.enter="saveNotebookName(nb.id)" @blur="saveNotebookName(nb.id)"/>
+          <input ref="notebookNameRef" v-model="notebookEditName" class="flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-brand-400 select-text" @keyup.enter="saveNotebookName(nb.id)" @blur="saveNotebookName(nb.id)"/>
         </div>
         <div v-else :data-drop-target="nb.id" class="flex items-center gap-1 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group cursor-pointer relative overflow-hidden select-none" :class="[(currentView==='notebook'&&selectedNotebookId===nb.id)?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragNotebookId===nb.id?'opacity-30':'', isDragging && dragTargetId===nb.id && dragNotebookId!==nb.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectNotebook(nb.id)" @mousedown="startNotebookDrag($event, nb.id)" :style="{ paddingLeft: `${4 + (nb._depth || 0) * 16}px` }">
   <div v-if="currentView==='notebook'&&selectedNotebookId===nb.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
@@ -787,8 +723,8 @@ const restoreNotebookList = computed(() => {
           <span v-else class="w-3 flex-shrink-0 mr-0.5"></span>
           <AppIcon name="folder-open" size="13" class="flex-shrink-0 text-surface-400"/>
           <span class="truncate flex-1">{{ nb.name }}</span>
-          <span @click.stop="startAddNotebook(nb.id)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="新建子笔记本"><AppIcon name="plus" size="10"/></span>
-          <span @click.stop="startEditNotebook(nb)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span>
+          <span @mousedown.stop @click.stop="startAddNotebook(nb.id)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="新建子笔记本"><AppIcon name="plus" size="10"/></span>
+          <span @mousedown.stop @click.stop="startEditNotebook(nb)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span>
           <span @click.stop="removeNotebook(nb.id)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="10"/></span>
         </div>
         <!-- Insertion line: below target -->
@@ -813,7 +749,7 @@ const restoreNotebookList = computed(() => {
       <button v-if="currentView!=='daily'" @click="createNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建"><AppIcon name="plus" size="12" stroke="2.5"/></button>
     </div>
     <div class="flex-1 overflow-y-auto p-2 space-y-1.5">
-      <div v-for="note in displayedNotes" :key="note.note_id" @mousedown="startNoteDrag($event, note.note_id||note.id)" class="flex items-center px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden hover:scale-[1.02] hover:z-10 select-none" :class="[selectedNoteId===(note.note_id||note.id)?'bg-blue-50/70 border-brand-200 shadow-none scale-100':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragNoteId===(note.note_id||note.id)?'opacity-50':'']" @click="selectNote(note.note_id||note.id)">
+      <div v-for="note in displayedNotes" :key="note.note_id" @mousedown="onNoteMouseDown($event, note.note_id||note.id)" class="flex items-center px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden hover:scale-[1.02] hover:z-10 select-none" :class="[selectedNoteId===(note.note_id||note.id)||isSelected(note.note_id||note.id)?'bg-blue-50/70 border-brand-200 shadow-none scale-100':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragNoteId===(note.note_id||note.id)?'opacity-50':'']" @click="onNoteCardClick($event, note.note_id||note.id)">
         <div v-if="selectedNoteId===(note.note_id||note.id)" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
         <div class="flex-1 min-w-0">
           <p class="text-[12px] font-medium text-surface-800 truncate">{{ currentView==='daily' ? (note.title||(note.created_at||'').slice(0,10)) : (note.title||'未命名笔记') }}</p>
@@ -860,121 +796,7 @@ const restoreNotebookList = computed(() => {
   <!-- Editor -->
   <div class="flex-1 flex flex-col min-w-0 overflow-hidden relative" v-if="currentView!=='trash'">
     <template v-if="selectedNoteId">
-      <div class="flex items-center gap-0 px-2 h-10 border-b border-surface-100 shrink-0">
-        <!-- Group 1: Heading Dropdown -->
-        <div class="relative">
-          <button @mousedown.prevent @click.stop="headingOpen=!headingOpen; listOpen=false" class="flex items-center gap-0.5 w-[54px] h-7 justify-center rounded transition-colors duration-200 text-xs text-surface-500 hover:bg-surface-100">
-            <span>{{ headingLabel }}</span>
-            <svg class="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-          </button>
-          <div v-if="headingOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[90px]">
-            <button @mousedown.prevent="execFormat('formatBlock','p'); headingLabel='正文'; headingOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50">正文</button>
-            <button @mousedown.prevent="insertHeading(1)" class="w-full px-3 py-1.5 text-xs text-left font-bold text-surface-600 hover:bg-surface-50">标题 1</button>
-            <button @mousedown.prevent="insertHeading(2)" class="w-full px-3 py-1.5 text-xs text-left font-bold text-surface-600 hover:bg-surface-50">标题 2</button>
-            <button @mousedown.prevent="insertHeading(3)" class="w-full px-3 py-1.5 text-xs text-left font-bold text-surface-600 hover:bg-surface-50">标题 3</button>
-          </div>
-        </div>
-        <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-        <!-- Group 2: Text Styles -->
-        <div class="flex items-center gap-0.5">
-          <button @mousedown.prevent="execFormat('bold')" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 relative group" :class="editor?.isActive('bold')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'"><b class="text-xs">B</b><span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">加粗</span></button>
-          <button @mousedown.prevent="execFormat('italic')" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 relative group" :class="editor?.isActive('italic')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'"><i class="text-xs">I</i><span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">斜体</span></button>
-          <button @mousedown.prevent="execFormat('underline')" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 relative group" :class="editor?.isActive('underline')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'"><u class="text-xs">U</u><span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">下划线</span></button>
-          <button @mousedown.prevent="execFormat('strikeThrough')" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 text-xs text-surface-500 hover:bg-surface-100 line-through relative group" :class="editor?.isActive('strike')?'bg-blue-50 text-blue-600':''"><span>S</span><span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">删除线</span></button>
-        </div>
-        <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-        <!-- Group 3: List dropdown -->
-        <div class="relative">
-          <button @mousedown.prevent @click.stop="listOpen=!listOpen; headingOpen=false" class="flex items-center gap-0.5 h-7 px-1.5 justify-center rounded transition-colors duration-200 text-xs text-surface-500 hover:bg-surface-100">
-            <AppIcon name="list" size="15"/>
-            <svg class="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-          </button>
-          <div v-if="listOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[110px]">
-            <button @mousedown.prevent="insertList('ul'); listOpen=false" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50"><AppIcon name="list" size="14"/>无序列表</button>
-            <button @mousedown.prevent="insertList('ol'); listOpen=false" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50"><AppIcon name="list-ol" size="14"/>有序列表</button>
-          </div>
-        </div>
-        <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-        <!-- Task list button -->
-        <button @mousedown.prevent="toggleTaskList()" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 relative group" :class="editor?.isActive('taskList')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'" title="任务清单">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M8 12l3 3 5-6"/></svg>
-          <span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">任务清单</span>
-        </button>
-        <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-        <!-- Group 4: Alignment dropdown -->
-        <div class="relative">
-          <button @mousedown.prevent @click.stop="alignOpen=!alignOpen; headingOpen=false; listOpen=false" class="flex items-center gap-0.5 h-7 px-1.5 justify-center rounded transition-colors duration-200 text-xs text-surface-500 hover:bg-surface-100">
-            <AppIcon :name="alignLabel==='右对齐'?'align-right':alignLabel==='居中'?'align-center':'align-left'" size="15"/>
-            <svg class="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-          </button>
-          <div v-if="alignOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[120px]">
-            <button @mousedown.prevent="execAlign('left')" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50"><AppIcon name="align-left" size="14"/>左对齐</button>
-            <button @mousedown.prevent="execAlign('center')" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50"><AppIcon name="align-center" size="14"/>居中</button>
-            <button @mousedown.prevent="execAlign('right')" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50"><AppIcon name="align-right" size="14"/>右对齐</button>
-          </div>
-        </div>
-        <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-        <!-- Group 5: Inserts & Table -->
-        <div class="flex items-center gap-0.5">
-          <button @mousedown.prevent="execFormat('insertHorizontalRule')" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group"><span class="text-xs">—</span><span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">分隔线</span></button>
-          <button @mousedown.prevent="insertBlock('pre')" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group"><AppIcon name="code-bracket" size="15"/><span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">代码块</span></button>
-          <button @mousedown.prevent="insertBlock('blockquote')" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group"><AppIcon name="quote" size="15"/><span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">引用</span></button>
-          <div class="mx-0.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-          <button @mousedown.prevent="insertTime()" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group" title="插入时间"><AppIcon name="clock" size="15"/><span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">插入时间</span></button>
-          <div class="mx-0.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-          <!-- @ mention button -->
-          <div class="relative">
-            <button
-              data-at-btn
-              @mousedown.prevent @click.stop="openAtSelector()"
-              class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group"
-              :class="atOpen ? 'bg-blue-50 text-blue-600' : ''"
-              title="插入链接"
-            >
-              <svg class="w-[15px] h-[15px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 12v1a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
-              <span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">插入链接</span>
-            </button>
-          </div>
-          <div class="mx-0.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-          <div class="mx-0.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-          <!-- Table button with rows/cols inputs -->
-          <div class="relative">
-            <button @mousedown.prevent @click.stop="tableMenuOpen=!tableMenuOpen; headingOpen=false; listOpen=false; alignOpen=false" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 relative group" :class="editor?.isActive('table')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'">
-              <AppIcon name="table-grid" size="15"/>
-              <svg class="w-2 h-2 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-              <span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">表格</span>
-            </button>
-            <div v-if="tableMenuOpen" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-lg shadow-sm border border-surface-100 p-1 w-[120px]" @click.stop>
-              <div v-if="!editor?.isActive('table')" class="space-y-1.5 mb-2">
-                <div class="flex items-center gap-1.5">
-                  <span class="text-[11px] text-surface-500 w-4">行</span>
-                  <input v-model.number="tableRows" type="number" min="1" max="10" class="flex-1 border border-surface-200 rounded px-1.5 py-0.5 text-[11px] text-center outline-none focus:border-brand-400 no-spinner" inputmode="numeric"/>
-                </div>
-                <div class="flex items-center gap-1.5">
-                  <span class="text-[11px] text-surface-500 w-4">列</span>
-                  <input v-model.number="tableCols" type="number" min="1" max="8" class="flex-1 border border-surface-200 rounded px-1.5 py-0.5 text-[11px] text-center outline-none focus:border-brand-400 no-spinner" inputmode="numeric"/>
-                </div>
-              </div>
-              <button v-if="!editor?.isActive('table')" @click.prevent="insertTableCustom()" class="w-full py-1 text-[10px] bg-brand-600 text-white rounded hover:bg-brand-700 transition-colors flex items-center justify-center gap-1">
-                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M12 4v16m8-8H4"/></svg>
-                插入表格
-              </button>
-              <template v-if="editor?.isActive('table')">
-                <hr class="border-surface-100 my-2" />
-                <button @mousedown.prevent="execFormat('addColumnBefore'); tableMenuOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50 rounded">左侧插入列</button>
-                <button @mousedown.prevent="execFormat('addColumnAfter'); tableMenuOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50 rounded">右侧插入列</button>
-                <button @mousedown.prevent="execFormat('deleteColumn'); tableMenuOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50 rounded">删除列</button>
-                <hr class="border-surface-100 my-1" />
-                <button @mousedown.prevent="execFormat('addRowBefore'); tableMenuOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50 rounded">上方插入行</button>
-                <button @mousedown.prevent="execFormat('addRowAfter'); tableMenuOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50 rounded">下方插入行</button>
-                <button @mousedown.prevent="execFormat('deleteRow'); tableMenuOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50 rounded">删除行</button>
-                <hr class="border-surface-100 my-1" />
-                <button @mousedown.prevent="execFormat('deleteTable'); tableMenuOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-red-500 hover:bg-red-50 rounded">删除表格</button>
-              </template>
-            </div>
-          </div>
-        </div>
-      </div>
+      <RichTextToolbar :editor="editor" :at-active="atOpen" @at="openAtSelector" />
       <!-- Title + Editor + floating drawer -->
       <div class="flex-1 flex flex-col min-w-0 relative">
         <div v-if="currentView!=='daily'" class="px-4 pt-3 pb-1 shrink-0">
@@ -1009,7 +831,7 @@ const restoreNotebookList = computed(() => {
 <!-- Drag ghost -->
 <Teleport to="body">
   <div v-if="isDragging" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}">
-    <template v-if="dragType === 'note'">{{ notes.find(n => (n.note_id||n.id) === dragNoteId)?.title || '笔记' }}</template>
+    <template v-if="dragType === 'note'">{{ selectedCount > 1 ? `${selectedCount} 条笔记` : `${notes.find(n => (n.note_id||n.id) === dragNoteId)?.title || '笔记'} · Shift+点击可多选` }}</template>
     <template v-else>{{ notebooks.find(n => n.id === dragNotebookId)?.name || '笔记本' }}</template>
   </div>
 </Teleport>
@@ -1059,9 +881,6 @@ const restoreNotebookList = computed(() => {
 </template>
 
 <style>
-.no-spinner::-webkit-outer-spin-button,
-.no-spinner::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.no-spinner { -moz-appearance: textfield; }
 .tiptap-editor {
   padding: 8px 0 16px;
   font-size: 14px;

@@ -100,7 +100,7 @@ defineExpose({ loadFiles })
 </script>
 
 <template>
-  <div class="flex-shrink-0 w-[300px] border-l border-surface-200 flex flex-col bg-surface-50/20">
+  <div class="flex-shrink-0 w-[240px] border-l border-surface-200 flex flex-col bg-surface-50/20">
     <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0">
       <span class="text-[10px] font-semibold text-surface-400 uppercase tracking-wider">项目文件</span>
       <span class="text-[9px] text-surface-300">{{ files.length }}</span>
@@ -120,7 +120,7 @@ defineExpose({ loadFiles })
               <div class="w-6 h-6 flex items-center justify-center rounded font-bold text-[7px] tracking-wider shrink-0 select-none" :class="fileTypeClass(f.file_ext || '')">{{ (f.file_ext || 'file').toUpperCase() }}</div>
               <div class="ml-1.5 flex-1 min-w-0 flex items-center gap-1">
                 <template v-if="editingFileId === f.id">
-                  <input v-model="editingFileName" data-panel-rename-input class="w-full text-[10px] font-medium text-surface-700 bg-transparent outline-none border-b border-brand-400 pb-0.5" @keyup.enter="confirmRename(f)" @blur="confirmRename(f)" @click.stop @keyup.escape="cancelRename()" />
+                  <input v-model="editingFileName" data-panel-rename-input class="w-full text-[10px] font-medium text-surface-700 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text" @keyup.enter="confirmRename(f)" @blur="confirmRename(f)" @click.stop @mousedown.stop @keyup.escape="cancelRename()" />
                 </template>
                 <template v-else>
                   <p class="text-[10px] font-medium text-surface-700 truncate leading-tight cursor-pointer hover:text-blue-600 flex-1 min-w-0" :title="fileDisplayName(f)" @click="previewFileById(f.id)">{{ fileDisplayName(f) }}</p>

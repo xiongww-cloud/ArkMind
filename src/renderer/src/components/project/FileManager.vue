@@ -11,6 +11,7 @@ import * as api from '@/api/db-client'
 
 const { updateFileMeta, openFile, downloadFile, fetchFileTree, createFolder, renameFolder, deleteFolder, moveFolder, reorderFolder } = api
 import { toast } from '@/composables/useToast'
+import { useMultiSelect } from '@/composables/useMultiSelect'
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -142,9 +143,15 @@ async function onFileDragUp() {
   if (!fileId || !tid || tid === fileId) return
   const folderId = tid === '__root__' || tid === '__uncategorized__' ? null : tid
   try {
-    await updateFileMeta(fileId, { folderId })
+    const idsToMove = selectedCount.value > 1 && isSelected(fileId)
+      ? [...selectedIds.value]
+      : [fileId]
+    for (const rid of idsToMove) {
+      await updateFileMeta(rid, { folderId })
+    }
     await loadFiles()
-    toast({ message: '文件已移动', type: 'success' })
+    clearMultiSelect()
+    toast({ message: idsToMove.length > 1 ? `已移动 ${idsToMove.length} 个文件` : '文件已移动', type: 'success' })
   } catch (e: any) { toast({ message: '移动失败', type: 'error' }) }
 }
 
@@ -248,6 +255,33 @@ const filteredFiles = computed(() => {
     return matchSearch && matchTag
   })
 })
+
+const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(filteredFiles as any)
+const pendingShiftDown = ref(false)
+
+function onFileMouseDown(e: MouseEvent, fid: string) {
+  if ((e.target as HTMLElement).closest('input')) return
+  if (e.shiftKey) {
+    e.preventDefault()
+    multiSelectRange(fid)
+    pendingShiftDown.value = true
+    return
+  }
+  pendingShiftDown.value = false
+  if (!isSelected(fid)) multiSelectSingle(fid)
+  startFileDrag(e, fid)
+}
+
+function onFileCardClick(e: MouseEvent, fid: string) {
+  if (e.shiftKey || pendingShiftDown.value) return
+  clearMultiSelect()
+  previewFile(fid)
+}
+
+function selectFolder(id: string|null) {
+  selectedFolderId.value = id
+  clearMultiSelect()
+}
 
 // ─── Fetch on mount ───────────────────────────────────────────────────────────
 let loadGen = 0
@@ -392,7 +426,7 @@ function getFileColor(fileName) {
       <button v-if="!isArchived" @click="$refs.folderTree?.startAddFolder()" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="新建目录"><AppIcon name="plus" size="12" stroke="2.5"/></button>
     </div>
     <FolderTree ref="folderTree" :folders="allFolders" :selected-id="selectedFolderId" :project-id="projectId" :external-drag-target-id="isDraggingFile ? dragTargetId : null"
-      @select="(id) => selectedFolderId = id"
+      @select="selectFolder"
       @create="onFolderCreate"
       @rename="onFolderRename"
       @delete="onFolderDelete"
@@ -419,28 +453,28 @@ function getFileColor(fileName) {
     <div class="flex-1 overflow-y-auto p-2 space-y-1">
       <div v-if="isFetching" class="text-center py-8"><p class="text-xs text-surface-400">加载中...</p></div>
       <div v-else-if="filteredFiles.length === 0" class="text-center py-8"><p class="text-xs text-surface-400">暂无文件</p></div>
-      <div v-for="file in filteredFiles" :key="file.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200" :class="[isDraggingFile && dragFileId===file.id ? 'opacity-30 select-none' : '']" @mousedown="startFileDrag($event, file.id)">
+      <div v-for="file in filteredFiles" :key="file.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200" :class="[isDraggingFile && dragFileId===file.id ? 'opacity-30 select-none' : '', isSelected(file.id) ? 'bg-blue-50/70 border-blue-200' : '']" @mousedown="onFileMouseDown($event, file.id)">
         <div class="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[9px] font-bold tracking-wider" :class="getFileColor(file.name)">{{ (file.name || '').split('.').pop()?.toUpperCase() || 'FILE' }}</div>
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 min-w-0">
-            <input v-if="editingNameFileId === file.id" v-model="editingNameValue" data-name-input class="text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 w-full min-w-0" @keyup.enter="saveFileName(file.id)" @blur="saveFileName(file.id)" @keyup.escape="cancelEditName()"/>
-            <p v-else class="text-[12px] font-medium text-surface-800 truncate cursor-pointer hover:text-blue-600 transition-colors" :title="file.displayName || file.custom_name || file.name" @click="previewFile(file.id)">{{ file.displayName || file.custom_name || file.name }}</p>
+            <input v-if="editingNameFileId === file.id" v-model="editingNameValue" data-name-input class="text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 w-full min-w-0 select-text" @keyup.enter="saveFileName(file.id)" @blur="saveFileName(file.id)" @mousedown.stop @keyup.escape="cancelEditName()"/>
+            <p v-else class="text-[12px] font-medium text-surface-800 truncate inline-block max-w-full cursor-pointer hover:text-blue-600 transition-colors" :title="file.displayName || file.custom_name || file.name" @click="onFileCardClick($event, file.id)">{{ file.displayName || file.custom_name || file.name }}</p>
             <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatFileSize(file.file_size) }}</span>
             <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatDateTime(file.updated_at || file.created_at) }}</span>
           </div>
           <!-- 标签行 -->
 
           <div v-if="editingRemarkFileId === file.id" class="mt-1">
-            <input v-model="editingRemarkValue" data-remark-input class="w-full text-[11px] text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5" placeholder="输入备注..." @keyup.enter="saveRemark(file.id)" @blur="saveRemark(file.id)" @keyup.escape="cancelEditRemark()"/>
+            <input v-model="editingRemarkValue" data-remark-input class="w-full text-[11px] text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text" placeholder="输入备注..." @keyup.enter="saveRemark(file.id)" @blur="saveRemark(file.id)" @mousedown.stop @keyup.escape="cancelEditRemark()"/>
           </div>
           <div v-else class="mt-0.5 flex items-center gap-1">
             <p v-if="file.remark" class="text-[10px] text-surface-400 truncate cursor-pointer hover:text-blue-600" @click="startEditRemark(file)">{{ file.remark }}</p>
             <p v-else class="text-[10px] text-surface-300 cursor-pointer hover:text-blue-600" @click="startEditRemark(file)">无备注</p>
-            <button @click.stop="startEditRemark(file)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="编辑备注"><AppIcon name="edit" size="10"/></button>
+            <button @mousedown.stop @click.stop="startEditRemark(file)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="编辑备注"><AppIcon name="edit" size="10"/></button>
           </div>
         </div>
         <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button v-if="!isArchived" @click.stop="startEditName(file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑文件名"><AppIcon name="edit" size="13"/></button>
+          <button v-if="!isArchived" @mousedown.stop @click.stop="startEditName(file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑文件名"><AppIcon name="edit" size="13"/></button>
           <button @click.stop="downloadFileFromId(file.id, file.displayName || file.name, (file.name || '').split('.').pop())" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="下载"><AppIcon name="download" size="12"/></button>
           <button v-if="!isArchived" @click.stop="deleteFile(file.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="trash" size="12"/></button>
         </div>
@@ -451,7 +485,7 @@ function getFileColor(fileName) {
   <!-- Drag ghost -->
   <Teleport to="body">
     <div v-if="isDraggingFile" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}">
-      {{ filteredFiles.find(f => f.id === dragFileId)?.displayName || filteredFiles.find(f => f.id === dragFileId)?.custom_name || filteredFiles.find(f => f.id === dragFileId)?.name || '文件' }}
+      {{ selectedCount > 1 ? `${selectedCount} 个文件` : `${filteredFiles.find(f => f.id === dragFileId)?.displayName || filteredFiles.find(f => f.id === dragFileId)?.custom_name || filteredFiles.find(f => f.id === dragFileId)?.name || '文件'} · Shift+点击可多选` }}
     </div>
   </Teleport>
 </div>

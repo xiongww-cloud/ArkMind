@@ -4,6 +4,7 @@ import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import { useResizablePanels } from '@/composables/useResizablePanels'
+import { useMultiSelect } from '@/composables/useMultiSelect'
 import AppIcon from '@/components/common/AppIcon.vue'
 import {
   fetchFileTree, listGlobalFiles,
@@ -66,7 +67,7 @@ function buildTree(dirs: Folder[], collapsed: Set<string>, q: string): Folder[] 
 
 const folderTree = computed(() => buildTree(allFolders.value, collapsedFolders.value, ''))
 
-function selectFolder(id: string|null) { selectedFolderId.value = id }
+function selectFolder(id: string|null) { selectedFolderId.value = id; clearMultiSelect() }
 
 // ─── Data load ────────────────────────────────────────────────────────
 onMounted(async () => { await loadFolders(); await loadFiles() })
@@ -154,6 +155,28 @@ const filteredFiles = computed(() => {
   }
   return [...result].sort((a,b) => (b.updated_at||b.created_at||'').localeCompare(a.updated_at||a.created_at||''))
 })
+
+const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(filteredFiles as any)
+const pendingShiftDown = ref(false)
+
+function onFileMouseDown(e: MouseEvent, fid: string) {
+  if ((e.target as HTMLElement).closest('input')) return
+  if (e.shiftKey) {
+    e.preventDefault()
+    multiSelectRange(fid)
+    pendingShiftDown.value = true
+    return
+  }
+  pendingShiftDown.value = false
+  if (!isSelected(fid)) multiSelectSingle(fid)
+  startFileDrag(e, fid)
+}
+
+function onFileCardClick(e: MouseEvent, fid: string) {
+  if (e.shiftKey || pendingShiftDown.value) return
+  clearMultiSelect()
+  if (!dragJustFinished.value) handlePreview(fid)
+}
 
 // ─── File type display ──────────────────────────────────────────────────
 const fileTypeColors: Record<string,string> = {
@@ -298,15 +321,24 @@ async function onDragUp() {
     if (!fileId || tid === fileId) return
     try {
       const folderId = tid === '__root__' || tid === '__uncategorized__' ? null : tid
-      await moveFileToFolder(fileId, folderId)
+      const idsToMove = selectedCount.value > 1 && isSelected(fileId)
+        ? [...selectedIds.value]
+        : [fileId]
+      for (const rid of idsToMove) {
+        await moveFileToFolder(rid, folderId)
+      }
       await loadFiles(); await loadFolders()
-      toast({ message: '文件已移动', type: 'success' })
+      clearMultiSelect()
+      toast({ message: idsToMove.length > 1 ? `已移动 ${idsToMove.length} 个文件` : '文件已移动', type: 'success' })
     } catch { toast({ message: '移动失败', type: 'error' }) }
   }
 }
 const dragGhostText = computed(() => {
   if (dragType.value === 'folder') return allFolders.value.find(f => f.id === dragFolderId.value)?.name || '目录'
-  if (dragType.value === 'file') return fileDisplayName(allFiles.value.find(f => f.id === dragFileId.value) as any)
+  if (dragType.value === 'file') {
+    if (selectedCount.value > 1) return `${selectedCount.value} 个文件`
+    return `${fileDisplayName(allFiles.value.find(f => f.id === dragFileId.value) as any)} · Shift+点击可多选`
+  }
   return ''
 })
 onUnmounted(() => { if (dragTimer.value) clearTimeout(dragTimer.value); document.removeEventListener('mousemove', onDragMove); document.removeEventListener('mouseup', onDragUp); document.removeEventListener('mouseup', onDragUpPre) })
@@ -360,7 +392,7 @@ async function handleDelete(id: string) {
             <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
             <span v-else class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
-            <input data-folder-edit v-model="folderEditName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none" @keyup.enter="confirmRename(d.id)" @blur="confirmRename(d.id)"/>
+            <input data-folder-edit v-model="folderEditName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="confirmRename(d.id)" @blur="confirmRename(d.id)"/>
           </div>
 
           <!-- 正常目录节点 -->
@@ -372,7 +404,7 @@ async function handleDelete(id: string) {
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
             <span class="truncate flex-1">{{ d.name }}</span>
             <span @click.stop="startAddSubFolder(d.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="plus" size="10"/></span>
-            <span @click.stop="startRename(d.id, d.name)" class="w-4 h-4 flex items-center justify-center rounded hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span>
+            <span @mousedown.stop @click.stop="startRename(d.id, d.name)" class="w-4 h-4 flex items-center justify-center rounded hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span>
             <span @click.stop="handleDeleteFolder(d.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="10"/></span>
           </div>
 
@@ -380,7 +412,7 @@ async function handleDelete(id: string) {
           <div v-if="addingNew && addingParentId === d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${12 + ((d._depth||0) + 1) * 16}px` }">
             <span class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
-            <input data-folder-add v-model="newFolderName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none" @keyup.enter="confirmAddFolder" @keyup.escape="cancelAddFolder" @blur="confirmAddFolder"/>
+            <input data-folder-add v-model="newFolderName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="confirmAddFolder" @keyup.escape="cancelAddFolder" @blur="confirmAddFolder"/>
           </div>
           <!-- Insertion line: below -->
           <div v-if="isDragging && dragType==='folder' && dragInsert?.targetId===d.id && dragInsert?.side==='below'" class="insertion-line" :style="{ marginLeft: `${4 + (d._depth||0) * 16}px` }"></div>
@@ -437,8 +469,9 @@ async function handleDelete(id: string) {
     </div>
     <div class="flex-1 overflow-y-auto p-2 space-y-1">
       <div v-for="f in filteredFiles" :key="f.id"
-        class="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200 select-none"
-        @mousedown="startFileDrag($event, f.id)"
+        class="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200"
+        :class="[isSelected(f.id) ? 'bg-blue-50/70 border-blue-200' : '', isDragging && dragFileId===f.id ? 'select-none' : '']"
+        @mousedown="onFileMouseDown($event, f.id)"
       >
         <div class="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[9px] font-bold tracking-wider" :class="fileTypeColor(f.file_ext)">{{ (f.file_ext || '').toUpperCase() || 'FILE' }}</div>
         <div class="flex-1 min-w-0">
@@ -446,29 +479,30 @@ async function handleDelete(id: string) {
             <input
               v-model="editingFileName"
               data-lib-rename-input
-              class="w-full text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 pb-0.5"
+              class="w-full text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text"
               @keyup.enter="confirmFileRename(f)"
               @blur="confirmFileRename(f)"
               @click.stop
+              @mousedown.stop
               @keyup.escape="cancelFileRename()"
             />
           </template>
           <template v-else>
-            <span class="text-[12px] text-surface-800 truncate block hover:text-blue-600 transition-colors cursor-pointer" :title="fileDisplayName(f)" @click="!dragJustFinished && handlePreview(f.id)">{{ fileDisplayName(f) }}</span>
+            <span class="text-[12px] text-surface-800 truncate inline-block max-w-full hover:text-blue-600 transition-colors cursor-pointer" :title="fileDisplayName(f)" @click="onFileCardClick($event, f.id)">{{ fileDisplayName(f) }}</span>
           </template>
           <div v-if="editingRemarkFileId === f.id" class="mt-1">
-            <input v-model="editingRemarkValue" data-lib-remark-input class="w-full text-[11px] text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5" placeholder="输入备注..." @keyup.enter="saveRemark(f)" @blur="saveRemark(f)" @keyup.escape="cancelEditRemark()"/>
+            <input v-model="editingRemarkValue" data-lib-remark-input class="w-full text-[11px] text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text" placeholder="输入备注..." @keyup.enter="saveRemark(f)" @blur="saveRemark(f)" @mousedown.stop @keyup.escape="cancelEditRemark()"/>
           </div>
           <div v-else class="mt-0.5 flex items-center gap-1">
             <p v-if="f.lib_remark" class="text-[10px] text-surface-400 truncate cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">{{ f.lib_remark }}</p>
             <p v-else class="text-[10px] text-surface-300 cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">无备注</p>
-            <button @click.stop="startEditRemark(f)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="编辑备注"><AppIcon name="edit" size="10"/></button>
+            <button @mousedown.stop @click.stop="startEditRemark(f)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="编辑备注"><AppIcon name="edit" size="10"/></button>
           </div>
         </div>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatSize(f.file_size) }}</span>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ (f.updated_at||f.created_at||'').slice(0,10) }}</span>
         <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-          <button @click.stop="startFileRename(f)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="edit" size="13"/></button>
+            <button @mousedown.stop @click.stop="startFileRename(f)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="edit" size="13"/></button>
           <button @click.stop="handleDownload(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="download" size="13"/></button>
           <button @click.stop="handleDelete(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500"><AppIcon name="trash" size="13"/></button>
         </div>
