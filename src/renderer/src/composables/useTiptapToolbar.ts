@@ -46,7 +46,7 @@ export function useTiptapToolbar(editor: Ref<any>) {
       case 'codeBlock': ed.toggleCodeBlock().run(); break
       case 'blockquote': ed.toggleBlockquote().run(); break
       case 'heading': if (val) ed.toggleHeading({ level: Number(val) as 1 | 2 | 3 }).run(); break
-      case 'align': if (val) ed.setTextAlign(val as any); break
+      case 'align': if (val) ed.setTextAlign(val as any).run(); break
       case 'insertTable': ed.insertTable({ rows: tableRows.value, cols: tableCols.value, withHeaderRow: true }).run(); tableMenuOpen.value = false; break
       case 'addColumnBefore': ed.addColumnBefore().run(); break
       case 'addColumnAfter': ed.addColumnAfter().run(); break
@@ -94,6 +94,15 @@ export function useTiptapToolbar(editor: Ref<any>) {
     tableMenuOpen.value = false
   }
 
+  function insertTime() {
+    if (!editor.value) return
+    const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    editor.value.chain().focus().insertContent({
+      type: 'timeTag',
+      content: [{ type: 'text', text: now }],
+    }).insertContent(' ').run()
+  }
+
   function closePopups() {
     headingOpen.value = false
     listOpen.value = false
@@ -136,6 +145,7 @@ export function useTiptapToolbar(editor: Ref<any>) {
     insertBlock,
     execAlign,
     insertTableCustom,
+    insertTime,
     closePopups,
     togglePopup
   }

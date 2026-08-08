@@ -8,7 +8,17 @@ import TableCell from '@tiptap/extension-table-cell'
 import TableHeader from '@tiptap/extension-table-header'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
+import { Node } from '@tiptap/core'
 import { ProjectExtension, FileExtension } from '@/components/editor/extensions'
+
+export const TimeTag = Node.create({
+  name: 'timeTag',
+  group: 'inline',
+  inline: true,
+  content: 'text*',
+  parseHTML: () => [{ tag: 'span.time-tag' }],
+  renderHTML: () => ['span', { class: 'time-tag' }, 0],
+})
 
 export function getTiptapExtensions(options?: { placeholder?: string; extraExtensions?: any[] }) {
   return [
@@ -24,6 +34,7 @@ export function getTiptapExtensions(options?: { placeholder?: string; extraExten
     TaskItem.configure({ nested: true }),
     ProjectExtension,
     FileExtension,
+    TimeTag,
     ...(options?.extraExtensions || []),
   ]
 }

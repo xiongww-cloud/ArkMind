@@ -1,23 +1,14 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onUnmounted } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
-import StarterKit from '@tiptap/starter-kit'
-import Underline from '@tiptap/extension-underline'
-import TextAlign from '@tiptap/extension-text-align'
-import Placeholder from '@tiptap/extension-placeholder'
-import Table from '@tiptap/extension-table'
-import TableRow from '@tiptap/extension-table-row'
-import TableCell from '@tiptap/extension-table-cell'
-import TableHeader from '@tiptap/extension-table-header'
-import TaskList from '@tiptap/extension-task-list'
-import TaskItem from '@tiptap/extension-task-item'
+import { getTiptapExtensions } from '@/composables/useTiptapConfig'
 import AppIcon from '@/components/common/AppIcon.vue'
+import RichTextToolbar from '@/components/common/RichTextToolbar.vue'
 import ProjectDetail from '@/views/ProjectDetail.vue'
 import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
 import CalendarPicker from './CalendarPicker.vue'
 import { createProject } from '@/api/db-client'
 import { toast } from '@/composables/useToast'
-import { ProjectExtension, FileExtension } from '@/components/editor/extensions'
 import { useLinkModals } from '@/composables/useLinkModals'
 
 const PRIO = { color: { P1: '#ef4444', P2: '#f59e0b', P3: '#3b82f6' } as Record<string,string> }
@@ -36,15 +27,6 @@ const emit = defineEmits<{
   update: [id: string, data: Partial<Todo>]
   close: []
 }>()
-
-const headingLabel = ref('正文')
-const headingOpen = ref(false)
-const listOpen = ref(false)
-const alignOpen = ref(false)
-const alignLabel = ref('左对齐')
-const tableMenuOpen = ref(false)
-const tableRows = ref(3)
-const tableCols = ref(3)
 
 // ── Date picker: custom calendar popover ──
 const datePickerOpen = ref(false)
@@ -146,37 +128,12 @@ defineExpose({ insertFileAtCursor })
 // Editor
 const editor = useEditor({
   content: props.todo?.content || '',
-  extensions: [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] } }), Underline,
-    Table.configure({ resizable: true }), TableRow, TableCell, TableHeader,
-    TaskList, TaskItem.configure({ nested: true }),
-    TextAlign.configure({ types: ['heading', 'paragraph'] }),
-    Placeholder.configure({ placeholder: '添加描述...' }),
-    ProjectExtension,
-    FileExtension,
-  ],
+  extensions: getTiptapExtensions({ placeholder: '添加描述...' }),
   onUpdate: ({ editor: ed }) => { debouncedEmit({ content: ed.getHTML() }) },
-  onSelectionUpdate: ({ editor: ed }) => {
-    if (ed.isActive('heading', { level: 1 })) headingLabel.value = '标题 1'
-    else if (ed.isActive('heading', { level: 2 })) headingLabel.value = '标题 2'
-    else if (ed.isActive('heading', { level: 3 })) headingLabel.value = '标题 3'
-    else headingLabel.value = '正文'
-    if (ed.isActive({ textAlign: 'right' })) alignLabel.value = '右对齐'
-    else if (ed.isActive({ textAlign: 'center' })) alignLabel.value = '居中'
-    else alignLabel.value = '左对齐'
-  },
   editorProps: { attributes: { class: 'tiptap-editor text-left' } },
 })
 
 watch(() => props.todo?.id, () => { nextTick(() => editor.value?.commands.setContent(props.todo?.content || '')); dateInput.value = props.todo?.dueDate || '' })
-
-function execFormat(cmd: string) { if (!editor.value) return; const ed = editor.value.chain().focus(); switch (cmd) { case 'bold': ed.toggleBold().run(); break; case 'italic': ed.toggleItalic().run(); break; case 'underline': ed.toggleUnderline().run(); break; case 'strikeThrough': ed.toggleStrike().run(); break; case 'justifyLeft': ed.setTextAlign('left').run(); break; case 'justifyCenter': ed.setTextAlign('center').run(); break; case 'justifyRight': ed.setTextAlign('right').run(); break; case 'insertHorizontalRule': ed.setHorizontalRule().run(); break; case 'insertTable': ed.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); break; case 'addColumnBefore': ed.addColumnBefore().run(); break; case 'addColumnAfter': ed.addColumnAfter().run(); break; case 'deleteColumn': ed.deleteColumn().run(); break; case 'addRowBefore': ed.addRowBefore().run(); break; case 'addRowAfter': ed.addRowAfter().run(); break; case 'deleteRow': ed.deleteRow().run(); break; case 'deleteTable': ed.deleteTable().run(); break; } }
-function insertHeading(level: number) { editor.value?.chain().focus().toggleHeading({ level: level as 1 | 2 | 3 }).run(); headingOpen.value = false }
-function insertList(type: 'ul' | 'ol') { if (!editor.value) return; type === 'ul' ? editor.value.chain().focus().toggleBulletList().run() : editor.value.chain().focus().toggleOrderedList().run() }
-function toggleTaskList() { editor.value?.chain().focus().toggleTaskList().run(); listOpen.value = false }
-function insertBlock(tag: string) { if (!editor.value) return; if (tag === 'pre') editor.value.chain().focus().toggleCodeBlock().run(); else if (tag === 'blockquote') editor.value.chain().focus().toggleBlockquote().run() }
-function execAlign(dir: 'left' | 'center' | 'right') { editor.value?.chain().focus().setTextAlign(dir).run(); alignLabel.value = dir === 'right' ? '右对齐' : dir === 'center' ? '居中' : '左对齐'; alignOpen.value = false }
-function insertTableCustom() { const r = Math.max(1, Math.min(10, tableRows.value)); const c = Math.max(1, Math.min(8, tableCols.value)); editor.value?.chain().focus().insertTable({ rows: r, cols: c, withHeaderRow: true }).run(); tableMenuOpen.value = false }
 
 // 防抖保存：3秒内多次编辑只触发一次 update
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -188,68 +145,14 @@ function debouncedEmit(data: Record<string, any>) {
 }
 
 function toggleDone() { emit('update', props.todo.id, { done: !props.todo.done }) }
-function closePopups() { headingOpen.value = false; listOpen.value = false; alignOpen.value = false; tableMenuOpen.value = false; datePickerOpen.value = false; priorityOpen.value = false; projectOpen.value = false }
+function closePopups() { datePickerOpen.value = false; priorityOpen.value = false; projectOpen.value = false }
 onUnmounted(() => editor.value?.destroy())
 </script>
 
 <template>
   <div v-if="todo" class="flex-1 flex flex-col min-w-0 overflow-y-auto" @click="closePopups">
     <!-- Toolbar -->
-    <div class="flex items-center gap-0 px-2 h-10 border-b border-surface-100 shrink-0">
-      <div class="relative">
-        <button @mousedown.prevent @click.stop="headingOpen=!headingOpen; listOpen=false; alignOpen=false" class="flex items-center gap-0.5 w-[54px] h-7 justify-center rounded transition-colors text-xs text-surface-500 hover:bg-surface-100"><span>{{ headingLabel }}</span><svg class="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></button>
-        <div v-if="headingOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[90px]">
-          <button @mousedown.prevent="editor?.chain().focus().setParagraph().run(); headingLabel='正文'; headingOpen=false" class="w-full px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50">正文</button>
-          <button @mousedown.prevent="insertHeading(1)" class="w-full px-3 py-1.5 text-xs text-left font-bold text-surface-600 hover:bg-surface-50">标题 1</button>
-          <button @mousedown.prevent="insertHeading(2)" class="w-full px-3 py-1.5 text-xs text-left font-bold text-surface-600 hover:bg-surface-50">标题 2</button>
-          <button @mousedown.prevent="insertHeading(3)" class="w-full px-3 py-1.5 text-xs text-left font-bold text-surface-600 hover:bg-surface-50">标题 3</button>
-        </div>
-      </div>
-      <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-      <div class="flex items-center gap-0.5">
-        <button @mousedown.prevent="execFormat('bold')" class="w-7 h-7 flex items-center justify-center rounded transition-colors" :class="editor?.isActive('bold')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'"><b class="text-xs">B</b></button>
-        <button @mousedown.prevent="execFormat('italic')" class="w-7 h-7 flex items-center justify-center rounded transition-colors" :class="editor?.isActive('italic')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'"><i class="text-xs">I</i></button>
-        <button @mousedown.prevent="execFormat('underline')" class="w-7 h-7 flex items-center justify-center rounded transition-colors" :class="editor?.isActive('underline')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'"><u class="text-xs">U</u></button>
-        <button @mousedown.prevent="execFormat('strikeThrough')" class="w-7 h-7 flex items-center justify-center rounded transition-colors text-xs text-surface-500 hover:bg-surface-100 line-through" :class="editor?.isActive('strike')?'bg-blue-50 text-blue-600':''"><span>S</span></button>
-      </div>
-      <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-      <div class="relative">
-        <button @mousedown.prevent @click.stop="listOpen=!listOpen; headingOpen=false; alignOpen=false" class="flex items-center gap-0.5 h-7 px-1.5 justify-center rounded transition-colors text-xs text-surface-500 hover:bg-surface-100"><AppIcon name="list" size="15"/><svg class="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></button>
-        <div v-if="listOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[110px]"><button @mousedown.prevent="insertList('ul'); listOpen=false" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-surface-600 hover:bg-surface-50"><AppIcon name="list" size="14"/>无序列表</button><button @mousedown.prevent="insertList('ol'); listOpen=false" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-surface-600 hover:bg-surface-50"><AppIcon name="list-ol" size="14"/>有序列表</button></div>
-      </div>
-      <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-      <button @mousedown.prevent="toggleTaskList()" class="w-7 h-7 flex items-center justify-center rounded transition-colors duration-200 relative group" :class="editor?.isActive('taskList')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'" title="任务清单">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M8 12l3 3 5-6"/></svg>
-        <span class="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">任务清单</span>
-      </button>
-      <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-      <div class="relative">
-        <button @mousedown.prevent @click.stop="alignOpen=!alignOpen; headingOpen=false; listOpen=false" class="flex items-center gap-0.5 h-7 px-1.5 justify-center rounded transition-colors text-xs text-surface-500 hover:bg-surface-100"><AppIcon :name="alignLabel==='右对齐'?'align-right':alignLabel==='居中'?'align-center':'align-left'" size="15"/><svg class="w-2.5 h-2.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></button>
-        <div v-if="alignOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[120px]"><button @mousedown.prevent="execAlign('left')" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-surface-600 hover:bg-surface-50"><AppIcon name="align-left" size="14"/>左对齐</button><button @mousedown.prevent="execAlign('center')" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-surface-600 hover:bg-surface-50"><AppIcon name="align-center" size="14"/>居中</button><button @mousedown.prevent="execAlign('right')" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-surface-600 hover:bg-surface-50"><AppIcon name="align-right" size="14"/>右对齐</button></div>
-      </div>
-      <div class="mx-1.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-      <div class="flex items-center gap-0.5">
-        <button @mousedown.prevent="execFormat('insertHorizontalRule')" class="w-7 h-7 flex items-center justify-center rounded transition-colors text-surface-500 hover:bg-surface-100"><span class="text-xs">—</span></button>
-        <button @mousedown.prevent="insertBlock('pre')" class="w-7 h-7 flex items-center justify-center rounded transition-colors text-surface-500 hover:bg-surface-100"><AppIcon name="code-bracket" size="15"/></button>
-        <button @mousedown.prevent="insertBlock('blockquote')" class="w-7 h-7 flex items-center justify-center rounded transition-colors text-surface-500 hover:bg-surface-100"><AppIcon name="quote" size="15"/></button>
-        <div class="mx-0.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-        <button
-          data-at-btn
-          @mousedown.prevent @click.stop="openAtSelector()"
-          class="w-7 h-7 flex items-center justify-center rounded transition-colors text-surface-500 hover:bg-surface-100 relative"
-          :class="atOpen ? 'bg-blue-50 text-blue-600' : ''"
-          title="插入链接"
-        >
-          <svg class="w-[15px] h-[15px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 12v1a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
-        </button>
-        <div class="mx-0.5 w-px h-[14px] bg-[#E5E7EB]"></div>
-        <div class="relative">
-          <button @mousedown.prevent @click.stop="tableMenuOpen=!tableMenuOpen; headingOpen=false; listOpen=false; alignOpen=false" class="w-7 h-7 flex items-center justify-center rounded transition-colors" :class="editor?.isActive('table')?'bg-blue-50 text-blue-600':'text-surface-500 hover:bg-surface-100'"><AppIcon name="table-grid" size="15"/><svg class="w-2 h-2 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></button>
-          <div v-if="tableMenuOpen" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-lg shadow-sm border border-surface-100 p-1.5 w-[120px]" @click.stop><template v-if="!editor?.isActive('table')"><div class="space-y-1.5 mb-2"><div class="flex items-center gap-1.5"><span class="text-[11px] text-surface-500 w-4">行</span><input v-model.number="tableRows" type="number" min="1" max="10" class="flex-1 border border-surface-200 rounded px-1.5 py-0.5 text-[11px] text-center outline-none focus:border-brand-400 no-spinner" inputmode="numeric"/></div><div class="flex items-center gap-1.5"><span class="text-[11px] text-surface-500 w-4">列</span><input v-model.number="tableCols" type="number" min="1" max="8" class="flex-1 border border-surface-200 rounded px-1.5 py-0.5 text-[11px] text-center outline-none focus:border-brand-400 no-spinner" inputmode="numeric"/></div></div><button @click.prevent="insertTableCustom()" class="w-full py-1 text-[10px] bg-brand-600 text-white rounded hover:bg-brand-700 transition-colors flex items-center justify-center gap-1"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M12 4v16m8-8H4"/></svg>插入表格</button></template></div>
-        </div>
-      </div>
-    </div>
-
+    <RichTextToolbar :editor="editor" :at-active="atOpen" @at="openAtSelector" />
     <!-- Header: checkbox + title -->
     <div class="flex items-start gap-4 px-4 pt-6 pb-2 shrink-0">
       <button @click="toggleDone" class="w-7 h-7 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all duration-200 hover:shadow-md mt-0.5" :style="todo.done ? { borderColor: todo.priority ? PRIO.color[todo.priority] : '#9ca3af', background: todo.priority ? PRIO.color[todo.priority] : '#9ca3af' } : { borderColor: todo.priority ? PRIO.color[todo.priority] : '#d1d5db' }">
@@ -404,8 +307,6 @@ onUnmounted(() => editor.value?.destroy())
 .tiptap-editor table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
 .tiptap-editor table td, .tiptap-editor table th { border: 1px solid #e2e8f0; padding: 6px 10px; font-size: 13px; min-width: 60px; }
 .tiptap-editor table th { background: #f8fafc; font-weight: 600; }
-.no-spinner::-webkit-outer-spin-button,.no-spinner::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.no-spinner { -moz-appearance: textfield; }
 
 .project-link, .file-link { display: inline-flex; align-items: center; gap: 2px; padding: 1px 6px; border-radius: 4px; font-size: 13px; cursor: pointer; white-space: nowrap; transition: background 0.15s; }
 .project-link { background: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8; }
@@ -413,4 +314,13 @@ onUnmounted(() => editor.value?.destroy())
 .file-link { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
 .file-link:hover { background: #dcfce7; }
 .link-svg { flex-shrink: 0; display: inline; }
+
+.tiptap-editor .time-tag {
+  background: #f1f5f9;
+  border-radius: 5px;
+  padding: 1px 7px;
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+}
 </style>
