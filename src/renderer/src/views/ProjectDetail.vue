@@ -159,7 +159,7 @@ async function saveExpectedDate() {
     if (v === (project.value.expectedOrderDate || project.value.expected_order_date || '')) { isEditingExpectedDate.value = false; return }
     project.value.expectedOrderDate = v
     project.value.expected_order_date = v
-    projectStore.updateProjectInList(projectId.value, { expected_order_date: v })
+    projectStore.updateProjectInList(projectId.value, { expectedOrderDate: v })
     try {
       await projectStore.updateProject(projectId.value, { expectedOrderDate: v })
     } catch (e) { console.warn('保存预计下单时间失败', e) }
@@ -224,9 +224,9 @@ async function selectExpectedDay(day: number) {
     project.value.expectedOrderDate = displayTime
     project.value.expected_order_date = displayTime
   }
-  projectStore.updateProjectInList(projectId.value, { expected_order_date: displayTime })
+  projectStore.updateProjectInList(projectId.value, { expectedOrderDate: displayTime })
   try {
-    await projectStore.updateProject(projectId.value, { expected_order_date: displayTime })
+    await projectStore.updateProject(projectId.value, { expectedOrderDate: displayTime })
   } catch (e) { console.warn('保存预计下单时间失败', e) }
 }
 
@@ -237,9 +237,9 @@ async function clearExpectedDate() {
     project.value.expectedOrderDate = displayTime
     project.value.expected_order_date = displayTime
   }
-  projectStore.updateProjectInList(projectId.value, { expected_order_date: '' })
+  projectStore.updateProjectInList(projectId.value, { expectedOrderDate: '' })
   try {
-    await projectStore.updateProject(projectId.value, { expected_order_date: '' })
+    await projectStore.updateProject(projectId.value, { expectedOrderDate: '' })
   } catch (e) { console.warn('清除预计下单时间失败', e) }
 }
 
