@@ -584,7 +584,6 @@ fn percent_decode(s: &str) -> String {
 #[cfg(target_os = "macos")]
 fn read_macos_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
-    use objc2_foundation::NSString;
     use std::sync::mpsc;
 
     let (tx, rx) = mpsc::channel::<Vec<serde_json::Value>>();
@@ -596,7 +595,9 @@ fn read_macos_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Va
             let mut files = Vec::new();
             if let Some(items) = pb.pasteboardItems() {
                 for item in items.iter() {
-                    if let Some(url) = item.stringForType(NSPasteboardTypeFileURL) {
+                    // NSPasteboardTypeFileURL 是 extern static，需 unsafe 访问
+                    let file_url_type = unsafe { NSPasteboardTypeFileURL };
+                    if let Some(url) = item.stringForType(file_url_type) {
                         let s = url.to_string();
                         // file:///Users/... → /Users/...
                         let path = s.strip_prefix("file://").map(|p| p.to_string()).unwrap_or(s);
