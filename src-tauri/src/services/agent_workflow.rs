@@ -2550,7 +2550,7 @@ fn relative_time(created_at: &str) -> String {
 
 
 #[tauri::command]
-pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>) -> Result<Value, String> {
+pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>) -> Result<Value, String> {
     AGENT_CANCEL.store(false, Ordering::Release);
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
@@ -2697,15 +2697,52 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
         }
     }
     // ★ 保存 user 消息到 DB（历史加载完成后，避免重复）
+    // ★ 解析附件并构建增强消息
+    let augmented_query = if !attachments.is_empty() {
+        if let Some(ref h) = app_handle { let _ = h.emit("agent:progress", serde_json::json!({"msg":"正在解析附件..."})); }
+        let mut blocks = Vec::new();
+        let mut total_bytes = 0usize;
+        const TOTAL_CAP: usize = 100000;
+        for att in &attachments {
+            let path = att["path"].as_str().unwrap_or("");
+            let name = att["name"].as_str().unwrap_or("未命名文件");
+            if path.is_empty() { continue; }
+            let ext = std::path::Path::new(path).extension()
+                .and_then(|e| e.to_str()).unwrap_or("").to_string();
+            match crate::services::file_parser::parse_chat_attachment(path, &ext).await {
+                Ok((_kind, text)) if !text.is_empty() => {
+                    if total_bytes + text.len() > TOTAL_CAP {
+                        // 超出总预算：结构感知截断（保留表头/段落边界），而非整段跳过
+                        let remaining = TOTAL_CAP.saturating_sub(total_bytes);
+                        let cut = crate::services::file_parser::truncate_at_boundary(&text, remaining);
+                        total_bytes += cut.len();
+                        blocks.push(format!("【附件：{}】\n{}", name, cut));
+                    } else {
+                        total_bytes += text.len();
+                        blocks.push(format!("【附件：{}】\n{}", name, text));
+                    }
+                }
+                Ok(_) => { blocks.push(format!("【附件：{}】\n（文件解析为空）", name)); }
+                Err(e) => { blocks.push(format!("【附件：{}】\n（解析失败: {}）", name, e)); }
+            }
+        }
+        if blocks.is_empty() {
+            query.clone()
+        } else {
+            format!("{}\n\n<<<ATTACHMENTS>>>\n{}", query, blocks.join("\n\n"))
+        }
+    } else {
+        query.clone()
+    };
     if let Some(ref sid) = session_id {
         let _ = crate::database::run(
             "INSERT INTO chat_messages(session_id, role, content) VALUES(?1, 'user', ?2)",
-            &[json!(sid), json!(query)],
+            &[json!(sid), json!(&augmented_query)],
         );
     }
 
     // ★ 追加本轮新问题
-    messages.push(ChatMessage{role:MessageRole::User,content:Some(query.clone()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+    messages.push(ChatMessage{role:MessageRole::User,content:Some(augmented_query),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
     // ★ 上下文压缩：复用会话上下文，LLM 返回 JSON 摘要
     // 单个会话上下文长度 256k，自动压缩阈值 80%（204,800 tokens）
@@ -2945,7 +2982,7 @@ pub async fn agent_chat_workflow(user_query: String, max_iterations: Option<i32>
             }).sum();
             let budget_info = format!(
                 "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
-                scratchpad, chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
+                scratchpad, chrono::Local::now().format("%Y-%m-%d %A %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
             );
             // 移除上一轮的动态上下文消息
             if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
@@ -4886,7 +4923,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     }).sum();
                      let budget_info = format!(
                         "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
-                        scratchpad, chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
+                        scratchpad, chrono::Local::now().format("%Y-%m-%d %A %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
                     );
                     // 移除上一轮的动态上下文消息
                     if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {

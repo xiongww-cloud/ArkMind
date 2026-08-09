@@ -284,7 +284,7 @@ pub fn run() {
             commands::file_open, commands::file_download, commands::file_get_path, commands::file_has_oss_files, commands::file_migrate_files,
             commands::file_update_meta,
             commands::file_list_by_product, commands::file_open_product, commands::file_download_product,
-            commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes,
+            commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes, commands::chat_save_temp_image, commands::chat_read_macos_clipboard_files,
             commands::file_list_global,
             commands::file_move, commands::file_tree,
             commands::file_folder_create, commands::file_folder_rename, commands::file_folder_delete, commands::file_folder_move, commands::file_folder_reorder,
@@ -359,7 +359,7 @@ pub fn run() {
             // Sprite Window
             commands::create_sprite_window, commands::toggle_sprite_window, commands::close_sprite_window, commands::set_sprite_position,
             // Chat Window
-            commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::expand_chat_window,
+            commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::expand_chat_window, commands::set_chat_dialog_mode,
             // Export
             commands::export_data, commands::import_data, commands::backup_all, commands::restore_all, commands::export_write_buffer,
             commands::solution_download_excel,

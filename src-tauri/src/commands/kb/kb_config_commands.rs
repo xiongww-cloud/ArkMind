@@ -51,9 +51,10 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
     let query = data["query"].as_str().unwrap_or("").to_string();
     let max_iter = data["maxIterations"].as_i64().map(|n| n as i32);
     let session_id = data["sessionId"].as_str().map(String::from);
+    let attachments: Vec<Value> = data["attachments"].as_array().cloned().unwrap_or_default();
 
     tauri::async_runtime::spawn(async move {
-        let result = crate::services::agent_workflow::agent_chat_workflow(query, max_iter, Some(app_handle.clone()), false, session_id.clone()).await;
+        let result = crate::services::agent_workflow::agent_chat_workflow(query, attachments, max_iter, Some(app_handle.clone()), false, session_id.clone()).await;
         match result {
             Ok(v) => {
                 // ★ 保存 assistant 消息到 DB（纯内容，无 metadata）
@@ -102,7 +103,7 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
     let query = data["query"].as_str().unwrap_or("").to_string();
     if query.is_empty() { return Err("请输入问题".to_string()); }
     tauri::async_runtime::spawn(async move {
-        let result = crate::services::agent_workflow::agent_chat_workflow(query, None, Some(app_handle.clone()), false, None).await;
+        let result = crate::services::agent_workflow::agent_chat_workflow(query, vec![], None, Some(app_handle.clone()), false, None).await;
         match result {
             Ok(v) => { let _ = app_handle.emit("agent:done", &v); }
             Err(e) => {

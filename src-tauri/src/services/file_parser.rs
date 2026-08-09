@@ -54,8 +54,8 @@ pub struct VisionConfig {
 }
 
 /// 视觉模型适配器：每个 api_format + model_name 定义自己的请求构建、响应解析和文本后处理
-trait VisionAdapter {
-    fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str) -> Value;
+trait VisionAdapter: Send + Sync {
+    fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str, prompt: &str) -> Value;
     fn parse_response(&self, body: &Value) -> String;
     /// 模型专属输出文本归一化（在 parse_response 之后调用）
     fn post_process(&self, text: &str) -> String {
@@ -65,14 +65,14 @@ trait VisionAdapter {
 
 struct OpenaiAdapter;
 impl VisionAdapter for OpenaiAdapter {
-    fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str) -> Value {
+    fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str, prompt: &str) -> Value {
         json!({
             "model": cfg.model,
             "messages": [{
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": base64_data_uri}},
-                    {"type": "text", "text": VISION_DEFAULT_PROMPT}
+                    {"type": "text", "text": prompt}
                 ]
             }],
             "max_tokens": 4096,
@@ -86,7 +86,7 @@ impl VisionAdapter for OpenaiAdapter {
 
 struct DashscopeAdapter;
 impl VisionAdapter for DashscopeAdapter {
-    fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str) -> Value {
+    fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str, prompt: &str) -> Value {
         json!({
             "model": cfg.model,
             "input": {
@@ -94,7 +94,7 @@ impl VisionAdapter for DashscopeAdapter {
                     "role": "user",
                     "content": [
                         {"image": base64_data_uri},
-                        {"text": VISION_DEFAULT_PROMPT}
+                        {"text": prompt}
                     ]
                 }]
             },
@@ -141,7 +141,7 @@ fn split_heading_chain(line: &str) -> Vec<String> {
 }
 
 impl VisionAdapter for Qwen3VlAdapter {
-    fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str) -> Value {
+    fn build_request(&self, cfg: &VisionConfig, base64_data_uri: &str, prompt: &str) -> Value {
         // 与 Dashscope 相同
         json!({
             "model": cfg.model,
@@ -150,7 +150,7 @@ impl VisionAdapter for Qwen3VlAdapter {
                     "role": "user",
                     "content": [
                         {"image": base64_data_uri},
-                        {"text": VISION_DEFAULT_PROMPT}
+                        {"text": prompt}
                     ]
                 }]
             },
@@ -221,7 +221,7 @@ impl VisionAdapter for Qwen3VlAdapter {
     }
 }
 
-fn get_adapter(api_format: &str, model_name: &str) -> Box<dyn VisionAdapter> {
+fn get_adapter(api_format: &str, model_name: &str) -> Box<dyn VisionAdapter + Send + Sync> {
     match api_format {
         "dashscope" if is_qwen3(model_name) => Box::new(Qwen3VlAdapter),
         "dashscope" => Box::new(DashscopeAdapter),
@@ -266,7 +266,7 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     // 复用共享客户端（避免每页重建 reqwest::Client 的开销）
     let client = &*VISION_CLIENT;
 
-    let body = adapter.build_request(&cfg, base64_data_uri);
+    let body = adapter.build_request(&cfg, base64_data_uri, VISION_DEFAULT_PROMPT);
 
     // 自动拼接 /chat/completions（与 LLM 请求和测试连接保持一致）
     let url = if cfg.base_url.contains("/v1/") || cfg.base_url.ends_with("/chat/completions") {
@@ -330,6 +330,122 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
         send_ms, body_ms, t_parse.elapsed().as_millis(), status, cleaned.len()
     );
     Ok(cleaned)
+}
+
+/// Chat 场景图片描述提示词（比 OCR 提示词更通用，支持截图、照片、图表等）
+const CHAT_DESCRIBE_PROMPT: &str = r#"请详细描述这张图片的内容。如果图片中包含文字、表格、图表或数据，请完整提取；如果是物体、场景或界面截图，请描述关键信息。输出简洁的中文 Markdown。"#;
+
+/// Chat 场景图片描述（调用视觉模型，用通用提示词而非文档提取提示词）
+pub async fn describe_image_for_chat(base64_data_uri: &str) -> Result<String, String> {
+    let cfg = get_vision_config().ok_or("未配置视觉模型，请在设置页配置视觉模型")?;
+    let adapter = get_adapter(&cfg.api_format, &cfg.model);
+    let client = &*VISION_CLIENT;
+    let body = adapter.build_request(&cfg, base64_data_uri, CHAT_DESCRIBE_PROMPT);
+    let url = if cfg.base_url.contains("/v1/") || cfg.base_url.ends_with("/chat/completions") {
+        cfg.base_url.clone()
+    } else {
+        format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'))
+    };
+    let mut req = client.post(&url).json(&body);
+    if !cfg.api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", cfg.api_key)); }
+    let resp = req.send().await.map_err(|e| format!("请求失败: {}", e))?;
+    let status = resp.status();
+    let resp_text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    let resp_body: Value = serde_json::from_str(&resp_text).map_err(|_| {
+        format!("响应不是JSON: {} (HTTP {})", &resp_text[..resp_text.len().min(500)], status)
+    })?;
+    if !status.is_success() {
+        let err_detail = resp_body["error"]["message"].as_str().map(|s| s.to_string())
+            .or_else(|| resp_body["error"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| resp_text.chars().take(500).collect());
+        return Err(format!("API 错误 (HTTP {}): {}", status, err_detail));
+    }
+    let text = adapter.parse_response(&resp_body);
+    let text = adapter.post_process(&text);
+    if text.trim().is_empty() { return Err("图片描述模型返回空内容".into()); }
+    Ok(text.trim().to_string())
+}
+
+/// 判断扩展名是否为图片格式
+fn is_image_ext(ext: &str) -> bool {
+    matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif")
+}
+
+/// 单个附件解析后文本长度上限
+pub const ATTACH_TEXT_CAP: usize = 16000;
+
+/// 解析单个附件文件：文档走 parse_file_smart，图片走视觉模型描述
+/// 返回 (kind, text)，kind 为 "image" 或 "doc"
+/// 文档附件默认不截断（完整返回），图片描述保持 ATTACH_TEXT_CAP 上限
+pub async fn parse_chat_attachment(path: &str, ext: &str) -> Result<(String, String), String> {
+    let ext_lower = ext.to_lowercase();
+    if is_image_ext(&ext_lower) {
+        let mime = match ext_lower.as_str() {
+            "png" => "image/png", "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp", "bmp" => "image/bmp", "gif" => "image/gif",
+            _ => "image/png",
+        };
+        let data_uri = file_to_data_uri(path, mime).ok_or_else(|| format!("无法读取图片文件: {}", path))?;
+        let text = describe_image_for_chat(&data_uri).await?;
+        let truncated = truncate_text(&text, ATTACH_TEXT_CAP);
+        Ok(("image".to_string(), truncated))
+    } else {
+        // 文档：用 spawn_blocking 包装同步解析，完整返回不截断
+        let path_owned = path.to_string();
+        let result = tokio::task::spawn_blocking(move || parse_file_smart(&path_owned, &ext_lower))
+            .await
+            .map_err(|e| format!("解析任务失败: {}", e))?;
+        if !result.success && result.error.is_empty() {
+            return Err(format!("文件解析失败或内容为空: {}", path));
+        }
+        let text = if result.success { result.text } else { result.error };
+        Ok(("doc".to_string(), text))
+    }
+}
+
+/// 结构感知截断：优先在表格行（</tr>）边界截断，其次段落边界，最后字符边界
+/// 保留表头，截断后提示剩余内容可追问
+pub fn truncate_at_boundary(text: &str, cap: usize) -> String {
+    if text.len() <= cap { return text.to_string(); }
+    // UTF-8 安全：cap 可能落在多字节字符中间，向前找安全边界
+    let safe_cap = {
+        let mut c = cap;
+        while c > 0 && !text.is_char_boundary(c) { c -= 1; }
+        c
+    };
+    let head = &text[..safe_cap];
+    // 1. 优先在表格行结束标签边界截断
+    if let Some(pos) = head.rfind("</tr>") {
+        let cut = pos + "</tr>".len();
+        let kept_rows = text[..cut].matches("<tr>").count();
+        let total_rows = text.matches("<tr>").count();
+        return format!(
+            "{}\n\n（表格内容较长，已展示前 {} / {} 行，可追问剩余内容）",
+            &text[..cut], kept_rows, total_rows
+        );
+    }
+    // 2. 其次在段落/换行边界截断
+    if let Some(pos) = head.rfind('\n') {
+        return format!(
+            "{}\n\n（内容较长，已截断，可追问剩余内容）",
+            &text[..pos]
+        );
+    }
+    // 3. 最后按字符边界截断
+    format!(
+        "{}\n\n（内容较长，已截断，可追问剩余内容）",
+        &text[..safe_cap]
+    )
+}
+
+/// 截断文本，超出时附注截断提示
+fn truncate_text(text: &str, cap: usize) -> String {
+    if text.len() <= cap { return text.to_string(); }
+    let mut end = cap;
+    // 在字符边界截断（UTF-8 安全）
+    while end < text.len() && !text.is_char_boundary(end) { end += 1; }
+    let total = text.len();
+    format!("{}\n\n（内容已截断，原文共 {} 字）", &text[..end], total)
 }
 
 /// PDF 每页渲染为 PNG 图片 → Vec<base64 data URI>（200 DPI, 全部页面）
@@ -1433,8 +1549,8 @@ fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
                 }
             }
 
-            let mut rows: Vec<Vec<String>> = Vec::new();
-            for row in ws.rows() {
+            let mut rows: Vec<(usize, Vec<String>)> = Vec::new();
+            for (orig_ri, row) in ws.rows().enumerate() {
                 let cells: Vec<String> = row
                     .iter()
                     .map(|c| match c {
@@ -1487,14 +1603,14 @@ fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
                 if cells.iter().all(|c| c.is_empty()) {
                     continue;
                 }
-                rows.push(cells);
+                rows.push((orig_ri, cells));
             }
 
             if rows.is_empty() {
                 continue;
             }
 
-            let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+            let max_cols = rows.iter().map(|r| r.1.len()).max().unwrap_or(0);
             if max_cols == 0 {
                 continue;
             }
@@ -1502,7 +1618,7 @@ fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
             // Detect empty columns — 跳过每一行都空的列
             let mut non_empty_cols = vec![false; max_cols];
             for row in &rows {
-                for (ci, cell) in row.iter().enumerate() {
+                for (ci, cell) in row.1.iter().enumerate() {
                     if ci < max_cols && !cell.is_empty() {
                         non_empty_cols[ci] = true;
                     }
@@ -1516,12 +1632,12 @@ fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
                 .collect();
 
             result.push_str("<table>\n");
-            for (ri, row) in rows.iter().enumerate() {
+            for (ri, (orig_ri, row)) in rows.iter().enumerate() {
                 result.push_str("<tr>");
                 let tag = if ri == 0 { "th" } else { "td" };
                 for &ci in &col_map {
-                    // 跳过被合并覆盖的非起始单元格
-                    if skip_cells.contains(&(ri, ci)) {
+                    // 跳过被合并覆盖的非起始单元格（用原始行号匹配）
+                    if skip_cells.contains(&(*orig_ri, ci)) {
                         continue;
                     }
                     let cell = row.get(ci).map(|s| s.as_str()).unwrap_or("");
@@ -1529,7 +1645,7 @@ fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
                         .replace('&', "&amp;")
                         .replace('<', "&lt;")
                         .replace('>', "&gt;");
-                    let attrs = match merge_map.get(&(ri, ci)) {
+                    let attrs = match merge_map.get(&(*orig_ri, ci)) {
                         Some(&(rs, cs)) => format!(" rowspan=\"{}\" colspan=\"{}\"", rs, cs),
                         None => String::new(),
                     };

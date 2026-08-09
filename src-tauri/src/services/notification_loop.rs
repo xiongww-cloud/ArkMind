@@ -172,6 +172,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(
             prompt,
+            vec![],
             Some(6),
             Some(handle.clone()),
             true,

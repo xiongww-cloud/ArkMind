@@ -509,6 +509,124 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
     }
 }
 
+/// 粘贴文件落临时文件（供 Chat 附件粘贴场景：图片、文档等）
+#[tauri::command]
+pub async fn chat_save_temp_image(bytes: Vec<u8>, ext: String, orig_name: Option<String>) -> Result<Value, String> {
+    if bytes.is_empty() { return Err("文件数据为空".into()); }
+    let ext_clean = ext.trim().trim_start_matches('.').to_lowercase();
+    // 只允许字母数字扩展名，防止路径注入
+    let safe_ext: String = ext_clean.chars().take(10).filter(|c| c.is_ascii_alphanumeric()).collect();
+    if safe_ext.is_empty() { return Err("无效的文件扩展名".into()); }
+    let dir = std::env::temp_dir().join("arkmind_attach");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+    let display_name = orig_name.filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{}.{}", uuid::Uuid::new_v4(), safe_ext));
+    let path = dir.join(&display_name);
+    std::fs::write(&path, &bytes).map_err(|e| format!("写入临时文件失败: {}", e))?;
+    Ok(json!({"success": true, "path": path.to_string_lossy(), "name": display_name}))
+}
+
+/// 把源文件拷贝到临时目录（macOS 剪贴板文件粘贴用），返回 {path, name}
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn copy_to_attach_temp(src_path: &str) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(src_path).ok()?;
+    if bytes.is_empty() { return None; }
+    let name = std::path::Path::new(src_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("paste.bin")
+        .to_string();
+    let ext = std::path::Path::new(src_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin")
+        .to_string();
+    let ext_clean: String = ext.chars().take(10).filter(|c| c.is_ascii_alphanumeric()).collect();
+    let safe_ext = if ext_clean.is_empty() { "bin".to_string() } else { ext_clean };
+    let dir = std::env::temp_dir().join("arkmind_attach");
+    std::fs::create_dir_all(&dir).ok()?;
+    // 防止与已有临时文件重名
+    let mut display_name = name.clone();
+    let mut path = dir.join(&display_name);
+    let mut i = 1;
+    while path.exists() {
+        display_name = format!("{}_{}.{}", name.trim_end_matches(&format!(".{}", safe_ext)), i, safe_ext);
+        path = dir.join(&display_name);
+        i += 1;
+    }
+    std::fs::write(&path, &bytes).ok()?;
+    Some(serde_json::json!({ "path": path.to_string_lossy(), "name": display_name, "kind": "doc" }))
+}
+
+/// 简单百分号解码（macOS file URL 路径可能含 %20 等）
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i+1..i+3]).ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
+            if let Some(b) = hex {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// macOS：从 NSPasteboard 读取 Finder 复制的文件，拷贝到临时目录返回附件列表
+/// 必须在主线程读取剪贴板（AppKit 限制），故通过 run_on_main_thread 同步执行
+#[cfg(target_os = "macos")]
+fn read_macos_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+    use objc2_foundation::NSString;
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel::<Vec<serde_json::Value>>();
+    let app = app.clone();
+    // 主线程执行读取
+    let _ = app.run_on_main_thread(move || {
+        let files = objc2::autoreleasepool(|_| {
+            let pb = NSPasteboard::generalPasteboard();
+            let mut files = Vec::new();
+            if let Some(items) = pb.pasteboardItems() {
+                for item in items.iter() {
+                    if let Some(url) = item.stringForType(NSPasteboardTypeFileURL) {
+                        let s = url.to_string();
+                        // file:///Users/... → /Users/...
+                        let path = s.strip_prefix("file://").map(|p| p.to_string()).unwrap_or(s);
+                        let decoded = percent_decode(&path);
+                        if let Some(v) = copy_to_attach_temp(&decoded) {
+                            files.push(v);
+                        }
+                    }
+                }
+            }
+            files
+        });
+        let _ = tx.send(files);
+    });
+    rx.recv().unwrap_or_default()
+}
+
+/// Windows/其他平台：无剪贴板文件读取，返回空
+#[cfg(not(target_os = "macos"))]
+fn read_macos_clipboard_files_impl(_app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+    vec![]
+}
+
+/// 读取 macOS 剪贴板中的文件（Finder 复制 → 粘贴），返回附件列表
+#[tauri::command]
+pub async fn chat_read_macos_clipboard_files(app: tauri::AppHandle) -> Result<Value, String> {
+    let files = read_macos_clipboard_files_impl(&app);
+    Ok(json!({ "success": true, "files": files }))
+}
+
 #[tauri::command] pub async fn file_export(file_id: String) -> Result<Value, String> {
     match resolve_file_info(&file_id) {
         Some((src, name, ext)) => {

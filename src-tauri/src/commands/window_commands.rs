@@ -4,6 +4,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // 失焦自动隐藏监听器只绑定一次（窗口由配置创建，可能多次调用 create_chat_window）
 static CHAT_EVENT_SETUP: AtomicBool = AtomicBool::new(false);
 
+/// 聊天窗口处于"系统对话框模式"（如打开文件选择对话框）时，失焦不自动隐藏
+static CHAT_DIALOG_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 设置聊天窗口的对话框模式。active=true 时失焦不隐藏（用于文件选择等原生对话框打开期间）
+#[tauri::command]
+pub async fn set_chat_dialog_mode(active: bool) -> Result<(), String> {
+    CHAT_DIALOG_ACTIVE.store(active, Ordering::Relaxed);
+    Ok(())
+}
+
 /// macOS：将窗口设为辅助窗口（不参与前台调度/Stage Manager 分组）
 /// 注意：必须在主线程调用 AppKit API（使用 run_on_main_thread 调度）
 #[cfg(target_os = "macos")]
@@ -206,7 +216,7 @@ fn setup_chat_window_events(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("chat") {
         win.on_window_event(move |event| {
             if let tauri::WindowEvent::Focused(focused) = event {
-                if !focused {
+                if !focused && !CHAT_DIALOG_ACTIVE.load(Ordering::Relaxed) {
                     if let Some(chat_win) = handle.get_webview_window("chat") {
                         // ★ 先重置前端展开状态，再隐藏窗口
                         let _ = handle.emit("chat:reset", ());
