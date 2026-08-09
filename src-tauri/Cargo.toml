@@ -81,6 +81,7 @@ tempfile = "3"
 # macOS: 设置 NSWindow collectionBehavior（前台调度辅助窗口）+ NSPasteboard（读取剪贴板文件）
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+objc2-foundation = "0.3"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSPasteboard", "NSPasteboardItem"] }
 
 [profile.release]

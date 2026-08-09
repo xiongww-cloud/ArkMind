@@ -591,7 +591,7 @@ fn read_macos_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Va
     let app = app.clone();
     // 主线程执行读取
     let _ = app.run_on_main_thread(move || {
-        let files = objc2::autoreleasepool(|_| {
+        let files = objc2::rc::autoreleasepool(|_| {
             let pb = NSPasteboard::generalPasteboard();
             let mut files = Vec::new();
             if let Some(items) = pb.pasteboardItems() {
