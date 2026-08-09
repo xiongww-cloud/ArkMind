@@ -649,8 +649,10 @@ onUnmounted(() => {
     <!-- Input Bar -->
     <div class="flex-shrink-0 px-4 pb-4 pt-2 bg-surface-50/30">
       <div class="max-w-3xl mx-auto">
-        <AttachmentChips v-if="pendingAttachments.length" :files="pendingAttachments" removable class="mb-2" @remove="removeAttachment" />
-        <p class="text-[10px] text-surface-300 text-right mb-1.5 pr-1">↵ 发送 · Shift+↵ 换行</p>
+        <div class="flex items-start justify-between gap-2 mb-1.5">
+          <AttachmentChips v-if="pendingAttachments.length" :files="pendingAttachments" removable @remove="removeAttachment" />
+          <p class="text-[10px] text-surface-300 pr-1 flex-shrink-0 mt-0.5 ml-auto">↵ 发送 · Shift+↵ 换行</p>
+        </div>
         <div class="flex items-end gap-2 bg-white rounded-2xl border border-surface-200 px-3 py-2 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.02)] transition-all duration-200 focus-within:border-brand-300 focus-within:shadow-[0_0_0_3px_rgba(37,99,235,0.1),0_4px_12px_rgba(0,0,0,0.08)]">
           <button @click="openAttachmentDialog" class="w-6 h-6 flex items-center justify-center flex-shrink-0 rounded-md text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors" title="附加文件（图片/文档）">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>

@@ -420,14 +420,14 @@ pub fn truncate_at_boundary(text: &str, cap: usize) -> String {
         let kept_rows = text[..cut].matches("<tr>").count();
         let total_rows = text.matches("<tr>").count();
         return format!(
-            "{}\n\n（表格内容较长，已展示前 {} / {} 行，可追问剩余内容）",
+            "{}\n\n（表格内容较长，已展示前 {} / {} 行）",
             &text[..cut], kept_rows, total_rows
         );
     }
     // 2. 其次在段落/换行边界截断
     if let Some(pos) = head.rfind('\n') {
         return format!(
-            "{}\n\n（内容较长，已截断，可追问剩余内容）",
+            "{}\n\n（内容较长，已截断）",
             &text[..pos]
         );
     }
@@ -1556,27 +1556,7 @@ fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
                     .map(|c| match c {
                         Data::Empty => String::new(),
                         Data::Error(e) => format!("#ERR {}", e),
-                        Data::String(s) => {
-                            let t = s.trim().replace('\r', "").replace('\n', " ");
-                            let digit_count = t
-                                .chars()
-                                .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '_' || *c == '-')
-                                .count();
-                            let is_code = t.len() > 5
-                                && digit_count as f64 / t.len() as f64 > 0.55
-                                && t.as_bytes()
-                                    .first()
-                                    .map(|b| b.is_ascii_lowercase() || *b == b'_')
-                                    .unwrap_or(false)
-                                && t.contains('.')
-                                && t.chars()
-                                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
-                            if is_code {
-                                String::new()
-                            } else {
-                                t
-                            }
-                        }
+                        Data::String(s) => s.trim().replace('\r', "").replace('\n', " "),
                         Data::Float(f) => {
                             if *f == 0.0 {
                                 "0".to_string()
@@ -1589,16 +1569,6 @@ fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
                         _ => c.to_string(),
                     })
                     .collect();
-
-                // Filter formula cache rows: 首个单元格以 ,productTotalPrice 等开头 → 整行跳过
-                let formula_prefixes = [",productTotalPrice", ",serviceTotalPrice", ",projectTotalPrice"];
-                if cells
-                    .first()
-                    .map(|c| formula_prefixes.iter().any(|p| c.starts_with(p)))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
 
                 if cells.iter().all(|c| c.is_empty()) {
                     continue;
@@ -1667,36 +1637,13 @@ fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
                             Data::Empty => {}
                             Data::Error(e) => result.push_str(&format!("#ERR {} ", e)),
                             Data::String(s) => {
-                                let t = s.trim();
-                                let digit_ratio = t
-                                    .chars()
-                                    .filter(|c| {
-                                        c.is_ascii_digit() || *c == '.' || *c == '_' || *c == '-'
-                                    })
-                                    .count() as f64
-                                    / t.len().max(1) as f64;
-                                if t.len() > 5
-                                    && digit_ratio > 0.55
-                                    && t.contains('.')
-                                    && t.chars().all(|c| {
-                                        c.is_ascii_alphanumeric()
-                                            || c == '.'
-                                            || c == '_'
-                                            || c == '-'
-                                    }) {
-                                } else {
-                                    result.push_str(&format!("{} ", t));
-                                }
+                                result.push_str(&format!("{} ", s.trim()));
                             }
                             Data::Float(f) => {
-                                if *f != 0.0 {
-                                    result.push_str(&format!("{} ", f));
-                                }
+                                result.push_str(&format!("{} ", f));
                             }
                             Data::Int(i) => {
-                                if *i != 0 {
-                                    result.push_str(&format!("{} ", i));
-                                }
+                                result.push_str(&format!("{} ", i));
                             }
                             _ => result.push_str(&format!("{} ", cell.to_string())),
                         }
