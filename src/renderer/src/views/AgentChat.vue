@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onActivated, onUnmounted, nextTick, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
+import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbLoadSessionMessages, kbDeleteSession } from '@/api/db-client'
@@ -13,8 +14,118 @@ import { ProjectCard, TodoCard, ObjectList } from '@/components/renderer'
 
 const agent = useAgentChat()
 
+// ─── Attachments ─────────────────────────────────────────────────
+const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
+const DOC_EXTS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md', 'csv', 'json'])
+const ALL_EXTS = new Set([...IMG_EXTS, ...DOC_EXTS])
+const MAX_ATTACH = 5
+const MAX_SIZE = 20 * 1024 * 1024
+const isMac = typeof navigator !== 'undefined' && (
+  navigator.platform.toUpperCase().indexOf('MAC') >= 0 ||
+  navigator.userAgent.toUpperCase().indexOf('MAC') >= 0
+)
+
+interface PendingAttachment { path: string; name: string; kind: 'image' | 'doc'; previewUrl?: string }
+const pendingAttachments = ref<PendingAttachment[]>([])
+
+function extOf(name: string): string { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : '' }
+
+async function openAttachmentDialog() {
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const result = await open({ multiple: true, canCreateDirectories: false, filters: [{ name: '文档与图片', extensions: [...ALL_EXTS] }] })
+  if (!result) return
+  const paths: string[] = Array.isArray(result) ? result : [result as string]
+  for (const p of paths) {
+    if (pendingAttachments.value.length >= MAX_ATTACH) { toast({ message: `最多附加 ${MAX_ATTACH} 个文件`, type: 'error' }); break }
+    const name = p.replace(/^.*[\\\/]/, '')
+    const ext = extOf(name)
+    if (!ALL_EXTS.has(ext)) { toast({ message: `不支持的文件类型: ${ext}`, type: 'error' }); continue }
+    if (pendingAttachments.value.some(a => a.path === p)) continue
+    const kind: 'image' | 'doc' = IMG_EXTS.has(ext) ? 'image' : 'doc'
+    pendingAttachments.value.push({ path: p, name, kind })
+  }
+}
+
+function removeAttachment(idx: number) { pendingAttachments.value.splice(idx, 1) }
+
+async function onPaste(e: ClipboardEvent) {
+  // 优先从 clipboardData.files 获取（WebView2 中比 items 更可靠）
+  const files = e.clipboardData?.files
+  if (files && files.length > 0) {
+    e.preventDefault()
+    let added = 0
+    for (const file of Array.from(files)) {
+      if (pendingAttachments.value.length >= MAX_ATTACH) { toast({ message: `最多附加 ${MAX_ATTACH} 个文件`, type: 'error' }); break }
+      const ext = extOf(file.name) || (file.type.split('/')[1] === 'jpeg' ? 'jpg' : file.type.split('/')[1] || 'bin')
+      if (!ALL_EXTS.has(ext) && !IMG_EXTS.has(ext)) { continue }
+      try {
+        const buf = await file.arrayBuffer()
+        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: file.name || null })
+        if (r?.success && r.path) {
+          const kind: 'image' | 'doc' = IMG_EXTS.has(ext) ? 'image' : 'doc'
+          const previewUrl = kind === 'image' ? URL.createObjectURL(new Blob([buf], { type: file.type })) : undefined
+          pendingAttachments.value.push({ path: r.path, name: r.name || file.name, kind, previewUrl })
+          added++
+        }
+      } catch (err) { console.warn('[Chat] paste file save failed:', err) }
+    }
+    if (added > 0) toast({ message: `已粘贴 ${added} 个文件`, type: 'success' })
+    else toast({ message: '粘贴失败：不支持的文件类型', type: 'error' })
+    return
+  }
+  // 回退：从 clipboardData.items 获取图片
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of items) {
+    if (!item.type.startsWith('image/')) continue
+    if (pendingAttachments.value.length >= MAX_ATTACH) { toast({ message: `最多附加 ${MAX_ATTACH} 个文件`, type: 'error' }); break }
+    e.preventDefault()
+    const file = item.getAsFile()
+    if (!file) continue
+    try {
+      const buf = await file.arrayBuffer()
+      const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1]
+      const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: null })
+      if (r?.success && r.path) {
+        const blobUrl = URL.createObjectURL(new Blob([buf], { type: item.type }))
+        pendingAttachments.value.push({ path: r.path, name: r.name || `pasted.${ext}`, kind: 'image', previewUrl: blobUrl })
+        toast({ message: '已粘贴图片', type: 'success' })
+      }
+    } catch (err) { console.warn('[Chat] paste image save failed:', err); toast({ message: '粘贴图片失败', type: 'error' }) }
+  }
+  // macOS：WebKit 不把剪贴板文件暴露给 clipboardData.files/items，
+  // 若未添加任何附件，回退从后端 NSPasteboard 读取 Finder 复制的文件
+  if (isMac && pendingAttachments.value.length < MAX_ATTACH) {
+    try {
+      const r: any = await invoke('chat_read_macos_clipboard_files')
+      if (r?.success && Array.isArray(r.files) && r.files.length) {
+        let addedMac = 0
+        for (const f of r.files) {
+          if (pendingAttachments.value.length >= MAX_ATTACH) break
+          pendingAttachments.value.push({ path: f.path, name: f.name, kind: f.kind || 'doc' })
+          addedMac++
+        }
+        if (addedMac > 0) toast({ message: `已粘贴 ${addedMac} 个文件`, type: 'success' })
+      }
+    } catch (err) { console.warn('[Chat] macos clipboard read failed:', err) }
+  }
+}
+
+function extractAttachmentNames(content: string): string[] {
+  const names: string[] = []
+  const re = /【附件：(.+?)】/g
+  let m
+  while ((m = re.exec(content)) !== null) names.push(m[1])
+  return names
+}
+
+function displayContent(content: string): string {
+  const i = content.indexOf('<<<ATTACHMENTS>>>')
+  return i >= 0 ? content.slice(0, i).trimEnd() : content
+}
+
 // ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage extends AgentChatMessage { id?: string; role: 'user'|'assistant'; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; contextDocs?: any[]; workspace?: string }
+interface ChatMessage extends AgentChatMessage { id?: string; role: 'user'|'assistant'; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; contextDocs?: any[]; workspace?: string; attachments?: Array<{path:string;name:string;kind:'image'|'doc'}> }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
 function formatChatTime(ts: number) {
@@ -287,9 +398,10 @@ async function handleSendMessage() {
   console.log('[FE] handleSendMessage BUILD=streamfix-0719')
   if (q.length > MAX_INPUT_LENGTH) { toast({ message: `输入内容过长（${q.length}/${MAX_INPUT_LENGTH}），请精简后重试`, type: 'error' }); return }
   const session = currentSession.value; if (!session) return
-  session.messages.push({ id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() })
+  const atts = [...pendingAttachments.value]
+  session.messages.push({ id: crypto.randomUUID(), role: 'user', content: q, attachments: atts.length ? atts : undefined, timestamp: Date.now() })
   if (session.name === '新对话') { session.name = q.slice(0, 30) }
-  sessionDirty.value = true; inputMessage.value = ''; saveToStorage()
+  sessionDirty.value = true; inputMessage.value = ''; pendingAttachments.value = []; saveToStorage()
   nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
   nextTick(() => { const el = textareaRef.value; if (el) el.style.height = '' })
   agent.isChatting.value = true
@@ -357,7 +469,7 @@ async function handleSendMessage() {
     })
 
     // ★ 调用命令（立即返回，不等待结果）
-    invoke('kb_agent_chat', { data: { query: q, sessionId: currentSessionId.value } }).catch((err) => {
+    invoke('kb_agent_chat', { data: { query: q, sessionId: currentSessionId.value, attachments: atts.map(a => ({ path: a.path, name: a.name })) } }).catch((err) => {
       console.error('[KB] invoke failed:', err)
       flushTokenQueue()
       const msg = session.messages[aiIdx]; msg.isThinking = false
@@ -508,7 +620,13 @@ onUnmounted(() => {
             <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1" :class="msg.role === 'user' ? 'text-right' : ''">{{ msg.timestamp ? formatChatTime(msg.timestamp) : '' }}</div>
             <div v-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
             <div v-else-if="msg.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-2">
-              <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ msg.content }}</pre>
+              <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ displayContent(msg.content) }}</pre>
+              <AttachmentChips v-if="msg.attachments?.length" :files="msg.attachments" class="mt-1.5" />
+              <div v-else-if="msg.content.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1.5">
+                <span v-for="name in extractAttachmentNames(msg.content)" :key="name" class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-white/20 text-white/90">
+                  <AppIcon name="file" size="10" class="opacity-80" />{{ name }}
+                </span>
+              </div>
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
               <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm w-full" :class="{ 'thinking-bubble': msg.isThinking }">
@@ -531,9 +649,13 @@ onUnmounted(() => {
     <!-- Input Bar -->
     <div class="flex-shrink-0 px-4 pb-4 pt-2 bg-surface-50/30">
       <div class="max-w-3xl mx-auto">
+        <AttachmentChips v-if="pendingAttachments.length" :files="pendingAttachments" removable class="mb-2" @remove="removeAttachment" />
         <p class="text-[10px] text-surface-300 text-right mb-1.5 pr-1">↵ 发送 · Shift+↵ 换行</p>
         <div class="flex items-end gap-2 bg-white rounded-2xl border border-surface-200 px-3 py-2 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.02)] transition-all duration-200 focus-within:border-brand-300 focus-within:shadow-[0_0_0_3px_rgba(37,99,235,0.1),0_4px_12px_rgba(0,0,0,0.08)]">
-          <textarea ref="textareaRef" v-model="inputMessage" rows="1" maxlength="5000" placeholder="向 AI 提问..." class="flex-1 border-none resize-none outline-none text-[13px] text-surface-800 bg-transparent leading-relaxed placeholder:text-surface-400 max-h-[80px] py-1" @keydown.enter.exact.prevent="handleSendMessage" @input="(e: any) => { if (!inputMessage.trim()) { e.target.style.height = ''; return }; e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 80) + 'px' }" />
+          <button @click="openAttachmentDialog" class="w-6 h-6 flex items-center justify-center flex-shrink-0 rounded-md text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors" title="附加文件（图片/文档）">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+          </button>
+          <textarea ref="textareaRef" v-model="inputMessage" rows="1" maxlength="5000" placeholder="向 AI 提问..." class="flex-1 border-none resize-none outline-none text-[13px] text-surface-800 bg-transparent leading-relaxed placeholder:text-surface-400 max-h-[80px] py-1" @keydown.enter.exact.prevent="handleSendMessage" @paste="onPaste" @input="(e: any) => { if (!inputMessage.trim()) { e.target.style.height = ''; return }; e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 80) + 'px' }" />
           <button v-if="agent.isChatting.value" @click="stopAgent" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-red-500 hover:bg-red-600 text-white transition-all duration-200" title="停止">
             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
           </button>

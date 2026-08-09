@@ -92,6 +92,8 @@ export interface AgentChatOptions {
   onFinish?: () => void
   /** 会话 ID（用于持久化会话状态） */
   sessionId?: string
+  /** 附件列表（文件路径+名称） */
+  attachments?: Array<{ path: string; name: string }>
 }
 
 // ─── Composable ─────────────────────────────────────────────────
@@ -197,7 +199,7 @@ export function useAgentChat() {
 
   // ── startAgentChat ──
   async function startAgentChat(query: string, options: AgentChatOptions) {
-    const { getMessage, scrollFn, onDone, onError, onStartAnswer, onFinish, sessionId } = options
+    const { getMessage, scrollFn, onDone, onError, onStartAnswer, onFinish, sessionId, attachments } = options
 
     isChatting.value = true
     setThinkingProgress('思考中')
@@ -296,7 +298,7 @@ export function useAgentChat() {
       })
 
       // ★ 先注册完所有 listener 再 invoke，避免 agent:done 在 listener 注册前发出导致事件丢失
-      invoke('kb_agent_chat', { data: { query, sessionId: sessionId || undefined } }).catch((err) => {
+      invoke('kb_agent_chat', { data: { query, sessionId: sessionId || undefined, attachments: attachments || [] } }).catch((err) => {
         console.error('[AgentChat] invoke failed:', err)
         flushTokenQueue()
         const msg = getMessage()

@@ -5,10 +5,109 @@ import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { kbFabInitSession, kbFabLoadHistory } from '@/api/db-client'
 import { useAgentChat, type ChatMessage } from '@/composables/useAgentChat'
+import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 
 const agent = useAgentChat()
 
+// --- Attachments ---
+const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
+const DOC_EXTS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md', 'csv', 'json'])
+const ALL_EXTS = new Set([...IMG_EXTS, ...DOC_EXTS])
+interface PendingAttachment { path: string; name: string; kind: 'image' | 'doc'; previewUrl?: string }
+const pendingAttachments = ref<PendingAttachment[]>([])
+function extOf(name: string): string { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : '' }
+async function openAttachmentDialog() {
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  // 打开原生文件对话框前，告知后端进入"对话框模式"，失焦不隐藏 chat 窗口
+  invoke('set_chat_dialog_mode', { active: true }).catch(() => {})
+  let result: any = null
+  try {
+    result = await open({ multiple: true, canCreateDirectories: false, filters: [{ name: 'Files', extensions: [...ALL_EXTS] }] })
+  } finally {
+    invoke('set_chat_dialog_mode', { active: false }).catch(() => {})
+  }
+  if (!result) return
+  const paths: string[] = Array.isArray(result) ? result : [result as string]
+  let added = 0
+  for (const p of paths) {
+    if (pendingAttachments.value.length >= 5) break
+    const name = p.replace(/^.*[\\\/]/, '')
+    const ext = extOf(name)
+    if (!ALL_EXTS.has(ext)) continue
+    if (pendingAttachments.value.some(a => a.path === p)) continue
+    pendingAttachments.value.push({ path: p, name, kind: IMG_EXTS.has(ext) ? 'image' : 'doc' })
+    added++
+  }
+  // 收起态添加附件后自动展开，以便显示附件行
+  if (added > 0 && !expanded.value) expandChat()
+}
+function removeAttachment(idx: number) { pendingAttachments.value.splice(idx, 1) }
+async function onPaste(e: ClipboardEvent) {
+  let added = 0
+  const files = e.clipboardData?.files
+  if (files && files.length > 0) {
+    e.preventDefault()
+    for (const file of Array.from(files)) {
+      if (pendingAttachments.value.length >= 5) break
+      const ext = extOf(file.name) || (file.type.split('/')[1] === 'jpeg' ? 'jpg' : file.type.split('/')[1] || 'bin')
+      if (!ALL_EXTS.has(ext) && !IMG_EXTS.has(ext)) continue
+      try {
+        const buf = await file.arrayBuffer()
+        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: file.name || null })
+        if (r?.success && r.path) {
+          const kind: 'image' | 'doc' = IMG_EXTS.has(ext) ? 'image' : 'doc'
+          const previewUrl = kind === 'image' ? URL.createObjectURL(new Blob([buf], { type: file.type })) : undefined
+          pendingAttachments.value.push({ path: r.path, name: r.name || file.name, kind, previewUrl })
+          added++
+        }
+      } catch (err) { console.warn('[Chat] paste save failed:', err) }
+    }
+    if (added > 0 && !expanded.value) expandChat()
+    return
+  }
+  const items = e.clipboardData?.items
+  if (items) {
+    for (const item of items) {
+      if (!item.type.startsWith('image/')) continue
+      if (pendingAttachments.value.length >= 5) break
+      e.preventDefault()
+      const file = item.getAsFile(); if (!file) continue
+      try {
+        const buf = await file.arrayBuffer()
+        const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1]
+        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: null })
+        if (r?.success && r.path) {
+          const blobUrl = URL.createObjectURL(new Blob([buf], { type: item.type }))
+          pendingAttachments.value.push({ path: r.path, name: r.name || `pasted.${ext}`, kind: 'image', previewUrl: blobUrl })
+          added++
+        }
+      } catch (err) { console.warn('[Chat] paste image failed:', err) }
+    }
+  }
+  // macOS：WebKit 不把剪贴板文件暴露给 clipboardData.files/items，
+  // 若未添加任何附件，回退从后端 NSPasteboard 读取 Finder 复制的文件
+  if (added === 0 && isMac) {
+    try {
+      const r: any = await invoke('chat_read_macos_clipboard_files')
+      if (r?.success && Array.isArray(r.files) && r.files.length) {
+        for (const f of r.files) {
+          if (pendingAttachments.value.length >= 5) break
+          pendingAttachments.value.push({ path: f.path, name: f.name, kind: f.kind || 'doc' })
+          added++
+        }
+      }
+    } catch (err) { console.warn('[Chat] macos clipboard read failed:', err) }
+  }
+  if (added > 0 && !expanded.value) expandChat()
+}
+function displayContent(content: string): string { const i = content.indexOf('<<<ATTACHMENTS>>>'); return i >= 0 ? content.slice(0, i).trimEnd() : content }
+function extractAttachmentNames(content: string): string[] { const names: string[] = []; const re = /[\u3010]\u9644\u4ef6\uff1a(.+?)[\u3011]/g; let m; while ((m = re.exec(content)) !== null) names.push(m[1]); return names }
+
 // ─── State ──────────────────────────────────────────────────
+const isMac = typeof navigator !== 'undefined' && (
+  navigator.platform.toUpperCase().indexOf('MAC') >= 0 ||
+  navigator.userAgent.toUpperCase().indexOf('MAC') >= 0
+)
 const expanded = ref(false)
 const inputAtBottom = ref(false)
 const animating = ref(false)
@@ -153,9 +252,10 @@ async function send() {
   if (!expanded.value) expandChat()
 
   agent.stopAllTypewriters(messages.value)
-  inputText.value = ''
+  const atts = [...pendingAttachments.value]
+  inputText.value = ''; pendingAttachments.value = []
 
-  const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: q, timestamp: Date.now() }
+  const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: q, attachments: atts.length ? atts as any : undefined, timestamp: Date.now() }
   messages.value.push(userMsg)
 
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', thinking: true, toolCalls: [], rawToolCalls: [], toolResults: [], timestamp: Date.now() }
@@ -167,6 +267,7 @@ async function send() {
     getMessage: () => aiMsg,
     scrollFn: scrollChat,
     sessionId: 'fab-main-session',
+    attachments: atts.map(a => ({ path: a.path, name: a.name })),
     onDone: (result, ctx) => {
       if (ctx.finalAnswer && ctx.finalAnswer.trim()) {
         aiMsg.toolCalls = result.tool_log || []
@@ -257,7 +358,11 @@ onUnmounted(() => {
           <div class="msg-content" :class="m.role === 'user' ? 'max-w-[70%]' : 'max-w-[85%]'">
             <div class="msg-time" :class="m.role === 'user' ? 'text-right' : ''">{{ fmtTime(m.timestamp) }}</div>
             <div v-if="m.role === 'user'" class="bubble-user">
-              <pre class="bubble-user__text">{{ m.content }}</pre>
+              <pre class="bubble-user__text">{{ displayContent(m.content) }}</pre>
+              <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1" />
+              <div v-else-if="m.content?.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1">
+                <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-white/20 text-white/90">{{ name }}</span>
+              </div>
             </div>
             <div v-else class="bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
               <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
@@ -268,20 +373,30 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- 附件行（独立于输入栏，显示在消息区与输入栏之间） -->
+    <div v-if="pendingAttachments.length" class="chat-attachments">
+      <AttachmentChips :files="pendingAttachments" removable @remove="removeAttachment" />
+    </div>
+
     <!-- 输入栏（始终可见，面板底部） -->
     <div class="chat-input-bar"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp">
-      <button @click.stop="expanded ? collapseChat() : expandChat()" class="icon-btn" :title="expanded ? '收起' : '展开'">
-        <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-180': expanded }" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
-      </button>
-      <input v-model="inputText" :placeholder="expanded ? '向 AI 提问...' : currentSpeechText" class="chat-input"
-        @keydown.enter.exact.prevent="send" />
-      <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" title="停止">
-        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-      </button>
-      <button v-else @click.stop="send" :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
-      </button>
+      <div class="flex items-center gap-1 flex-1 min-w-0">
+        <button @click.stop="expanded ? collapseChat() : expandChat()" class="icon-btn" :title="expanded ? '收起' : '展开'">
+          <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-180': expanded }" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
+        </button>
+        <button @click.stop="openAttachmentDialog" class="icon-btn" title="附加文件">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+        </button>
+        <input v-model="inputText" :placeholder="expanded ? '...' : currentSpeechText" class="chat-input"
+          @keydown.enter.exact.prevent="send" @paste="onPaste" />
+        <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" title="停止">
+          <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+        </button>
+        <button v-else @click.stop="send" :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
+        </button>
+      </div>
     </div>
   </div>
 </div>
@@ -340,6 +455,7 @@ onUnmounted(() => {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 12px;
+  padding-bottom: 44px;  /* 预留附件行空间，避免最后一条消息被附件行遮挡 */
   user-select: text;
   scrollbar-width: thin;
   scrollbar-color: rgba(37, 99, 235, 0.2) transparent;
@@ -348,10 +464,21 @@ onUnmounted(() => {
 .messages-scroll::-webkit-scrollbar-track { background: transparent; }
 .messages-scroll::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #06b6d4, #6366f1); border-radius: 4px; }
 
+/* ═══ 附件行（绝对定位，悬浮于输入栏上方，不参与 flex 撑高） ═══ */
+.chat-attachments {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 48px;          /* 输入栏高度之上 */
+  display: flex;
+  padding: 6px 8px;
+  border-top: 1px solid rgba(0,0,0,0.04);
+  background: rgba(255,255,255,0.95);
+}
+
 /* ═══ 输入栏（面板底部，flex 子元素） ═══ */
 .chat-input-bar {
   flex: 0 0 auto;
-  width: 580px; height: 48px;
+  width: 580px; min-height: 48px;
   display: flex; align-items: center; gap: 4px;
   padding: 6px 8px;
   border-top: 1px solid rgba(0,0,0,0.04);
