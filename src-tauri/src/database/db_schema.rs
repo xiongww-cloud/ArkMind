@@ -360,7 +360,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
 
         -- ★ 业务关联表：实体间多对多关系
         CREATE TABLE IF NOT EXISTS business_relations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT PRIMARY KEY,
             source_type TEXT NOT NULL,
             source_id TEXT NOT NULL,
             target_type TEXT NOT NULL,

@@ -1006,7 +1006,7 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
 }
 
 /// 收集项目所有方案中使用的所有产品，重写 project_product_mapping 与 business_relations
-fn sync_project_products(project_id: &str) -> Result<(), String> {
+pub fn sync_project_products(project_id: &str) -> Result<(), String> {
     let products = database::all(
         "SELECT DISTINCT si.product_id, si.product_name FROM solution_items si \
          JOIN solution_versions sv ON sv.id = si.solution_version_id \

@@ -136,7 +136,22 @@ pub fn run() {
             log::info!("DB initialized: {:?}", db_file);
 
             // Initialize business_relations table
-            services::business_relations::init();
+            // ★ 若检测并修复了 INTEGER id 坏表（旧 schema 导致所有关联写入静默失败），
+            //    从现存业务映射表回填恢复全部关联 + 重建方案图谱边
+            let br_rebuilt = services::business_relations::init();
+            if br_rebuilt {
+                log::info!("[业务关联] 检测到坏表修复，开始从业务数据重建关联...");
+                services::business_relations::backfill();
+                if let Ok(projects) = database::all("SELECT id FROM projects", &[]) {
+                    for p in &projects {
+                        if let Some(pid) = p["id"].as_str() {
+                            let _ = commands::project_commands::sync_project_products(pid);
+                            commands::project_commands::sync_solution_graph(pid);
+                        }
+                    }
+                    log::info!("[业务关联] 方案图谱重建完成（{} 个项目）", projects.len());
+                }
+            }
 
             // 清理过期 compressed 消息：每 session 最多保留 50 条，清理空 session
             commands::kb::cleanup_chat_messages(50);

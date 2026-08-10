@@ -47,7 +47,7 @@ async function saveFileName(fileId: string) {
   if (!v) return
   const f = fileList.value.find((x: any) => x.id === fileId)
   if (f && v !== (f.displayName || f.custom_name || f.name)) {
-    try { await updateFileMeta(fileId, { customName: v }); f.custom_name = v; f.name = v; toast({ message: '文件名已更新', type: 'success' }) } catch { toast({ message: '重命名失败', type: 'error' }) }
+    try { await updateFileMeta(fileId, { customName: v }); f.custom_name = v; f.name = v; f.displayName = v; toast({ message: '文件名已更新', type: 'success' }) } catch { toast({ message: '重命名失败', type: 'error' }) }
   }
 }
 function cancelEditName() { editingNameFileId.value = null }
@@ -327,7 +327,8 @@ async function triggerNewFile() {
       } catch (e: any) { upFail(task, e.message || '上传失败') }
     }
     await loadFiles()
-    await projectStore.addProjectDynamic(props.projectId, `上传了 ${paths.length} 个文件`)
+    const fileNames = paths.map(p => p.replace(/^.*[\\\/]/, ''))
+    await projectStore.addProjectDynamic(props.projectId, `上传了文件「${fileNames.join('」「')}」`)
     await projectStore.fetchProjectDynamics(props.projectId)
   } catch (e) { console.warn('文件选择失败', e); toast({ message: '文件选择仅支持桌面环境', type: 'error' }) }
 }

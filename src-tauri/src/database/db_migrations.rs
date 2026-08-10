@@ -1,6 +1,14 @@
 use rusqlite::{Connection, Result as SqliteResult};
 use crate::database::db_core::with_db;
 
+/// 检查表是否存在（遗留表迁移前的保护：全新安装的库没有老版本遗留表）
+fn table_exists(conn: &Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [name], |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0
+}
+
 pub fn check_license_premium() -> bool {
     match with_db(|conn| {
         let row = conn.query_row(
@@ -274,32 +282,43 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         ALTER TABLE project_vendor_mapping ADD COLUMN selected_contact_id TEXT DEFAULT NULL;
     ");
 
-    // ★ 回填 project_customer_mapping → business_relations
-    let _ = conn.execute_batch(
-        "INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
-         SELECT hex(randomblob(16)), 'CUSTOMER', pcm.customer_id, 'PROJECT', pcm.project_id, 'belongs_to', '{}', datetime('now','localtime'), datetime('now','localtime')
-         FROM project_customer_mapping pcm
-         WHERE pcm.customer_id IS NOT NULL AND pcm.customer_id != ''
-           AND pcm.project_id IS NOT NULL AND pcm.project_id != ''
-           AND NOT EXISTS (
-               SELECT 1 FROM business_relations br
-               WHERE br.source_type='CUSTOMER' AND br.source_id=pcm.customer_id
-               AND br.target_type='PROJECT' AND br.target_id=pcm.project_id
-           )"
-    );
+    // ★ 回填 project_customer_mapping → business_relations（遗留表，全新安装不存在则跳过）
+    if table_exists(conn, "project_customer_mapping") {
+        if let Err(e) = conn.execute_batch(
+            "INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+             SELECT hex(randomblob(16)), 'CUSTOMER', pcm.customer_id, 'PROJECT', pcm.project_id, 'belongs_to', '{}', datetime('now','localtime'), datetime('now','localtime')
+             FROM project_customer_mapping pcm
+             WHERE pcm.customer_id IS NOT NULL AND pcm.customer_id != ''
+               AND pcm.project_id IS NOT NULL AND pcm.project_id != ''
+               AND NOT EXISTS (
+                   SELECT 1 FROM business_relations br
+                   WHERE br.source_type='CUSTOMER' AND br.source_id=pcm.customer_id
+                   AND br.target_type='PROJECT' AND br.target_id=pcm.project_id
+               )"
+        ) {
+            log::error!("[迁移] project_customer_mapping → business_relations 回填失败: {}", e);
+        }
+    }
 
-    // ★ 迁移旧表数据到统一合作伙伴表
-    let _ = conn.execute_batch("
-        -- 迁移渠道
-        INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, created_at)
-        SELECT id, 'CHANNEL', name, phone, company, remark, created_at FROM channel_partners;
-        -- 迁移厂商
-        INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, created_at)
-        SELECT id, 'VENDOR', name, phone, company, remark, created_at FROM vendor_partners;
-        -- 迁移客户
-        INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, contact_person, contact_phone, created_at, updated_at)
-        SELECT id, 'CUSTOMER', name, '', '', remark, contact_person, contact_phone, created_at, updated_at FROM customers;
-    ");
+    // ★ 迁移旧表数据到统一合作伙伴表（遗留表，全新安装不存在则跳过）
+    if table_exists(conn, "channel_partners") {
+        let _ = conn.execute_batch(
+            "INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, created_at)
+             SELECT id, 'CHANNEL', name, phone, company, remark, created_at FROM channel_partners;"
+        );
+    }
+    if table_exists(conn, "vendor_partners") {
+        let _ = conn.execute_batch(
+            "INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, created_at)
+             SELECT id, 'VENDOR', name, phone, company, remark, created_at FROM vendor_partners;"
+        );
+    }
+    if table_exists(conn, "customers") {
+        let _ = conn.execute_batch(
+            "INSERT OR IGNORE INTO partners (id, type, name, phone, company, remark, contact_person, contact_phone, created_at, updated_at)
+             SELECT id, 'CUSTOMER', name, '', '', remark, contact_person, contact_phone, created_at, updated_at FROM customers;"
+        );
+    }
 
     // ★ 删除旧表（不再需要）
     let _ = conn.execute_batch("DROP TABLE IF EXISTS channel_contacts;");
@@ -313,35 +332,59 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     ).unwrap_or(0) > 0;
 
     if !migration_done {
-        let _ = conn.execute_batch("
-            -- 迁移渠道映射
-            INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
-            SELECT hex(randomblob(16)), 'CHANNEL', channel_id, 'PROJECT', project_id, 'belongs_to',
-                   json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
-                   created_at, datetime('now','localtime')
-            FROM project_channel_mapping
-            WHERE channel_id IS NOT NULL AND project_id IS NOT NULL;
-            -- 迁移厂商映射
-            INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
-            SELECT hex(randomblob(16)), 'VENDOR', vendor_id, 'PROJECT', project_id, 'belongs_to',
-                   json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
-                   created_at, datetime('now','localtime')
-            FROM project_vendor_mapping
-            WHERE vendor_id IS NOT NULL AND project_id IS NOT NULL;
-            -- 迁移客户映射
-            INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
-            SELECT hex(randomblob(16)), 'CUSTOMER', customer_id, 'PROJECT', project_id, 'belongs_to',
-                   json_object('remark', ''),
-                   created_at, datetime('now','localtime')
-            FROM project_customer_mapping
-            WHERE customer_id IS NOT NULL AND project_id IS NOT NULL;
-        ");
-        // 标记迁移完成
-        conn.execute(
-            "INSERT OR REPLACE INTO system_config (key, value) VALUES ('migration_br_mapping_done', '1')",
-            [],
-        ).ok();
-        log::info!("[迁移] business_relations 映射迁移完成");
+        let mut all_ok = true;
+        // 迁移渠道映射（表在当前 schema 中，但做存在性检查以防万一）
+        if table_exists(conn, "project_channel_mapping") {
+            if let Err(e) = conn.execute_batch("
+                INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+                SELECT hex(randomblob(16)), 'CHANNEL', channel_id, 'PROJECT', project_id, 'belongs_to',
+                       json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
+                       created_at, datetime('now','localtime')
+                FROM project_channel_mapping
+                WHERE channel_id IS NOT NULL AND project_id IS NOT NULL;
+            ") {
+                log::error!("[迁移] 渠道映射 → business_relations 失败: {}", e);
+                all_ok = false;
+            }
+        }
+        // 迁移厂商映射
+        if table_exists(conn, "project_vendor_mapping") {
+            if let Err(e) = conn.execute_batch("
+                INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+                SELECT hex(randomblob(16)), 'VENDOR', vendor_id, 'PROJECT', project_id, 'belongs_to',
+                       json_object('selected_contact_id', COALESCE(selected_contact_id, ''), 'remark', ''),
+                       created_at, datetime('now','localtime')
+                FROM project_vendor_mapping
+                WHERE vendor_id IS NOT NULL AND project_id IS NOT NULL;
+            ") {
+                log::error!("[迁移] 厂商映射 → business_relations 失败: {}", e);
+                all_ok = false;
+            }
+        }
+        // 迁移客户映射（遗留表，全新安装不存在则跳过）
+        if table_exists(conn, "project_customer_mapping") {
+            if let Err(e) = conn.execute_batch("
+                INSERT OR IGNORE INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at)
+                SELECT hex(randomblob(16)), 'CUSTOMER', customer_id, 'PROJECT', project_id, 'belongs_to',
+                       json_object('remark', ''),
+                       created_at, datetime('now','localtime')
+                FROM project_customer_mapping
+                WHERE customer_id IS NOT NULL AND project_id IS NOT NULL;
+            ") {
+                log::error!("[迁移] 客户映射 → business_relations 失败: {}", e);
+                all_ok = false;
+            }
+        }
+        // 全部成功才标记迁移完成；失败则下次启动重试（INSERT OR IGNORE 幂等，重试安全）
+        if all_ok {
+            conn.execute(
+                "INSERT OR REPLACE INTO system_config (key, value) VALUES ('migration_br_mapping_done', '1')",
+                [],
+            ).ok();
+            log::info!("[迁移] business_relations 映射迁移完成");
+        } else {
+            log::warn!("[迁移] business_relations 映射迁移存在失败项，将在下次启动重试");
+        }
     }
 
     // ★ 处理 partner_contacts 表 schema 变更（移除 partner_id 列）

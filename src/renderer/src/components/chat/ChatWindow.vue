@@ -385,10 +385,11 @@ onUnmounted(() => {
         <button @click.stop="expanded ? collapseChat() : expandChat()" class="icon-btn" :title="expanded ? '收起' : '展开'">
           <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-180': expanded }" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
         </button>
-        <button @click.stop="openAttachmentDialog" class="icon-btn" title="附加文件">
+        <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" title="附加文件">
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
         </button>
         <input v-model="inputText" :placeholder="expanded ? '...' : currentSpeechText" class="chat-input"
+          :title="isMac ? '支持 Cmd+V 粘贴图片/文件' : ''"
           @keydown.enter.exact.prevent="send" @paste="onPaste" />
         <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" title="停止">
           <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
