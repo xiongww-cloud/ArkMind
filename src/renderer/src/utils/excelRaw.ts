@@ -5,7 +5,9 @@
  * 方案导入 / 产品导入各自定义 fields 配置，共用此解析器。
  */
 
-import * as XLSX from 'xlsx'
+import * as XLSXModule from 'xlsx/dist/xlsx.core.min.js'
+
+const XLSX = (XLSXModule as any).default || XLSXModule
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  TYPES
