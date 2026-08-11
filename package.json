@@ -38,7 +38,6 @@
     "dompurify": "^3.2.4",
     "exceljs": "^4.4.0",
     "xlsx": "^0.18.5",
-    "xlsx": "^0.18.5",
     "file-saver": "^2.0.5",
     "mammoth": "^1.8.0",
     "marked": "^15.0.12",

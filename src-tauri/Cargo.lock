@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "arkmind"
-version = "13.1.0"
+version = "13.2.0"
 dependencies = [
  "aes-gcm",
  "arrow-array",
