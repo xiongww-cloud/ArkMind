@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import { parsePMSExcel, exportToPMSExcel } from '@/utils/solutionExcel'
+import { exportToPMSExcel, buildItemsFromMapping } from '@/utils/solutionExcel'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
 import { confirm, dangerConfirm, alert } from '@/composables/useConfirm'
 import AppIcon from '@/components/common/AppIcon.vue'
 import AppRemark from '@/components/common/AppRemark.vue'
+import ExcelImportWizard from '@/components/shared/ExcelImportWizard.vue'
+import type { ImportField, RawDataRow, SheetData } from '@/utils/excelRaw'
 
 import * as api from '@/api/db-client'
 import { formatDateTime } from '@/utils/time'
@@ -23,76 +25,64 @@ const gparams = ref([])  // 参数列表 — 从后端加载
 
 // ─── 设备型号内联补全 (Inline Autocomplete) ─────────────────────────────────
 const isDeleting = ref(false)
-const showUploadModal = ref(false)
+const showImportWizard = ref(false)
 
-// ─── Excel 格式导入 ──────────────────────────────────────────────────────────
-const pmsFileInput = ref(null)
-const pmsSelectedFile = ref(null) // 选中的文件，确认后才解析
-const isPMSImporting = ref(false)
-const pmsImportError = ref('')
-const pmsFileName = ref('')
+// ─── Excel 向导导入 ──────────────────────────────────────────────────────────
+const solutionImportFields: ImportField[] = [
+  { key: 'sn',         label: '序号',     guesses: ['序号', '编号', 'No', 'no', '#'] },
+  { key: 'deviceName', label: '设备名称', guesses: ['设备名', '设备名称', '名称'] },
+  { key: 'model',      label: '产品型号', guesses: ['型号', '产品型号', 'Model', 'model', '产品名称'], required: true },
+  { key: 'params',     label: '产品参数', guesses: ['参数', '产品参数', '规格', 'Specs', 'specs', '描述'] },
+  { key: 'qty',        label: '数量',     guesses: ['数量', '数', 'Qty', 'qty', '台数'], numeric: true, defaultHint: '1' },
+  { key: 'unit',       label: '单位',     guesses: ['单位', 'Unit', 'unit'], defaultHint: '台' },
+  { key: 'price',      label: '单价',     guesses: ['单价', 'Price', 'price', '含税单价'], numeric: true, defaultHint: '0' },
+]
 
-function triggerPMSFile() { pmsFileInput.value?.click() }
-
-function onPMSFilePickedFromInput(e) {
-  const file = e.target.files?.[0]
-  if (!file) return
-  pmsSelectedFile.value = file
-  pmsFileName.value = file.name
-}
-
-function confirmPMSImport() {
-  if (!pmsSelectedFile.value) return
-  handlePMSFile(pmsSelectedFile.value)
-}
-
-function cancelImport() {
-  showUploadModal.value = false
-  pmsImportError.value = ''
-  pmsFileName.value = ''
-  pmsSelectedFile.value = null
-  if (pmsFileInput.value) pmsFileInput.value.value = ''
-}
-
-async function handlePMSFile(file) {
-  isPMSImporting.value = true
-  pmsImportError.value = ''
-
-  const productList = Array.isArray(gp.value) ? gp.value : []
-  const result = await parsePMSExcel(file, productList)
-  isPMSImporting.value = false
-  if (pmsFileInput.value) pmsFileInput.value.value = ''
-
-  if (result.error) {
-    pmsImportError.value = result.error
-    return
+function classifySolutionRow(row: RawDataRow, mapping: (string | undefined)[], sheet: SheetData): string | null {
+  // 查映射后的型号列
+  const modelIdx = mapping.findIndex(k => k === 'model')
+  const modelVal = modelIdx >= 0 ? (row.cells[modelIdx] || '').trim() : ''
+  // 检查是否为合计/总计行（任意单元格含关键词）
+  const hasTotal = row.cells.some(c => c.includes('合计') || c.includes('总计'))
+  if (hasTotal) return 'ignore'
+  // 检查是否为子网行：序号列纵向合并的主单元格
+  const snIdx = mapping.findIndex(k => k === 'sn')
+  if (snIdx >= 0) {
+    const m = row.merges.find(mg => mg.col === snIdx + 1 && mg.isMaster && mg.rowSpan > 1)
+    if (m && !modelVal) return 'subnet'
   }
+  // 有型号 → 设备
+  if (modelVal) return 'device'
+  // 无型号但行内有内容 → 问题行（强制用户选）
+  const hasContent = row.cells.some(c => c.trim().length > 0)
+  if (hasContent) return null // null = 问题行，让用户选
+  // 空行
+  return 'ignore'
+}
 
-  // 直接设置草稿的设备清单
+function shouldSkipSolutionRow(row: RawDataRow, sheet: SheetData): boolean {
+  // 全空行跳过
+  return row.cells.every(c => !c.trim())
+}
+
+function onImportConfirm(payload: any) {
+  const { mapping, rows, decisions, sheet } = payload
+  const productList = Array.isArray(gp.value) ? gp.value : []
+  const items = buildItemsFromMapping(rows, mapping, decisions, sheet, productList)
+  // 匹配产品库参数
   if (cplan.value?.draft) {
-    cplan.value.draft.items = result.items.map((item: any) => {
+    cplan.value.draft.items = items.map((item: any) => {
       if (item.rowType === 'subnet' || !item.model) return item
-      // 自动匹配产品库获取参数
-      const match = (Array.isArray(gp.value) ? gp.value : []).find(
-        (p: any) => (p.name || '').toLowerCase() === (item.model || '').toLowerCase()
-      )
+      const match = productList.find((p: any) => (p.name || '').toLowerCase() === item.model.toLowerCase())
       if (match) {
         const allGparams = Array.isArray(gparams.value) ? gparams.value : []
         const productParams = allGparams.filter((p: any) => p.productId === match.id)
-        return {
-          ...item,
-          productId: match.id,
-          syncParams: false,
-          mergedText: item.mergedText || match.full_specs || match.standard_specs || '',
-          params: productParams.map((p: any) => ({ ...p, mark: '' })),
-        }
+        return { ...item, productId: match.id, syncParams: false, mergedText: item.mergedText || match.full_specs || match.standard_specs || '', params: productParams.map((p: any) => ({ ...p, mark: '' })) }
       }
       return { ...item, syncParams: item.syncParams !== false }
     })
   }
-  showUploadModal.value = false
-  pmsSelectedFile.value = null
-  pmsFileName.value = ''
+  showImportWizard.value = false
 }
 
 function onDeviceKeydown(e) {
@@ -745,7 +735,7 @@ onUnmounted(() => {
           <div class="flex items-center gap-1 ml-auto flex-nowrap">
             <button @click="apl" class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0" title="添加设备"><AppIcon name="plus" class="w-3.5 h-3.5" /></button>
             <button @click="asub" class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0" title="子网"><AppIcon name="folder" class="w-3.5 h-3.5" /></button>
-            <button @click="showUploadModal = true" class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0" title="导入"><AppIcon name="upload" class="w-3.5 h-3.5" /></button>
+            <button @click="showImportWizard = true" class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0" title="导入"><AppIcon name="upload" class="w-3.5 h-3.5" /></button>
             <button @click="preSave" :disabled="isSaving" class="flex items-center gap-1 h-6 px-2 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-wait transition-colors flex-shrink-0 whitespace-nowrap"><AppIcon v-if="isSaving" name="spinner" class="animate-spin w-3 h-3" /><AppIcon v-else name="save" class="w-3 h-3" /><span>{{ isSaving ? '保存中...' : '保存' }}</span></button>
           </div>
         </div>
@@ -943,57 +933,22 @@ onUnmounted(() => {
     </div>
   </Teleport>
 
-  <!-- Hidden PMS file input -->
-  <input ref="pmsFileInput" type="file" class="hidden" accept=".xlsx,.xls" @change="onPMSFilePickedFromInput" />
 
-  <!-- Import Excel Modal (PMS / SCT) -->
-  <Teleport to="body">
-    <div v-if="showUploadModal" class="fixed inset-0 z-[80] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm" @click.self="cancelImport">
-      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 flex flex-col overflow-hidden transition-all duration-200">
-        <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
-          <h3 class="text-sm font-semibold text-gray-800">上传 Excel</h3>
-          <button @click="cancelImport" class="text-gray-400 hover:text-gray-600">
-            <AppIcon name="x" class="w-4 h-4" />
-          </button>
-        </div>
-
-        <div class="p-6">
-          <div
-            @click="triggerPMSFile"
-            class="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors border-slate-200 hover:border-blue-400 hover:bg-blue-50/30"
-          >
-            <AppIcon name="upload" class="w-10 h-10 mx-auto mb-3 text-slate-300" />
-            <p v-if="!pmsFileName" class="text-sm text-slate-400">点击选择 Excel 文件</p>
-            <p v-else class="text-sm text-blue-600 font-medium truncate">{{ pmsFileName }}</p>
-          </div>
-          <div v-if="isPMSImporting" class="mt-4 flex items-center gap-2 text-xs text-blue-600 justify-center">
-            <AppIcon name="spinner" class="w-3.5 h-3.5 animate-spin" />
-            正在解析 Excel...
-          </div>
-          <div v-if="pmsImportError" class="mt-4 p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
-            {{ pmsImportError }}
-          </div>
-          <div class="mt-4 p-3 bg-slate-50 border border-slate-100 rounded-lg text-[11px] text-slate-500 leading-relaxed">
-            <p class="font-medium text-slate-600 mb-1">格式要求（.xlsx）</p>
-            <p>表头行须包含以下列，列顺序固定：</p>
-            <p class="mt-1 font-mono text-[10px]">A:序号 B:产品型号 C:产品参数 D:数量 E:单位 F:单价 G:小计</p>
-            <p class="mt-1">含「设备名称」列时：</p>
-            <p class="font-mono text-[10px]">A:序号 B:设备名称 C:产品型号 D:产品参数 E:数量 F:单位 G:单价 H:小计</p>
-            <p class="mt-1">· 序号列为数字，遇到「合计/总计」行停止解析</p>
-            <p>· 支持子网（序号列合并多行的单元格为子网名称，从属行自动归入该子网）</p>
-            <p>· 产品型号会自动匹配产品库，已有型号自动填入参数</p>
-          </div>
-        </div>
-        <div class="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
-          <button @click="cancelImport" class="btn-secondary">取消</button>
-          <button @click="confirmPMSImport" :disabled="!pmsSelectedFile || isPMSImporting" class="btn-primary">
-            <AppIcon v-if="isPMSImporting" name="spinner" class="animate-spin w-3 h-3" />
-            <span>{{ isPMSImporting ? '解析中...' : '确认' }}</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
+  <!-- Excel Import Wizard -->
+  <ExcelImportWizard
+    v-model="showImportWizard"
+    title="导入方案 Excel"
+    :fields="solutionImportFields"
+    :rowActions="[
+      { key: 'device',  label: '添加产品', color: 'emerald' },
+      { key: 'subnet',  label: '添加子网', color: 'blue' },
+      { key: 'ignore',  label: '忽略',     color: 'slate' },
+      { key: 'problem', label: '需要选择', color: 'amber', isProblem: true },
+    ]"
+    :classify="classifySolutionRow"
+    :shouldSkipRow="shouldSkipSolutionRow"
+    @confirm="onImportConfirm"
+  />
 
   <!-- Copy toast -->
   <Teleport to="body">

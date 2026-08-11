@@ -2,9 +2,14 @@
  * 方案配置器 Excel 导入/导出工具
  *
  * 从 SolutionConfigurator.vue 中抽离，便于维护和复用。
+ * 导入逻辑已迁移到 ExcelImportWizard + excelRaw.ts，本文件保留：
+ *   - DeviceItem / ImportResult / ExportOptions 类型定义
+ *   - exportToPMSExcel（导出）
+ *   - buildItemsFromMapping（向导确认后组装设备清单）
  */
 
 import * as ExcelJSModule from 'exceljs/dist/exceljs.min.js'
+import type { RawDataRow, SheetData } from './excelRaw'
 
 const ExcelJS = (ExcelJSModule as any).default || (ExcelJSModule as any).default?.default || ExcelJSModule
 
@@ -48,146 +53,93 @@ function guid(): string {
   return Math.random().toString(36).substring(2, 11)
 }
 
+/** 按字段映射从原始行读取值 */
+function getCellByField(row: RawDataRow, mapping: (string | undefined)[], fieldKey: string): string {
+  const idx = mapping.findIndex(k => k === fieldKey)
+  if (idx < 0 || idx >= row.cells.length) return ''
+  return row.cells[idx].trim()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
-//  PMS FORMAT IMPORT
+//  WIZARD IMPORT — 按映射组装设备清单
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 解析 PMS 格式 Excel 文件，返回设备清单。
+ * 向导确认后，按映射 + 行决策组装 DeviceItem[]（替代旧 parsePMSExcel）。
  *
- * PMS 格式列布局（无"设备名称"列时）:
- *   A:序号  B:产品型号  C:产品参数  D:数量  E:单位  F:单价  G:小计
- * 含"设备名称"列时:
- *   A:序号  B:设备名称  C:产品型号  D:产品参数  E:数量  F:单位  G:单价  H:小计
- *
- * @param file          - 用户选择的 .xlsx 文件
- * @param productList   - 产品库列表（用于自动匹配型号）
- * @returns 解析结果（设备清单 或 错误信息）
+ * @param rows       - 向导传入的 RawDataRow[]
+ * @param mapping    - 列映射
+ * @param decisions  - 每行决策（action: 'device' | 'subnet' | 'ignore'）
+ * @param sheet      - Sheet 数据（含 mergeMap）
+ * @param productList - 产品库列表（用于型号匹配）
  */
-export async function parsePMSExcel(
-  file: File,
-  productList: Array<{ id: string; name: string; price?: number }> = []
-): Promise<ImportResult> {
-  try {
-    const buffer = await file.arrayBuffer()
-    const wb = new (ExcelJS.Workbook as any)()
-    await wb.xlsx.load(buffer)
-    const ws = wb.worksheets[0]
-    if (!ws) return { items: [], error: '未找到工作表' }
+export function buildItemsFromMapping(
+  rows: RawDataRow[],
+  mapping: (string | undefined)[],
+  decisions: { action: string; subnetName?: string }[],
+  sheet: SheetData,
+  productList: Array<{ id: string; name: string }> = []
+): DeviceItem[] {
+  const items: DeviceItem[] = []
+  // 追踪子网归属：遇到 subnet action 时记录当前子网名
+  let currentSubnet: string | null = null
 
-    // 解析表头判断是否有"设备名称"列
-    const headerRow = ws.getRow(1)
-    const headers: string[] = []
-    headerRow.eachCell((cell: any) => {
-      headers.push(String(cell.value || '').trim())
-    })
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+    const decision = decisions[i]
+    if (!decision || decision.action === 'ignore' || decision.action === 'problem') continue
 
-    const hasCustomName = headers.some((h: string) => h.includes('设备名称'))
-    const colMap = hasCustomName
-      ? { sn: 1, cn: 2, pm: 3, pr: 4, qty: 5, un: 6, up: 7, st: 8 }
-      : { sn: 1, pm: 2, pr: 3, qty: 4, un: 5, up: 6, st: 7 }
-
-    const items: DeviceItem[] = []
-
-    // ── 预扫描：检测 A 列（序号列）纵向合并单元格 → 子网范围 ──
-    const subnetRanges: Array<{ name: string; startRow: number; endRow: number }> = []
-    for (let r = 2; r <= ws.rowCount; r++) {
-      const cell = ws.getRow(r).getCell(colMap.sn)
-      if (cell.isMerged && cell.master === cell) {
-        const name = String(cell.value || '').trim()
-        if (name && !name.includes('合计') && !name.includes('总计')) {
-          let endRow = r
-          for (let r2 = r + 1; r2 <= ws.rowCount; r2++) {
-            const c2 = ws.getRow(r2).getCell(colMap.sn)
-            if (c2.isMerged && c2.master === cell) { endRow = r2 } else { break }
-          }
-          subnetRanges.push({ name, startRow: r, endRow })
-        }
-      }
-    }
-
-    const subnetStartRows = new Set(subnetRanges.map(s => s.startRow))
-    const rowToSubnet = new Map<number, { name: string; startRow: number; endRow: number }>()
-    for (const range of subnetRanges) {
-      for (let r = range.startRow; r <= range.endRow; r++) rowToSubnet.set(r, range)
-    }
-
-    for (let r = 2; r <= ws.rowCount; r++) {
-      const row = ws.getRow(r)
-      const snCell = row.getCell(colMap.sn)
-      const snVal = snCell.value
-
-      // 检查合计行
-      if (snVal !== null && snVal !== undefined && snVal !== '') {
-        const snStr = String(snVal).trim()
-        if (snStr.includes('合计') || snStr.includes('总计') || snStr === '合计：') break
-      }
-
-      // 子网主单元格 → emit subnet
-      if (subnetStartRows.has(r)) {
-        const range = rowToSubnet.get(r)!
-        items.push({
-          uid: guid(),
-          rowType: 'subnet',
-          productId: '',
-          model: '',
-          customName: '',
-          unitPrice: 0,
-          quantity: 0,
-          unit: '',
-          params: [],
-          mergedText: '',
-          syncParams: false,
-          name: range.name,
-        })
-        continue
-      }
-
-      // 子网从属行或独立设备行
-      const subnet = rowToSubnet.get(r)
-      const snIsNumeric = snVal !== null && snVal !== undefined && snVal !== '' && !isNaN(Number(snVal))
-
-      // 不在子网范围内且序号不是数字 → 跳过（备注行等）
-      if (!subnet && !snIsNumeric) continue
-
-      const pmVal = row.getCell(colMap.pm).value
-      const model = String(pmVal || '').trim()
-      if (!model) continue
-
-      const customName = hasCustomName
-        ? String(row.getCell(colMap.cn).value || '').trim()
-        : ''
-      const specs = String(row.getCell(colMap.pr).value || '').trim()
-      const qty = parseInt(String(row.getCell(colMap.qty).value || '1')) || 1
-      const unit = String(row.getCell(colMap.un).value || '台').trim() || '台'
-      const up = parseFloat(String(row.getCell(colMap.up).value || '0')) || 0
-
-      const match = productList.find(
-        (p) => (p.name || '').toLowerCase() === model.toLowerCase()
-      )
-
+    // 子网行
+    if (decision.action === 'subnet') {
+      const name = decision.subnetName || getCellByField(row, mapping, 'model') || getCellByField(row, mapping, 'sn') || '未命名子网'
+      currentSubnet = name
       items.push({
         uid: guid(),
-        productId: match?.id || '',
-        model,
-        customName,
-        unitPrice: up,
-        quantity: qty,
-        unit,
+        rowType: 'subnet',
+        productId: '',
+        model: '',
+        customName: '',
+        unitPrice: 0,
+        quantity: 0,
+        unit: '',
         params: [],
-        mergedText: specs || (match as any)?.full_specs || (match as any)?.standard_specs || '',
+        mergedText: '',
         syncParams: false,
+        name,
       })
+      continue
     }
 
-    if (items.length === 0) {
-      return { items: [], error: '未解析到有效设备行' }
-    }
+    // 设备行（action === 'device'）
+    const model = getCellByField(row, mapping, 'model')
+    const customName = getCellByField(row, mapping, 'deviceName')
+    const specs = getCellByField(row, mapping, 'params')
+    const qtyStr = getCellByField(row, mapping, 'qty')
+    const unitStr = getCellByField(row, mapping, 'unit')
+    const priceStr = getCellByField(row, mapping, 'price')
 
-    return { items }
-  } catch (ex: any) {
-    return { items: [], error: ex.message || '文件解析失败' }
+    const qty = parseInt(qtyStr) || 1
+    const unit = unitStr || '台'
+    const up = parseFloat(priceStr) || 0
+
+    // 产品库匹配
+    const match = productList.find(p => (p.name || '').toLowerCase() === model.toLowerCase())
+
+    items.push({
+      uid: guid(),
+      productId: match?.id || '',
+      model,
+      customName,
+      unitPrice: up,
+      quantity: qty,
+      unit,
+      params: [],
+      mergedText: specs || '',
+      syncParams: false,
+    })
   }
+
+  return items
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -7,7 +7,9 @@ import { confirm, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, getMaterialAssociations, updateMaterialAssociations, updateFileMeta, exportWriteBuffer } from '@/api/db-client'
-import { exportProductsToExcel, parseProductExcel } from '@/utils/productExcel'
+import { exportProductsToExcel } from '@/utils/productExcel'
+import ExcelImportWizard from '@/components/shared/ExcelImportWizard.vue'
+import type { ImportField, RawDataRow, SheetData } from '@/utils/excelRaw'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
@@ -187,11 +189,23 @@ const currentProduct = computed(() => (store.products as any[]).find((p: any) =>
 
 // ─── Product Excel 导入/导出 ─────────────────────────────────────────────
 const exportingProducts = ref(false)
-const importing = ref(false)
-const importModalOpen = ref(false)
-const importRows = ref<{ name: string; fullSpecs: string }[]>([])
-const importTargetSeriesId = ref<string | null>(null)
-const importFileRef = ref<HTMLInputElement | null>(null)
+const showProductImportWizard = ref(false)
+
+const productImportFields: ImportField[] = [
+  { key: 'name',      label: '产品名称', guesses: ['产品名称', '名称', 'Name', 'name', '型号'], required: true },
+  { key: 'fullSpecs', label: '技术参数', guesses: ['技术参数', '参数', 'Specs', 'specs', '规格', '描述'] },
+  { key: 'description', label: '描述',   guesses: ['描述', '说明', 'Description', 'description', '备注'] },
+]
+
+function classifyProductRow(row: RawDataRow, mapping: (string | undefined)[]): string | null {
+  const nameIdx = mapping.findIndex(k => k === 'name')
+  const nameVal = nameIdx >= 0 ? (row.cells[nameIdx] || '').trim() : ''
+  if (nameVal) return 'import'
+  // 无名称但有内容 → 问题行
+  const hasContent = row.cells.some(c => c.trim().length > 0)
+  if (hasContent) return null
+  return 'ignore'
+}
 
 // 目录下拉选项（全部系列，按层级缩进，不受折叠状态影响）
 const seriesOptions = computed(() => {
@@ -208,16 +222,42 @@ const seriesOptions = computed(() => {
 })
 
 // 导入分析：全局同名 + 文件内重复 → 跳过
-const importAnalysis = computed(() => {
-  const seen = new Set<string>()
-  let dup = 0, fresh = 0
-  for (const r of importRows.value) {
-    const key = r.name.trim().toLowerCase()
-    if (isDuplicateName(r.name) || seen.has(key)) dup++
-    else { seen.add(key); fresh++ }
-  }
-  return { dup, fresh }
-})
+const importTargetSeriesId = ref<string | null>(null)
+const importing = ref(false)
+
+async function onProductImportConfirm(payload: any) {
+  const { mapping, rows, decisions, sheet } = payload
+  importing.value = true
+  let created = 0, skipped = 0
+  try {
+    // 确定目标目录
+    importTargetSeriesId.value = (selectedSeriesId.value && selectedSeriesId.value !== store.uncategorizedSeriesId) ? selectedSeriesId.value : (store.uncategorizedSeriesId || null)
+    const seen = new Set<string>()
+    for (let i = 0; i < rows.length; i++) {
+      const decision = decisions[i]
+      if (!decision || decision.action === 'ignore' || decision.action === 'problem') continue
+      const row = rows[i]
+      const nameIdx = mapping.findIndex((k: string | undefined) => k === 'name')
+      const specsIdx = mapping.findIndex((k: string | undefined) => k === 'fullSpecs')
+      const descIdx = mapping.findIndex((k: string | undefined) => k === 'description')
+      const name = nameIdx >= 0 ? (row.cells[nameIdx] || '').trim() : ''
+      if (!name) { skipped++; continue }
+      const fullSpecs = specsIdx >= 0 ? (row.cells[specsIdx] || '').trim() : ''
+      const description = descIdx >= 0 ? (row.cells[descIdx] || '').trim() : ''
+      // 文件内去重
+      const key = name.toLowerCase()
+      if (seen.has(key) || isDuplicateName(name)) { skipped++; continue }
+      seen.add(key)
+      try {
+        await store.createProduct({ name, fullSpecs, description, seriesId: importTargetSeriesId.value })
+        created++
+      } catch { skipped++ }
+    }
+    await store.fetchProducts()
+    toast({ message: `成功导入 ${created} 个产品${skipped > 0 ? `，跳过 ${skipped} 个` : ''}`, type: 'success' })
+    showProductImportWizard.value = false
+  } finally { importing.value = false }
+}
 
 async function handleExportProducts() {
   if (exportingProducts.value) return
@@ -230,38 +270,6 @@ async function handleExportProducts() {
     else if (r.error !== 'cancelled') toast({ message: r.error || '导出失败', type: 'error' })
   } catch (e: any) { toast({ message: '导出失败: ' + (e?.message || ''), type: 'error' }) }
   finally { exportingProducts.value = false }
-}
-
-function triggerImportProducts() { importFileRef.value?.click() }
-
-async function onImportFileChange(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  const result = await parseProductExcel(file)
-  if (result.error || result.rows.length === 0) { toast({ message: result.error || '未解析到产品', type: 'error' }); return }
-  importRows.value = result.rows
-  importTargetSeriesId.value = (selectedSeriesId.value && selectedSeriesId.value !== store.uncategorizedSeriesId) ? selectedSeriesId.value : (store.uncategorizedSeriesId || null)
-  importModalOpen.value = true
-}
-
-async function confirmImportProducts() {
-  if (importing.value) return
-  importing.value = true
-  let created = 0, skipped = 0
-  try {
-    for (const row of importRows.value) {
-      if (isDuplicateName(row.name)) { skipped++; continue }
-      try {
-        await store.createProduct({ name: row.name, fullSpecs: row.fullSpecs, seriesId: importTargetSeriesId.value })
-        created++
-      } catch { skipped++ }
-    }
-    await store.fetchProducts()
-    toast({ message: `成功导入 ${created} 个产品，跳过 ${skipped} 个同名`, type: 'success' })
-    importModalOpen.value = false
-  } finally { importing.value = false }
 }
 
 const editingName = ref(false); const editName = ref('')
@@ -542,7 +550,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
   <!-- Product list -->
   <div class="flex-shrink-0 flex flex-col overflow-hidden border-r border-surface-200 relative" :style="{width:listWidth+'px'}">
     <div class="absolute right-[-3px] top-0 bottom-0 w-[6px] cursor-col-resize z-10 select-none" @mousedown="onResizeStart('list', $event)"></div>
-    <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0"><span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">产品</span><div class="flex items-center gap-1"><button @click="handleExportProducts" :disabled="exportingProducts" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="导出产品到 Excel"><AppIcon name="download" size="12" stroke="2.5"/></button><button @click="triggerImportProducts" :disabled="importing" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="从 Excel 导入产品"><AppIcon name="upload" size="12" stroke="2.5"/></button><button @click="createProduct" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="plus" size="12" stroke="2.5"/></button></div><input ref="importFileRef" type="file" accept=".xlsx" class="hidden" @change="onImportFileChange"/></div>
+    <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0"><span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">产品</span><div class="flex items-center gap-1"><button @click="handleExportProducts" :disabled="exportingProducts" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="导出产品到 Excel"><AppIcon name="download" size="12" stroke="2.5"/></button><button @click="showProductImportWizard = true" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="从 Excel 导入产品"><AppIcon name="upload" size="12" stroke="2.5"/></button><button @click="createProduct" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="plus" size="12" stroke="2.5"/></button></div></div>
     <div ref="productListRef" class="flex-1 overflow-y-auto p-2 space-y-1">
       <div v-for="p in filteredProducts" :key="p.id" :data-product-id="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden select-none" :class="[selectedProductId===p.id || isSelected(p.id)?'bg-blue-50/70 border-brand-200 shadow-md scale-[1.02] z-10':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragProductId===p.id?'opacity-30':'']" @click="onProductCardClick($event, p.id)" @mousedown="onProductMouseDown($event, p.id)">
         <div v-if="selectedProductId===p.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
@@ -631,28 +639,19 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
   <!-- Drag ghost -->
   <Teleport to="body"><div v-if="isDragging" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}"><template v-if="dragType === 'series'">{{ store.series.find(s => s.id === dragSeriesId)?.name || '目录' }}</template><template v-else>{{ selectedCount > 1 ? `${selectedCount} 个产品` : `${store.products.find(p => p.id === dragProductId)?.name || '产品'} · Shift+点击可多选` }}</template></div></Teleport>
 
-  <!-- Product Excel import dialog -->
-  <Teleport to="body"><Transition name="modal-fade"><div v-if="importModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="importModalOpen=false">
-    <div class="bg-white rounded-2xl w-[420px] shadow-2xl border border-surface-200">
-      <div class="flex items-center px-5 py-3 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">导入产品</h3></div>
-      <div class="p-5 space-y-4">
-        <div class="text-[12px] text-surface-600 space-y-1">
-          <p>共解析 <span class="font-semibold text-surface-800">{{ importRows.length }}</span> 条产品，其中 <span class="font-semibold text-emerald-600">{{ importAnalysis.fresh }}</span> 条可导入，<span class="font-semibold" :class="importAnalysis.dup > 0 ? 'text-amber-600' : 'text-surface-400'">{{ importAnalysis.dup }}</span> 条同名将跳过。</p>
-          <p class="text-[10px] text-surface-400">同名产品将自动跳过，不会覆盖已有数据。</p>
-        </div>
-        <div>
-          <p class="text-[11px] text-surface-500 mb-1.5">导入到目录</p>
-          <select v-model="importTargetSeriesId" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[12px] outline-none focus:border-brand-400 bg-white">
-            <option v-for="opt in seriesOptions" :key="opt.id" :value="opt.id">{{ opt.label }}</option>
-          </select>
-        </div>
-      </div>
-      <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-surface-100">
-        <button @click="importModalOpen=false" class="btn-secondary text-xs">取消</button>
-        <button @click="confirmImportProducts" class="btn-primary text-xs" :disabled="importing || importAnalysis.fresh === 0">{{ importing ? '导入中...' : `导入 ${importAnalysis.fresh} 个产品` }}</button>
-      </div>
-    </div>
-  </div></Transition></Teleport>
+  <!-- Excel Import Wizard -->
+  <ExcelImportWizard
+    v-model="showProductImportWizard"
+    title="导入产品 Excel"
+    :fields="productImportFields"
+    :rowActions="[
+      { key: 'import',   label: '导入', color: 'emerald' },
+      { key: 'ignore',   label: '忽略', color: 'slate' },
+      { key: 'problem',  label: '需要选择', color: 'amber', isProblem: true },
+    ]"
+    :classify="classifyProductRow"
+    @confirm="onProductImportConfirm"
+  />
 
   <!-- Material upload dialog -->
   <Teleport to="body"><Transition name="modal-fade"><div v-if="materialUploadOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="materialUploadOpen=false">
