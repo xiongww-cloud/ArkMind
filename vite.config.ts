@@ -19,6 +19,9 @@ export default defineConfig({
       '@renderer': resolve(__dirname, 'src/renderer/src'),
     },
   },
+  optimizeDeps: {
+    include: ['xlsx'],
+  },
   server: {
     port: 5173,
     strictPort: true,
