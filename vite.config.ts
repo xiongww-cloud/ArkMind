@@ -17,6 +17,9 @@ export default defineConfig({
     alias: {
       '@': resolve(__dirname, 'src/renderer/src'),
       '@renderer': resolve(__dirname, 'src/renderer/src'),
+      // xlsx 的 .mjs 是混合模块(export + exports. + require)，Rollup 无法静态分析。
+      // 用 alias 指向 UMD 版本，让 Vite 的 commonjs 插件能正确处理。
+      'xlsx': resolve(__dirname, 'node_modules/xlsx/dist/xlsx.full.min.js'),
     },
   },
   optimizeDeps: {
