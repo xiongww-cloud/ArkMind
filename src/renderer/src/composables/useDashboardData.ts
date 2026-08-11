@@ -173,10 +173,10 @@ export function useDashboardData() {
 
   // ─── KPI: Monthly won (current vs last) ────────────────────────
   const wonThisMonth = computed(() =>
-    allProjects.value.filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || '') === thisMonthKey)
+    allProjects.value.filter((p: any) => p.status === 'Won' && getMonthKey(p.won_at || p.updated_at || '') === thisMonthKey)
   )
   const wonLastMonth = computed(() =>
-    allProjects.value.filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || '') === lastMonthKey)
+    allProjects.value.filter((p: any) => p.status === 'Won' && getMonthKey(p.won_at || p.updated_at || '') === lastMonthKey)
   )
   const wonThisMonthCount = computed(() => wonThisMonth.value.length)
   const wonThisMonthBudget = computed(() =>
@@ -276,7 +276,7 @@ export function useDashboardData() {
   const trendWonBudget = computed(() =>
     trendMonths.value.map(month =>
       allProjects.value
-        .filter((p: any) => p.status === 'Won' && getMonthKey(p.updated_at || '') === month)
+        .filter((p: any) => p.status === 'Won' && getMonthKey(p.won_at || p.updated_at || '') === month)
         .reduce((s: number, p: any) => s + (Number(p.budget) || 0), 0)
     )
   )

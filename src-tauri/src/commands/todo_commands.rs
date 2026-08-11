@@ -59,6 +59,7 @@ pub async fn todos_create(data: Value) -> Result<Value, String> {
     let repeat = data["repeat"].as_str().map(|s| s.to_string());
 
     let id = uuid::Uuid::new_v4().to_string();
+    let mut linked_pid: Option<String> = None;
     database::with_db(|conn| {
         conn.execute("BEGIN", [])?;
         let r = conn.execute(
@@ -75,6 +76,7 @@ pub async fn todos_create(data: Value) -> Result<Value, String> {
                     "INSERT OR IGNORE INTO todo_project_mapping(todo_id, project_id) VALUES(?1, ?2)",
                     rusqlite::params![id, pid],
                 )?;
+                linked_pid = Some(pid.clone());
             }
         }
         conn.execute("COMMIT", [])
@@ -84,6 +86,11 @@ pub async fn todos_create(data: Value) -> Result<Value, String> {
         eprintln!("{}", msg);
         msg
     })?;
+
+    // 新建待办关联项目 → 刷新项目活跃时间（必须在 with_db 闭包外调用，避免死锁）
+    if let Some(ref pid) = linked_pid {
+        crate::commands::project_commands::touch_project(pid);
+    }
 
     let todo = database::get(
         "SELECT t.*, tpm.project_id, p.name as project_name FROM todos t \
@@ -110,6 +117,15 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
     } else if let Some(v) = data["done"].as_i64() {
         fields.push("done=?".into()); values.push(json!(if v != 0 { 1i32 } else { 0i32 }));
     }
+    // ★ 待办完成检测：仅 false→true 翻转视为"完成"，用于刷新关联项目活跃时间
+    let completing = {
+        let new_done = data["done"].as_bool().or_else(|| data["done"].as_i64().map(|n| n != 0));
+        if new_done == Some(true) {
+            let old_done = database::get("SELECT done FROM todos WHERE id=?", &[json!(&id)])
+                .ok().flatten().and_then(|r| r["done"].as_i64()).unwrap_or(0) != 0;
+            !old_done
+        } else { false }
+    };
     if let Some(p) = data.get("priority") {
         if p.is_null() || p.as_str().map(|s| s.is_empty()).unwrap_or(true) {
             fields.push("priority=NULL".into());
@@ -134,9 +150,15 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
 
     // ★ Sync todo_project_mapping when projectId changes
     let update_project = !data["projectId"].is_null();
+    let mut pid_newly_linked: Option<String> = None;
     if update_project {
         let new_pid = data["projectId"].as_str().map(|s| s.to_string());
         database::with_db(|conn| {
+            // 增量比对：仅当项目关联实际变化时才刷新项目活跃时间
+            let old_pid: Option<String> = conn.query_row(
+                "SELECT project_id FROM todo_project_mapping WHERE todo_id=?1 LIMIT 1",
+                rusqlite::params![id], |r| r.get(0),
+            ).ok();
             // Remove old mapping(s)
             conn.execute("DELETE FROM todo_project_mapping WHERE todo_id=?1", rusqlite::params![id])?;
             // Insert new mapping if provided
@@ -146,10 +168,17 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
                         "INSERT OR IGNORE INTO todo_project_mapping(todo_id, project_id) VALUES(?1, ?2)",
                         rusqlite::params![id, pid],
                     )?;
+                    if old_pid.as_deref() != Some(pid.as_str()) {
+                        pid_newly_linked = Some(pid.clone());
+                    }
                 }
             }
             Ok(())
         }).map_err(|e| e.to_string())?;
+    }
+    // 项目关联变化 → 刷新项目活跃时间（with_db 闭包外调用，避免死锁）
+    if let Some(ref pid) = pid_newly_linked {
+        crate::commands::project_commands::touch_project(pid);
     }
 
     if !fields.is_empty() {
@@ -159,6 +188,15 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
             &format!("UPDATE todos SET {} WHERE id=?", fields.join(",")),
             &values,
         ).map_err(|e| e.to_string())?;
+    }
+
+    // 待办完成（false→true）→ 刷新关联项目活跃时间
+    if completing {
+        if let Ok(Some(r)) = database::get("SELECT project_id FROM todo_project_mapping WHERE todo_id=?1 LIMIT 1", &[json!(&id)]) {
+            if let Some(pid) = r["project_id"].as_str() {
+                crate::commands::project_commands::touch_project(pid);
+            }
+        }
     }
 
     let todo = database::get(

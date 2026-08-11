@@ -212,6 +212,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE knowledge_push_queue ADD COLUMN debounce_until TEXT DEFAULT NULL",
         // 预计下单时间
         "ALTER TABLE projects ADD COLUMN expected_order_date TEXT DEFAULT ''",
+        // 中标时间（updated_at 改为"最后活跃时间"语义后，中标时间需要专用列承载）
+        "ALTER TABLE projects ADD COLUMN won_at TEXT DEFAULT ''",
         // session state: SessionMemory JSON 缓存到 chat_sessions
         "ALTER TABLE chat_sessions ADD COLUMN session_state TEXT DEFAULT NULL",
         // context metadata: 压缩摘要存储在 session 级别
@@ -227,6 +229,18 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
+    }
+
+    // ★ 回填存量 Won 项目的 won_at：优先取状态变更日志的最早时间，找不到回退 updated_at
+    if let Err(e) = conn.execute_batch("
+        UPDATE projects SET won_at = (
+            SELECT MIN(created_at) FROM project_dynamics
+            WHERE project_id = projects.id AND type='system' AND content='项目状态更新为：Won'
+        ) WHERE status='Won' AND (won_at IS NULL OR won_at='');
+        UPDATE projects SET won_at = updated_at
+        WHERE status='Won' AND (won_at IS NULL OR won_at='');
+    ") {
+        log::error!("[数据库] won_at 存量回填失败: {}", e);
     }
 
     // ★ 重命名 partners 表的 company 列为 address

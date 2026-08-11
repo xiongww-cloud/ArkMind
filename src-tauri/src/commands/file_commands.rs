@@ -189,6 +189,13 @@ pub(crate) async fn upload_file_core(
         add_relation_with_desc(&file_id, entity_type, "", custom_name, creator, note);
     }
 
+    // 上传文件到项目 → 刷新项目"最后活跃时间"
+    if entity_type == "project" {
+        for &eid in entity_ids {
+            crate::commands::project_commands::touch_project(eid);
+        }
+    }
+
     if entity_type == "library" {
         database::run(
             "INSERT OR REPLACE INTO library_file_locations(file_id, folder_id) VALUES(?1,?2)",

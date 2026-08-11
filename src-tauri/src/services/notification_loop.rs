@@ -249,10 +249,11 @@ fn build_initial_context(since: &str) -> String {
         }
     }
 
+    // ★ 近期中标：updated_at 已改为"最后活跃时间"语义，中标时间必须用 won_at
     if let Ok(rows) = database::all(
-        "SELECT id, name, budget, updated_at FROM projects \
-         WHERE updated_at > ?1 AND status='Won' \
-         ORDER BY updated_at DESC",
+        "SELECT id, name, budget, won_at FROM projects \
+         WHERE status='Won' AND won_at != '' AND won_at > ?1 \
+         ORDER BY won_at DESC",
         &[json!(since)],
     ) {
         if !rows.is_empty() {
@@ -260,11 +261,77 @@ fn build_initial_context(since: &str) -> String {
                 let id = r["id"].as_str().unwrap_or("");
                 let name = r["name"].as_str().unwrap_or("");
                 let budget = r["budget"].as_f64().unwrap_or(0.0);
-                let updated = r["updated_at"].as_str().unwrap_or("");
-                format!("  - {} {} ({:.0}万, {})", id, name, budget, &updated[..10.min(updated.len())])
+                let won = r["won_at"].as_str().unwrap_or("");
+                format!("  - {} {} ({:.0}万, {})", id, name, budget, &won[..10.min(won.len())])
             }).collect();
             parts.push(format!("近期中标:\n{}", items.join("\n")));
         }
+    }
+
+    // ── 其余对象的计数摘要（只统计新建，不跟踪更新，规避高频噪音） ──
+
+    // 新增文件（≤5 个列名，超出只报数量）
+    if let Ok(rows) = database::all(
+        "SELECT original_name FROM file_assets WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 6",
+        &[json!(since)],
+    ) {
+        if !rows.is_empty() {
+            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM file_assets WHERE created_at > ?1", &[json!(since)])
+                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
+            let names: Vec<String> = rows.iter().take(5).filter_map(|r| r["original_name"].as_str().map(String::from)).collect();
+            parts.push(format!("新增文件 ({}个): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
+        }
+    }
+
+    // 新增笔记（排除每日闪记，避免每天自动噪音）
+    if let Ok(rows) = database::all(
+        "SELECT title FROM notes WHERE created_at > ?1 AND is_daily=0 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 6",
+        &[json!(since)],
+    ) {
+        if !rows.is_empty() {
+            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM notes WHERE created_at > ?1 AND is_daily=0 AND deleted_at IS NULL", &[json!(since)])
+                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
+            let names: Vec<String> = rows.iter().take(5).filter_map(|r| r["title"].as_str().map(String::from)).collect();
+            parts.push(format!("新增笔记 ({}条): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
+        }
+    }
+
+    // 新增产品
+    if let Ok(rows) = database::all(
+        "SELECT name FROM products WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 6",
+        &[json!(since)],
+    ) {
+        if !rows.is_empty() {
+            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM products WHERE created_at > ?1", &[json!(since)])
+                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
+            let names: Vec<String> = rows.iter().take(5).filter_map(|r| r["name"].as_str().map(String::from)).collect();
+            parts.push(format!("新增产品 ({}个): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
+        }
+    }
+
+    // 新增合作伙伴（渠道/厂商/客户）
+    if let Ok(rows) = database::all(
+        "SELECT name, type FROM partners WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 6",
+        &[json!(since)],
+    ) {
+        if !rows.is_empty() {
+            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM partners WHERE created_at > ?1", &[json!(since)])
+                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
+            let names: Vec<String> = rows.iter().take(5).map(|r| {
+                let n = r["name"].as_str().unwrap_or("");
+                let t = r["type"].as_str().unwrap_or("");
+                format!("{}({})", n, t)
+            }).collect();
+            parts.push(format!("新增合作伙伴 ({}个): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
+        }
+    }
+
+    // 文件解析失败积压（不按时间，报当前积压；只报数量不列名，避免重复打扰）
+    let parse_failed: i64 = database::get(
+        "SELECT COUNT(*) as cnt FROM knowledge_push_queue WHERE source_type='FILE' AND status='failed'", &[]
+    ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    if parse_failed > 0 {
+        parts.push(format!("文件解析失败积压: {} 个文件解析失败（可在 系统设置→知识管线管理 查看并处理）", parse_failed));
     }
 
     if parts.is_empty() {

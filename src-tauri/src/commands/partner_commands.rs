@@ -160,10 +160,14 @@ pub async fn partner_delete(partner_id: String) -> Result<Value, String> {
 pub async fn partner_link_project(partner_id: String, project_id: String, contact_id: Option<String>, remark: Option<String>) -> Result<Value, String> {
     let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
     // WRITE 1: partner_project_mapping（始终写入，Partner 直接关联项目）
-    database::run(
+    let newly_linked = database::run(
         "INSERT OR IGNORE INTO partner_project_mapping(partner_id, project_id, partner_type, remark) VALUES(?, ?, ?, ?)",
         &[json!(&partner_id), json!(&project_id), json!(&ptype), json!(remark.as_deref().unwrap_or(""))]
-    ).ok();
+    ).map(|r| r.changes > 0).unwrap_or(false);
+    // 新建立的关联 → 刷新项目活跃时间（重复关联不刷新）
+    if newly_linked {
+        crate::commands::project_commands::touch_project(&project_id);
+    }
     // WRITE 2: business_relations（Partner → Project）
     crate::services::business_relations::upsert(&ptype, &partner_id, "PROJECT", &project_id, "belongs_to", "{}");
     // 如果指定了联系人，同时关联联系人到项目

@@ -79,8 +79,10 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
         Ok(())
     }).map_err(|e|e.to_string())?;
     // business_relations::upsert must be called outside with_db to avoid mutex deadlock
+    // 新建笔记：所有项目关联都是新增的，统一刷新项目活跃时间（touch 也必须在 with_db 外调用）
     for pid in &project_ids {
         crate::services::business_relations::upsert("NOTE", &note_id, "PROJECT", pid, "authored_by", "{}");
+        crate::commands::project_commands::touch_project(pid);
     }
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
     crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Created);
@@ -98,12 +100,19 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
     if let Some(v) = data["notebookId"].as_str() { fields.push("notebook_id=?".into()); values.push(json!(v)); }
     if !fields.is_empty() { fields.push("updated_at=?".into()); values.push(json!(ts)); values.push(json!(note_id)); let sql = format!("UPDATE notes SET {} WHERE note_id=?", fields.join(",")); database::run(&sql, &values).map_err(|e|e.to_string())?; }
     if let Some(pids) = data["projectIds"].as_array() {
+        // 增量比对：笔记自动保存会反复走"先删后插"，只为"新出现的项目关联"刷新活跃时间
+        let old_pids: std::collections::HashSet<String> = database::all(
+            "SELECT project_id FROM note_project_mapping WHERE note_id=?", &[json!(note_id)]
+        ).unwrap_or_default().iter().filter_map(|r| r["project_id"].as_str().map(String::from)).collect();
         database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(note_id)]).ok();
         crate::services::business_relations::delete_by_source("NOTE", &note_id);
         for p in pids {
             if let Some(pid) = p.as_str() {
                 database::run("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?,?)",&[json!(note_id),p.clone()]).ok();
                 crate::services::business_relations::upsert("NOTE", &note_id, "PROJECT", pid, "authored_by", "{}");
+                if !old_pids.contains(pid) {
+                    crate::commands::project_commands::touch_project(pid);
+                }
             }
         }
     }
