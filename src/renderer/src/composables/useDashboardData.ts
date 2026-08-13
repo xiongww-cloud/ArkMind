@@ -107,8 +107,7 @@ export function useDashboardData() {
   }
 
   function goToProject(projectId: string) {
-    const match = projectStore.projects.find((p: any) => p._backendId === projectId)
-    router.push(`/projects/${match?.id || projectId}`)
+    router.push(`/projects/${projectId}`)
   }
 
   // ─── Time-of-day ────────────────────────────────────────────────

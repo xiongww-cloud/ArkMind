@@ -208,10 +208,11 @@ impl LanceDBClient {
     }
 
     /// 扫描所有向量记录的 rowid（孤儿清理用）
+    /// 注意：LanceDB query 默认 limit=10，必须显式设置大 limit
     pub fn scan_all_rowids(&self) -> Result<Vec<i64>, String> {
         if !self.table_exists()? { return Ok(Vec::new()); }
         let table = sync_run(self.db.open_table(&self.table_name).execute(), "open")?;
-        let stream = sync_run(table.query().execute(), "scan")?;
+        let stream = sync_run(table.query().limit(10_000_000).execute(), "scan")?;
         let batches = collect(stream)?;
         let mut ids = Vec::new();
         for b in batches {

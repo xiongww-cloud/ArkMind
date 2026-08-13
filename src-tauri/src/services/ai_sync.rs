@@ -8,6 +8,11 @@ pub(crate) fn compute_content_hash(content: &str) -> String {
     let mut h = Sha256::new(); h.update(content.as_bytes()); hex::encode(&h.finalize()[..32])
 }
 
+/// 纯函数：per-parent 哈希对比（"内容未变跳过"的判定核心）
+pub(crate) fn hashes_unchanged(existing: &[String], new: &[String]) -> bool {
+    existing.len() == new.len() && existing.iter().zip(new.iter()).all(|(a, b)| a == b)
+}
+
 /// Split a text into line-groups, each group fitting within target_chars.
 /// Preserves semantic line boundaries (unlike character-level truncation).
 fn split_text_by_lines(text: &str, target_chars: usize) -> Vec<String> {
@@ -106,8 +111,7 @@ async fn import_sync_document(
         ).unwrap_or_default().iter()
             .filter_map(|r| r["content_hash"].as_str().map(|s| s.to_string()))
             .collect();
-        let unchanged = existing_hashes.len() == new_hashes.len()
-            && existing_hashes.iter().zip(new_hashes.iter()).all(|(a, b)| a == b);
+        let unchanged = hashes_unchanged(&existing_hashes, &new_hashes);
         if unchanged {
             log::info!("[物化] 内容未改变，跳过: source_data_id={}", sdid);
             return Ok(0);  // 内容未变，0 个块
@@ -277,6 +281,50 @@ pub async fn materialize_and_store(
     }
 
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_content_hash_deterministic() {
+        let h1 = compute_content_hash("内容A");
+        let h2 = compute_content_hash("内容A");
+        let h3 = compute_content_hash("内容B");
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_eq!(h1.len(), 64, "SHA-256 hex 应为 64 字符");
+    }
+
+    #[test]
+    fn test_hashes_unchanged() {
+        let a = vec!["h1".to_string(), "h2".to_string()];
+        assert!(hashes_unchanged(&a, &a.clone()));
+        assert!(!hashes_unchanged(&a, &["h1".to_string()]));            // 数量变化
+        assert!(!hashes_unchanged(&a, &["h1".to_string(), "h9".to_string()])); // 内容变化
+        assert!(!hashes_unchanged(&a, &["h2".to_string(), "h1".to_string()])); // 顺序变化
+        assert!(!hashes_unchanged(&[], &["h1".to_string()]));           // 新增
+    }
+
+    #[test]
+    fn test_split_text_by_lines_respects_target() {
+        let lines: Vec<String> = (0..20).map(|i| format!("第{}行，包含一定量的内容。", i)).collect();
+        let text = lines.join("\n");
+        let groups = split_text_by_lines(&text, 60);
+        assert!(groups.len() > 1);
+        // 内容不丢
+        let joined = groups.join("\n");
+        for l in &lines {
+            assert!(joined.contains(l), "丢失行: {}", l);
+        }
+    }
+
+    #[test]
+    fn test_split_text_by_lines_short_passthrough() {
+        assert_eq!(split_text_by_lines("单行", 100), vec!["单行".to_string()]);
+        assert_eq!(split_text_by_lines("两行\n文本", 100), vec!["两行\n文本".to_string()]);
+    }
 }
 
 

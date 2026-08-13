@@ -341,4 +341,70 @@ mod tests {
         let tables: Vec<&Block> = blocks.iter().filter(|b| b.block_type == BlockType::Table).collect();
         assert_eq!(tables.len(), 1, "should find exactly 1 Table block");
     }
+
+    #[test]
+    fn test_merge_short_tails_merges_short_parents() {
+        let mut parents = vec!["短块一".to_string(), "短块二".to_string(), "短块三".to_string()];
+        merge_short_tails(&mut parents);
+        assert_eq!(parents.len(), 1, "全部短块应合并为一个");
+        assert!(parents[0].contains("短块一") && parents[0].contains("短块三"));
+    }
+
+    #[test]
+    fn test_merge_short_tails_respects_max_parent() {
+        let long = "长".repeat(MAX_PARENT);
+        let mut parents = vec!["短".to_string(), long.clone()];
+        merge_short_tails(&mut parents);
+        assert_eq!(parents.len(), 2, "合并后会超过 MAX_PARENT，不得合并");
+    }
+
+    #[test]
+    fn test_merge_short_tails_single_parent_noop() {
+        let mut parents = vec!["唯一".to_string()];
+        merge_short_tails(&mut parents);
+        assert_eq!(parents.len(), 1);
+    }
+
+    #[test]
+    fn test_accumulate_table_block_outputs_kv_text() {
+        // HTML 表格块应经 semantic_builder 转 KV 语义文本并入父块
+        let text = "产品参数\n<table><tr><th>名称</th><th>值</th></tr><tr><td>容量</td><td>128GB</td></tr></table>";
+        let parents = accumulate_adaptive_parents(build_sections(parse_blocks(text)));
+        let joined = parents.join("\n");
+        assert!(joined.contains("容量"), "KV 文本应包含字段名: {}", joined);
+        assert!(joined.contains("128GB"), "KV 文本应包含字段值: {}", joined);
+        assert!(!joined.contains("<table"), "父块中不应残留 HTML 表格标签");
+    }
+
+    #[test]
+    fn test_accumulate_heading_splits_long_parent() {
+        // 超长内容 + 新标题 → 标题前应切分父块
+        let long_para = "内容".repeat(COMPACT_THRESHOLD + 100);
+        let text = format!("# 第一章\n{}\n# 第二章\n尾声", long_para);
+        let parents = accumulate_adaptive_parents(build_sections(parse_blocks(&text)));
+        assert!(parents.len() >= 2, "超过 COMPACT_THRESHOLD 后遇标题应切分, got {} parents", parents.len());
+    }
+
+    #[test]
+    fn test_split_into_parents_respects_limit_and_content() {
+        let lines: Vec<String> = (0..50).map(|i| format!("第{}行内容", i)).collect();
+        let text = lines.join("\n");
+        let parents = split_into_parents(&text, 100);
+        assert!(parents.len() > 1, "应拆分为多个父块");
+        for p in &parents {
+            assert!(p.chars().count() <= 100 + 10, "父块超长: {} 字符", p.chars().count());
+        }
+        // 内容不丢：所有行都在某个父块中
+        let joined = parents.join("\n");
+        for l in &lines {
+            assert!(joined.contains(l), "丢失内容行: {}", l);
+        }
+    }
+
+    #[test]
+    fn test_split_into_parents_short_text_passthrough() {
+        let text = "短文本";
+        let parents = split_into_parents(text, 100);
+        assert_eq!(parents, vec![text.to_string()]);
+    }
 }

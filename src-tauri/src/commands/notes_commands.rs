@@ -85,7 +85,6 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
         crate::commands::project_commands::touch_project(pid);
     }
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Created);
     Ok(json!({"success":true,"noteId":note_id}))
 }
 #[tauri::command]
@@ -118,7 +117,6 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
     }
     database::save().map_err(|e|e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command]
@@ -128,7 +126,6 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     // 软删除即彻底清理：business_relations + 知识管线（恢复只入笔记本，不需要这些关联）
     crate::services::business_relations::delete_by_source("NOTE", &note_id);
     crate::services::knowledge_lifecycle::notify_deleted("NOTE", &note_id);
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
     database::save().map_err(|e|e.to_string())?;
     Ok(json!({"success":true}))
 }
@@ -141,7 +138,6 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     // 恢复笔记时通知知识库重新物化（软删除时未清理知识管线，恢复后需更新内容）
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
     database::save().map_err(|e|e.to_string())?;
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn notes_list_archive() -> Result<Value, String> {
@@ -159,7 +155,6 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     // 清理以该笔记为目标的边（真实附件的 FILE→NOTE has_file 边，由 add_relation 写入）
     database::run("DELETE FROM business_relations WHERE target_type='NOTE' AND target_id=?", &[json!(&note_id)]).ok();
     database::run("DELETE FROM notes WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Deleted);
     database::save().map_err(|e|e.to_string())?;
     Ok(json!({"success":true}))
 }

@@ -9,7 +9,7 @@ import FolderTree from '@/components/common/FolderTree.vue'
 import { formatDateTime } from '@/utils/time'
 import * as api from '@/api/db-client'
 
-const { updateFileMeta, openFile, downloadFile, fetchFileTree, createFolder, renameFolder, deleteFolder, moveFolder, reorderFolder } = api
+const { updateFileMeta, openFile, downloadFile, copyFileToClipboard, fetchFileTree, createFolder, renameFolder, deleteFolder, moveFolder, reorderFolder } = api
 import { toast } from '@/composables/useToast'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 
@@ -381,6 +381,19 @@ async function downloadFileFromId(fileId, suggestedName, fileExt) {
   }
 }
 
+async function copyFile(fileId) {
+  try {
+    const r = await copyFileToClipboard(fileId)
+    if (r?.success) {
+      toast({ message: `已复制「${r.fileName || '文件'}」，可粘贴到文件夹或聊天软件`, type: 'success' })
+    } else {
+      toast({ message: r?.error || '复制失败', type: 'error' })
+    }
+  } catch (e) {
+    toast({ message: '复制失败: ' + ((e && e.message) || e || ''), type: 'error' })
+  }
+}
+
 // ─── Icon & color helpers ─────────────────────────────────────────────────────
 const fileTypeIcons: Record<string, string> = {
   doc: 'file-doc', docx: 'file-doc', xls: 'file-spreadsheet', xlsx: 'file-spreadsheet',
@@ -477,6 +490,7 @@ function getFileColor(fileName) {
         <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
           <button v-if="!isArchived" @mousedown.stop @click.stop="startEditName(file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑文件名"><AppIcon name="edit" size="13"/></button>
           <button @click.stop="downloadFileFromId(file.id, file.displayName || file.name, (file.name || '').split('.').pop())" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="下载"><AppIcon name="download" size="12"/></button>
+          <button @click.stop="copyFile(file.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="复制文件到剪贴板"><AppIcon name="copy" size="12"/></button>
           <button v-if="!isArchived" @click.stop="deleteFile(file.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="trash" size="12"/></button>
         </div>
       </div>

@@ -65,9 +65,8 @@ const isBidOverdue = computed(() => bidDaysRemaining.value <= 0)
 async function selectStatus(status: string) {
   if (status === project.value?.status) { showStatusDropdown.value = false; return }
   const oldLabel = statusLabels[project.value.status] || project.value.status
-  project.value.status = status
-  projectStore.updateProjectInList(projectId.value, { status })
-  await projectStore.updateProjectStatus(projectId.value, status)
+  const ok = await projectStore.updateProjectStatus(projectId.value, status)
+  if (!ok) { showStatusDropdown.value = false; return }
   const newLabel = statusLabels[status] || status
   await projectStore.addProjectDynamic(projectId.value, `将项目阶段从「${oldLabel}」变更为「${newLabel}」`)
   showStatusDropdown.value = false
@@ -105,7 +104,8 @@ async function handleDeleteProject() {
     message: `确定要删除项目「${project.value?.name}」吗？此操作不可撤销，所有关联的方案、版本和文件将被永久删除。`
   })
   if (!ok) return
-  await projectStore.deleteProject(projectId.value)
+  const deleted = await projectStore.deleteProject(projectId.value)
+  if (!deleted) return
   await router.replace({ name: 'Projects' })
   toast.success('项目已永久删除')
 }
@@ -737,7 +737,7 @@ watch(
       </div>
 
       <div v-if="activeTab === 'todos'" class="h-full">
-        <ProjectTodos :project-id="projectId" :project-name="project?.name || ''" :project-backend-id="project?._backendId" />
+        <ProjectTodos :project-id="projectId" :project-name="project?.name || ''" />
       </div>
 
       <div v-if="activeTab === 'files'" class="h-full">

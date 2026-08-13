@@ -1,4 +1,7 @@
 /**
+ * TODO(incubating): PPT / Asset Manager 功能当前未纳入主版本范围。
+ * 暂不删除，待功能正式恢复时继续。
+ *
  * useAssetManager — 素材管线组合式函数
  *
  * 统一管理演示文稿模块中的所有图片资源操作：

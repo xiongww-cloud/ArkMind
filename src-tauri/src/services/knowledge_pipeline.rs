@@ -33,31 +33,6 @@ fn format_cursor(ts: &str, rowid: i64) -> String { format!("{}|{}", ts, rowid) }
 
 // ─── Entry point ──────────────────────────────────────────────────
 
-/// 清理 LanceDB 孤儿向量（暂不在启动时执行——全表扫描/重写会与 embed_loop 争锁拖垮向量化。
-/// 孤儿向量被搜索过滤，无正确性影响；保留实现供未来空闲期懒清理复用）
-#[allow(dead_code)]
-pub fn cleanup_orphan_vectors() {
-    if let Ok(g) = crate::services::lancedb_client::get_lancedb() {
-        if let Some(ref c) = *g {
-            let Ok(all_rowids) = c.scan_all_rowids() else { return; };
-            if all_rowids.is_empty() { return; }
-            let chunk_ids: std::collections::HashSet<i64> = crate::database::all(
-                "SELECT id FROM knowledge_chunks WHERE chunk_type='child'", &[]
-            ).unwrap_or_default().iter()
-                .filter_map(|r| r["id"].as_i64())
-                .collect();
-            let orphans: Vec<i64> = all_rowids.into_iter()
-                .filter(|id| !chunk_ids.contains(id))
-                .collect();
-            if orphans.is_empty() { return; }
-            match c.delete_chunks_by_rowids(&orphans) {
-                Ok(_) => log::info!("[知识管线] 启动清理 LanceDB 孤儿向量: {} 条", orphans.len()),
-                Err(e) => log::warn!("[知识管线] LanceDB 孤儿向量清理失败: {}", e),
-            }
-        }
-    }
-}
-
 pub fn start() {
     if PIPELINE_RUNNING.swap(true, Ordering::AcqRel) {
         log::info!("[知识管线] 已在运行中");
@@ -212,6 +187,10 @@ async fn embed_loop() {
     let mut backoff = 1u64;
     loop {
         if !PIPELINE_RUNNING.load(Ordering::Acquire) { break; }
+
+        // 孤儿向量低频回收（内部按 24h 周期 + 阈值 + dry-run 开关自行判定；
+        // 与 embed_loop 同 runtime 顺序执行，天然互斥）
+        crate::services::vector_vacuum::maybe_run();
 
         // 持续处理直到没有待向量化的块
         let mut had_work = false;

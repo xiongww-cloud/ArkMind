@@ -4,7 +4,6 @@ mod commands;
 mod crypto;
 mod database;
 mod license;
-mod oss;
 mod services;
 mod time_utils;
 
@@ -300,6 +299,7 @@ pub fn run() {
             commands::file_update_meta,
             commands::file_list_by_product, commands::file_open_product, commands::file_download_product,
             commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes, commands::chat_save_temp_image, commands::chat_read_macos_clipboard_files,
+            commands::file_copy_to_clipboard,
             commands::file_list_global,
             commands::file_move, commands::file_tree,
             commands::file_folder_create, commands::file_folder_rename, commands::file_folder_delete, commands::file_folder_move, commands::file_folder_reorder,
@@ -390,11 +390,15 @@ pub fn run() {
             commands::notification_mark_all_read, commands::notification_delete, commands::notification_stats,
             commands::notification_config_get, commands::notification_config_update,
             commands::notification_loop_status,
+            // Project ID Migration（canonical ID 收敛）
+            commands::migration_submit_project_id_map, commands::migration_project_id_state,
             // Debug（仅 debug 构建注册）
             #[cfg(debug_assertions)]
             commands::save_agent_context,
             #[cfg(debug_assertions)]
             commands::get_agent_context,
+            #[cfg(debug_assertions)]
+            commands::debug_rehearse_id_migration,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Arkmind")

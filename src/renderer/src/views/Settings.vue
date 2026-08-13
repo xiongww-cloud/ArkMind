@@ -720,6 +720,13 @@ async function saveNotifyConfig() {
 // ─── Pipeline Management ──────────────────────────────────────
 const pipelineData = ref<any>(null)
 const pipelineRunning = ref(false)
+// vacuum 时间戳为 epoch 秒字符串
+function formatVacuumTime(epochSecs: string): string {
+  const n = parseInt(epochSecs, 10)
+  if (!n) return ''
+  const d = new Date(n * 1000)
+  return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
 async function loadPipeline() {
   try {
     const [debug, status] = await Promise.all([pipelineDebugStatus(), knowledgePipelineStatus()])
@@ -1391,6 +1398,15 @@ onDeactivated(() => {
                     <span>{{ pipelineData.fileParse?.processing ? '正在解析 ' + (pipelineData.fileParse.current?.name || '文件') + ' — 第 ' + (pipelineData.fileParse.current?.page ?? 0) + '/' + (pipelineData.fileParse.current?.total ?? '--') + ' 页' : (pipelineData.fileParse?.pending ? '等待解析中...' : '空闲') }}</span>
                     <span>{{ pipelineData.fileParse?.total ? ((pipelineData.fileParse?.done ?? 0) / pipelineData.fileParse.total * 100).toFixed(1) : 0 }}%</span>
                   </div>
+                </div>
+                <div v-if="pipelineData.vectorVacuum" class="flex items-center justify-between text-[10px] text-surface-400 border-t border-surface-100 pt-2">
+                  <span>
+                    向量回收：孤儿 {{ pipelineData.vectorVacuum.orphan_vectors ?? 0 }} 个
+                    <template v-if="pipelineData.vectorVacuum.dry_run">（演练模式）</template>
+                  </span>
+                  <span>
+                    {{ pipelineData.vectorVacuum.last_run ? '上次清理 ' + formatVacuumTime(pipelineData.vectorVacuum.last_run) : (pipelineData.vectorVacuum.last_check ? '上次检查 ' + formatVacuumTime(pipelineData.vectorVacuum.last_check) : '尚未检查') }}
+                  </span>
                 </div>
               </div>
               <p v-else class="text-[11px] text-surface-300 text-center py-4 mb-4">加载中...</p>

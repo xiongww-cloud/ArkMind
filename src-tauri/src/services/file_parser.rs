@@ -1661,4 +1661,68 @@ fn read_pdf(p: &str) -> String {
     pdf_extract::extract_text(p).unwrap_or_default()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_real_text() {
+        assert!(has_real_text("正常文本"));
+        assert!(has_real_text("abc123"));
+        assert!(has_real_text("中")); // 非 ASCII 字符
+        assert!(!has_real_text(""));
+        assert!(!has_real_text("   \n\t  "));
+        assert!(!has_real_text("--- *** ---"));
+    }
+
+    #[test]
+    fn test_sanitize_chars_removes_control_and_bom() {
+        let raw = "\u{FEFF}正常\u{0007}文本\u{0001}";
+        let out = sanitize_chars(raw);
+        assert!(out.contains("正常"));
+        assert!(out.contains("文本"));
+        assert!(!out.contains('\u{FEFF}'), "BOM 应被去除");
+        assert!(!out.contains('\u{0007}'), "控制字符应被去除");
+    }
+
+    #[test]
+    fn test_sanitize_chars_strips_page_numbers() {
+        let raw = "第一页内容\n--- 第 1 页 ---\n第二页内容";
+        let out = sanitize_chars(raw);
+        assert!(out.contains("第一页内容"));
+        assert!(out.contains("第二页内容"));
+        assert!(!out.contains("--- 第 1 页 ---"), "页码标记应被去除: {}", out);
+    }
+
+    #[test]
+    fn test_sanitize_chars_strips_garbled_lines() {
+        let raw = "正常行\n目目目目目目目目目目目目\n另一正常行";
+        let out = sanitize_chars(raw);
+        assert!(out.contains("正常行"));
+        assert!(!out.contains("目目目"), "重复字符噪音行应被去除: {}", out);
+    }
+
+    #[test]
+    fn test_sanitize_chars_unifies_line_endings() {
+        let raw = "行一\r\n行二\r行三";
+        let out = sanitize_chars(raw);
+        assert!(!out.contains('\r'));
+        assert_eq!(out.matches("行").count(), 3);
+    }
+
+    #[test]
+    fn test_merge_pdf_broken_lines() {
+        // 非句尾的行应与下一行合并
+        let text = "这是一个被强行\n截断的句子。这是下一句。";
+        let out = merge_pdf_broken_lines(text);
+        assert!(out.contains("截断的句子。"), "断行应合并: {}", out);
+        assert!(out.contains("这是一个被强行 截断的句子。"));
+
+        // 句尾不合并
+        let text2 = "完整句。\n下一句。";
+        let out2 = merge_pdf_broken_lines(text2);
+        assert!(out2.contains("完整句。\n下一句。") || out2.lines().count() == 2);
+    }
+}
+
 

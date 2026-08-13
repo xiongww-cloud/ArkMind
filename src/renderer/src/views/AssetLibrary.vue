@@ -8,7 +8,7 @@ import { useMultiSelect } from '@/composables/useMultiSelect'
 import AppIcon from '@/components/common/AppIcon.vue'
 import {
   fetchFileTree, listGlobalFiles,
-  exportFile, deleteFileFromDomain, previewFile, updateFileMeta,
+  exportFile, deleteFileFromDomain, previewFile, updateFileMeta, copyFileToClipboard,
   uploadFile, moveFileToFolder,
   createFolder, renameFolder, deleteFolder, moveFolder, reorderFolder,
 } from '@/api/db-client'
@@ -355,6 +355,13 @@ function formatSize(bytes: number|undefined): string {
 // ─── Preview / Export / Delete ────────────────────────────────────────
 async function handlePreview(id: string) { try { const r = await previewFile(id); if (!r?.success) toast({ message: r?.error || '预览失败', type: 'error' }) } catch (e: any) { toast({ message: '预览失败', type: 'error' }) } }
 async function handleDownload(id: string) { try { const r = await exportFile(id); if (!r?.success) toast({ message: r?.error || '下载失败', type: 'error' }) } catch (e: any) { toast({ message: '下载失败', type: 'error' }) } }
+async function handleCopyFile(id: string) {
+  try {
+    const r = await copyFileToClipboard(id)
+    if (r?.success) toast({ message: `已复制「${r.fileName || '文件'}」，可粘贴到文件夹或聊天软件`, type: 'success' })
+    else toast({ message: r?.error || '复制失败', type: 'error' })
+  } catch (e: any) { toast({ message: '复制失败: ' + (e?.message || e || ''), type: 'error' }) }
+}
 async function handleDelete(id: string) {
   const ok = await dangerConfirm({ title: '删除文件', message: '确定从资料库中删除此文件？', confirmText: '删除' })
   if (!ok) return
@@ -503,8 +510,9 @@ async function handleDelete(id: string) {
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ (f.updated_at||f.created_at||'').slice(0,10) }}</span>
         <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
             <button @mousedown.stop @click.stop="startFileRename(f)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="edit" size="13"/></button>
-          <button @click.stop="handleDownload(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="download" size="13"/></button>
-          <button @click.stop="handleDelete(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500"><AppIcon name="trash" size="13"/></button>
+          <button @click.stop="handleDownload(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="下载"><AppIcon name="download" size="13"/></button>
+          <button @click.stop="handleCopyFile(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="复制文件到剪贴板"><AppIcon name="copy" size="13"/></button>
+          <button @click.stop="handleDelete(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="trash" size="13"/></button>
         </div>
       </div>
       <div v-if="filteredFiles.length === 0" class="text-center py-8"><p class="text-xs text-surface-400">暂无文件</p></div>

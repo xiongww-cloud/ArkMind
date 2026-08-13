@@ -455,7 +455,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<us
 }
 
 /// 创建 ZIP 归档
-fn create_zip_archive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn create_zip_archive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     let file = std::fs::File::create(dst)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -925,4 +925,54 @@ fn import_contacts(data: &Value) -> Result<(), String> {
     }
     std::fs::write(&save_path, &buffer).map_err(|e| format!("写入文件失败: {}", e))?;
     Ok(json!({"success":true,"savedPath":save_path}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 备份归档完整性：create_zip_archive 产物可被完整读回（Rollback L1/L3 依赖此原语）
+    #[test]
+    fn test_zip_archive_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("staging");
+        std::fs::create_dir_all(src.join("database")).unwrap();
+        std::fs::write(src.join("database").join("arkmind.db"), b"fake-db-content-12345").unwrap();
+        std::fs::write(src.join("manifest.json"), b"{\"version\":\"1.0\"}").unwrap();
+
+        let zip_path = dir.path().join("backup.zip");
+        create_zip_archive(&src, &zip_path).unwrap();
+
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        assert!(names.iter().any(|n| n.contains("arkmind.db")), "zip 应包含数据库文件: {:?}", names);
+        assert!(names.iter().any(|n| n.contains("manifest.json")), "zip 应包含 manifest: {:?}", names);
+
+        let entry_name = names.iter().find(|n| n.contains("arkmind.db")).cloned().unwrap();
+        let mut content = Vec::new();
+        {
+            let mut db_file = archive.by_name(&entry_name)
+                .expect("应能按路径读出数据库文件");
+            std::io::Read::read_to_end(&mut db_file, &mut content).unwrap();
+        }
+        assert_eq!(content, b"fake-db-content-12345", "归档内容必须与源文件逐字节一致");
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_counts_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), b"a").unwrap();
+        std::fs::write(src.join("sub").join("b.txt"), b"b").unwrap();
+        let dst = dir.path().join("dst");
+        let n = copy_dir_recursive(&src, &dst).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(std::fs::read(dst.join("sub").join("b.txt")).unwrap(), b"b");
+        // 不存在的源目录返回 0
+        assert_eq!(copy_dir_recursive(&dir.path().join("nope"), &dst).unwrap(), 0);
+    }
 }

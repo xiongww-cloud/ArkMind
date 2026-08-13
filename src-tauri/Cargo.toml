@@ -82,6 +82,11 @@ tempfile = "3"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSPasteboard", "NSPasteboardItem"] }
+objc2-foundation = "0.3"
+
+# Windows: 剪贴板文件列表写入（复制文件到剪贴板，供资源管理器/微信粘贴）
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5"
 
 [profile.release]
 panic = "abort"

@@ -101,7 +101,6 @@ pub async fn todos_create(data: Value) -> Result<Value, String> {
     .map_err(|e| e.to_string())?
     .unwrap_or(json!({}));
     crate::services::knowledge_lifecycle::notify_changed("TODO", &id);
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Created);
     Ok(json!({ "success": true, "todo": todo }))
 }
 
@@ -208,7 +207,6 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
     .map_err(|e| e.to_string())?
     .unwrap_or(json!({}));
     crate::services::knowledge_lifecycle::notify_changed("TODO", &id);
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Updated);
     Ok(json!({ "success": true, "todo": todo }))
 }
 
@@ -218,7 +216,6 @@ pub async fn todos_delete(id: String) -> Result<Value, String> {
     crate::services::knowledge_lifecycle::notify_deleted("TODO", &id);
     crate::services::business_relations::delete_by_source("TODO", &id);
     database::run("DELETE FROM todos WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Deleted);
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({ "success": true }))
 }
@@ -281,7 +278,6 @@ pub async fn todos_toggle(id: String) -> Result<Value, String> {
         &[json!(&id)],
     ).map_err(|e| e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("TODO", &id);
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Todo, &id, crate::services::object_changed::Action::Updated);
     // 标记完成时入队清理 source_data + 向量
     let todo = database::get(
         "SELECT t.*, tpm.project_id, p.name as project_name FROM todos t \

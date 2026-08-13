@@ -116,13 +116,20 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn setup_test_db() -> tempfile::TempDir {
+    fn setup_test_db() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+        let guard = test_db_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
         set_db(conn);
-        dir
+        (dir, guard)
+    }
+
+    // 全局 DB 单连接被测试共享：set_db 会替换全局连接，必须串行化所有使用全局连接的测试
+    fn test_db_mutex() -> &'static Mutex<()> {
+        static M: Mutex<()> = Mutex::new(());
+        &M
     }
 
     #[test]
@@ -216,14 +223,14 @@ mod tests {
 
     #[test]
     fn test_run_create_table() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         let result = run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_run_insert() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]).unwrap();
         let result = run("INSERT INTO test(name) VALUES(?1)", &[serde_json::json!("hello")]);
         assert!(result.is_ok());
@@ -234,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_run_update() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]).unwrap();
         run("INSERT INTO test(name) VALUES(?1)", &[serde_json::json!("old")]).unwrap();
         let result = run("UPDATE test SET name=?1 WHERE id=1", &[serde_json::json!("new")]);
@@ -244,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_run_delete() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]).unwrap();
         run("INSERT INTO test(name) VALUES(?1)", &[serde_json::json!("delete_me")]).unwrap();
         let result = run("DELETE FROM test WHERE id=1", &[]);
@@ -254,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_all_select() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]).unwrap();
         run("INSERT INTO test(name) VALUES(?1)", &[serde_json::json!("alice")]).unwrap();
         run("INSERT INTO test(name) VALUES(?1)", &[serde_json::json!("bob")]).unwrap();
@@ -266,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_all_select_with_params() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]).unwrap();
         run("INSERT INTO test(name) VALUES(?1)", &[serde_json::json!("alice")]).unwrap();
         run("INSERT INTO test(name) VALUES(?1)", &[serde_json::json!("bob")]).unwrap();
@@ -277,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_get_select_one() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]).unwrap();
         run("INSERT INTO test(name) VALUES(?1)", &[serde_json::json!("alice")]).unwrap();
         let row = get("SELECT * FROM test WHERE id=1", &[]).unwrap();
@@ -287,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_get_returns_none() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]).unwrap();
         let row = get("SELECT * FROM test WHERE id=999", &[]).unwrap();
         assert!(row.is_none());
@@ -295,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_all_empty_table() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         run("CREATE TABLE test(id INTEGER PRIMARY KEY, name TEXT)", &[]).unwrap();
         let rows = all("SELECT * FROM test", &[]).unwrap();
         assert_eq!(rows.len(), 0);
@@ -310,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_save() {
-        let _dir = setup_test_db();
+        let _dir_guard = setup_test_db();
         let result = save();
         assert!(result.is_ok());
     }

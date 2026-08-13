@@ -106,6 +106,7 @@ async function handleBatchExport() {
 }
 
 // ─── Backend sync ────────────────────────────────────────────────
+// Canonical ID：本地 id 即后端 projects.id，按 id 直接合并，无需映射/模糊匹配
 async function syncFromBackend() {
   try {
     const remote = await fetchProjects()
@@ -113,12 +114,11 @@ async function syncFromBackend() {
     const remoteArr = Array.isArray(remote) ? remote : []
     const store = projectStore.projects
     const remoteIds = new Set(remoteArr.map(r => r.id))
-    const idMap = projectStore.loadBackendIdMap()
 
-    for (const r of remote) {
-      const match = store.find(p => p._backendId === r.id || p.name === r.name)
+    for (const r of remoteArr) {
+      const match = store.find(p => p.id === r.id)
       if (match) {
-        match._backendId = r.id
+        match._synced = true
         match.name = r.name
         match.budget = r.budget || ''
         match.description = r.description || ''
@@ -132,10 +132,9 @@ async function syncFromBackend() {
         match.wonAt = r.won_at || ''
         match.bidTime = r.bid_time || ''
         match.expectedOrderDate = r.expected_order_date || ''
-        idMap[match.id] = r.id
       } else {
         store.push({
-          id: r.id, _backendId: r.id,
+          id: r.id, _synced: true,
           name: r.name, budget: r.budget || '',
           description: r.description || '',
           status: r.status, owner: r.owner || '',
@@ -150,20 +149,11 @@ async function syncFromBackend() {
         })
       }
     }
-    projectStore.saveBackendIdMap(idMap)
 
+    // 仅移除"已知同步到后端但后端已不存在"的项目；本地新建未同步的不动
     for (let i = store.length - 1; i >= 0; i--) {
       const p = store[i]
-      if (p._backendId && !remoteIds.has(p._backendId)) store.splice(i, 1)
-    }
-    for (const r of remote) {
-      const candidates = store.filter(p => p._backendId === r.id || p.name === r.name)
-      if (candidates.length > 1) {
-        const keep = candidates.find(p => p.id.startsWith('PRO-')) || candidates[0]
-        for (const dup of candidates) {
-          if (dup !== keep) { const idx = store.indexOf(dup); if (idx !== -1) store.splice(idx, 1) }
-        }
-      }
+      if (p._synced && !remoteIds.has(p.id)) store.splice(i, 1)
     }
   } catch (e) {
     console.warn('ProjectHub 后端同步失败', e)
@@ -175,7 +165,10 @@ onMounted(() => {
   if (s && typeof s === 'string' && allStatusOptions.includes(s)) {
     selectedStatuses.value = new Set([s])
   }
-  syncFromBackend()
+  syncFromBackend().then(async () => {
+    const report = await projectStore.submitProjectIdMigration()
+    if (report?.migrated > 0) await syncFromBackend()
+  })
   loadCustomers()
 })
 onActivated(() => {
@@ -576,20 +569,23 @@ async function createProject() {
   if (!validateForm()) return
   const f = projectForm.value
   const customerId = f.customerId
-  const id = projectStore.addProject({
-    name: f.name.trim(), budget: f.budget, description: f.description,
-    status: f.status, owner: authStore.currentUser.name,
-    userId: authStore.currentUser.id, bidTime: f.bidTime,
-  })
+  let id
+  try {
+    id = await projectStore.addProject({
+      name: f.name.trim(), budget: f.budget, description: f.description,
+      status: f.status, owner: authStore.currentUser.name,
+      userId: authStore.currentUser.id, bidTime: f.bidTime,
+    })
+  } catch (e) {
+    console.warn('创建项目失败', e)
+    toast.error('创建项目失败，请重试')
+    return
+  }
   closeModal()
   if (customerId) {
     try {
+      await customerLinkProject(customerId, id)
       await syncFromBackend()
-      const backendId = projectStore.loadBackendIdMap()[id]
-      if (backendId) {
-        await customerLinkProject(customerId, backendId)
-        await syncFromBackend()
-      }
     } catch (e) { console.warn('客户关联失败', e) }
   }
   router.push(`/projects/${id}`)

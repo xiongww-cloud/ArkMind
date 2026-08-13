@@ -733,6 +733,11 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         let _ = conn.execute_batch(&format!("CREATE INDEX IF NOT EXISTS {idx_name} ON notes({col});"));
     }
 
+    // ★ 项目 canonical ID 迁移：阶段 A —— 仅准备状态字段与审计表。
+    //    真正的数据迁移由前端启动后提交 identity map 触发（migration_submit_project_id_map），
+    //    因为 run_migrations 执行时前端尚未启动，无法获得 localId→backendId 映射。
+    crate::database::project_id_migration::ensure_migration_infrastructure(conn);
+
     Ok(())
 }
 
@@ -1067,4 +1072,33 @@ pub(crate) fn create_notifications_tables(conn: &Connection) {
         INSERT OR IGNORE INTO notification_config(key,value) VALUES('startup_only','0');"
     );
     log::info!("[迁移] notifications 表创建完成");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_migrations;
+    use crate::database::db_schema;
+
+    fn schema_dump(conn: &rusqlite::Connection) -> String {
+        let mut stmt = conn.prepare(
+            "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).unwrap();
+        let rows = stmt.query_map([], |r| {
+            Ok(format!("{}|{}|{}", r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default()))
+        }).unwrap();
+        rows.flatten().collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn test_run_migrations_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db_schema::create_schema(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        let schema1 = schema_dump(&conn);
+
+        run_migrations(&conn).unwrap();
+        let schema2 = schema_dump(&conn);
+
+        assert_eq!(schema1, schema2, "run_migrations 二次执行不得改变 schema");
+    }
 }

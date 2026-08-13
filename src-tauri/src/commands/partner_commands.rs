@@ -367,8 +367,7 @@ pub async fn contacts_list_all(partner_type: Option<String>) -> Result<Vec<Value
 // Event Bus helpers
 // ═══════════════════════════════════════════════════════════════════
 
-fn emit_for_project(pid: &str) {
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Project, pid, crate::services::object_changed::Action::Updated);
+fn emit_for_project(_pid: &str) {
 }
 
 fn emit_for_partner(pid: &str) {

@@ -63,13 +63,18 @@ fn temp_dir() -> String {
         .to_string()
 }
 
+/// 清空应用 temp 目录（预览临时文件 ARK-*、剪贴板暂存等一次性文件）。
+/// 该目录只存放可抛弃的临时物，启动时整目录清空。
 pub fn cleanup_preview_links() {
     let td = temp_dir();
     let _ = std::fs::create_dir_all(&td);
     if let Ok(entries) = std::fs::read_dir(&td) {
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with("ARK-") {
-                let _ = std::fs::remove_file(entry.path());
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
             }
         }
     }
@@ -261,7 +266,6 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 
 #[tauri::command] pub async fn file_remove_note_mapping(file_id: String, note_id: String) -> Result<Value, String> {
     database::run("DELETE FROM file_relations WHERE entity_type='note' AND entity_id=? AND file_id=?", &[json!(&note_id), json!(&file_id)]).map_err(|e| e.to_string())?;
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::Note, &note_id, crate::services::object_changed::Action::Updated);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn file_list_by_note(note_id: String) -> Result<Vec<Value>, String> {
@@ -363,8 +367,6 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
     if let Some((_, et, eid)) = &rel_info {
         crate::services::business_relations::delete("FILE", &asset_id.unwrap_or_default(), &et.to_uppercase(), eid, "has_file");
     }
-
-    crate::services::object_changed::object_changed(crate::services::object_changed::ObjectType::File, &file_id, crate::services::object_changed::Action::Deleted);
     Ok(json!({"success":true}))
 }
 
@@ -676,6 +678,120 @@ pub async fn chat_read_macos_clipboard_files(app: tauri::AppHandle) -> Result<Va
             Ok(json!({"success":true,"data":b64}))
         }
         None => Ok(json!({"success":false,"error":"文件不存在"}))
+    }
+}
+
+/// 复制文件到系统剪贴板（资源管理器/Finder/微信等直接 Ctrl/Cmd+V 粘贴出真实文件）。
+/// 实现：把 CAS 文件暂存到临时目录（还原原始文件名），再把暂存路径写入剪贴板。
+#[tauri::command]
+pub async fn file_copy_to_clipboard(file_id: String, app: tauri::AppHandle) -> Result<Value, String> {
+    let Some((src, name, ext)) = resolve_file_info(&file_id) else {
+        return Ok(json!({"success":false,"error":"文件不存在"}));
+    };
+
+    // ── 暂存：还原原始文件名（CAS 存储是哈希名，直接入剪贴板粘贴出来名字不可读） ──
+    let staged = stage_for_clipboard(&src, &name, &ext)?;
+    let staged_path = staged.clone();
+
+    // ── 平台分派：macOS 需主线程；Windows 任意线程 ──
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel::<Result<(), String>>();
+        let app2 = app.clone();
+        let _ = app2.run_on_main_thread(move || {
+            let r = crate::services::file_clipboard::copy_files_macos(&[staged_path]);
+            let _ = tx.send(r);
+        });
+        match rx.recv().unwrap_or_else(|_| Err("剪贴板线程失败".to_string())) {
+            Ok(_) => Ok(json!({"success":true,"fileName":filename_for_clipboard(&name, &ext)})),
+            Err(e) => Err(e),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = &app;
+        let r = crate::services::file_clipboard::set_clipboard_files(&[staged_path]);
+        match r {
+            Ok(_) => Ok(json!({"success":true,"fileName":filename_for_clipboard(&name, &ext)})),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// 复制前暂存文件到 temp 目录，文件名 = 软件显示的文件名（原始名+扩展名）。
+/// 同名直接覆盖：暂存文件生命周期短（下次复制或启动即替换/清空），无需防冲突。
+fn stage_for_clipboard(src: &str, name: &str, ext: &str) -> Result<String, String> {
+    let display_name = filename_for_clipboard(name, ext);
+
+    let td = temp_dir();
+    std::fs::create_dir_all(&td).map_err(|e| format!("创建暂存目录失败: {}", e))?;
+    let target = std::path::Path::new(&td).join(display_name);
+    std::fs::copy(src, &target).map_err(|e| format!("暂存文件失败: {}", e))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+fn filename_for_clipboard(name: &str, ext: &str) -> String {
+    if name.is_empty() {
+        return "download".to_string();
+    }
+    if ext.is_empty() || name.to_lowercase().ends_with(&format!(".{}", ext.to_lowercase())) {
+        name.to_string()
+    } else {
+        format!("{}.{}", name, ext)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_filename_for_clipboard_keeps_extension_when_missing() {
+        assert_eq!(filename_for_clipboard("方案", "docx"), "方案.docx");
+        assert_eq!(filename_for_clipboard("a", "pdf"), "a.pdf");
+    }
+
+    #[test]
+    fn test_filename_for_clipboard_preserves_existing_extension() {
+        assert_eq!(filename_for_clipboard("方案.docx", "docx"), "方案.docx");
+        assert_eq!(filename_for_clipboard("report.PDF", "pdf"), "report.PDF");
+    }
+
+    #[test]
+    fn test_filename_for_clipboard_empty_fallback() {
+        assert_eq!(filename_for_clipboard("", "xlsx"), "download");
+        assert_eq!(filename_for_clipboard("", ""), "download");
+        assert_eq!(filename_for_clipboard("名字", ""), "名字");
+    }
+
+    #[test]
+    fn test_stage_for_clipboard_stages_with_display_name() {
+        let dir = tempfile::tempdir().unwrap();
+        // 用临时文件模拟 CAS 源文件
+        let src = dir.path().join("abcdef1234567890");
+        std::fs::write(&src, b"content").unwrap();
+        let staged = stage_for_clipboard(&src.to_string_lossy(), "测试.docx", "docx").unwrap();
+        let path = std::path::Path::new(&staged);
+        assert!(path.exists(), "暂存文件必须存在");
+        let fname = path.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(fname, "测试.docx", "暂存文件名必须等于软件显示的文件名（无前缀）: {}", fname);
+        assert_eq!(std::fs::read(&staged).unwrap(), b"content", "暂存内容必须一致");
+        std::fs::remove_file(&staged).ok();
+    }
+
+    #[test]
+    fn test_stage_for_clipboard_overwrites_same_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("abcdef");
+        std::fs::write(&src, b"v1").unwrap();
+        let staged = stage_for_clipboard(&src.to_string_lossy(), "同名.docx", "docx").unwrap();
+        // 同名字覆盖：写入不同内容，再次暂存应覆盖
+        std::fs::write(&src, b"v2").unwrap();
+        let staged2 = stage_for_clipboard(&src.to_string_lossy(), "同名.docx", "docx").unwrap();
+        assert_eq!(staged, staged2, "同名文件应覆盖到同一路径");
+        assert_eq!(std::fs::read(&staged2).unwrap(), b"v2", "覆盖后内容应为最新");
+        std::fs::remove_file(&staged2).ok();
     }
 }
 

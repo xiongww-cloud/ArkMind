@@ -88,6 +88,7 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
         "knowledge": {"chunks":chunks,"parents":parents,"children":children,"vectorized":vectorized,"childrenNonempty":children_nonempty,"vectorizedValid":vectorized_valid,"embedPending":embed_pending,"lastEmbedError":last_embed_error},
         "source": {"files":source_files,"notes":source_notes,"products":source_products,"projects":source_projects,"todos":source_todos,"total":source_total},
         "fileParse": {"done":files_done.max(0),"pending":files_pending,"processing":files_processing,"failed":files_failed,"unsupported":files_unsupported,"total":files_total,"current":current_file},
+        "vectorVacuum": crate::services::vector_vacuum::vacuum_status(),
     }))
 }
 

@@ -1,5 +1,4 @@
 use crate::database;
-use serde_json::json;
 
 /// Initialize the business_relations table
 /// 返回 true 表示检测并修复了 INTEGER id 坏表（调用方应触发数据回填恢复）
@@ -250,29 +249,35 @@ pub fn upsert(
     relation_type: &str,
     metadata: &str,
 ) {
-    if source_id.is_empty() || target_id.is_empty() { return; }
-    // Try update first
-    let changes = database::run(
+    let r = database::with_db(|conn| {
+        upsert_on(conn, source_type, source_id, target_type, target_id, relation_type, metadata)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e))
+    });
+    match r {
+        Ok(_) => log::info!("[业务关联] upsert: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type),
+        Err(e) => log::error!("[业务关联] upsert 失败: {}[{}] → {}[{}] ({}): {}", source_type, source_id, target_type, target_id, relation_type, e),
+    }
+}
+
+pub(crate) fn upsert_on(
+    conn: &rusqlite::Connection,
+    source_type: &str, source_id: &str,
+    target_type: &str, target_id: &str,
+    relation_type: &str,
+    metadata: &str,
+) -> Result<(), String> {
+    if source_id.is_empty() || target_id.is_empty() { return Ok(()); }
+    let changes = conn.execute(
         "UPDATE business_relations SET metadata=?, updated_at=datetime('now','localtime') WHERE source_type=? AND source_id=? AND target_type=? AND target_id=? AND relation_type=?",
-        &[json!(metadata), json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type)],
-    );
-    match changes {
-        Ok(c) if c.changes > 0 => {
-            log::info!("[业务关联] 更新: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
-            return;
-        }
-        Ok(_) => {}
-        Err(e) => log::error!("[业务关联] 更新失败: {}[{}] → {}[{}] ({}): {}", source_type, source_id, target_type, target_id, relation_type, e),
-    }
-    // Insert new
+        rusqlite::params![metadata, source_type, source_id, target_type, target_id, relation_type],
+    ).map_err(|e| e.to_string())?;
+    if changes > 0 { return Ok(()); }
     let id = uuid::Uuid::new_v4().to_string();
-    match database::run(
+    conn.execute(
         "INSERT INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,datetime('now','localtime'),datetime('now','localtime'))",
-        &[json!(id), json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type), json!(metadata)],
-    ) {
-        Ok(_) => log::info!("[业务关联] 新增: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type),
-        Err(e) => log::error!("[业务关联] 新增失败: {}[{}] → {}[{}] ({}): {}", source_type, source_id, target_type, target_id, relation_type, e),
-    }
+        rusqlite::params![id, source_type, source_id, target_type, target_id, relation_type, metadata],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Delete a specific business relation
@@ -281,18 +286,107 @@ pub fn delete(
     target_type: &str, target_id: &str,
     relation_type: &str,
 ) {
-    let _ = database::run(
-        "DELETE FROM business_relations WHERE source_type=? AND source_id=? AND target_type=? AND target_id=? AND relation_type=?",
-        &[json!(source_type), json!(source_id), json!(target_type), json!(target_id), json!(relation_type)],
-    );
+    let _ = database::with_db(|conn| {
+        delete_on(conn, source_type, source_id, target_type, target_id, relation_type)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e))
+    });
     log::info!("[业务关联] 删除: {}[{}] → {}[{}] ({})", source_type, source_id, target_type, target_id, relation_type);
+}
+
+pub(crate) fn delete_on(
+    conn: &rusqlite::Connection,
+    source_type: &str, source_id: &str,
+    target_type: &str, target_id: &str,
+    relation_type: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM business_relations WHERE source_type=? AND source_id=? AND target_type=? AND target_id=? AND relation_type=?",
+        rusqlite::params![source_type, source_id, target_type, target_id, relation_type],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Delete all relations where an entity is the source
 pub fn delete_by_source(source_type: &str, source_id: &str) {
-    let _ = database::run(
-        "DELETE FROM business_relations WHERE source_type=? AND source_id=?",
-        &[json!(source_type), json!(source_id)],
-    );
+    let _ = database::with_db(|conn| {
+        delete_by_source_on(conn, source_type, source_id)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e))
+    });
     log::info!("[业务关联] 删除所有源关联: {}[{}]", source_type, source_id);
+}
+
+pub(crate) fn delete_by_source_on(conn: &rusqlite::Connection, source_type: &str, source_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM business_relations WHERE source_type=? AND source_id=?",
+        rusqlite::params![source_type, source_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            CREATE TABLE business_relations (
+                id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_id TEXT NOT NULL,
+                target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+                relation_type TEXT NOT NULL DEFAULT 'belongs_to', metadata TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT '', updated_at TEXT DEFAULT ''
+            );
+            CREATE UNIQUE INDEX idx_br_unique ON business_relations(source_type, source_id, target_type, target_id, relation_type);
+        ").unwrap();
+        conn
+    }
+
+    fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn test_upsert_idempotent() {
+        let conn = fixture();
+        upsert_on(&conn, "NOTE", "n1", "PROJECT", "p1", "authored_by", "{}").unwrap();
+        upsert_on(&conn, "NOTE", "n1", "PROJECT", "p1", "authored_by", "{\"x\":1}").unwrap();
+        upsert_on(&conn, "NOTE", "n1", "PROJECT", "p1", "authored_by", "{}").unwrap();
+        // 幂等：重复 upsert 不产生重复行
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM business_relations"), 1);
+        // 重复 upsert 走 UPDATE 路径（metadata 被更新）
+        upsert_on(&conn, "NOTE", "n1", "PROJECT", "p1", "authored_by", "{\"x\":2}").unwrap();
+        let meta: String = conn.query_row(
+            "SELECT metadata FROM business_relations WHERE source_id='n1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(meta, "{\"x\":2}");
+    }
+
+    #[test]
+    fn test_upsert_empty_ids_noop() {
+        let conn = fixture();
+        upsert_on(&conn, "NOTE", "", "PROJECT", "p1", "authored_by", "{}").unwrap();
+        upsert_on(&conn, "NOTE", "n1", "PROJECT", "", "authored_by", "{}").unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM business_relations"), 0);
+    }
+
+    #[test]
+    fn test_delete_specific() {
+        let conn = fixture();
+        upsert_on(&conn, "NOTE", "n1", "PROJECT", "p1", "authored_by", "{}").unwrap();
+        upsert_on(&conn, "NOTE", "n1", "PROJECT", "p2", "authored_by", "{}").unwrap();
+        delete_on(&conn, "NOTE", "n1", "PROJECT", "p1", "authored_by").unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM business_relations"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM business_relations WHERE target_id='p2'"), 1);
+    }
+
+    #[test]
+    fn test_delete_by_source_cascade() {
+        let conn = fixture();
+        upsert_on(&conn, "TODO", "t1", "PROJECT", "p1", "belongs_to", "{}").unwrap();
+        upsert_on(&conn, "TODO", "t1", "PROJECT", "p2", "belongs_to", "{}").unwrap();
+        upsert_on(&conn, "TODO", "t2", "PROJECT", "p1", "belongs_to", "{}").unwrap();
+        delete_by_source_on(&conn, "TODO", "t1").unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM business_relations"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM business_relations WHERE source_id='t2'"), 1);
+    }
 }
