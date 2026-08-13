@@ -44,8 +44,7 @@ const solutionImportFields: ImportField[] = [
   {
     key: 'model',
     label: '产品型号',
-    guesses: ['型号', '产品型号', 'Model', 'model', '产品名称'],
-    required: true
+    guesses: ['型号', '产品型号', 'Model', 'model', '产品名称']
   },
   {
     key: 'params',
@@ -97,9 +96,9 @@ function classifySolutionRow(
   }
   // 有型号 → 设备
   if (modelVal) return 'device'
-  // 无型号但行内有内容 → 问题行（强制用户选）
+  // 无型号但行内有内容 → 仍作为设备导入（型号可选，后续可手动填写）
   const hasContent = row.cells.some((c) => c.trim().length > 0)
-  if (hasContent) return null // null = 问题行，让用户选
+  if (hasContent) return 'device'
   // 空行
   return 'ignore'
 }
