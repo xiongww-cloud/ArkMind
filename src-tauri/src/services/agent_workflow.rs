@@ -2548,6 +2548,66 @@ fn relative_time(created_at: &str) -> String {
 // Main Agent Loop
 // ═══════════════════════════════════════════════════════════════════
 
+/// 大附件切片提炼阈值：单附件超过该字符数则不再截断，改为 LLM 提炼关键信息
+const ATTACH_SUMMARIZE_THRESHOLD: usize = 100000;
+/// 提炼切片大小（字符）
+const ATTACH_SUMMARIZE_CHUNK: usize = 6000;
+/// 提炼片数上限（防病态超大文件打爆 API）
+const ATTACH_SUMMARIZE_MAX_CHUNKS: usize = 30;
+/// 提炼提示词：通用关键信息提炼，不限定领域
+const ATTACH_SUMMARIZE_PROMPT: &str = "你是信息提炼助手。请从以下文件片段中提炼并保留关键信息，删除冗余表述，用简洁的中文输出精炼摘要。";
+
+/// 大附件切片提炼：split → 每片 LLM 提炼 → 按序汇总
+/// 超过 ATTACH_SUMMARIZE_THRESHOLD 字符的附件不再截断，而是切片后由 LLM 提炼关键信息。
+/// 最终以「片段N摘要」块拼接输出，体积远小于原文且不丢失关键内容。
+async fn summarize_large_attachment(
+    text: &str,
+    app_handle: &Option<tauri::AppHandle>,
+) -> String {
+    let chunks = crate::services::smart_chunker::split_into_parents(text, ATTACH_SUMMARIZE_CHUNK);
+    let total = chunks.len().min(ATTACH_SUMMARIZE_MAX_CHUNKS);
+
+    // 预收集为 owned 数据，避免 futures::stream::iter 的借用生命周期冲突
+    let chunk_data: Vec<(usize, String)> = chunks.iter().take(total).enumerate()
+        .map(|(i, s)| (i, s.clone()))
+        .collect();
+
+    let results: Vec<String> = futures::stream::iter(chunk_data)
+        .map(|(i, chunk)| async move {
+            if let Some(ref h) = app_handle {
+                let _ = h.emit("agent:progress", serde_json::json!({"msg": format!("正在提炼附件… {}/{}", i + 1, total)}));
+            }
+            let msgs = vec![
+                ChatMessage { role: MessageRole::System, content: Some(ATTACH_SUMMARIZE_PROMPT.to_string()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None },
+                ChatMessage { role: MessageRole::User, content: Some(chunk.clone()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None },
+            ];
+            match call_llm_streaming(&msgs, None, app_handle).await {
+                Ok((content, ..)) => content.trim().to_string(),
+                Err(e) => {
+                    log::warn!("[大附件提炼] 片段 {} 提炼失败: {}", i + 1, e);
+                    let cut = crate::services::file_parser::truncate_at_boundary(&chunk, 2000);
+                    format!("（片段提炼失败: {}）\n{}", e, cut)
+                }
+            }
+        })
+        .buffered(3)
+        .collect::<Vec<_>>()
+        .await;
+
+    let mut summary = results.into_iter().enumerate()
+        .map(|(i, s)| format!("【片段{}】\n{}", i + 1, s))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // 超出 30 片的部分：结构截断追加（带提示），避免丢失
+    if chunks.len() > ATTACH_SUMMARIZE_MAX_CHUNKS {
+        let rest = chunks[ATTACH_SUMMARIZE_MAX_CHUNKS..].join("\n");
+        let cut = crate::services::file_parser::truncate_at_boundary(&rest, 4000);
+        summary.push_str(&format!("\n\n（其余 {} 片内容较长已略过）\n{}", chunks.len() - ATTACH_SUMMARIZE_MAX_CHUNKS, cut));
+    }
+
+    if summary.trim().is_empty() { "（大附件提炼结果为空）".to_string() } else { summary }
+}
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>) -> Result<Value, String> {
@@ -2606,13 +2666,12 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
 
             if db_content.is_empty() { return None; }
 
-            // 为 user 和 assistant 消息添加时间戳
-            let content_with_timestamp = if role == "user" || role == "assistant" {
-                if !created_at.is_empty() {
-                    format!("[{}] {}", created_at, db_content)
-                } else {
-                    db_content.to_string()
-                }
+            // 为 user 和 assistant 消息添加时间戳（格式与发送时一致，保证 prompt cache 命中）
+            let time_str = created_at.get(11..19).unwrap_or("");
+            let content_with_timestamp = if role == "user" && !time_str.is_empty() {
+                format!("时间：{}\n提问：{}", time_str, db_content)
+            } else if role == "assistant" && !time_str.is_empty() {
+                format!("时间：{}\n回答：{}", time_str, db_content)
             } else {
                 db_content.to_string()
             };
@@ -2711,7 +2770,15 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
                 .and_then(|e| e.to_str()).unwrap_or("").to_string();
             match crate::services::file_parser::parse_chat_attachment(path, &ext).await {
                 Ok((_kind, text)) if !text.is_empty() => {
-                    if total_bytes + text.len() > TOTAL_CAP {
+                    if text.len() > ATTACH_SUMMARIZE_THRESHOLD {
+                        // ★ 大附件：切片提炼，不截断
+                        if let Some(ref h) = app_handle {
+                            let _ = h.emit("agent:progress", serde_json::json!({"msg": format!("检测到超大附件「{}」，正在切片提炼…", name)}));
+                        }
+                        let distilled = summarize_large_attachment(&text, &app_handle).await;
+                        total_bytes += distilled.len();
+                        blocks.push(format!("【附件：{}（已提炼）】\n{}", name, distilled));
+                    } else if total_bytes + text.len() > TOTAL_CAP {
                         // 超出总预算：结构感知截断（保留表头/段落边界），而非整段跳过
                         let remaining = TOTAL_CAP.saturating_sub(total_bytes);
                         let cut = crate::services::file_parser::truncate_at_boundary(&text, remaining);
@@ -2741,8 +2808,10 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
         );
     }
 
-    // ★ 追加本轮新问题
-    messages.push(ChatMessage{role:MessageRole::User,content:Some(augmented_query),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+    // ★ 追加本轮新问题（带时间戳前缀，与历史加载格式一致，保证 LLM prompt cache 命中）
+    let now = chrono::Local::now().format("%H:%M:%S").to_string();
+    let timestamped = format!("时间：{}\n提问：{}", now, augmented_query);
+    messages.push(ChatMessage{role:MessageRole::User,content:Some(timestamped),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
     // ★ 上下文压缩：复用会话上下文，LLM 返回 JSON 摘要
     // 单个会话上下文长度 256k，自动压缩阈值 80%（204,800 tokens）
@@ -2799,13 +2868,12 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
 
                             if db_content.is_empty() { return None; }
 
-                            // 为 user 和 assistant 消息添加时间戳
-                            let content_with_timestamp = if role == "user" || role == "assistant" {
-                                if !created_at.is_empty() {
-                                    format!("[{}] {}", created_at, db_content)
-                                } else {
-                                    db_content.to_string()
-                                }
+                            // 为 user 和 assistant 消息添加时间戳（格式与发送时一致）
+                            let time_str = created_at.get(11..19).unwrap_or("");
+                            let content_with_timestamp = if role == "user" && !time_str.is_empty() {
+                                format!("时间：{}\n提问：{}", time_str, db_content)
+                            } else if role == "assistant" && !time_str.is_empty() {
+                                format!("时间：{}\n回答：{}", time_str, db_content)
                             } else {
                                 db_content.to_string()
                             };
