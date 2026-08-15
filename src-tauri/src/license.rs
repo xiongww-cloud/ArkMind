@@ -10,7 +10,26 @@ use ed25519_dalek::{Verifier, VerifyingKey, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::database;
+
 const PUBLIC_KEY_B64: &str = "KnOxev79d1jGqD+8puSDci84W1P0tXBtNKYYtQRrrKM=";
+
+/// 试用期时长（天）
+pub const TRIAL_DAYS: i64 = 30;
+
+/// 试用状态（机器码绑定，存储在 system_settings 中）
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialStatus {
+    pub started_at: String,
+    pub ends_at: String,
+    pub remaining_days: i64,
+    pub active: bool,
+    pub expired: bool,
+}
+
+const TRIAL_START_KEY: &str = "trial_started_at";
+const TRIAL_MACHINE_KEY: &str = "trial_machine_code";
 
 #[derive(Debug, Deserialize, Serialize)]
 struct LicensePayload {
@@ -18,6 +37,89 @@ struct LicensePayload {
     machine_code: String,
     expires_at: String,
     issued_at: String,
+}
+
+fn get_trial_record() -> Option<(String, String)> {
+    let start = database::get(
+        "SELECT value FROM system_settings WHERE key=?1",
+        &[serde_json::json!(TRIAL_START_KEY)],
+    )
+    .ok()
+    .flatten()
+    .and_then(|r| r["value"].as_str().map(|s| s.to_string()));
+    let machine = database::get(
+        "SELECT value FROM system_settings WHERE key=?1",
+        &[serde_json::json!(TRIAL_MACHINE_KEY)],
+    )
+    .ok()
+    .flatten()
+    .and_then(|r| r["value"].as_str().map(|s| s.to_string()));
+    match (start, machine) {
+        (Some(s), Some(m)) => Some((s, m)),
+        _ => None,
+    }
+}
+
+fn set_trial_record(started_at: &str, machine: &str) {
+    database::run(
+        "INSERT OR REPLACE INTO system_settings(key, value, updated_at) VALUES(?1,?2,datetime('now','localtime'))",
+        &[serde_json::json!(TRIAL_START_KEY), serde_json::json!(started_at)],
+    )
+    .ok();
+    database::run(
+        "INSERT OR REPLACE INTO system_settings(key, value, updated_at) VALUES(?1,?2,datetime('now','localtime'))",
+        &[serde_json::json!(TRIAL_MACHINE_KEY), serde_json::json!(machine)],
+    )
+    .ok();
+}
+
+/// 首次启动初始化试用：无记录时记录当前日期 + 机器码；
+/// 机器码不匹配（如 DB 复制到新机器）时视为新试用。
+pub fn init_trial() {
+    let machine = get_machine_hash();
+    match get_trial_record() {
+        Some((_, stored_machine)) if stored_machine == machine => {}
+        _ => {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            set_trial_record(&today, &machine);
+        }
+    }
+}
+
+/// 计算当前试用状态（首次调用时自动初始化）
+pub fn get_trial_status() -> TrialStatus {
+    init_trial();
+    let machine = get_machine_hash();
+    let started_at = match get_trial_record() {
+        Some((started_at, stored_machine)) if stored_machine == machine => started_at,
+        _ => {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+            set_trial_record(&today, &machine);
+            today
+        }
+    };
+
+    let parsed_start = chrono::NaiveDate::parse_from_str(&started_at, "%Y-%m-%d")
+        .unwrap_or_else(|_| chrono::Local::now().date_naive());
+    let ends = parsed_start + chrono::Duration::days(TRIAL_DAYS);
+    let today = chrono::Local::now().date_naive();
+    // 今天到结束日期的整天数：结束当天为 0（最后一天仍可用），<0 视为过期
+    let remaining_days = ends.signed_duration_since(today).num_days();
+    let expired = remaining_days < 0;
+
+    TrialStatus {
+        started_at: parsed_start.format("%Y-%m-%d").to_string(),
+        ends_at: ends.format("%Y-%m-%d").to_string(),
+        remaining_days: remaining_days.max(0),
+        active: !expired,
+        expired,
+    }
+}
+
+/// 试用期是否进行中（未过期）
+pub fn trial_is_active() -> bool {
+    let s = get_trial_status();
+    s.active && !s.expired
 }
 
 pub fn get_machine_hash() -> String {

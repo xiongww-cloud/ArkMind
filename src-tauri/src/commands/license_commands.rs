@@ -32,6 +32,7 @@ pub fn license_status() -> Result<Value, String> {
             }
 
             let is_active = status == "active";
+            let trial = license::get_trial_status();
             Ok(json!({
                 "activated": is_active,
                 "status": status,
@@ -39,12 +40,17 @@ pub fn license_status() -> Result<Value, String> {
                 "activatedAt": r["activated_at"].as_str().unwrap_or(""),
                 "expiresAt": expires_at,
                 "machineCode": r["machine_code"].as_str().unwrap_or(""),
+                "trial": trial,
             }))
         }
-        None => Ok(json!({
-            "activated": false,
-            "status": "inactive"
-        })),
+        None => {
+            let trial = license::get_trial_status();
+            Ok(json!({
+                "activated": false,
+                "status": "inactive",
+                "trial": trial,
+            }))
+        }
     }
 }
 

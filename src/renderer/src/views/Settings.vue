@@ -35,6 +35,9 @@ const licenseError = ref('')
 const licenseSuccess = ref('')
 const licenseCodeCopied = ref(false)
 const licenseUpdating = ref(false)
+const trialActive = ref(false)
+const trialRemainingDays = ref(0)
+const trialExpired = ref(false)
 
 async function loadLicense() {
   try {
@@ -45,6 +48,9 @@ async function loadLicense() {
     licenseProduct.value = status.product || ''
     licenseExpiresAt.value = status.expiresAt || ''
     licenseActivatedAt.value = status.activatedAt || ''
+    trialActive.value = !!status.trial?.active && !status.trial?.expired
+    trialRemainingDays.value = status.trial?.remainingDays || 0
+    trialExpired.value = !!status.trial?.expired
     // ★ 从 machine_code 命令获取原始 UUID（而非 license 表中的 HASH）
     const rawMachineCode = await getMachineCode()
     licenseMachineCode.value = rawMachineCode
@@ -1323,6 +1329,21 @@ onDeactivated(() => {
                 </div>
               </div>
               <div v-if="!licenseActivated">
+                <div
+                  v-if="trialActive"
+                  class="bg-amber-50 border border-amber-100 rounded-lg p-3 mb-3"
+                >
+                  <p class="text-[11px] font-medium text-amber-700">
+                    试用中（剩余 {{ trialRemainingDays }} 天）
+                  </p>
+                  <p class="text-[10px] text-amber-600/80 mt-0.5">试用结束后需激活许可证才能继续使用</p>
+                </div>
+                <div
+                  v-else-if="trialExpired"
+                  class="bg-red-50 border border-red-100 rounded-lg p-3 mb-3"
+                >
+                  <p class="text-[11px] font-medium text-red-700">试用已结束，请激活许可证</p>
+                </div>
                 <p class="text-[12px] font-medium text-surface-700 mb-2">激活许可证</p>
                 <div class="bg-surface-50 rounded-lg p-3 mb-3">
                   <p class="text-[10px] text-surface-500 mb-2">机器码</p>
@@ -1332,7 +1353,7 @@ onDeactivated(() => {
                   </div>
                 </div>
                 <div class="flex items-center gap-2">
-                  <input v-model="licenseKey" class="flex-1 border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="PMS-xxxx" @keyup.enter="activateLicenseKey" />
+                  <input v-model="licenseKey" class="flex-1 border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="arkmind-xxxx" @keyup.enter="activateLicenseKey" />
                   <button class="px-3 py-1.5 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" :disabled="licenseActivating" @click="activateLicenseKey">{{ licenseActivating ? '激活中...' : '激活' }}</button>
                 </div>
                 <p v-if="licenseError" class="text-[10px] text-red-500 mt-2">{{ licenseError }}</p>

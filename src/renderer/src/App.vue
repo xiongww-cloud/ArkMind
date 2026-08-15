@@ -13,6 +13,8 @@ import { listen } from '@tauri-apps/api/event'
 const sidebarCollapsed = ref(false)
 const authStore = useAuthStore()
 const showActivation = ref(false)
+const showTrialReminder = ref(false)
+const trialRemainingDays = ref(0)
 const guideModalRef = ref<InstanceType<typeof GuideModal> | null>(null)
 let licensePollTimer = null
 
@@ -20,14 +22,58 @@ function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
 }
 
+const TRIAL_REMINDER_DAYS_KEY = 'trial_reminder_shown_date'
+
+function todayStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** 试用提醒每天最多弹一次 */
+function shouldShowTrialReminder(remainingDays: number): boolean {
+  if (remainingDays > 7 || remainingDays <= 0) return false
+  try {
+    const last = localStorage.getItem(TRIAL_REMINDER_DAYS_KEY)
+    if (last === todayStr()) return false
+  } catch {
+    /* ignore */
+  }
+  return true
+}
+
+function markTrialReminderShown() {
+  try {
+    localStorage.setItem(TRIAL_REMINDER_DAYS_KEY, todayStr())
+  } catch {
+    /* ignore */
+  }
+}
+
 async function checkActivation() {
   try {
     const { fetchLicenseStatus } = await import('@/api/db-client')
     const status = await fetchLicenseStatus()
-    if (!status.activated) {
+    const trial = status.trial
+
+    if (status.activated) {
+      return
+    }
+    // 许可证已过期 → 强制激活
+    if (status.status === 'expired') {
       showActivation.value = true
-    } else if (status.status === 'expired') {
+      return
+    }
+    // 试用已过期且未激活 → 强制激活
+    if (trial?.expired) {
       showActivation.value = true
+      return
+    }
+    // 试用进行中且剩余 ≤7 天 → 每日提醒
+    if (trial?.active && trial.remainingDays <= 7) {
+      if (shouldShowTrialReminder(trial.remainingDays)) {
+        trialRemainingDays.value = trial.remainingDays
+        showTrialReminder.value = true
+      }
     }
   } catch (e) {
     console.warn('License check failed, showing modal:', e)
@@ -36,12 +82,18 @@ async function checkActivation() {
 }
 
 async function pollLicenseStatus() {
-  if (showActivation.value) return
+  if (showActivation.value || showTrialReminder.value) return
   try {
     const { fetchLicenseStatus } = await import('@/api/db-client')
     const status = await fetchLicenseStatus()
-    if (status.status === 'expired') {
+    const trial = status.trial
+    if (status.status === 'expired' || (!status.activated && trial?.expired)) {
       showActivation.value = true
+      return
+    }
+    if (trial?.active && trial.remainingDays <= 7 && shouldShowTrialReminder(trial.remainingDays)) {
+      trialRemainingDays.value = trial.remainingDays
+      showTrialReminder.value = true
     }
   } catch {
     // Silent fail
@@ -50,6 +102,12 @@ async function pollLicenseStatus() {
 
 function onActivated() {
   showActivation.value = false
+  showTrialReminder.value = false
+}
+
+function onDismissTrialReminder() {
+  markTrialReminderShown()
+  showTrialReminder.value = false
 }
 
 const LICENSE_POLL_INTERVAL_MS = 5 * 60 * 1000
@@ -97,7 +155,18 @@ onUnmounted(() => {
     <ConfirmDialog />
     <Toast />
     <UploadProgress />
-    <ActivationModal v-if="showActivation" @activated="onActivated" />
+    <ActivationModal
+      v-if="showActivation"
+      @activated="onActivated"
+      @close="showActivation = false"
+    />
+    <ActivationModal
+      v-if="showTrialReminder"
+      trial-reminder
+      :trial-remaining-days="trialRemainingDays"
+      @activated="onActivated"
+      @close="onDismissTrialReminder"
+    />
     <GuideModal ref="guideModalRef" />
   </div>
 </template>

@@ -161,6 +161,9 @@ pub fn run() {
             // ★ 启动时清理过期许可证
             license::cleanup_expired_licenses();
 
+            // ★ 启动时初始化试用期（首次启动记录开始时间）
+            license::init_trial();
+
             // Window events
             {
                 let handle = app.handle().clone();

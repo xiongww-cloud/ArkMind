@@ -10,6 +10,10 @@ fn table_exists(conn: &Connection, name: &str) -> bool {
 }
 
 pub fn check_license_premium() -> bool {
+    // ★ 试用期内开放全部高级功能
+    if crate::license::trial_is_active() {
+        return true;
+    }
     match with_db(|conn| {
         let row = conn.query_row(
             "SELECT product, expires_at FROM license WHERE status='active' ORDER BY id DESC LIMIT 1",

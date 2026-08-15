@@ -98,6 +98,13 @@ export interface LicenseStatus {
   expiresAt: string
   activatedAt: string
   machineCode: string
+  trial?: {
+    active: boolean
+    startedAt: string
+    endsAt: string
+    remainingDays: number
+    expired: boolean
+  }
 }
 export interface DynamicRow {
   id: string
