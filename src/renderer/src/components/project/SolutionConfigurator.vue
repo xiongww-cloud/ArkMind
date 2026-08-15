@@ -32,6 +32,9 @@ const gparams = ref([]) // 参数列表 — 从后端加载
 // ─── 设备型号内联补全 (Inline Autocomplete) ─────────────────────────────────
 const isDeleting = ref(false)
 const showImportWizard = ref(false)
+// ─── 价格上浮 ───────────────────────────────────────────────────────────────
+const markupPercent = ref(0)
+const showMarkupInput = ref(false)
 // ─── SCT 服务费分摊模式 ─────────────────────────────────────────────────────
 const showSCTAllocator = ref(false)
 const sctSheet = ref<SheetData | null>(null)
@@ -563,6 +566,22 @@ function cms() {
 function autoEnableSync(idx) {
   const item = li.value[idx]
   if (item?.productId) item.syncParams = true
+}
+
+function applyMarkup() {
+  const percent = markupPercent.value
+  if (!percent || percent === 0) {
+    showMarkupInput.value = false
+    return
+  }
+  const multiplier = 1 + percent / 100
+  const items = im.value ? (cplan.value?.draft?.items || []) : li.value
+  for (const item of items) {
+    if (item.rowType === 'subnet') continue
+    item.unitPrice = Math.round(item.unitPrice * multiplier * 100) / 100
+  }
+  markupPercent.value = 0
+  showMarkupInput.value = false
 }
 
 const smm = ref(false)
@@ -1806,9 +1825,36 @@ onUnmounted(() => {
         <div
           class="shrink-0 border-t border-gray-200 bg-gray-50/80 px-4 py-2.5 flex items-center justify-between"
         >
-          <span class="text-xs font-semibold text-gray-600 uppercase tracking-wider"
-            >总计方案报价</span
-          ><span class="text-sm font-bold text-red-600"
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-semibold text-gray-600 uppercase tracking-wider"
+              >总价</span
+            >
+            <button
+              v-if="!showMarkupInput"
+              @click="showMarkupInput = true"
+              class="h-6 px-2 flex items-center justify-center rounded text-[11px] text-surface-400 hover:text-orange-600 hover:bg-orange-100 border border-dashed border-surface-300 hover:border-orange-300 transition-colors"
+            >
+              上浮
+            </button>
+            <div v-else class="flex items-center gap-1 bg-orange-50 rounded-md px-1.5 py-0.5 border border-orange-200">
+              <input
+                v-model.number="markupPercent"
+                type="number"
+                min="-50"
+                max="200"
+                step="1"
+                class="w-14 h-5 text-xs text-center bg-white border border-orange-200 rounded outline-none focus:border-orange-400"
+                placeholder="上浮"
+                @keyup.enter="applyMarkup"
+                @keyup.escape="showMarkupInput = false; markupPercent = 0"
+                ref="markupInputRef"
+              />
+              <span class="text-xs text-orange-600">%</span>
+              <button @click="applyMarkup" class="text-xs text-orange-600 hover:text-orange-800 font-medium px-1">应用</button>
+              <button @click="showMarkupInput = false; markupPercent = 0" class="text-xs text-gray-400 hover:text-gray-600 px-1">取消</button>
+            </div>
+          </div>
+          <span class="text-sm font-bold text-red-600"
             >¥
             {{
               gt.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -1916,7 +1962,7 @@ onUnmounted(() => {
           class="shrink-0 border-t border-gray-200 bg-gray-50/80 px-4 py-2.5 flex items-center justify-between"
         >
           <span class="text-xs font-semibold text-gray-600 uppercase tracking-wider"
-            >总计方案报价</span
+            >总价</span
           ><span class="text-sm font-bold text-red-600"
             >¥
             {{
