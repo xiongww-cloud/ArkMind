@@ -197,10 +197,10 @@ export async function exportToPMSExcel(opts: ExportOptions): Promise<void> {
     if (!c) return
     c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } }
     c.border = {
-      top: { style: 'medium' },
-      bottom: { style: 'medium' },
-      left: { style: 'medium' },
-      right: { style: 'medium' },
+      top: { style: 'thin' },
+      bottom: { style: 'thin' },
+      left: { style: 'thin' },
+      right: { style: 'thin' },
     }
   })
 
@@ -247,17 +247,16 @@ export async function exportToPMSExcel(opts: ExportOptions): Promise<void> {
     row.getCell('up').value = item.unitPrice || 0
     row.getCell('st').value = st
 
-    const lines = pt.split('\n').reduce((sum: number, l: string) => sum + Math.max(1, Math.ceil(l.length / 45)), 0)
-    row.height = lines * 27
+    // 不固定行高：单元格 wrapText 时由 Excel/WPS 打开后按内容自适应
 
     row.eachCell((cell: any, cn: number) => {
       if (!cell) return
       cell.font = { size: 10, color: { argb: 'FF444444' } }
       cell.border = {
-        top: { style: 'medium' },
-        bottom: { style: 'medium' },
-        left: { style: 'medium' },
-        right: { style: 'medium' },
+        top: { style: 'thin' },
+        bottom: { style: 'thin' },
+        left: { style: 'thin' },
+        right: { style: 'thin' },
       }
       if (cn === paramColIdx) {
         cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true }
@@ -304,10 +303,10 @@ export async function exportToPMSExcel(opts: ExportOptions): Promise<void> {
     const cell = tr.getCell(c)
     if (!cell) continue
     cell.border = {
-      top: { style: 'medium' },
-      bottom: { style: 'medium' },
-      left: { style: 'medium' },
-      right: { style: 'medium' },
+      top: { style: 'thin' },
+      bottom: { style: 'thin' },
+      left: { style: 'thin' },
+      right: { style: 'thin' },
     }
     if (!cell.fill || typeof cell.fill !== 'object' || !cell.fill.type) {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } }

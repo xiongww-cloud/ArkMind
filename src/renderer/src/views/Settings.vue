@@ -1087,14 +1087,11 @@ onDeactivated(() => {
         </div>
       </div>
 
-      <!-- ══════════ 两栏布局 ══════════ -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-
-        <!-- ──── 左栏 ──── -->
-        <div class="space-y-4">
+      <!-- ══════════ 卡片区（Columns 瀑布流自动排列） ══════════ -->
+      <div class="columns-1 lg:columns-2 gap-4">
 
           <!-- AI 模型配置 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">AI 模型配置</h2>
             </div>
@@ -1181,7 +1178,7 @@ onDeactivated(() => {
           </div>
 
           <!-- 智能通知 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="flex items-center justify-between px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">智能通知</h2>
               <div v-if="notifyEnabled && notifyInterval !== 0" class="flex items-center gap-1.5">
@@ -1222,7 +1219,7 @@ onDeactivated(() => {
           </div>
 
           <!-- 运行日志 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">运行日志</h2>
             </div>
@@ -1234,13 +1231,8 @@ onDeactivated(() => {
             </div>
           </div>
 
-        </div>
-
-        <!-- ──── 右栏 ──── -->
-        <div class="space-y-4">
-
           <!-- 桌面精灵 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="flex items-center justify-between px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">桌面精灵</h2>
               <div class="flex items-center gap-1.5">
@@ -1268,102 +1260,8 @@ onDeactivated(() => {
             </div>
           </div>
 
-          <!-- 数据与许可证 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
-            <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">数据与许可证</h2>
-            <div class="p-5 space-y-3">
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-[12px] font-medium text-surface-700">导出数据</p>
-                  <p class="text-[10px] text-surface-400">选择性备份业务域数据到本地</p>
-                </div>
-                <button class="btn-primary text-[11px]" :disabled="isExporting" @click="showDomainSelector = true">{{ isExporting ? '导出中...' : '导出数据' }}</button>
-              </div>
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-[12px] font-medium text-surface-700">导入数据</p>
-                  <p class="text-[10px] text-surface-400">从 .ark 文件恢复业务数据</p>
-                </div>
-                <button class="btn-primary text-[11px]" :disabled="isImporting" @click="handleImportData">{{ isImporting ? '导入中...' : '导入数据' }}</button>
-              </div>
-              <hr class="border-surface-100 my-1" />
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-[12px] font-medium text-surface-700">一键备份</p>
-                  <p class="text-[10px] text-surface-400">打包所有数据到 .zip 文件</p>
-                </div>
-                <button class="btn-secondary text-[11px]" :disabled="isBackingUp" @click="handleBackupAll">{{ isBackingUp ? '备份中...' : '一键备份' }}</button>
-              </div>
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-[12px] font-medium text-surface-700">一键恢复</p>
-                  <p class="text-[10px] text-surface-400">从 .zip 备份恢复（需重启）</p>
-                </div>
-                <button class="btn-secondary text-[11px]" :disabled="isRestoring" @click="handleRestoreAll">{{ isRestoring ? '恢复中...' : '一键恢复' }}</button>
-              </div>
-              <!-- Domain Selector Modal -->
-              <Teleport to="body"><Transition name="modal-fade"><div v-if="showDomainSelector" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="showDomainSelector=false">
-                <div class="bg-white rounded-xl shadow-xl w-[380px] max-h-[80vh] overflow-y-auto" @click.stop>
-                  <div class="flex items-center px-5 py-3 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">选择导出范围</h3></div>
-                  <div class="p-5 space-y-2">
-                    <label v-for="d in selectedDomains" :key="d.key" class="flex items-center gap-2 cursor-pointer py-1">
-                      <input type="checkbox" v-model="d.selected" class="w-3.5 h-3.5 rounded border-surface-300 text-brand-600" />
-                      <span class="text-[11px] text-surface-600">{{ d.label }}</span>
-                    </label>
-                  </div>
-                  <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-surface-100">
-                    <button @click="showDomainSelector=false" class="btn-secondary text-xs">取消</button>
-                    <button @click="handleExportData" class="btn-primary text-xs" :disabled="isExporting">{{ isExporting ? '导出中...' : '确定导出' }}</button>
-                  </div>
-                </div>
-              </div></Transition></Teleport>
-              <hr class="border-surface-100 my-1" />
-              <!-- License -->
-              <div v-if="licenseActivated">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <p class="text-[12px] font-medium text-surface-700">{{ licenseProductLabel || '已激活' }} <span class="text-[10px] text-emerald-500 font-normal">● 已激活</span></p>
-                    <p class="text-[10px] text-surface-400">{{ formatExpiryDate(licenseExpiresAt) ? '有效期至 ' + formatExpiryDate(licenseExpiresAt) : '永久许可' }}</p>
-                  </div>
-                  <button @click="licenseUpdating = true" class="btn-primary text-[11px]">更新</button>
-                </div>
-              </div>
-              <div v-if="!licenseActivated">
-                <div
-                  v-if="trialActive"
-                  class="bg-amber-50 border border-amber-100 rounded-lg p-3 mb-3"
-                >
-                  <p class="text-[11px] font-medium text-amber-700">
-                    试用中（剩余 {{ trialRemainingDays }} 天）
-                  </p>
-                  <p class="text-[10px] text-amber-600/80 mt-0.5">试用结束后需激活许可证才能继续使用</p>
-                </div>
-                <div
-                  v-else-if="trialExpired"
-                  class="bg-red-50 border border-red-100 rounded-lg p-3 mb-3"
-                >
-                  <p class="text-[11px] font-medium text-red-700">试用已结束，请激活许可证</p>
-                </div>
-                <p class="text-[12px] font-medium text-surface-700 mb-2">激活许可证</p>
-                <div class="bg-surface-50 rounded-lg p-3 mb-3">
-                  <p class="text-[10px] text-surface-500 mb-2">机器码</p>
-                  <div class="flex items-center gap-2">
-                    <code class="flex-1 px-2.5 py-1.5 bg-white border border-surface-200 rounded-lg text-[11px] font-mono text-surface-700 select-all">{{ licenseMachineCode || '加载中...' }}</code>
-                    <button @click="copyMachineCode" class="px-2.5 py-1.5 text-[11px] rounded-lg border border-surface-200 text-surface-500 hover:bg-surface-100" v-if="licenseMachineCode">{{ licenseCodeCopied ? '已复制' : '复制' }}</button>
-                  </div>
-                </div>
-                <div class="flex items-center gap-2">
-                  <input v-model="licenseKey" class="flex-1 border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="arkmind-xxxx" @keyup.enter="activateLicenseKey" />
-                  <button class="px-3 py-1.5 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" :disabled="licenseActivating" @click="activateLicenseKey">{{ licenseActivating ? '激活中...' : '激活' }}</button>
-                </div>
-                <p v-if="licenseError" class="text-[10px] text-red-500 mt-2">{{ licenseError }}</p>
-                <p v-if="licenseSuccess" class="text-[10px] text-emerald-600 mt-2">{{ licenseSuccess }}</p>
-              </div>
-            </div>
-          </div>
-
           <!-- 知识管线管理 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="flex items-center gap-2 px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">知识管线管理</h2>
               <span class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-50 text-emerald-600' : 'bg-surface-50 text-surface-400'">
@@ -1440,7 +1338,105 @@ onDeactivated(() => {
             </div>
           </div>
 
-        </div>
+          <!-- 数据管理 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+            <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">数据管理</h2>
+            <div class="p-5 space-y-3">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">导出数据</p>
+                  <p class="text-[10px] text-surface-400">选择性备份业务域数据到本地</p>
+                </div>
+                <button class="btn-primary text-[11px]" :disabled="isExporting" @click="showDomainSelector = true">{{ isExporting ? '导出中...' : '导出数据' }}</button>
+              </div>
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">导入数据</p>
+                  <p class="text-[10px] text-surface-400">从 .ark 文件恢复业务数据</p>
+                </div>
+                <button class="btn-primary text-[11px]" :disabled="isImporting" @click="handleImportData">{{ isImporting ? '导入中...' : '导入数据' }}</button>
+              </div>
+              <hr class="border-surface-100 my-1" />
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">一键备份</p>
+                  <p class="text-[10px] text-surface-400">打包所有数据到 .zip 文件</p>
+                </div>
+                <button class="btn-secondary text-[11px]" :disabled="isBackingUp" @click="handleBackupAll">{{ isBackingUp ? '备份中...' : '一键备份' }}</button>
+              </div>
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[12px] font-medium text-surface-700">一键恢复</p>
+                  <p class="text-[10px] text-surface-400">从 .zip 备份恢复（需重启）</p>
+                </div>
+                <button class="btn-secondary text-[11px]" :disabled="isRestoring" @click="handleRestoreAll">{{ isRestoring ? '恢复中...' : '一键恢复' }}</button>
+              </div>
+              <!-- Domain Selector Modal -->
+              <Teleport to="body"><Transition name="modal-fade"><div v-if="showDomainSelector" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="showDomainSelector=false">
+                <div class="bg-white rounded-xl shadow-xl w-[380px] max-h-[80vh] overflow-y-auto" @click.stop>
+                  <div class="flex items-center px-5 py-3 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">选择导出范围</h3></div>
+                  <div class="p-5 space-y-2">
+                    <label v-for="d in selectedDomains" :key="d.key" class="flex items-center gap-2 cursor-pointer py-1">
+                      <input type="checkbox" v-model="d.selected" class="w-3.5 h-3.5 rounded border-surface-300 text-brand-600" />
+                      <span class="text-[11px] text-surface-600">{{ d.label }}</span>
+                    </label>
+                  </div>
+                  <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-surface-100">
+                    <button @click="showDomainSelector=false" class="btn-secondary text-xs">取消</button>
+                    <button @click="handleExportData" class="btn-primary text-xs" :disabled="isExporting">{{ isExporting ? '导出中...' : '确定导出' }}</button>
+                  </div>
+                </div>
+              </div></Transition></Teleport>
+            </div>
+          </div>
+
+          <!-- 许可证 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+            <h2 class="text-[13px] font-semibold text-surface-700 px-5 pt-5 pb-0">许可证</h2>
+            <div class="p-5 space-y-3">
+              <!-- License -->
+              <div v-if="licenseActivated">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-[12px] font-medium text-surface-700">{{ licenseProductLabel || '已激活' }} <span class="text-[10px] text-emerald-500 font-normal">● 已激活</span></p>
+                    <p class="text-[10px] text-surface-400">{{ formatExpiryDate(licenseExpiresAt) ? '有效期至 ' + formatExpiryDate(licenseExpiresAt) : '永久许可' }}</p>
+                  </div>
+                  <button @click="licenseUpdating = true" class="btn-primary text-[11px]">更新</button>
+                </div>
+              </div>
+              <div v-if="!licenseActivated">
+                <div
+                  v-if="trialActive"
+                  class="bg-amber-50 border border-amber-100 rounded-lg p-3 mb-3"
+                >
+                  <p class="text-[11px] font-medium text-amber-700">
+                    试用中（剩余 {{ trialRemainingDays }} 天）
+                  </p>
+                  <p class="text-[10px] text-amber-600/80 mt-0.5">试用结束后需激活许可证才能继续使用</p>
+                </div>
+                <div
+                  v-else-if="trialExpired"
+                  class="bg-red-50 border border-red-100 rounded-lg p-3 mb-3"
+                >
+                  <p class="text-[11px] font-medium text-red-700">试用已结束，请激活许可证</p>
+                </div>
+                <p class="text-[12px] font-medium text-surface-700 mb-2">激活许可证</p>
+                <div class="bg-surface-50 rounded-lg p-3 mb-3">
+                  <p class="text-[10px] text-surface-500 mb-2">机器码</p>
+                  <div class="flex items-center gap-2">
+                    <code class="flex-1 px-2.5 py-1.5 bg-white border border-surface-200 rounded-lg text-[11px] font-mono text-surface-700 select-all">{{ licenseMachineCode || '加载中...' }}</code>
+                    <button @click="copyMachineCode" class="px-2.5 py-1.5 text-[11px] rounded-lg border border-surface-200 text-surface-500 hover:bg-surface-100" v-if="licenseMachineCode">{{ licenseCodeCopied ? '已复制' : '复制' }}</button>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input v-model="licenseKey" class="flex-1 border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="arkmind-xxxx" @keyup.enter="activateLicenseKey" />
+                  <button class="px-3 py-1.5 text-[11px] rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" :disabled="licenseActivating" @click="activateLicenseKey">{{ licenseActivating ? '激活中...' : '激活' }}</button>
+                </div>
+                <p v-if="licenseError" class="text-[10px] text-red-500 mt-2">{{ licenseError }}</p>
+                <p v-if="licenseSuccess" class="text-[10px] text-emerald-600 mt-2">{{ licenseSuccess }}</p>
+              </div>
+            </div>
+          </div>
 
       </div>
 

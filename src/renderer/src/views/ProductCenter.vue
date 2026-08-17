@@ -283,7 +283,7 @@ async function saveName() {
 async function deleteProduct(id: string) { const ok = await dangerConfirm({ title: '删除产品', message: '确定删除此产品？', confirmText: '删除' }); if (!ok) return; await store.deleteProduct(id); if (selectedProductId.value === id) selectedProductId.value = null; await store.fetchProducts() }
 
 // ─── Local edit state (v-model) with debounced save ────────────────
-const localSpecs = ref(''); const localDesc = ref(''); const localFullSpecs = ref('')
+const localDesc = ref(''); const localFullSpecs = ref('')
 watch(() => selectedProductId.value, pid => {
   // 取消所有 pending saves
   for (const t of Object.values(saveTimers)) clearTimeout(t as number)
@@ -291,7 +291,6 @@ watch(() => selectedProductId.value, pid => {
   if (!pid) return
   const p = currentProduct.value
   // product_list 返回蛇形字段，兼容两种命名
-  localSpecs.value = p?.standardSpecs || p?.standard_specs || ''
   localDesc.value = p?.description || ''
   localFullSpecs.value = p?.fullSpecs || p?.full_specs || ''
 })

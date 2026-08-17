@@ -155,9 +155,6 @@ pub fn run() {
             // 清理过期 compressed 消息：每 session 最多保留 50 条，清理空 session
             commands::kb::cleanup_chat_messages(50);
 
-            // ★ 首次启动注入使用指南到记忆系统
-            services::user_guides::inject_if_needed();
-
             // ★ 启动时清理过期许可证
             license::cleanup_expired_licenses();
 

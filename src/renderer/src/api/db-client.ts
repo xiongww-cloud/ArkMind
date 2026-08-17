@@ -64,7 +64,6 @@ export interface ProductRow {
   name: string
   series_id: string | null
   description: string
-  standard_specs: string
   full_specs: string
   created_at: string
   updated_at: string

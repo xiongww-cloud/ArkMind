@@ -1,5 +1,8 @@
 //! User Guides — 首次启动时注入软件使用指南到 memories 表
 //! 指南通过记忆系统存储，AI 在回答用户使用问题时按需检索
+//! 注意：该注入功能已停用（lib.rs 不再调用），代码保留备用
+
+#![allow(dead_code)]
 
 const GUIDES_VERSION: &str = "1.0";
 

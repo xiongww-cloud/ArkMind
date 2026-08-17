@@ -128,8 +128,9 @@ function onImportConfirm(payload: any) {
         return {
           ...item,
           productId: match.id,
-          syncParams: false,
-          mergedText: item.mergedText || match.full_specs || match.standard_specs || '',
+          // 产品库无参数时默认勾选"更新产品参数"，让本次导入的参数回写产品库
+          syncParams: !match.full_specs,
+          mergedText: item.mergedText || match.full_specs || '',
           params: productParams.map((p: any) => ({ ...p, mark: '' }))
         }
       }
@@ -170,7 +171,7 @@ function handleServiceFeeConfirm(result: any) {
       quantity: hw.quantity || 1,
       unit: hw.unit || '台',
       params: productParams.map((p: any) => ({ ...p, mark: '' })),
-      mergedText: match?.full_specs || match?.standard_specs || '',
+      mergedText: match?.full_specs || '',
       syncParams: match ? false : true,
       _originalUnitPrice: hw.unitPrice || 0,
       _allocatedAmount: hw.allocatedAmount || 0
@@ -242,7 +243,7 @@ function handleDeviceConfirm(item, e) {
       item.unitPrice = match.price
     }
     // Load default parameters from product
-    item.mergedText = match.full_specs || match.standard_specs || ''
+    item.mergedText = item.mergedText || match.full_specs || ''
     // Pre-populate params from gparams if available, otherwise leave as-is
     const allGparams = Array.isArray(gparams.value) ? gparams.value : []
     const productParams = allGparams.filter((p) => p.productId === match.id)
@@ -839,7 +840,6 @@ async function sdv() {
         item.model = match.name
         if (match.price && !item.unitPrice) item.unitPrice = match.price
         if (match.full_specs && !item.mergedText) item.mergedText = match.full_specs
-        item.syncParams = false
       }
     }
 
@@ -1408,16 +1408,12 @@ onUnmounted(() => {
             @click="sed"
             class="bg-white rounded-lg border px-3 py-2.5 cursor-pointer transition-shadow hover:shadow-sm group/card border-amber-200 shadow-sm"
           >
-            <!-- Row 1: dot + version + 编辑中 + time + amount + delete -->
+            <!-- Row 1: dot + version + time + amount + delete -->
             <div class="flex items-center gap-2 mb-1.5">
               <div class="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0" />
               <span class="text-xs font-medium text-amber-600 shrink-0">{{
                 fmtVersion(cplan.draft.versionNum)
               }}</span>
-              <span
-                class="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 shrink-0"
-                >编辑中</span
-              >
               <span class="text-[10px] text-surface-400 shrink-0">{{
                 formatDateTime(cplan.draft.startedAt || cplan.draft.createdAt)
               }}</span>
@@ -1435,7 +1431,7 @@ onUnmounted(() => {
                 class="btn-ghost !p-0.5 text-slate-300 hover:text-red-500 opacity-0 group-hover/card:opacity-100 shrink-0"
                 title="删除草稿"
               >
-                <AppIcon name="x" class="w-3 h-3" />
+                <AppIcon name="trash" class="w-3 h-3" />
               </button>
             </div>
             <!-- Row 2: 备注（点击编辑） -->
