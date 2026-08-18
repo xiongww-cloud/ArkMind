@@ -740,7 +740,7 @@ async function handleImportProject() {
       <table class="w-full text-xs table-fixed min-w-[770px]">
         <tbody class="divide-y divide-surface-50">
           <tr v-for="project in filteredProjects" :key="project.id"
-            class="transition-colors group"
+            class="transition-colors group hover:bg-surface-50"
             :class="selectionMode && isProjectSelected(project.id) ? 'bg-blue-50/50 ring-1 ring-inset ring-blue-300' : ''">
             <td v-if="selectionMode" class="px-3 py-2.5 w-10 align-middle text-center cursor-pointer" @click="toggleProjectSelection(project.id)">
               <div class="w-4 h-4 rounded border flex items-center justify-center mx-auto" :class="isProjectSelected(project.id) ? 'bg-blue-600 border-blue-600' : 'border-slate-300 bg-white'">
