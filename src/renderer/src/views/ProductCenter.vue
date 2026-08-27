@@ -319,7 +319,7 @@ function onFullSpecsInput() {
 // ═══════════════════════════════════════════════════════════════════
 const materials = ref<any[]>([])
 const materialUploadOpen = ref(false)
-const materialModalRef = ref<HTMLElement | null>(null)
+const materialPasteArea = ref<HTMLTextAreaElement | null>(null)
 // 待上传物料：name 不含扩展名，ext 单独存（编辑文件名不涉及后缀）
 const materialFiles = ref<Array<{ path: string; name: string; ext: string; _temp?: boolean }>>([])
 const materialDragOver = ref(false)
@@ -398,6 +398,10 @@ async function onMaterialPaste(e: ClipboardEvent) {
     await readMaterialMacClipboard()
   }
   if (added > 0) toast({ message: `已粘贴 ${added} 个文件`, type: 'success' })
+  // 处理完成后重新聚焦隐藏 textarea，保持后续粘贴可用
+  requestAnimationFrame(() => {
+    materialPasteArea.value?.focus()
+  })
 }
 
 /** macOS：从后端 NSPasteboard 读取 Finder 复制的文件，加入待上传列表 */
@@ -414,17 +418,6 @@ async function readMaterialMacClipboard() {
       }
     }
   } catch (err) { console.warn('[ProductCenter] macos clipboard read failed:', err) }
-}
-
-/** 物料弹窗 keydown 兜底：⌘V/Ctrl+V 直接读取剪贴板（macOS 上 paste 事件不可靠） */
-function onMaterialModalKeydown(e: KeyboardEvent) {
-  if (!materialUploadOpen.value) return
-  const meta = isMac ? e.metaKey : e.ctrlKey
-  if (!meta || (e.key !== 'v' && e.key !== 'V')) return
-  const el = document.activeElement
-  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
-  e.preventDefault()
-  readMaterialMacClipboard()
 }
 
 const materialTypeOptions = ['彩页', '白皮书', '检测报告', '其他']
@@ -449,9 +442,9 @@ async function openMaterialUpload() {
   materialAssoc.value = { productIds: [selectedProductId.value!], seriesIds: [] }
   modalCollapsed.value = Object.fromEntries((store.series as any[]).map((s: any) => [s.id, true]))
   materialUploadOpen.value = true
-  // macOS：paste 事件需焦点在可聚焦元素上，弹窗打开后聚焦容器
+  // macOS：paste 事件只在可编辑元素上触发，弹窗打开后聚焦隐藏的 textarea
   requestAnimationFrame(() => {
-    materialModalRef.value?.focus()
+    materialPasteArea.value?.focus()
   })
 }
 async function handleFilePick() {
@@ -787,7 +780,9 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
   />
 
   <!-- Material upload dialog -->
-  <Teleport to="body"><Transition name="modal-fade"><div v-if="materialUploadOpen" ref="materialModalRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm outline-none" @paste.prevent="onMaterialPaste" @keydown="onMaterialModalKeydown">
+  <Teleport to="body"><Transition name="modal-fade"><div v-if="materialUploadOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+    <!-- 隐藏 textarea：macOS 上 paste 事件只在可编辑元素触发，用它捕获粘贴 -->
+    <textarea ref="materialPasteArea" class="fixed top-0 left-0 w-px h-px opacity-0" tabindex="-1" @paste.prevent="onMaterialPaste"></textarea>
     <div class="bg-white rounded-2xl w-[500px] max-h-[85vh] overflow-hidden shadow-2xl flex flex-col border border-surface-200">
       <div class="flex items-center px-5 py-2 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">{{ assocMaterialId ? '设置物料关联' : '上传产品物料' }}</h3></div>
 
@@ -839,6 +834,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                 <input
                   v-model="f.name"
                   @focus="$event.target.select()"
+                  @blur="() => materialPasteArea?.focus()"
                   class="flex-1 min-w-0 text-[12px] font-medium text-surface-800 bg-transparent border border-transparent focus:border-brand-400 focus:bg-white rounded px-1 py-0.5 outline-none transition-colors"
                   title="编辑文件名"
                 />

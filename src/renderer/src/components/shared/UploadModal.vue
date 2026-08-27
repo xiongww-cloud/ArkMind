@@ -55,14 +55,14 @@ function extOf(name: string): string {
   return i > 0 ? name.slice(i + 1).toLowerCase() : ''
 }
 
-const modalRef = ref<HTMLElement | null>(null)
+const pasteArea = ref<HTMLTextAreaElement | null>(null)
 
 function open() {
   pendingUploads.value = []
   show.value = true
-  // macOS：paste 事件需焦点在可聚焦元素上，弹窗打开后聚焦容器
+  // macOS：paste 事件只在可编辑元素上触发，弹窗打开后聚焦隐藏的 textarea
   requestAnimationFrame(() => {
-    modalRef.value?.focus()
+    pasteArea.value?.focus()
   })
 }
 
@@ -126,6 +126,10 @@ async function onUploadPaste(e: ClipboardEvent) {
   if (isMac && added === 0) {
     await readMacClipboardFiles()
   }
+  // 处理完成后重新聚焦隐藏 textarea，保持后续粘贴可用
+  requestAnimationFrame(() => {
+    pasteArea.value?.focus()
+  })
 }
 
 /** macOS：从后端 NSPasteboard 读取 Finder 复制的文件，加入待上传列表 */
@@ -142,17 +146,6 @@ async function readMacClipboardFiles() {
       }
     }
   } catch (err) { console.warn('[UploadModal] macos clipboard read failed:', err) }
-}
-
-/** 容器 keydown 兜底：⌘V/Ctrl+V 直接读取剪贴板（macOS 上 paste 事件不可靠） */
-function onModalKeydown(e: KeyboardEvent) {
-  const meta = isMac ? e.metaKey : e.ctrlKey
-  if (!meta || (e.key !== 'v' && e.key !== 'V')) return
-  // 焦点在文件名输入框内时交系统粘贴事件处理
-  const el = document.activeElement
-  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
-  e.preventDefault()
-  readMacClipboardFiles()
 }
 
 function removeUpload(idx: number) {
@@ -229,12 +222,15 @@ defineExpose({ open, close })
     <Transition name="modal-fade">
       <div
         v-if="show"
-        ref="modalRef"
-        tabindex="-1"
-        class="fixed inset-0 z-[80] bg-black/30 flex items-center justify-center outline-none"
-        @paste.prevent="onUploadPaste"
-        @keydown="onModalKeydown"
+        class="fixed inset-0 z-[80] bg-black/30 flex items-center justify-center"
       >
+        <!-- 隐藏 textarea：macOS 上 paste 事件只在可编辑元素触发，用它捕获粘贴 -->
+        <textarea
+          ref="pasteArea"
+          class="fixed top-0 left-0 w-px h-px opacity-0"
+          tabindex="-1"
+          @paste.prevent="onUploadPaste"
+        ></textarea>
         <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] max-h-[85vh] flex flex-col overflow-hidden" @click.stop>
           <!-- 头部 -->
           <div class="px-6 pt-5 pb-0">
@@ -283,6 +279,7 @@ defineExpose({ open, close })
                   <input
                     v-model="item.name"
                     @focus="$event.target.select()"
+                    @blur="() => pasteArea?.focus()"
                     class="flex-1 min-w-0 text-[11px] text-surface-800 bg-transparent border border-transparent focus:border-brand-400 focus:bg-white rounded px-1 py-0.5 outline-none transition-colors"
                     :title="`编辑文件名（当前：${item.name}.${item.ext}）`"
                   />

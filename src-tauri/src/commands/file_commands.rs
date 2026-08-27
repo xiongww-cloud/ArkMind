@@ -648,6 +648,7 @@ fn read_macos_clipboard_files_impl(_app: &tauri::AppHandle) -> Vec<serde_json::V
 #[tauri::command]
 pub async fn chat_read_macos_clipboard_files(app: tauri::AppHandle) -> Result<Value, String> {
     let files = read_macos_clipboard_files_impl(&app);
+    log::info!("[剪贴板] macOS 读取到 {} 个文件", files.len());
     Ok(json!({ "success": true, "files": files }))
 }
 
