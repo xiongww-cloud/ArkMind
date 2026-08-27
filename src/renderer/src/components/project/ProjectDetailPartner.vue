@@ -243,7 +243,7 @@ async function removeContact(ctId: string) {
               <tr class="text-slate-400 border-b border-slate-200">
                 <th class="text-left font-medium py-2 w-[25%]">联系人</th>
                 <th class="text-left font-medium py-2 w-[22%]">电话</th>
-                <th class="text-left font-medium py-2">备注</th>
+                <th class="text-left font-medium py-2 w-[25%]">备注</th>
                 <th class="w-10"></th>
               </tr>
             </thead>
@@ -287,7 +287,7 @@ async function removeContact(ctId: string) {
                         @keyup.enter="saveContactRemark(ct.id)" @blur="saveContactRemark(ct.id)" @keyup.escape="cancelEditContactRemark" />
                     </template>
                     <template v-else>
-                      <span class="text-xs truncate" :class="ct.remark ? 'text-surface-500' : 'text-surface-400 italic'">{{ ct.remark || '无备注' }}</span>
+                      <span class="text-xs whitespace-normal break-words" :class="ct.remark ? 'text-surface-500' : 'text-surface-400 italic'">{{ ct.remark || '无备注' }}</span>
                       <button v-if="!isArchived" @click.stop="startEditContactRemark(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-rm:opacity-100 flex-shrink-0" title="编辑备注">
                         <AppIcon name="edit" class="w-2.5 h-2.5" />
                       </button>

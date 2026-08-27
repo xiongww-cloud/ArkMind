@@ -337,7 +337,7 @@ onMounted(loadAll)
                   <td class="py-2 pr-2"><span class="text-surface-500 truncate">{{ ct.position || '—' }}</span></td>
                   <td class="py-2 pr-2"><span class="text-surface-500 truncate">{{ ct.phone || '—' }}</span></td>
                   <td class="py-2 pr-2"><span class="text-surface-500 truncate">{{ ct.email || '—' }}</span></td>
-                  <td class="py-2 pr-2"><span class="text-surface-400 truncate">{{ ct.remark || '—' }}</span></td>
+                  <td class="py-2 pr-2"><span class="text-surface-400 whitespace-normal break-words">{{ ct.remark || '—' }}</span></td>
                   <td class="py-2 text-right flex items-center justify-end gap-1">
                     <button @click="openEditContact(ct)" class="p-1 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct:opacity-100"><AppIcon name="edit" class="w-3 h-3" /></button>
                     <button @click="deleteContact(ct)" class="p-1 rounded text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover/ct:opacity-100"><AppIcon name="trash" class="w-3 h-3" /></button>
