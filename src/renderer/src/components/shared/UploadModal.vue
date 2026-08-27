@@ -22,6 +22,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from '@/composables/useToast'
 import { isMac, pasteShortcut } from '@/utils/platform'
+import { useGlobalPaste } from '@/composables/useGlobalPaste'
 
 const props = defineProps<{
   entityType: string
@@ -118,18 +119,32 @@ async function onUploadPaste(e: ClipboardEvent) {
   }
   // macOS：WebKit 不把剪贴板文件暴露给 clipboardData，从后端 NSPasteboard 读取
   if (isMac && added === 0) {
-    try {
-      const r: any = await invoke('chat_read_macos_clipboard_files')
-      if (r?.success && Array.isArray(r.files) && r.files.length) {
-        for (const f of r.files) {
-          const name = f.name || 'pasted'
-          const ext = extOf(name) || f.kind || 'bin'
-          pendingUploads.value.push({ file: f, name: name.replace(/\.[^.]+$/, ''), ext, isPath: false, tempPath: f.path })
-        }
-      }
-    } catch (err) { console.warn('[UploadModal] macos clipboard read failed:', err) }
+    await readMacClipboardFiles()
   }
 }
+
+/** macOS：从后端 NSPasteboard 读取 Finder 复制的文件，加入待上传列表 */
+async function readMacClipboardFiles() {
+  try {
+    const r: any = await invoke('chat_read_macos_clipboard_files')
+    if (r?.success && Array.isArray(r.files) && r.files.length) {
+      for (const f of r.files) {
+        const name = f.name || 'pasted'
+        const ext = extOf(name) || f.kind || 'bin'
+        pendingUploads.value.push({ file: f, name: name.replace(/\.[^.]+$/, ''), ext, isPath: false, tempPath: f.path })
+      }
+    }
+  } catch (err) { console.warn('[UploadModal] macos clipboard read failed:', err) }
+}
+
+// 全局 ⌘V/Ctrl+V 兜底（macOS 上 paste 事件依赖焦点，弹窗内直接按快捷键不触发）
+useGlobalPaste(show, () => {
+  if (isMac) {
+    readMacClipboardFiles()
+  } else {
+    readMacClipboardFiles()
+  }
+})
 
 function removeUpload(idx: number) {
   const item = pendingUploads.value[idx]
