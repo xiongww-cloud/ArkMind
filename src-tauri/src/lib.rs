@@ -298,7 +298,7 @@ pub fn run() {
             commands::file_open, commands::file_download, commands::file_get_path, commands::file_has_oss_files, commands::file_migrate_files,
             commands::file_update_meta,
             commands::file_list_by_product, commands::file_open_product, commands::file_download_product,
-            commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes, commands::chat_save_temp_image, commands::chat_read_macos_clipboard_files,
+            commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes, commands::chat_save_temp_image, commands::file_remove_temp, commands::chat_read_macos_clipboard_files,
             commands::file_copy_to_clipboard,
             commands::file_list_global,
             commands::file_move, commands::file_tree,

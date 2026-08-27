@@ -8,6 +8,7 @@ import AppIcon from '@/components/common/AppIcon.vue'
 const ProjectDetail = defineAsyncComponent(() => import('@/views/ProjectDetail.vue'))
 import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
 import AttachmentPanel from '@/components/notes/AttachmentPanel.vue'
+import UploadModal from '@/components/shared/UploadModal.vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import RichTextToolbar from '@/components/common/RichTextToolbar.vue'
 import { getTiptapExtensions } from '@/composables/useTiptapConfig'
@@ -20,10 +21,9 @@ import {
   fetchNotebooks, createNotebook, updateNotebook, deleteNotebook,
   countNotesByNotebook,
   fetchProjects,
-  deleteFileFromDomain, fetchFilesByNote, uploadFile, previewFile, updateFileMeta,
+  deleteFileFromDomain, fetchFilesByNote, previewFile, updateFileMeta,
 } from '@/api/db-client'
 import { useLinkModals } from '@/composables/useLinkModals'
-import { useUploadProgress } from '@/composables/useUploadProgress'
 import { nowLocalDb, tsMillis } from '@/utils/time'
 
 type ViewType = 'daily'|'orphan'|'notebook'|'trash'
@@ -591,19 +591,14 @@ async function loadNoteFiles() {
 }
 watch(selectedNoteId, loadNoteFiles)
 
-const { start: upStart, done: upDone, fail: upFail } = useUploadProgress()
-
-async function handleAttachPanel({ path, name }: { path: string; name?: string }) {
+// 上传弹窗（统一方案：选择文件 或 粘贴）
+const uploadModalRef = ref<InstanceType<typeof UploadModal> | null>(null)
+function openNoteUpload() {
   if (!selectedNoteId.value) return
-  const fileName = name || path.replace(/^.*[\\\/]/, '')
-  const ext = fileName.includes('.') ? fileName.split('.').pop() || '' : ''
-  const task = upStart(fileName)
-  try {
-    const r: any = await uploadFile({ filePath: path, fileName, fileExt: ext, customName: fileName, entityType: 'note', entityId: selectedNoteId.value })
-    const fileId = r?.fileId || r?.id
-    if (fileId) { await loadNoteFiles() }
-    upDone(task)
-  } catch (e: any) { upFail(task, e.message || '上传失败') }
+  uploadModalRef.value?.open()
+}
+async function handleNoteUploaded() {
+  await loadNoteFiles()
 }
 
 function insertNoteFileToEditor(f: any) {
@@ -814,11 +809,18 @@ const restoreNotebookList = computed(() => {
           :key="'ap-' + selectedNoteId"
           :note-id="selectedNoteId"
           :files="noteFiles"
-          @upload="(file) => handleAttachPanel(file)"
+          @open-upload="openNoteUpload"
           @preview="(file) => previewFile(file.id)"
           @insert="(file) => insertNoteFileToEditor(file)"
           @delete="(file) => removeNoteFile(file.id)"
           @rename="(file, name) => renameNoteFile(file, name)"
+        />
+        <UploadModal
+          ref="uploadModalRef"
+          entity-type="note"
+          title="上传笔记附件"
+          :resolve-entity-id="() => selectedNoteId.value || undefined"
+          @uploaded="handleNoteUploaded"
         />
       </div>
     </template>
@@ -837,7 +839,7 @@ const restoreNotebookList = computed(() => {
 </Teleport>
 
 <!-- Restore dialog -->
-<Teleport to="body"><Transition name="modal-fade"><div v-if="restoreDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="restoreDialogOpen=false"><div class="bg-white rounded-2xl w-[420px] max-h-[75vh] overflow-hidden shadow-2xl flex flex-col border border-surface-200">
+<Teleport to="body"><Transition name="modal-fade"><div v-if="restoreDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"><div class="bg-white rounded-2xl w-[420px] max-h-[75vh] overflow-hidden shadow-2xl flex flex-col border border-surface-200">
   <div class="flex items-center justify-between px-5 py-4 border-b border-surface-100">
     <h3 class="text-sm font-semibold text-surface-800">选择目标笔记本</h3>
     <button @click="restoreDialogOpen=false" class="w-7 h-7 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600">✕</button>

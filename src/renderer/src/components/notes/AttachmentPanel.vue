@@ -8,7 +8,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  upload: [file: { path: string; name?: string }]
+  openUpload: []
   preview: [file: any]
   insert: [file: any]
   delete: [file: any]
@@ -16,24 +16,8 @@ const emit = defineEmits<{
 }>()
 
 const isCollapsed = ref(true)
-const isDragging = ref(false)
-const fileInput = ref<HTMLInputElement>()
 const editingFileId = ref<string | null>(null)
 const editingName = ref('')
-
-async function triggerFileInput() {
-  const { open } = await import('@tauri-apps/plugin-dialog')
-  const result = await open({ multiple: true, canCreateDirectories: false })
-  if (!result) return
-  const paths = Array.isArray(result) ? result : [result]
-  for (const p of paths) {
-    emit('upload', { path: p } as any)
-  }
-}
-
-function handleFileSelect(_e: Event) {
-  // Not used; Tauri dialog handles file picking
-}
 
 function formatSize(bytes: number | undefined): string {
   if (!bytes || bytes === 0) return '--'
@@ -52,20 +36,6 @@ function getFileTypeClass(type: string) {
     png: 'bg-purple-50 text-purple-600', jpg: 'bg-purple-50 text-purple-600', jpeg: 'bg-purple-50 text-purple-600',
   }
   return map[type] || 'bg-slate-50 text-slate-500'
-}
-
-function handleDragOver(e: DragEvent) { e.preventDefault(); isDragging.value = true }
-function handleDragLeave() { isDragging.value = false }
-function handleDrop(e: DragEvent) {
-  e.preventDefault()
-  isDragging.value = false
-  const fs = e.dataTransfer?.files
-  if (fs) {
-    for (let i = 0; i < fs.length; i++) {
-      const f = fs[i] as any
-      emit('upload', { path: f.path, name: f.name })
-    }
-  }
 }
 
 function startRename(file: any) {
@@ -123,26 +93,15 @@ function fileNameFor(file: any) {
         </svg>
       </button>
 
-      <!-- inner content (dragover target) -->
-      <div
-        class="relative flex flex-col h-full overflow-hidden"
-        @dragover.prevent="handleDragOver"
-        @dragleave.prevent="handleDragLeave"
-        @drop.prevent="handleDrop"
-      >
-        <!-- drag overlay -->
-        <div v-if="isDragging" class="absolute inset-0 bg-blue-50/60 border-2 border-dashed border-blue-400 z-30 flex flex-col items-center justify-center pointer-events-none transition-all">
-          <svg class="w-8 h-8 text-blue-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M12 4v16m8-8H4"/></svg>
-          <span class="text-blue-600 text-xs font-medium">释放文件以上传到当前笔记</span>
-        </div>
-
+      <!-- inner content -->
+      <div class="relative flex flex-col h-full overflow-hidden">
         <!-- header -->
         <div class="flex items-center justify-between px-3 h-9 border-b border-gray-100 shrink-0">
           <div class="flex items-center gap-1.5">
             <span class="text-[11px] font-semibold text-gray-700">附件</span>
             <span class="text-[9px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{{ files?.length || 0 }}</span>
           </div>
-          <button @click="triggerFileInput" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors cursor-pointer" title="上传附件">
+          <button @click="emit('openUpload')" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors cursor-pointer" title="上传附件">
             <AppIcon name="plus" size="10" stroke="2.5"/>
             <span>上传附件</span>
           </button>
@@ -155,7 +114,7 @@ function fileNameFor(file: any) {
               <svg class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.2"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
             </div>
             <p class="text-[13px] font-medium text-gray-400">暂无附件</p>
-            <p class="text-[11px] text-gray-300 mt-1">拖拽文件或点击上方 + 上传</p>
+            <p class="text-[11px] text-gray-300 mt-1">点击上方 + 上传附件</p>
           </div>
 
           <div

@@ -534,6 +534,20 @@ pub async fn chat_save_temp_image(bytes: Vec<u8>, ext: String, orig_name: Option
     Ok(json!({"success": true, "path": path.to_string_lossy(), "name": display_name}))
 }
 
+/// 删除粘贴上传产生的临时文件（仅允许删除 arkmind_attach 目录内的文件，防路径穿越）
+#[tauri::command]
+pub fn file_remove_temp(path: String) -> Result<Value, String> {
+    let attach_dir = std::env::temp_dir().join("arkmind_attach");
+    let canonical_attach = attach_dir.canonicalize().unwrap_or(attach_dir);
+    let p = std::path::Path::new(&path);
+    let canonical_p = p.canonicalize().map_err(|_| "路径无效".to_string())?;
+    if !canonical_p.starts_with(&canonical_attach) {
+        return Ok(json!({"success":false,"error":"非临时目录文件，拒绝删除"}));
+    }
+    let _ = std::fs::remove_file(&canonical_p);
+    Ok(json!({"success":true}))
+}
+
 /// 把源文件拷贝到临时目录（macOS 剪贴板文件粘贴用），返回 {path, name}
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn copy_to_attach_temp(src_path: &str) -> Option<serde_json::Value> {
@@ -720,15 +734,49 @@ pub async fn file_copy_to_clipboard(file_id: String, app: tauri::AppHandle) -> R
 }
 
 /// 复制前暂存文件到 temp 目录，文件名 = 软件显示的文件名（原始名+扩展名）。
-/// 同名直接覆盖：暂存文件生命周期短（下次复制或启动即替换/清空），无需防冲突。
+/// 方案 B：复制前先删除旧的暂存文件，避免覆盖被其他进程占用（如剪贴板引用、
+/// 杀软扫描）的文件导致复制失败。暂存文件生命周期短（下次复制或启动即替换/清空）。
 fn stage_for_clipboard(src: &str, name: &str, ext: &str) -> Result<String, String> {
     let display_name = filename_for_clipboard(name, ext);
 
     let td = temp_dir();
     std::fs::create_dir_all(&td).map_err(|e| format!("创建暂存目录失败: {}", e))?;
     let target = std::path::Path::new(&td).join(display_name);
-    std::fs::copy(src, &target).map_err(|e| format!("暂存文件失败: {}", e))?;
-    Ok(target.to_string_lossy().to_string())
+
+    // 复制前先删除旧的暂存文件（文件不存在时忽略——首次复制/已被清空）
+    let mut rm_attempt = 0u32;
+    loop {
+        match std::fs::remove_file(&target) {
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(_) => {
+                rm_attempt += 1;
+                if rm_attempt >= 5 {
+                    break; // 删除失败则继续尝试复制，复制带重试兜底
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+
+    // 复制带重试（等待句柄释放）
+    let mut copy_err: Option<std::io::Error> = None;
+    for _ in 0..5 {
+        match std::fs::copy(src, &target) {
+            Ok(_) => {
+                copy_err = None;
+                break;
+            }
+            Err(e) => {
+                copy_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+    match copy_err {
+        Some(e) => Err(format!("暂存文件失败: {}", e)),
+        None => Ok(target.to_string_lossy().to_string()),
+    }
 }
 
 fn filename_for_clipboard(name: &str, ext: &str) -> String {

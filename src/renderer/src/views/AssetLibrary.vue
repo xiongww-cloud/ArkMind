@@ -2,17 +2,16 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
-import { useUploadProgress } from '@/composables/useUploadProgress'
 import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 import AppIcon from '@/components/common/AppIcon.vue'
+import UploadModal from '@/components/shared/UploadModal.vue'
 import {
   fetchFileTree, listGlobalFiles,
   exportFile, deleteFileFromDomain, previewFile, updateFileMeta, copyFileToClipboard,
-  uploadFile, moveFileToFolder,
+  moveFileToFolder,
   createFolder, renameFolder, deleteFolder, moveFolder, reorderFolder,
 } from '@/api/db-client'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
 
 interface Folder { id: string; name: string; node_type: string; allow_children: boolean; file_count: number; parent_id?: string|null; _depth?: number; _hasChildren?: boolean }
 interface AssetFile { id: string; file_ext?: string; file_size: number; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_remark?: string; lib_folder?: string|null }
@@ -191,22 +190,16 @@ const fileTypeColors: Record<string,string> = {
 function fileTypeColor(ext?: string): string { const key = ext?.toLowerCase() || ''; return fileTypeColors[key] || 'text-slate-500 bg-slate-50' }
 
 // ─── Upload ───────────────────────────────────────────────────────────
-const { start, done, fail } = useUploadProgress()
-async function handleUpload() {
-  const result = await openDialog({ multiple: false, canCreateDirectories: false })
-  if (!result) return
-  const path = typeof result === 'string' ? result : (result as any).path
-  if (!path) return
-  const ext = path.split('.').pop() || ''
-  const name = path.replace(/^.*[\\\/]/, '')
-  const targetFolder = selectedFolderId.value
-  const task = start(name)
-  try {
-    await uploadFile({ filePath: path, fileName: name, fileExt: ext, entityType: 'library', customName: name, note: '', creator: '', folderId: targetFolder && targetFolder !== '__uncategorized__' ? targetFolder : null })
-    await loadFiles(); await loadFolders()
-    selectedFolderId.value = targetFolder
-    done(task); toast({ message: '上传成功', type: 'success' })
-  } catch (e: any) { fail(task, e.message || '上传失败'); toast({ message: '上传失败: ' + (typeof e === 'string' ? e : (e.message || '')), type: 'error' }) }
+// 上传弹窗：使用公共 UploadModal（选择文件 或 粘贴，支持编辑文件名、逐个上传入库）
+const uploadModalRef = ref<InstanceType<typeof UploadModal> | null>(null)
+
+function handleUpload() {
+  uploadModalRef.value?.open()
+}
+
+async function handleLibraryUploaded() {
+  await loadFiles()
+  await loadFolders()
 }
 
 // ─── Folder CRUD ──────────────────────────────────────────────────────
@@ -433,7 +426,7 @@ async function handleDelete(id: string) {
         </div>
 
         <!-- 未分类 -->
-        <div>
+        <div class="mt-2 pt-1.5 border-t border-surface-100">
           <button @click="selectFolder('__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="[selectedFolderId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragTargetId==='__uncategorized__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
             <div v-if="selectedFolderId==='__uncategorized__'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
             <span class="w-3 h-3 flex-shrink-0"></span>
@@ -519,6 +512,15 @@ async function handleDelete(id: string) {
     </div>
   </div>
 </div>
+
+<!-- 上传弹窗：选择文件 或 Ctrl+V 粘贴 -->
+<UploadModal
+  ref="uploadModalRef"
+  entity-type="library"
+  title="上传文件"
+  :folder-id="selectedFolderId && selectedFolderId !== '__uncategorized__' ? selectedFolderId : null"
+  @uploaded="handleLibraryUploaded"
+/>
 
 <!-- Drag ghost -->
 <Teleport to="body">

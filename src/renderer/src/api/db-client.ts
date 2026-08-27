@@ -543,6 +543,10 @@ export async function fetchFiles(projectId: string): Promise<FileRow[]> {
 export async function uploadFile(data: unknown): Promise<FileUploadResult> {
   return invoke('file_upload', { data })
 }
+/// 删除粘贴上传产生的临时文件（仅临时目录内文件）
+export async function removeTempFile(path: string): Promise<{ success: boolean; error?: string }> {
+  return invoke('file_remove_temp', { path })
+}
 export async function deleteFile(fileId: string): Promise<void> {
   return invoke('file_delete', { fileId })
 }

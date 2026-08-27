@@ -673,7 +673,7 @@ onUnmounted(() => {
 <!-- Modals -->
 <Teleport to="body">
   <Transition name="modal-fade">
-    <div v-if="notebookPickerOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" @click.self="notebookPickerOpen = false">
+    <div v-if="notebookPickerOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm">
       <div class="bg-white rounded-2xl w-[360px] max-h-[70vh] overflow-hidden shadow-xl flex flex-col border border-[#e5e5ea]">
         <div class="flex items-center justify-between px-5 py-4 border-b border-[#e5e5ea]">
           <h3 class="text-[13px] font-semibold text-[#1d1d1f]">保存到笔记本</h3>

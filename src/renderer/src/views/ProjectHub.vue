@@ -292,6 +292,11 @@ async function clearExpectedDate() {
 
 function handleClickOutside(e: MouseEvent) {
   const target = e.target as HTMLElement
+  // 筛选下拉框（阶段/金额/时间/季度）：点击容器外统一关闭
+  // （@focusout + relatedTarget 在 macOS WebKit 中不可靠，用全局 click 兜底）
+  if (!target.closest('[data-filter-dropdown]')) {
+    closeAllDropdowns()
+  }
   if (showExpectedDateCalendar.value && !target.closest('[data-expected-calendar]')) {
     showExpectedDateCalendar.value = false
   }
@@ -626,7 +631,7 @@ async function handleImportProject() {
       </div>
 
       <!-- Status multi-select dropdown -->
-      <div class="relative flex-shrink-0" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) statusDropdownOpen = false }">
+      <div class="relative flex-shrink-0" data-filter-dropdown @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) statusDropdownOpen = false }">
         <button @click="statusDropdownOpen = !statusDropdownOpen; closeAllDropdowns('status')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none transition-colors" :class="selectedStatuses.size > 0 ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
           <span>{{ selectedStatuses.size > 0 ? `已选 ${selectedStatuses.size} 项` : '全部阶段' }}</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="statusDropdownOpen ? 'rotate-180' : ''" />
@@ -650,7 +655,7 @@ async function handleImportProject() {
       </div>
 
       <!-- Budget filter -->
-      <div class="relative flex-shrink-0" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) budgetDropdownOpen = false }">
+      <div class="relative flex-shrink-0" data-filter-dropdown @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) budgetDropdownOpen = false }">
         <button @click="budgetDropdownOpen = !budgetDropdownOpen; closeAllDropdowns('budget')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none transition-colors" :class="budgetFilter !== 'all' ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
           <span>{{ budgetOptions[budgetFilter] }}</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="budgetDropdownOpen ? 'rotate-180' : ''" />
@@ -663,7 +668,7 @@ async function handleImportProject() {
       </div>
 
       <!-- Time filter -->
-      <div class="relative flex-shrink-0" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) timeDropdownOpen = false }">
+      <div class="relative flex-shrink-0" data-filter-dropdown @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) timeDropdownOpen = false }">
         <button @click="timeDropdownOpen = !timeDropdownOpen; closeAllDropdowns('time')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none transition-colors" :class="timeFilter !== 'all' ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
           <span>{{ timeFilterLabels[timeFilter] }}</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="timeDropdownOpen ? 'rotate-180' : ''" />
@@ -676,7 +681,7 @@ async function handleImportProject() {
       </div>
 
       <!-- Quarter filter -->
-      <div class="relative flex-shrink-0" @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) quarterDropdownOpen = false }">
+      <div class="relative flex-shrink-0" data-filter-dropdown @focusout="(e) => { if (!e.currentTarget.contains(e.relatedTarget)) quarterDropdownOpen = false }">
         <button @click="quarterDropdownOpen = !quarterDropdownOpen; closeAllDropdowns('quarter')" class="flex items-center gap-1 h-7 text-xs bg-white border border-slate-200 rounded-md px-2.5 outline-none transition-colors" :class="selectedQuarter ? 'border-blue-400 text-blue-600' : 'text-slate-600'">
           <span>{{ selectedQuarter ? quarterLabel : '预计下单' }}</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="quarterDropdownOpen ? 'rotate-180' : ''" />

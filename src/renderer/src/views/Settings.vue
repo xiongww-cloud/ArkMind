@@ -1372,7 +1372,7 @@ onDeactivated(() => {
                 <button class="btn-secondary text-[11px]" :disabled="isRestoring" @click="handleRestoreAll">{{ isRestoring ? '恢复中...' : '一键恢复' }}</button>
               </div>
               <!-- Domain Selector Modal -->
-              <Teleport to="body"><Transition name="modal-fade"><div v-if="showDomainSelector" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="showDomainSelector=false">
+              <Teleport to="body"><Transition name="modal-fade"><div v-if="showDomainSelector" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
                 <div class="bg-white rounded-xl shadow-xl w-[380px] max-h-[80vh] overflow-y-auto" @click.stop>
                   <div class="flex items-center px-5 py-3 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">选择导出范围</h3></div>
                   <div class="p-5 space-y-2">
@@ -1448,7 +1448,7 @@ onDeactivated(() => {
   <!-- LLM Model Modal -->
   <Teleport to="body">
     <Transition name="modal-fade">
-      <div v-if="showProviderModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeProviderModal">
+      <div v-if="showProviderModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center">
         <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingProvider ? '编辑模型' : '添加模型' }}</h3>
           <div class="space-y-3">
@@ -1501,7 +1501,7 @@ onDeactivated(() => {
   <!-- Vision Model Modal -->
   <Teleport to="body">
     <Transition name="modal-fade">
-      <div v-if="showVisionModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeVisionModal">
+      <div v-if="showVisionModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center">
         <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingVision ? '编辑 视觉模型' : '添加 视觉模型' }}</h3>
           <div class="space-y-3">
@@ -1554,7 +1554,7 @@ onDeactivated(() => {
   <!-- Vector Modal -->
   <Teleport to="body">
     <Transition name="modal-fade">
-      <div v-if="showVecModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeVecModal">
+      <div v-if="showVecModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center">
         <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] p-6">
           <h3 class="text-[14px] font-semibold text-surface-800 mb-4">向量模型配置</h3>
           <div class="space-y-3">

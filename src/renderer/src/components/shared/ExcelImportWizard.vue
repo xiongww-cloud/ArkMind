@@ -411,7 +411,6 @@ function isRequiredMapped(): boolean {
       <div
         v-if="modelValue && step > 0"
         class="fixed inset-0 z-[85] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-        @click.self="close"
       >
         <div
           class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl mx-4 flex flex-col overflow-hidden"

@@ -6,7 +6,7 @@ import { useSelectionStore } from '@/stores/selection'
 import { confirm, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
-import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, getMaterialAssociations, updateMaterialAssociations, updateFileMeta, exportWriteBuffer } from '@/api/db-client'
+import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, getMaterialAssociations, updateMaterialAssociations, updateFileMeta, exportWriteBuffer, removeTempFile } from '@/api/db-client'
 import { exportProductsToExcel } from '@/utils/productExcel'
 import ExcelImportWizard from '@/components/shared/ExcelImportWizard.vue'
 import type { ImportField, RawDataRow, SheetData } from '@/utils/excelRaw'
@@ -14,6 +14,8 @@ import { useUploadProgress } from '@/composables/useUploadProgress'
 import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { invoke } from '@tauri-apps/api/core'
+import { isMac } from '@/utils/platform'
 import { formatDateTime } from '@/utils/time'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 
@@ -317,10 +319,18 @@ function onFullSpecsInput() {
 // ═══════════════════════════════════════════════════════════════════
 const materials = ref<any[]>([])
 const materialUploadOpen = ref(false)
-const materialFile = ref<any>(null)
+// 待上传物料：name 不含扩展名，ext 单独存（编辑文件名不涉及后缀）
+const materialFiles = ref<Array<{ path: string; name: string; ext: string; _temp?: boolean }>>([])
 const materialDragOver = ref(false)
 const materialType = ref('彩页')
 const materialNote = ref('')
+
+/** 拆分为 名称 + 扩展名（名称不含后缀，ext 小写） */
+function splitNameExt(fileName: string): { name: string; ext: string } {
+  const i = fileName.lastIndexOf('.')
+  if (i > 0) return { name: fileName.slice(0, i), ext: fileName.slice(i + 1).toLowerCase() }
+  return { name: fileName, ext: '' }
+}
 const materialAssoc = ref<{ productIds: string[], seriesIds: string[] }>({ productIds: [], seriesIds: [] })
 const materialSearch = ref('')
 const materialProjectsExpanded = ref(false)
@@ -336,6 +346,66 @@ function onMaterialDrop(e: DragEvent) {
   e.preventDefault()
   // Don't clear materialDragOver here — the Tauri native onDragDropEvent listener
   // needs it to be true to capture the file path. It will be cleared by the listener.
+}
+
+/** 粘贴上传：剪贴板文件/截图 → 保存临时文件 → 加入待上传列表 */
+async function onMaterialPaste(e: ClipboardEvent) {
+  let added = 0
+  const files = e.clipboardData?.files
+  if (files && files.length > 0) {
+    e.preventDefault()
+    for (const file of Array.from(files)) {
+      const rawName = file.name || 'pasted'
+      const ext = (rawName.split('.').pop() || file.type.split('/')[1] || 'bin').toLowerCase()
+      try {
+        const buf = await file.arrayBuffer()
+        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: file.name || null })
+        if (r?.success && r.path) {
+          const displayName = r.name || rawName
+          const { name, ext: e } = splitNameExt(displayName)
+          materialFiles.value.push({ path: r.path, name: name || 'pasted', ext: e || ext, _temp: true })
+          added++
+        }
+      } catch (err) { console.warn('[ProductCenter] paste save failed:', err) }
+    }
+  }
+  // 回退：从 clipboardData.items 获取图片（截图等无文件名）
+  if (added === 0) {
+    const items = e.clipboardData?.items
+    if (items) {
+      for (const item of items) {
+        if (!item.type.startsWith('image/')) continue
+        e.preventDefault()
+        const file = item.getAsFile()
+        if (!file) continue
+        try {
+          const buf = await file.arrayBuffer()
+          const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : (item.type.split('/')[1] || 'png')
+          const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: null })
+          if (r?.success && r.path) {
+            const displayName = r.name || 'pasted'
+            const { name, ext: e } = splitNameExt(displayName)
+            materialFiles.value.push({ path: r.path, name: name || 'pasted', ext: e || ext, _temp: true })
+            added++
+          }
+        } catch (err) { console.warn('[ProductCenter] paste image failed:', err) }
+      }
+    }
+  }
+  // macOS：WebKit 不把剪贴板文件暴露给 clipboardData，从后端 NSPasteboard 读取
+  if (isMac && added === 0) {
+    try {
+      const r: any = await invoke('chat_read_macos_clipboard_files')
+      if (r?.success && Array.isArray(r.files) && r.files.length) {
+        for (const f of r.files) {
+          const displayName = f.name || 'pasted'
+          const { name, ext } = splitNameExt(displayName)
+          materialFiles.value.push({ path: f.path, name: name || 'pasted', ext, _temp: true })
+        }
+      }
+    } catch (err) { console.warn('[ProductCenter] macos clipboard read failed:', err) }
+  }
+  if (added > 0) toast({ message: `已粘贴 ${added} 个文件`, type: 'success' })
 }
 
 const materialTypeOptions = ['彩页', '白皮书', '检测报告', '其他']
@@ -356,18 +426,23 @@ async function loadMaterials() { if (!selectedProductId.value) return; try { con
 
 async function openMaterialUpload() {
   assocMaterialId.value = null // clear associate mode
-  materialFile.value = null; materialType.value = '彩页'; materialNote.value = ''
+  materialFiles.value = []; materialType.value = '彩页'; materialNote.value = ''
   materialAssoc.value = { productIds: [selectedProductId.value!], seriesIds: [] }
   modalCollapsed.value = Object.fromEntries((store.series as any[]).map((s: any) => [s.id, true]))
   materialUploadOpen.value = true
 }
 async function handleFilePick() {
   try {
-    const result = await openDialog({ multiple: false, canCreateDirectories: false })
+    const result = await openDialog({ multiple: true, canCreateDirectories: false })
     if (!result) return
-    const path = typeof result === 'string' ? result : (result as any).path || result
-    const name = typeof result === 'string' ? path.replace(/^.*[\\\/]/, '') : ((result as any).name || path.replace(/^.*[\\\/]/, ''))
-    materialFile.value = { path, name }
+    const paths: string[] = Array.isArray(result) ? result : [result as string]
+    for (const p of paths) {
+      const path = typeof p === 'string' ? p : (p as any).path || p
+      const fullName = typeof p === 'string' ? path.replace(/^.*[\\\/]/, '') : ((p as any).name || path.replace(/^.*[\\\/]/, ''))
+      if (materialFiles.value.some(f => f.path === path)) continue
+      const { name, ext } = splitNameExt(fullName)
+      materialFiles.value.push({ path, name: name || '未命名', ext })
+    }
   } catch (e) {
     console.error('handleFilePick error:', e)
     toast({ message: '打开文件对话框失败', type: 'error' })
@@ -393,20 +468,51 @@ const { start: upStart, done: upDone, fail: upFail } = useUploadProgress()
 
 async function confirmUpload() {
   const productIds = materialAssoc.value.productIds.filter((id: string) => id)
-  if (!materialFile.value || productIds.length === 0) { toast({ message: '请选择文件和关联产品', type: 'error' }); return }
-  const path = materialFile.value.path || materialFile.value
-  const name = materialFile.value.name || path.replace(/^.*[\\\/]/, '')
-  const ext = name.split('.').pop() || ''
-  const matType = materialType.value === '彩页' ? 'BROCHURE' : materialType.value === '白皮书' ? 'WHITEPAPER' : materialType.value === '检测报告' ? 'TEST_REPORT' : 'OTHER'
-  const task = upStart(name)
-  // 关闭弹窗，异步上传
+  if (!materialFiles.value.length || productIds.length === 0) { toast({ message: '请选择文件和关联产品', type: 'error' }); return }
+  const files = [...materialFiles.value]
+  // 关闭弹窗，异步逐个上传
   materialUploadOpen.value = false
-  uploadFile({ filePath: path, fileName: name, fileExt: ext, entityType: 'product', entityIds: productIds, customName: name, note: materialType.value, creator: '' })
-    .then(async () => {
-      await loadMaterials()
-      upDone(task); toast({ message: '物料上传成功', type: 'success' })
-    })
-    .catch((e: any) => { upFail(task, e.message); toast({ message: e.message || '上传失败', type: 'error' }) })
+  let ok = 0
+  let fail = 0
+  for (const f of files) {
+    const path = f.path
+    const baseName = f.name || path.replace(/^.*[\\\/]/, '').replace(/\.[^.]+$/, '')
+    const ext = f.ext || ''
+    const name = ext ? `${baseName}.${ext}` : baseName
+    const task = upStart(name)
+    try {
+      await uploadFile({ filePath: path, fileName: name, fileExt: ext, entityType: 'product', entityIds: productIds, customName: name, note: materialType.value, creator: '' })
+      ok++
+      upDone(task)
+    } catch (e: any) {
+      fail++
+      upFail(task, e.message)
+    } finally {
+      // 粘贴产生的临时文件，上传后清理
+      if (f._temp && path) { try { await removeTempFile(path) } catch {} }
+    }
+  }
+  await loadMaterials()
+  if (ok > 0 && fail === 0) toast({ message: `物料上传成功 ${ok} 个`, type: 'success' })
+  else if (ok > 0) toast({ message: `物料上传完成：成功 ${ok}，失败 ${fail}`, type: 'warning' })
+  else toast({ message: '物料上传失败', type: 'error' })
+}
+
+/** 移除待上传物料项（粘贴产生的同步删除临时文件） */
+function removeMaterialFile(idx: number) {
+  const f = materialFiles.value[idx]
+  if (f && f._temp && f.path) {
+    try { removeTempFile(f.path).catch(() => {}) } catch {}
+  }
+  materialFiles.value.splice(idx, 1)
+}
+function clearMaterialFiles() {
+  for (const f of materialFiles.value) {
+    if (f._temp && f.path) {
+      try { removeTempFile(f.path).catch(() => {}) } catch {}
+    }
+  }
+  materialFiles.value = []
 }
 async function handleDeleteMaterial(mid: string) {
   const ok = await dangerConfirm({ title: '删除物料', message: '确定删除此物料？', confirmText: '删除' })
@@ -433,7 +539,7 @@ async function handlePreviewMaterial(mid: string) {
 }
 async function openAssocMaterial(m: any) {
   assocMaterialId.value = m.id
-  materialFile.value = null
+  materialFiles.value = []
   // 加载已有的产品关联
   let ids: string[] = []
   try {
@@ -477,9 +583,12 @@ onMounted(async () => {
       if (event.payload.type === 'drop' && materialDragOver.value) {
         const paths = event.payload.paths
         if (paths && paths.length > 0) {
-          const filePath = paths[0]
-          const name = filePath.replace(/^.*[\\\/]/, '')
-          materialFile.value = { name, path: filePath, size: 0 }
+          for (const filePath of paths) {
+            const fullName = filePath.replace(/^.*[\\\/]/, '')
+            if (materialFiles.value.some(f => f.path === filePath)) continue
+            const { name, ext } = splitNameExt(fullName)
+            materialFiles.value.push({ path: filePath, name: name || '未命名', ext })
+          }
         }
         materialDragOver.value = false
       } else if (event.payload.type === 'leave') {
@@ -525,6 +634,8 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
       <div class="px-2 py-1">
         <div><button @click="selectSeries(null)" :data-drop-target="'__root__'" class="flex items-center gap-2 w-full py-1.5 px-2 text-xs text-left transition-all duration-150 rounded-lg relative overflow-hidden" style="padding-left:12px" :class="[selectedSeriesId===null?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragTargetId==='__root__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']"><div v-if="selectedSeriesId===null" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div><AppIcon name="grid" size="13" class="flex-shrink-0"/>全部产品</button></div>
         <template v-for="(s) in seriesTree" :key="s.id">
+          <!-- 未分类上方分隔线 -->
+          <div v-if="s.name === UNCATEGORIZED_NAME" class="mb-1 mt-2 pt-1.5 border-t border-surface-100"></div>
           <!-- Insertion line: above -->
           <div v-if="isDragging && dragType==='series' && dragInsert?.targetId===s.id && dragInsert?.side==='above'" class="insertion-line" :style="{ marginLeft: `${4 + (s._depth||0) * 16}px` }"></div>
           <div v-if="editingSeriesId===s.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${12 + (s._depth||0) * 16}px` }"><span v-if="s.name !== UNCATEGORIZED_NAME && s._hasChildren" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedSeries.has(s.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span><span v-else-if="s.name !== UNCATEGORIZED_NAME" class="w-3 h-3 flex-shrink-0"></span><span v-else class="w-3 h-3 flex-shrink-0"></span><AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/><input data-series-edit v-model="seriesEditName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="saveSeriesName(s.id)" @blur="saveSeriesName(s.id)"/></div>
@@ -653,7 +764,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
   />
 
   <!-- Material upload dialog -->
-  <Teleport to="body"><Transition name="modal-fade"><div v-if="materialUploadOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @click.self="materialUploadOpen=false">
+  <Teleport to="body"><Transition name="modal-fade"><div v-if="materialUploadOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @paste.prevent="onMaterialPaste">
     <div class="bg-white rounded-2xl w-[500px] max-h-[85vh] overflow-hidden shadow-2xl flex flex-col border border-surface-200">
       <div class="flex items-center px-5 py-2 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">{{ assocMaterialId ? '设置物料关联' : '上传产品物料' }}</h3></div>
 
@@ -667,22 +778,51 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
               @dragover="onMaterialDragOver"
               @dragleave="onMaterialDragLeave"
               @drop.prevent="onMaterialDrop"
-              class="w-full border-2 border-dashed rounded-xl p-5 text-center transition-all duration-200 cursor-pointer flex flex-col items-center justify-center"
-              :class="materialDragOver ? 'border-brand-400 bg-brand-50/50' : materialFile ? 'border-emerald-300 bg-emerald-50/30' : 'border-surface-200 hover:border-brand-300 hover:bg-surface-50'"
+              class="w-full border-2 border-dashed rounded-xl py-5 px-4 text-center transition-all duration-200 cursor-pointer flex items-center justify-center gap-2.5"
+              :class="materialDragOver ? 'border-brand-400 bg-brand-50/50' : materialFiles.length ? 'border-emerald-300 bg-emerald-50/30' : 'border-surface-200 hover:border-brand-300 hover:bg-surface-50'"
             >
-              <template v-if="materialFile">
-                <AppIcon name="file-doc" size="22" class="text-emerald-600 mb-1.5"/>
-                <p class="text-xs text-surface-700 font-medium">{{ materialFile.name || materialFile }}</p>
-                <p class="text-[10px] text-surface-400 mt-1">点击或拖入替换文件</p>
+              <template v-if="materialFiles.length">
+                <div class="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+                  <AppIcon name="file-doc" size="14" />
+                </div>
+                <div class="text-left">
+                  <p class="text-[12px] font-medium text-surface-700">{{ materialFiles.length }} 个文件已选择</p>
+                  <p class="text-[12px] text-surface-600 mt-0.5">点击或粘贴追加文件</p>
+                </div>
               </template>
               <template v-else>
-                <AppIcon name="upload" size="22" class="mb-1.5" :class="materialDragOver?'text-brand-500':'text-surface-400'"/>
-                <p class="text-xs font-medium" :class="materialDragOver?'text-brand-600':'text-surface-400'">
-                  {{ materialDragOver ? '释放以上传文件' : '拖拽文件到此处或点击选择' }}
-                </p>
+                <div class="w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-colors" :class="materialDragOver ? 'bg-brand-100 text-brand-600' : 'bg-surface-100 text-surface-400'">
+                  <AppIcon name="upload" size="14" />
+                </div>
+                <div class="text-left">
+                  <p class="text-[12px] font-medium text-surface-700" :class="materialDragOver ? 'text-brand-600' : 'text-surface-700'">
+                    {{ materialDragOver ? '释放以上传文件' : '点击选择或按 Ctrl+V 粘贴' }}
+                  </p>
+                </div>
               </template>
             </div>
-            <button v-if="materialFile" @click="materialFile = null" class="absolute top-2 right-2 w-5 h-5 flex items-center justify-center rounded-full bg-white border border-surface-200 text-surface-400 hover:text-red-500 hover:border-red-200 transition-colors" title="移除文件"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M6 18L18 6"/></svg></button>
+          </div>
+          <!-- 已选文件列表 -->
+          <div v-if="materialFiles.length" class="mt-2 space-y-1.5 max-h-[180px] overflow-y-auto">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-medium text-surface-500">已选择 {{ materialFiles.length }} 个文件</span>
+              <button @click="clearMaterialFiles" class="text-[11px] text-surface-400 hover:text-red-500 transition-colors">清空</button>
+            </div>
+            <div v-for="(f, idx) in materialFiles" :key="f.path" class="group flex items-center gap-2 px-3 py-1.5 rounded-lg border border-surface-200 bg-white hover:border-surface-300 transition-colors">
+              <div class="w-7 h-7 rounded-md bg-surface-50 border border-surface-100 flex items-center justify-center flex-shrink-0">
+                <AppIcon name="file-doc" size="13" class="text-surface-500" />
+              </div>
+              <div class="flex-1 min-w-0 flex items-center gap-1">
+                <input
+                  v-model="f.name"
+                  @focus="$event.target.select()"
+                  class="flex-1 min-w-0 text-[12px] font-medium text-surface-800 bg-transparent border border-transparent focus:border-brand-400 focus:bg-white rounded px-1 py-0.5 outline-none transition-colors"
+                  title="编辑文件名"
+                />
+                <span v-if="f.ext" class="text-[10px] text-surface-400 flex-shrink-0">.{{ f.ext }}</span>
+              </div>
+              <button @click="removeMaterialFile(idx)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100" title="移除"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M6 18L18 6"/></svg></button>
+            </div>
           </div>
         </div>
 

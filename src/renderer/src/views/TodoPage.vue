@@ -3,9 +3,9 @@ import { ref, computed, onMounted, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSelectionStore } from '@/stores/selection'
 import AppIcon from '@/components/common/AppIcon.vue'
+import UploadModal from '@/components/shared/UploadModal.vue'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
-import { useUploadProgress } from '@/composables/useUploadProgress'
 import { fmtDate, formatSize, fileDisplayName, fileTypeColor } from '@/utils/format'
 import { fetchProjects, fetchTodos, fetchFiles, createTodo as apiCreateTodo, updateTodo as apiUpdateTodo, deleteTodo as apiDeleteTodo, toggleTodo as apiToggleTodo, previewFile, uploadFile, deleteFileFromDomain, fetchFilesByTodo, fetchFileTree } from '@/api/db-client'
 import TodoDetail from './TodoDetail.vue'
@@ -160,27 +160,20 @@ function formatTodoFileSize(bytes: number | undefined): string {
   return bytes+' B'
 }
 
-const { start: tdStart, done: tdDone, fail: tdFail } = useUploadProgress()
-
 // ─── Upload / Remove ───────────────────────────────────────────
-async function handleUpload() {
+const uploadModalRef = ref<InstanceType<typeof UploadModal> | null>(null)
+
+function handleUpload() {
   if (!selectedTodoId.value) return
-  const { open } = await import('@tauri-apps/plugin-dialog')
-  const result = await open({ multiple: false, canCreateDirectories: false })
-  if (!result) return
-  const filePath = result as string
-  const fileName = filePath.replace(/^.*[\\\/]/, '')
-  const ext = fileName.includes('.') ? fileName.split('.').pop() || '' : ''
-  const task = tdStart(fileName)
+  uploadModalRef.value?.open()
+}
+
+async function handleTodoUploaded() {
+  if (!selectedTodoId.value) return
   try {
-    const r: any = await uploadFile({ filePath, fileName, fileExt: ext, customName: fileName, entityType: 'todo', entityId: selectedTodoId.value })
-    const fileId = r?.fileId || r?.id
-    if (fileId) {
-      const list: any = await fetchFilesByTodo(selectedTodoId.value)
-      todoFiles.value = list?.files || []
-      tdDone(task); toast({ message: '附件已上传', type: 'success' })
-    }
-  } catch (e: any) { tdFail(task, e.message || '上传失败'); toast({ message: '上传失败: ' + (e.message || e), type: 'error' }) }
+    const list: any = await fetchFilesByTodo(selectedTodoId.value)
+    todoFiles.value = list?.files || []
+  } catch { /* ignore */ }
 }
 
 async function removeAttachment(fileId: string) {
@@ -625,6 +618,15 @@ function isOverdue(t: Todo): boolean {
       </div>
     </div>
   </div>
+
+  <!-- UploadModal：选择文件 / 粘贴上传 -->
+  <UploadModal
+    ref="uploadModalRef"
+    entity-type="todo"
+    title="上传待办附件"
+    :resolve-entity-id="() => selectedTodoId.value || undefined"
+    @uploaded="handleTodoUploaded"
+  />
 </div>
 
 </template>

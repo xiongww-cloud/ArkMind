@@ -588,8 +588,7 @@ function applyMarkup() {
 const smm = ref(false)
 const isSaving = ref(false)
 const saveError = ref('')
-const atags = ['降本减配', '增项扩容', '参数微调', '方案重构']
-const mf = reactive({ vn: '', tags: [], cm: '' })
+const mf = reactive({ cm: '' })
 function fmtVersion(v) {
   if (!v) return ''
   return v.replace(/^V/, 'v')
@@ -739,11 +738,6 @@ async function ommBlank() {
   aii.value = null
   clearValidation()
 }
-function tmt(tag) {
-  const i = mf.tags.indexOf(tag)
-  if (i > -1) mf.tags.splice(i, 1)
-  else mf.tags.push(tag)
-}
 function findUnknownDevices(items) {
   if (!items || !Array.isArray(items)) return []
   return items.filter((item) => {
@@ -809,13 +803,11 @@ async function preSave() {
     }
   }
 
-  mf.tags = [...(Array.isArray(cplan.value.draft.tags) ? cplan.value.draft.tags : [])]
   mf.cm = cplan.value.draft.content || ''
   smm.value = true
 }
 function confirmSave() {
   if (!cplan.value?.draft) return
-  cplan.value.draft.tags = [...mf.tags]
   cplan.value.draft.content = mf.cm.trim()
   smm.value = false
   sdv()
@@ -852,7 +844,7 @@ async function sdv() {
     try {
       r = await projectStore.savePlanVersion(props.project.id, cplan.value.id, {
         versionNum: d.versionNum,
-        tags: Array.isArray(d.tags) ? d.tags : [],
+        tags: [],
         content: d.content || '',
         operator: d.operator || op.value,
         deviceItems,
@@ -964,28 +956,6 @@ function sed() {
   av.value = 'edit'
   aii.value = null
   clearValidation()
-}
-
-function tdc(tag) {
-  if (tag.includes('降本')) return 'fill-red-500'
-  if (tag.includes('扩容')) return 'fill-green-500'
-  if (tag.includes('微调')) return 'fill-yellow-500'
-  if (tag.includes('重构')) return 'fill-blue-500'
-  return 'fill-gray-400'
-}
-function tc(tag) {
-  if (tag.includes('降本')) return 'bg-red-100 text-red-600'
-  if (tag.includes('扩容')) return 'bg-green-100 text-green-600'
-  if (tag.includes('微调')) return 'bg-yellow-100 text-yellow-700'
-  if (tag.includes('重构')) return 'bg-blue-100 text-blue-600'
-  return 'bg-gray-100 text-gray-500'
-}
-function tac(tag) {
-  if (tag.includes('降本')) return 'bg-red-100 text-red-600 border-red-200'
-  if (tag.includes('扩容')) return 'bg-green-100 text-green-600 border-green-200'
-  if (tag.includes('微调')) return 'bg-yellow-100 text-yellow-700 border-yellow-200'
-  if (tag.includes('重构')) return 'bg-blue-100 text-blue-600 border-blue-200'
-  return 'bg-gray-200 text-gray-700 border-gray-300'
 }
 
 async function evx(ver) {
@@ -1184,7 +1154,7 @@ const saveDraft = () => {
       _versionId: draft._versionId,
       versionNum: draft.versionNum,
       content: draft.content || '',
-      tags: Array.isArray(draft.tags) ? draft.tags : [],
+      tags: [],
       deviceItems: mapItemsToBackend(draft.items)
     })
   }
@@ -1357,7 +1327,7 @@ onUnmounted(() => {
             @keyup.enter="crp"
             @keyup.escape="crpc"
             @click.stop
-            class="flex-1 min-w-0 text-sm px-1 py-0.5 border border-blue-400 rounded outline-none focus:ring-1 focus:ring-blue-500"
+            class="flex-1 min-w-0 text-xs px-1 py-0.5 border border-blue-400 rounded outline-none focus:ring-1 focus:ring-blue-500"
           />
           <span v-else class="text-xs truncate block w-full flex-1 min-w-0">{{ plan.name }}</span>
           <span class="text-[11px] text-surface-400 font-mono flex-shrink-0 ml-2">{{
@@ -1490,21 +1460,6 @@ onUnmounted(() => {
                 :class="idx === 0 && !cplan?.draft ? 'text-brand-600' : 'text-surface-600'"
                 >{{ fmtVersion(entry.data.versionNum) }}</span
               >
-              <div
-                class="flex items-center gap-1 shrink-0"
-                v-if="entry.data.tags && entry.data.tags.length"
-              >
-                <span
-                  v-for="tag in entry.data.tags.slice(0, 2)"
-                  :key="tag"
-                  class="px-1.5 py-0.5 rounded text-[9px] font-medium flex-shrink-0"
-                  :class="tc(tag)"
-                  >{{ tag }}</span
-                >
-                <span v-if="entry.data.tags.length > 2" class="text-[9px] text-surface-400"
-                  >+{{ entry.data.tags.length - 2 }}</span
-                >
-              </div>
               <span class="text-[10px] text-surface-400 shrink-0">{{
                 formatDateTime(entry.data.createdAt)
               }}</span>
@@ -2046,26 +2001,6 @@ onUnmounted(() => {
         </div>
         <div class="p-6 space-y-4">
           <div>
-            <label class="block text-[11px] font-medium text-gray-500 mb-1.5">变更标签</label>
-            <div class="flex flex-wrap gap-1.5">
-              <button
-                v-for="tag in atags"
-                :key="tag"
-                @click="tmt(tag)"
-                class="px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors border"
-                :class="
-                  mf.tags.includes(tag)
-                    ? tac(tag)
-                    : 'bg-gray-50 text-gray-400 border-gray-200 hover:border-gray-300'
-                "
-              >
-                <svg class="w-1.5 h-1.5 inline-block mr-1 -mt-px" viewBox="0 0 6 6">
-                  <circle cx="3" cy="3" r="3" :class="tdc(tag)" /></svg
-                >{{ tag }}
-              </button>
-            </div>
-          </div>
-          <div>
             <label class="block text-[11px] font-medium text-gray-500 mb-1">变更说明</label
             ><textarea
               v-model="mf.cm"
@@ -2230,7 +2165,6 @@ onUnmounted(() => {
     <div
       v-if="showSCTAllocator"
       class="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 backdrop-blur-sm"
-      @click.self="handleServiceFeeCancel"
     >
       <div
         class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4 flex flex-col overflow-hidden"

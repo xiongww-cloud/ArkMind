@@ -3,9 +3,9 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
 import { confirm, dangerConfirm, alert } from '@/composables/useConfirm'
-import { useUploadProgress } from '@/composables/useUploadProgress'
 import AppIcon from '@/components/common/AppIcon.vue'
 import FolderTree from '@/components/common/FolderTree.vue'
+import UploadModal from '@/components/shared/UploadModal.vue'
 import { formatDateTime } from '@/utils/time'
 import * as api from '@/api/db-client'
 
@@ -20,7 +20,6 @@ const props = defineProps({
 
 const projectStore = useProjectStore()
 const authStore = useAuthStore()
-const { start: upStart, done: upDone, fail: upFail } = useUploadProgress()
 
 const isArchived = computed(() => {
   const project = projectStore.getProjectById(props.projectId)
@@ -307,30 +306,31 @@ onUnmounted(() => {
   if (dragFileTimer.value) clearTimeout(dragFileTimer.value)
 })
 
-// ─── Upload new file (batch) ─────────────────────────────────────────────────
-async function triggerNewFile() {
+// ─── Upload new file (选择 / 粘贴，经 UploadModal) ─────────────────────────
+const uploadModalRef = ref<InstanceType<typeof UploadModal> | null>(null)
+
+function triggerNewFile() {
+  uploadModalRef.value?.open()
+}
+
+async function resolveProjectBackendId(): Promise<string | undefined> {
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const result = await open({ multiple: true, canCreateDirectories: false })
-    if (!result) return
-    const paths: string[] = Array.isArray(result) ? result : [result as string]
-    if (paths.length === 0) return
-    const backendId = await projectStore.syncProjectToBackend(props.projectId)
-    const folderId = selectedFolderId.value && selectedFolderId.value !== '__uncategorized__' ? selectedFolderId.value : null
-    for (const filePath of paths) {
-      const name = filePath.replace(/^.*[\\\/]/, '')
-      const ext = name.includes('.') ? name.split('.').pop() || '' : ''
-      const task = upStart(name)
-      try {
-        await api.uploadFile({ filePath, fileExt: ext, entityType: 'project', entityId: backendId, customName: name, creator: authStore.currentUser.name, folderId })
-        upDone(task)
-      } catch (e: any) { upFail(task, e.message || '上传失败') }
-    }
-    await loadFiles()
-    const fileNames = paths.map(p => p.replace(/^.*[\\\/]/, ''))
-    await projectStore.addProjectDynamic(props.projectId, `上传了文件「${fileNames.join('」「')}」`)
-    await projectStore.fetchProjectDynamics(props.projectId)
-  } catch (e) { console.warn('文件选择失败', e); toast({ message: '文件选择仅支持桌面环境', type: 'error' }) }
+    return await projectStore.syncProjectToBackend(props.projectId)
+  } catch (e) {
+    console.warn('[FileManager] 同步项目后端失败', e)
+    return undefined
+  }
+}
+
+async function handleProjectUploaded() {
+  await loadFiles()
+  await projectStore.fetchProjectDynamics(props.projectId)
+}
+
+async function handleProjectUploadDone({ ok }: { ok: number; fail: number }) {
+  if (ok > 0) {
+    await projectStore.addProjectDynamic(props.projectId, `上传了 ${ok} 个文件`)
+  }
 }
 
 // ─── Delete file — API-backed cascade delete + physical file removal ──────────
@@ -496,6 +496,18 @@ function getFileColor(fileName) {
       </div>
     </div>
   </div>
+
+  <!-- UploadModal：选择文件 / 粘贴上传 -->
+  <UploadModal
+    ref="uploadModalRef"
+    entity-type="project"
+    title="上传项目文件"
+    :resolve-entity-id="resolveProjectBackendId"
+    :folder-id="selectedFolderId && selectedFolderId !== '__uncategorized__' ? selectedFolderId : null"
+    :creator="authStore.currentUser.name"
+    @uploaded="handleProjectUploaded"
+    @done="handleProjectUploadDone"
+  />
 
   <!-- Drag ghost -->
   <Teleport to="body">
