@@ -15,7 +15,7 @@ import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
-import { isMac } from '@/utils/platform'
+import { isMac, pasteShortcut } from '@/utils/platform'
 import { formatDateTime } from '@/utils/time'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 
@@ -796,7 +796,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                 </div>
                 <div class="text-left">
                   <p class="text-[12px] font-medium text-surface-700" :class="materialDragOver ? 'text-brand-600' : 'text-surface-700'">
-                    {{ materialDragOver ? '释放以上传文件' : '点击选择或按 Ctrl+V 粘贴' }}
+                    {{ materialDragOver ? '释放以上传文件' : `点击选择或按 ${pasteShortcut} 粘贴` }}
                   </p>
                 </div>
               </template>

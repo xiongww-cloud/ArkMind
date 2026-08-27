@@ -21,7 +21,7 @@ import { uploadFile, removeTempFile } from '@/api/db-client'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from '@/composables/useToast'
-import { isMac } from '@/utils/platform'
+import { isMac, pasteShortcut } from '@/utils/platform'
 
 const props = defineProps<{
   entityType: string
@@ -232,7 +232,7 @@ defineExpose({ open, close })
               </div>
               <div class="text-left">
                 <p class="text-[12px] font-medium text-surface-700">
-                  {{ pendingUploads.length ? `已选择 ${pendingUploads.length} 个文件` : '点击选择或按 Ctrl+V 粘贴' }}
+                  {{ pendingUploads.length ? `已选择 ${pendingUploads.length} 个文件` : `点击选择或按 ${pasteShortcut} 粘贴` }}
                 </p>
                 <p v-if="pendingUploads.length" class="text-[12px] text-surface-600 mt-0.5">点击或粘贴追加文件</p>
               </div>
