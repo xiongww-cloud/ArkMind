@@ -242,7 +242,7 @@ pub async fn kb_memory_parents(source_type: String, source_id: String) -> Result
         let lat = p["last_access_at"].as_i64().unwrap_or(0);
         let access_count = p["access_count"].as_i64().unwrap_or(0);
         let effective = if lat > 0 { base * (-GAMMA * ((now as i64 - lat) as f64)).exp() } else { let created = p["created_ts"].as_i64().unwrap_or(now as i64); base * (-GAMMA * ((now as i64 - created) as f64)).exp() };
-        let content = p["content"].as_str().unwrap_or("").chars().take(300).collect::<String>();
+        let content = p["content"].as_str().unwrap_or("").to_string();
         let doc_title = p["doc_title"].as_str().unwrap_or("").to_string();
 
         // Child count

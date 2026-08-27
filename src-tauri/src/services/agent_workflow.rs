@@ -1623,7 +1623,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
                 if !meta.is_empty() { meta.push('\n'); }
                 meta.push_str(&time_info);
             }
-            let preview: String = content.chars().take(1300).collect();
+            let preview = content.clone();
             if meta.is_empty() { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}", idx + 1, rrf_tag, boost_tag, preview)); }
             else { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}\n--------\n{}", idx + 1, rrf_tag, boost_tag, meta, preview)); }
 
@@ -1705,7 +1705,7 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     // 构建 chunks 数组
     let chunks: Vec<Value> = non_memory.iter().map(|(score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)| {
         let short_chunk_id: String = chunk_id.chars().take(8).collect();
-        let preview: String = content.chars().take(1300).collect();
+        let preview = content.clone();
         // 查询时间信息
         let created_at: String = database::get(
             "SELECT created_at FROM knowledge_chunks WHERE id=?1",
@@ -1809,7 +1809,7 @@ fn execute_traverse(chunk_id: &str, edge_type: &str, radius: usize, visited: &st
                 let r2 = database::get("SELECT chunk_id, content, chunk_index FROM knowledge_chunks WHERE source_data_id=?1 AND chunk_type='parent' AND chunk_index=?2",&[json!(sdid),json!(target)]).ok().flatten()?;
                 let cid_out = r2["chunk_id"].as_str().unwrap_or("").to_string();
                 let short = cid_out.chars().take(8).collect::<String>();
-                let content = r2["content"].as_str().unwrap_or(""); let preview = content.chars().take(600).collect::<String>();
+                let preview = r2["content"].as_str().unwrap_or("").to_string();
                 Some((short, preview, target))
             };
             let mut chunks = Vec::new();
@@ -1973,8 +1973,7 @@ async fn execute_batch_search(queries: &[Vec<String>], scope_rowids: Option<std:
             total_hits += 1;
             if let Ok(Some(r)) = database::get("SELECT p.content FROM knowledge_chunks c JOIN knowledge_chunks p ON p.chunk_id=c.parent_id WHERE c.chunk_id=?1",&[json!(chunk_id)]) {
                 if let Some(content) = r["content"].as_str() {
-                    let preview: String = content.chars().take(500).collect();
-                    out.push_str(&format!("**[{}] RRF={:.3} | source_id: {}**\n> {}\n\n", kw_str, rrf, source_display, preview.replace('\n', "\n> ")));
+                    out.push_str(&format!("**[{}] RRF={:.3} | source_id: {}**\n> {}\n\n", kw_str, rrf, source_display, content.replace('\n', "\n> ")));
                 }
             }
         }
@@ -2509,17 +2508,7 @@ fn fetch_parent_chunks(source_data_id: &str, source_type: &str, source_id: &str,
     let chunks: Vec<serde_json::Value> = rows.iter().enumerate().map(|(_i, r)| {
         let content = r["content"].as_str().unwrap_or("");
         let chunk_id = r["chunk_id"].as_str().unwrap_or("");
-        // 安全截断：使用 char_indices 确保不在 UTF-8 字符中间截断
-        let content_truncated = if content.len() > 1800 {
-            let mut end = 0;
-            for (i, _) in content.char_indices() {
-                if i > 1800 { break; }
-                end = i;
-            }
-            &content[..end]
-        } else {
-            content
-        };
+        let content_truncated = content;
         json!({
             "index": r["chunk_index"].as_i64().unwrap_or(0) + 1,
             "chunk_id": chunk_id.chars().take(8).collect::<String>(),
