@@ -16,7 +16,6 @@ import { useMultiSelect } from '@/composables/useMultiSelect'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { isMac, pasteShortcut } from '@/utils/platform'
-import { useGlobalPaste } from '@/composables/useGlobalPaste'
 import { formatDateTime } from '@/utils/time'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 
@@ -320,6 +319,7 @@ function onFullSpecsInput() {
 // ═══════════════════════════════════════════════════════════════════
 const materials = ref<any[]>([])
 const materialUploadOpen = ref(false)
+const materialModalRef = ref<HTMLElement | null>(null)
 // 待上传物料：name 不含扩展名，ext 单独存（编辑文件名不涉及后缀）
 const materialFiles = ref<Array<{ path: string; name: string; ext: string; _temp?: boolean }>>([])
 const materialDragOver = ref(false)
@@ -408,20 +408,24 @@ async function readMaterialMacClipboard() {
       for (const f of r.files) {
         const displayName = f.name || 'pasted'
         const { name, ext } = splitNameExt(displayName)
+        // 去重：keydown 与 paste 可能双触发
+        if (materialFiles.value.some(m => m.path === f.path)) continue
         materialFiles.value.push({ path: f.path, name: name || 'pasted', ext, _temp: true })
       }
     }
   } catch (err) { console.warn('[ProductCenter] macos clipboard read failed:', err) }
 }
 
-// 全局 ⌘V/Ctrl+V 兜底（macOS 上 paste 事件依赖焦点，弹窗内直接按快捷键不触发）
-useGlobalPaste(materialUploadOpen, () => {
-  if (isMac) {
-    readMaterialMacClipboard()
-  } else {
-    readMaterialMacClipboard()
-  }
-})
+/** 物料弹窗 keydown 兜底：⌘V/Ctrl+V 直接读取剪贴板（macOS 上 paste 事件不可靠） */
+function onMaterialModalKeydown(e: KeyboardEvent) {
+  if (!materialUploadOpen.value) return
+  const meta = isMac ? e.metaKey : e.ctrlKey
+  if (!meta || (e.key !== 'v' && e.key !== 'V')) return
+  const el = document.activeElement
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+  e.preventDefault()
+  readMaterialMacClipboard()
+}
 
 const materialTypeOptions = ['彩页', '白皮书', '检测报告', '其他']
 const materialTypeLabels: Record<string, string> = { 'BROCHURE': '彩页', 'WHITEPAPER': '白皮书', 'TEST_REPORT': '检测报告', 'OTHER': '其他' }
@@ -445,6 +449,10 @@ async function openMaterialUpload() {
   materialAssoc.value = { productIds: [selectedProductId.value!], seriesIds: [] }
   modalCollapsed.value = Object.fromEntries((store.series as any[]).map((s: any) => [s.id, true]))
   materialUploadOpen.value = true
+  // macOS：paste 事件需焦点在可聚焦元素上，弹窗打开后聚焦容器
+  requestAnimationFrame(() => {
+    materialModalRef.value?.focus()
+  })
 }
 async function handleFilePick() {
   try {
@@ -779,7 +787,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
   />
 
   <!-- Material upload dialog -->
-  <Teleport to="body"><Transition name="modal-fade"><div v-if="materialUploadOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" @paste.prevent="onMaterialPaste">
+  <Teleport to="body"><Transition name="modal-fade"><div v-if="materialUploadOpen" ref="materialModalRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm outline-none" @paste.prevent="onMaterialPaste" @keydown="onMaterialModalKeydown">
     <div class="bg-white rounded-2xl w-[500px] max-h-[85vh] overflow-hidden shadow-2xl flex flex-col border border-surface-200">
       <div class="flex items-center px-5 py-2 border-b border-surface-100"><h3 class="text-sm font-semibold text-surface-800">{{ assocMaterialId ? '设置物料关联' : '上传产品物料' }}</h3></div>
 

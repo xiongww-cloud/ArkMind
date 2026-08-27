@@ -22,7 +22,6 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from '@/composables/useToast'
 import { isMac, pasteShortcut } from '@/utils/platform'
-import { useGlobalPaste } from '@/composables/useGlobalPaste'
 
 const props = defineProps<{
   entityType: string
@@ -56,9 +55,15 @@ function extOf(name: string): string {
   return i > 0 ? name.slice(i + 1).toLowerCase() : ''
 }
 
+const modalRef = ref<HTMLElement | null>(null)
+
 function open() {
   pendingUploads.value = []
   show.value = true
+  // macOS：paste 事件需焦点在可聚焦元素上，弹窗打开后聚焦容器
+  requestAnimationFrame(() => {
+    modalRef.value?.focus()
+  })
 }
 
 function close() {
@@ -131,20 +136,24 @@ async function readMacClipboardFiles() {
       for (const f of r.files) {
         const name = f.name || 'pasted'
         const ext = extOf(name) || f.kind || 'bin'
+        // 去重：keydown 与 paste 可能双触发
+        if (pendingUploads.value.some(u => u.tempPath === f.path)) continue
         pendingUploads.value.push({ file: f, name: name.replace(/\.[^.]+$/, ''), ext, isPath: false, tempPath: f.path })
       }
     }
   } catch (err) { console.warn('[UploadModal] macos clipboard read failed:', err) }
 }
 
-// 全局 ⌘V/Ctrl+V 兜底（macOS 上 paste 事件依赖焦点，弹窗内直接按快捷键不触发）
-useGlobalPaste(show, () => {
-  if (isMac) {
-    readMacClipboardFiles()
-  } else {
-    readMacClipboardFiles()
-  }
-})
+/** 容器 keydown 兜底：⌘V/Ctrl+V 直接读取剪贴板（macOS 上 paste 事件不可靠） */
+function onModalKeydown(e: KeyboardEvent) {
+  const meta = isMac ? e.metaKey : e.ctrlKey
+  if (!meta || (e.key !== 'v' && e.key !== 'V')) return
+  // 焦点在文件名输入框内时交系统粘贴事件处理
+  const el = document.activeElement
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+  e.preventDefault()
+  readMacClipboardFiles()
+}
 
 function removeUpload(idx: number) {
   const item = pendingUploads.value[idx]
@@ -220,8 +229,11 @@ defineExpose({ open, close })
     <Transition name="modal-fade">
       <div
         v-if="show"
-        class="fixed inset-0 z-[80] bg-black/30 flex items-center justify-center"
+        ref="modalRef"
+        tabindex="-1"
+        class="fixed inset-0 z-[80] bg-black/30 flex items-center justify-center outline-none"
         @paste.prevent="onUploadPaste"
+        @keydown="onModalKeydown"
       >
         <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] max-h-[85vh] flex flex-col overflow-hidden" @click.stop>
           <!-- 头部 -->
