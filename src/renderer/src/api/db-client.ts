@@ -791,10 +791,10 @@ export const notesV2ListOrphan = fetchOrphanNotes
 export async function notesV2ListByNotebook(notebookId: string): Promise<FetchNotesResponse> {
   return invoke('notes_list_by_notebook', { notebookId })
 }
-export async function notesV2Get(noteId: string): Promise<{ success: boolean; note: any }> {
+export async function notesV2Get(noteId: string): Promise<{ success: boolean; note: unknown }> {
   return invoke('notes_get', { noteId })
 }
-export async function notesV2GetForTrash(noteId: string): Promise<{ success: boolean; note: any }> {
+export async function notesV2GetForTrash(noteId: string): Promise<{ success: boolean; note: unknown }> {
   return invoke('notes_get_for_trash', { noteId })
 }
 export async function notesV2Create(data: unknown): Promise<{ noteId: string }> {

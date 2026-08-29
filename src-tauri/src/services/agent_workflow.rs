@@ -1133,7 +1133,13 @@ pub fn clean_tool_markers(text: &str, strip_ext_tool: bool) -> String {
 ///   - tool_calls delta 按 index 累积（工具调用决策）
 ///   - usage 统计（stream_options.include_usage）
 /// 返回 (content, reasoning_content, tool_calls, usage)
+/// 公开接口：流式调用（silent=false）
 pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
+    call_llm_streaming_inner(messages, tools, app_handle, false).await
+}
+
+/// 内部实现：silent=true 时不发 agent:token 事件（用于工具内部的 LLM 调用）
+pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>, silent: bool) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
     let (url, api_key, model) = get_api_endpoint();
     // ★ 清理消息内容中的非法字符，防止 LLM API 解析失败
     let msgs: Vec<Value> = messages.iter().enumerate().map(|(i, m)| {
@@ -1215,17 +1221,17 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
                                         .or_else(|| st.full.find("<invoke"))
                                         .unwrap_or(0);
                                     if marker > st.token_buf_start {
-                                        if let Some(ref h) = app {
+                                        if !silent { if let Some(ref h) = app {
                                             let _ = h.emit("agent:token", json!({"token": &st.token_buf[..marker - st.token_buf_start]}));
-                                        }
+                                        } }
                                     }
                                     st.suppress_tokens = true;
                                     st.token_buf.clear();
                                     st.token_buf_start = st.full.len();
                                 } else if st.token_buf.len() >= 50 || tok.contains('\n') {
-                                    if let Some(ref h) = app {
+                                    if !silent { if let Some(ref h) = app {
                                         let _ = h.emit("agent:token", json!({"token": &st.token_buf}));
-                                    }
+                                    } }
                                     st.token_buf.clear();
                                     st.token_buf_start = st.full.len();
                                 }
@@ -1274,9 +1280,9 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
     while try_process_one(&mut st, &app_handle) {}
     // 流结束后 flush 残余 buffer
     if !st.suppress_tokens && !st.token_buf.is_empty() {
-        if let Some(ref h) = app_handle {
+        if !silent { if let Some(ref h) = app_handle {
             let _ = h.emit("agent:token", json!({"token": &st.token_buf}));
-        }
+        } }
         st.token_buf.clear();
         st.token_buf_start = st.full.len();
     }
@@ -3059,7 +3065,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
 
         // ★ 单请求流式：content 逐 token 输出到前端，同时累积 tool_calls delta
         log::info!("[Agent] 调用 call_llm_streaming，messages 长度: {}", messages.len());
-        let (ac_owned, reasoning, tcs_streamed, usage) = match call_llm_streaming(&messages, Some(&tools), &app_handle).await {
+        let (ac_owned, reasoning, tcs_streamed, usage) = match call_llm_streaming_inner(&messages, Some(&tools), &app_handle, silent).await {
             Ok(r) => {
                 log::info!("[Agent] call_llm_streaming 成功: content_len={}, tool_calls={}", r.0.len(), r.2.len());
                 r
