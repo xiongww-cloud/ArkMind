@@ -20,7 +20,6 @@ const navItems = [
   { path: '/contacts', label: '通讯录', icon: 'users' },
   { path: '/products', label: '产品', icon: 'cube' },
   { path: '/assets', label: '资料', icon: 'archive' },
-  { path: '/presentations', label: '演示材料', icon: 'monitor' },
   { path: '/knowledge-graph', label: '知识观测台', icon: 'network' },
   { path: '/knowledge/brain', label: '智能问答', icon: 'chat' },
   // { path: '/agent-debug', label: 'Agent调试', icon: 'bar-chart' },

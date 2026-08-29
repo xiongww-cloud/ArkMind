@@ -10,16 +10,11 @@ export interface JumpExtra {
 }
 
 export const useSelectionStore = defineStore('selection', () => {
-  const current = reactive<{
-    type: SelectionType | null
-    id: string | null
-    seq: number
-    extra: JumpExtra | null
-  }>({
+  const current = reactive<{ type: SelectionType | null; id: string | null; seq: number; extra: JumpExtra | null }>({
     type: null,
     id: null,
     seq: 0,
-    extra: null
+    extra: null,
   })
 
   function jumpTo(t: SelectionType, i: string, extra?: JumpExtra) {

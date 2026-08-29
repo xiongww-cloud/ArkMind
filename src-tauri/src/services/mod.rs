@@ -13,7 +13,6 @@ pub mod smart_chunker;
 pub mod data_pipeline;
 pub mod synapse;
 pub mod agent_workflow;
-pub mod presentation_ai;
 pub mod source_doc_sync;
 pub mod semantic_builder;
 pub mod knowledge_lifecycle;

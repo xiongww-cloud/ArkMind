@@ -8,8 +8,7 @@ export const useLicenseStore = defineStore('license', () => {
   const product = ref('')
 
   function setTier(t: LicenseTier, p: string = '') {
-    tier.value = t
-    product.value = p
+    tier.value = t; product.value = p
   }
 
   return { tier, product, setTier }

@@ -981,50 +981,8 @@ fn resolve_graph_node_name(node_type: &str, id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 工具模式：控制 agent_chat_workflow 加载哪些工具
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ToolMode {
-    /// 通用模式：12 个基础工具（知识库/对象/项目/待办等）
-    General,
-    /// 演示材料模式：12 个基础工具 + 3 个演示材料工具
-    Presentation,
-}
-
-fn build_presentation_tool_definitions() -> Vec<Value> {
-    vec![
-        json!({"type":"function","function":{
-            "name": "pres_tool_generate_page",
-            "description": "生成一页演示材料的 HTML。逐页生成，每页调用一次。输出 <section class='slide'> 元素。使用全局 CSS 变量确保风格一致。",
-            "parameters": {"type":"object","properties":{
-                "page": {"type":"integer", "description": "页码，从 1 开始"},
-                "instruction": {"type":"string", "description": "该页的设计要求（布局、内容、风格）"},
-                "totalPages": {"type":"integer", "description": "总页数（可选，帮助 AI 理解整体结构）"}
-            }, "required": ["page", "instruction"]}
-        }}),
-        json!({"type":"function","function":{
-            "name": "pres_tool_regenerate_slide",
-            "description": "重新设计某一页的 HTML。保留核心信息，重新设计布局和样式。需要传入当前页的 HTML。",
-            "parameters": {"type":"object","properties":{
-                "page": {"type":"integer", "description": "页码，从 1 开始"},
-                "instruction": {"type":"string", "description": "修改要求"},
-                "currentHtml": {"type":"string", "description": "当前页的完整 HTML（从之前的工具结果中获取）"}
-            }, "required": ["page", "instruction", "currentHtml"]}
-        }}),
-        json!({"type":"function","function":{
-            "name": "pres_tool_modify_slide",
-            "description": "修改某一页中的特定元素。用于小调整（改颜色、改字号、改文字等）。需要传入当前页的 HTML。",
-            "parameters": {"type":"object","properties":{
-                "page": {"type":"integer", "description": "页码，从 1 开始"},
-                "instruction": {"type":"string", "description": "修改要求"},
-                "currentHtml": {"type":"string", "description": "当前页的完整 HTML"},
-                "elementSelector": {"type":"string", "description": "CSS 选择器（可选，指定要修改的元素）"}
-            }, "required": ["page", "instruction", "currentHtml"]}
-        }}),
-    ]
-}
-
-fn build_tools_definitions(tool_mode: ToolMode) -> Value {
-    let mut tools = json!([
+fn build_tools_definitions() -> Value {
+    json!([
         {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中搜索文档内容（全文检索+语义检索）。适用于：找到提到某个关键词的文档、笔记、技术资料。支持时间范围过滤。返回匹配的文档片段及 ChunkID。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
         {"type":"function","function":{"name":"ext_tool_object","description":"查询或统计业务对象。必须指定 mode 决定操作类型。如需搜索文档正文内容（笔记、文件、资料），请用 ext_tool_search。","parameters":{"type":"object","properties":{"mode":{"type":"string","enum":["detail","search","filter","count","group","aggregate"],"description":"操作模式：detail=按ID查看详情，search=关键词搜索对象目录（名称/标题），filter=按字段筛选记录，count=统计数量，group=按字段分组统计，aggregate=聚合计算(SUM/AVG/MAX/MIN)"},"id":{"type":"array","items":{"type":"string"},"description":"[detail模式-必填] 对象ID列表，格式 TYPE-UUID 或裸UUID"},"query":{"type":"string","description":"[search模式-必填] 关键词，搜索对象的名称/标题等元数据"},"type":{"type":"string","description":"[filter/count/group/aggregate模式-必填] 对象类型：PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/FILE/SOLUTION/SOLUTION_VERSION(仅filter模式)/SOLUTION_ITEM(仅filter模式)/PROJECT_DYNAMIC(仅filter模式)"},"field_filters":{"type":"array","items":{"type":"object","properties":{"field":{"type":"string"},"op":{"type":"string","enum":["=","!=",">","<",">=","<=","LIKE","IN","IS_NULL","IS_NOT_NULL"]},"value":{"type":["string","number","boolean","null"]}},"required":["field","op","value"]},"description":"[filter/count模式] 结构化字段过滤"},"group_by":{"type":"string","description":"[group模式-必填] 分组字段名"},"aggregate":{"type":"string","description":"[aggregate模式-必填] 聚合表达式：SUM(字段)/AVG(字段)/MAX(字段)/MIN(字段)"},"sort":{"type":"object","properties":{"field":{"type":"string"},"order":{"type":"string","enum":["asc","desc"]}},"description":"排序配置"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页条数，默认50"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["mode"]}}},
         {"type":"function","function":{"name":"ext_tool_chunk_navigate","description":"在知识块间翻页。next=向后翻页，prev=向前翻页。用于阅读长文档的前后内容。⚠️ chunk_id 是8位短ID，来自 search() 结果的 ChunkID 字段。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID，必须来自 search() 结果的 ChunkID 字段"},"edge_type":{"type":"string","enum":["next","prev"],"description":"next=向后翻页；prev=向前翻页"},"radius":{"type":"integer","description":"返回块数量，默认10，最大20"}},"required":["chunk_id","edge_type"]}}},
@@ -1036,16 +994,7 @@ fn build_tools_definitions(tool_mode: ToolMode) -> Value {
         {"type":"function","function":{"name":"ext_tool_memory","description":"记录和检索长期记忆。action=create(创建记忆), action=update(更新记忆内容), action=delete(删除记忆), action=search(搜索记忆，不传query或传*可列出所有记忆)。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","search"],"description":"必填。search=搜索记忆，create=创建记忆，update=更新记忆，delete=删除记忆"},"content":{"type":"string","description":"记忆内容（create/update 必填）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条记忆内容数组"},"memory_id":{"type":"string","description":"记忆ID（update/delete 必填）"},"query":{"type":"string","description":"搜索关键词（search 用）。不传或传 * 可列出所有记忆"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户策略。action=create(新增策略), action=update(更新策略), action=delete(删除策略)。策略会自动注入 prompt，无需手动查询。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"],"description":"必填。create=新增策略，update=更新策略，delete=删除策略"},"id":{"type":"string","description":"策略ID（update/delete 用）"},"content":{"type":"string","description":"策略内容（create/update 用）"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_notification","description":"管理通知。action=create(创建通知)、update(更新通知)、delete(删除通知)、list(查看通知列表)、get(查看通知详情)。只有在发现真正需要用户关注的洞察时才调用，不要滥用。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list","get"],"description":"必填。create=创建通知，update=更新通知，delete=删除通知，list=查看通知，get=查看通知详情"},"notification_id":{"type":"string","description":"通知ID（get/update/delete用）"},"type":{"type":"string","description":"通知类型: todo_due/todo_today/project_stale/bid_deadline/llm_insight"},"title":{"type":"string","description":"通知标题，简短精炼"},"content":{"type":"string","description":"通知详情，使用 Markdown 格式：支持 **加粗**、- 列表、`代码`、> 引用等，让内容结构清晰易读"},"entity_type":{"type":"string","description":"关联实体类型: todo/project/null"},"entity_id":{"type":"string","description":"关联实体ID"},"priority":{"type":"string","enum":["high","medium","low"],"description":"优先级"},"follow_up_of":{"type":"string","description":"跟进的通知ID"},"limit":{"type":"integer","description":"每页条数，默认20"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["action"]}}},
-    ]);
-    // 演示材料模式：追加 3 个演示工具
-    if tool_mode == ToolMode::Presentation {
-        if let Some(arr) = tools.as_array_mut() {
-            for t in build_presentation_tool_definitions() {
-                arr.push(t);
-            }
-        }
-    }
-    tools
+    ])
 }
 
 
@@ -1185,11 +1134,6 @@ pub fn clean_tool_markers(text: &str, strip_ext_tool: bool) -> String {
 ///   - usage 统计（stream_options.include_usage）
 /// 返回 (content, reasoning_content, tool_calls, usage)
 pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
-    call_llm_streaming_inner(messages, tools, app_handle, false).await
-}
-
-/// 内部实现：silent=true 时不发 agent:token 事件（用于工具内部的 LLM 调用）
-pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>, silent: bool) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
     let (url, api_key, model) = get_api_endpoint();
     // ★ 清理消息内容中的非法字符，防止 LLM API 解析失败
     let msgs: Vec<Value> = messages.iter().enumerate().map(|(i, m)| {
@@ -1271,17 +1215,17 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
                                         .or_else(|| st.full.find("<invoke"))
                                         .unwrap_or(0);
                                     if marker > st.token_buf_start {
-                                        if !silent { if let Some(ref h) = app {
+                                        if let Some(ref h) = app {
                                             let _ = h.emit("agent:token", json!({"token": &st.token_buf[..marker - st.token_buf_start]}));
-                                        } }
+                                        }
                                     }
                                     st.suppress_tokens = true;
                                     st.token_buf.clear();
                                     st.token_buf_start = st.full.len();
                                 } else if st.token_buf.len() >= 50 || tok.contains('\n') {
-                                    if !silent { if let Some(ref h) = app {
+                                    if let Some(ref h) = app {
                                         let _ = h.emit("agent:token", json!({"token": &st.token_buf}));
-                                    } }
+                                    }
                                     st.token_buf.clear();
                                     st.token_buf_start = st.full.len();
                                 }
@@ -1330,9 +1274,9 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
     while try_process_one(&mut st, &app_handle) {}
     // 流结束后 flush 残余 buffer
     if !st.suppress_tokens && !st.token_buf.is_empty() {
-        if !silent { if let Some(ref h) = app_handle {
+        if let Some(ref h) = app_handle {
             let _ = h.emit("agent:token", json!({"token": &st.token_buf}));
-        } }
+        }
         st.token_buf.clear();
         st.token_buf_start = st.full.len();
     }
@@ -2655,12 +2599,8 @@ async fn summarize_large_attachment(
 }
 
 #[tauri::command]
-pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, persona_suffix: Option<String>, tool_mode: ToolMode) -> Result<Value, String> {
+pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>) -> Result<Value, String> {
     AGENT_CANCEL.store(false, Ordering::Release);
-    let system_prompt = match persona_suffix.as_deref() {
-        Some(s) if !s.trim().is_empty() => format!("{}\n\n{}", AGENT_SYSTEM_PROMPT, s),
-        _ => AGENT_SYSTEM_PROMPT.to_string(),
-    };
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
     let max_iters = max_iterations.unwrap_or(8).clamp(2, 20);
@@ -2670,7 +2610,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     let (_, api_key, _model) = get_api_endpoint();
     if api_key.is_empty() { return Ok(json!({"success":true,"result_type":"answer","answer":"请先在系统设置中配置 Chat API 密钥。"})); }
 
-    let tools = build_tools_definitions(tool_mode);
+    let tools = build_tools_definitions();
     // ★ Session 缓存：从 chat_sessions.session_state 恢复（始终遍历所有历史）
     let mut session = if let Some(ref sid) = session_id {
         load_session_state(sid).unwrap_or_else(|| {
@@ -2734,7 +2674,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     };
 
     let mut messages: Vec<ChatMessage> = vec![
-        ChatMessage{role:MessageRole::System,content:Some(system_prompt.clone()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
+        ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
     ];
 
     // ★ 注入压缩摘要（如果有）
@@ -2885,7 +2825,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
                     }
                     // 压缩后重新加载历史（从 DB 读取压缩后的状态）
                     messages.clear();
-                    messages.push(ChatMessage{role:MessageRole::System,content:Some(system_prompt.clone()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+                    messages.push(ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
                     // 读取新的压缩摘要
                     let new_session_row = crate::database::get(
@@ -3054,7 +2994,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     };
     
     // System Prompt 已是纯静态（today + user_policies 移至动态上下文消息）
-    messages[0].content = Some(system_prompt.clone());
+    messages[0].content = Some(AGENT_SYSTEM_PROMPT.to_string());
     let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
     let mut retry_count = 0u32; // ToolCall 清理后重试计数器
 
@@ -4900,62 +4840,6 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                 }
                             };
                             (res, vec![])
-                        }
-                        // ── 演示材料工具 ─────────────────────────
-                        "pres_tool_generate_page" => {
-                            let page = a["page"].as_i64().unwrap_or(1) as usize;
-                            let instruction = a["instruction"].as_str().unwrap_or("");
-                            let total = a["totalPages"].as_i64().unwrap_or(10) as usize;
-                            log::info!("[PresentationTool] generate_page page={}, instruction_len={}", page, instruction.len());
-                            let result = match crate::services::presentation_ai::generate_page_html(page, total, instruction, &app_handle).await {
-                                Ok(html) => {
-                                    log::info!("[PresentationTool] generate_page success, html_len={}", html.len());
-                                    if let Some(ref h) = app_handle { let _ = h.emit("presentation:page-generated", json!({"page": page, "html": html})); }
-                                    format!("第{}页已生成 ({} 字符)", page, html.len())
-                                }
-                                Err(e) => {
-                                    log::error!("[PresentationTool] generate_page failed: {}", e);
-                                    format!("生成失败: {}", e)
-                                }
-                            };
-                            (result, vec![])
-                        }
-                        "pres_tool_regenerate_slide" => {
-                            let page = a["page"].as_i64().unwrap_or(1) as usize;
-                            let instruction = a["instruction"].as_str().unwrap_or("");
-                            let current_html = a["currentHtml"].as_str().unwrap_or("");
-                            log::info!("[PresentationTool] regenerate_slide page={}, instruction_len={}", page, instruction.len());
-                            let result = match crate::services::presentation_ai::regenerate_slide_html(page, instruction, current_html, &app_handle).await {
-                                Ok(html) => {
-                                    log::info!("[PresentationTool] regenerate_slide success, html_len={}", html.len());
-                                    if let Some(ref h) = app_handle { let _ = h.emit("presentation:page-updated", json!({"page": page, "html": html})); }
-                                    format!("第{}页已重新设计 ({} 字符)", page, html.len())
-                                }
-                                Err(e) => {
-                                    log::error!("[PresentationTool] regenerate_slide failed: {}", e);
-                                    format!("重新设计失败: {}", e)
-                                }
-                            };
-                            (result, vec![])
-                        }
-                        "pres_tool_modify_slide" => {
-                            let page = a["page"].as_i64().unwrap_or(1) as usize;
-                            let instruction = a["instruction"].as_str().unwrap_or("");
-                            let current_html = a["currentHtml"].as_str().unwrap_or("");
-                            let selector = a["elementSelector"].as_str().unwrap_or("");
-                            log::info!("[PresentationTool] modify_slide page={}, instruction_len={}, selector={}", page, instruction.len(), selector);
-                            let result = match crate::services::presentation_ai::modify_slide_html(page, instruction, current_html, selector, &app_handle).await {
-                                Ok(html) => {
-                                    log::info!("[PresentationTool] modify_slide success, html_len={}", html.len());
-                                    if let Some(ref h) = app_handle { let _ = h.emit("presentation:page-updated", json!({"page": page, "html": html})); }
-                                    format!("第{}页已修改 ({} 字符)", page, html.len())
-                                }
-                                Err(e) => {
-                                    log::error!("[PresentationTool] modify_slide failed: {}", e);
-                                    format!("修改失败: {}", e)
-                                }
-                            };
-                            (result, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
                     };

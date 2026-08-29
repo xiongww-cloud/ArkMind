@@ -94,8 +94,6 @@ export interface AgentChatOptions {
   sessionId?: string
   /** 附件列表（文件路径+名称） */
   attachments?: Array<{ path: string; name: string }>
-  /** 自定义 invoke 函数（用于非 kb_agent_chat 的 agent，如演示材料 agent） */
-  invokeFn?: () => Promise<void>
 }
 
 // ─── Composable ─────────────────────────────────────────────────
@@ -300,27 +298,15 @@ export function useAgentChat() {
       })
 
       // ★ 先注册完所有 listener 再 invoke，避免 agent:done 在 listener 注册前发出导致事件丢失
-      if (options.invokeFn) {
-        options.invokeFn().catch((err: any) => {
-          console.error('[AgentChat] invokeFn failed:', err)
-          flushTokenQueue()
-          const msg = getMessage()
-          if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = String(err) }
-          isChatting.value = false
-          scrollFn()
-          cleanup()
-        })
-      } else {
-        invoke('kb_agent_chat', { data: { query, sessionId: sessionId || undefined, attachments: attachments || [] } }).catch((err) => {
-          console.error('[AgentChat] invoke failed:', err)
-          flushTokenQueue()
-          const msg = getMessage()
-          if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = String(err) }
-          isChatting.value = false
-          scrollFn()
-          cleanup()
-        })
-      }
+      invoke('kb_agent_chat', { data: { query, sessionId: sessionId || undefined, attachments: attachments || [] } }).catch((err) => {
+        console.error('[AgentChat] invoke failed:', err)
+        flushTokenQueue()
+        const msg = getMessage()
+        if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = String(err) }
+        isChatting.value = false
+        scrollFn()
+        cleanup()
+      })
 
       function cleanup() {
         clearInterval(tokenTimer)

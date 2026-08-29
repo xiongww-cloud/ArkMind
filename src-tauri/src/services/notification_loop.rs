@@ -177,8 +177,6 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             Some(handle.clone()),
             true,
             None,
-            None,
-            crate::services::agent_workflow::ToolMode::General,
         ).await;
 
         match result {
