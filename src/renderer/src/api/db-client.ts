@@ -24,7 +24,7 @@ export interface NotebookRow {
   parent_id?: string | null
   [key: string]: unknown
 }
-export interface SuccessResponse<T = void> {
+export interface SuccessResponse {
   success: boolean
   error?: string
 }
@@ -554,7 +554,9 @@ export async function updateFileMeta(fileId: string, data: Record<string, unknow
   return invoke('file_update_meta', { fileId, data })
 }
 /// 复制文件到系统剪贴板（可粘贴到资源管理器/Finder/微信等）
-export async function copyFileToClipboard(fileId: string): Promise<{ success: boolean; fileName?: string; error?: string }> {
+export async function copyFileToClipboard(
+  fileId: string
+): Promise<{ success: boolean; fileName?: string; error?: string }> {
   return invoke('file_copy_to_clipboard', { fileId })
 }
 export async function openFile(fileId: string): Promise<void> {
@@ -791,10 +793,12 @@ export const notesV2ListOrphan = fetchOrphanNotes
 export async function notesV2ListByNotebook(notebookId: string): Promise<FetchNotesResponse> {
   return invoke('notes_list_by_notebook', { notebookId })
 }
-export async function notesV2Get(noteId: string): Promise<{ success: boolean; note: any }> {
+export async function notesV2Get(noteId: string): Promise<{ success: boolean; note: unknown }> {
   return invoke('notes_get', { noteId })
 }
-export async function notesV2GetForTrash(noteId: string): Promise<{ success: boolean; note: any }> {
+export async function notesV2GetForTrash(
+  noteId: string
+): Promise<{ success: boolean; note: unknown }> {
   return invoke('notes_get_for_trash', { noteId })
 }
 export async function notesV2Create(data: unknown): Promise<{ noteId: string }> {
@@ -1105,9 +1109,7 @@ export async function kbChat(
 ): Promise<{ success: boolean; answer?: string; error?: string }> {
   return invoke('kb_chat', { data })
 }
-export async function kbAgentChat(
-  data: Record<string, unknown>
-): Promise<{
+export async function kbAgentChat(data: Record<string, unknown>): Promise<{
   success: boolean
   answer?: string
   tool_log?: Array<{ tool: string; args: unknown; result: string }>
@@ -1123,9 +1125,7 @@ export async function agentCancel(): Promise<{ success: boolean }> {
 export async function kbDiagnose(): Promise<KbDiagnoseResult> {
   return invoke('kb_diagnose')
 }
-export async function kbGetTableChunks(
-  fileId: string
-): Promise<{
+export async function kbGetTableChunks(fileId: string): Promise<{
   success: boolean
   chunks?: Array<{ id: number; chunk_text: string; chunk_index: number }>
 }> {
@@ -1144,6 +1144,23 @@ export async function kbTestChat(data: {
   model: string
 }): Promise<{ success: boolean; message?: string; error?: string }> {
   return invoke('kb_test_chat', { data })
+}
+
+// ─── Presentation AI ─────────────────────────────────────────────
+export async function presentationGenerateDeck(data: {
+  plan: string
+  context?: string
+  registry?: string
+}): Promise<{ success: boolean; slides?: unknown[]; error?: string }> {
+  return invoke('presentation_generate_deck', { data })
+}
+export async function presentationRefineSlide(data: {
+  slide: string
+  instruction: string
+  context?: string
+  registry?: string
+}): Promise<{ success: boolean; slide?: unknown; error?: string }> {
+  return invoke('presentation_refine_slide', { data })
 }
 
 // ─── AI Sync ───────────────────────────────────────────────────
@@ -1252,7 +1269,7 @@ export async function kbLoadSessionMessages(
   sessionId: string,
   beforeId?: number,
   limit?: number
-): Promise<{ success: boolean; messages?: any[] }> {
+): Promise<{ success: boolean; messages?: unknown[] }> {
   return invoke('kb_load_session_messages', {
     sessionId,
     beforeId: beforeId || null,
@@ -1290,17 +1307,13 @@ export async function setSpriteEnabled(enabled: boolean): Promise<{ success: boo
 }
 
 // ── Memory Explorer API ──
-export async function kbMemoryObjects(
-  query: string
-): Promise<{
+export async function kbMemoryObjects(query: string): Promise<{
   success: boolean
   objects: Array<{ source_type: string; source_id: string; title: string }>
 }> {
   return invoke('kb_memory_objects', { query })
 }
-export async function searchBusiness(
-  query: string
-): Promise<{
+export async function searchBusiness(query: string): Promise<{
   success: boolean
   objects: Array<{ source_type: string; source_id: string; title: string }>
 }> {
@@ -1533,7 +1546,7 @@ export async function openFileDialog(
 ): Promise<{ canceled: boolean; path: string }> {
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    const opts: any = { multiple: false, canCreateDirectories: false }
+    const opts: Record<string, unknown> = { multiple: false, canCreateDirectories: false }
     if (filters && filters.length > 0)
       opts.filters = filters.map((f) => ({ name: f.name, extensions: f.extensions }))
     const r = await open(opts)

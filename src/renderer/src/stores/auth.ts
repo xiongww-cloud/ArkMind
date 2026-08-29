@@ -21,7 +21,7 @@ const DEFAULT_USER: User = {
   phone: '',
   email: '',
   avatar: '',
-  aiConfig: '{}',
+  aiConfig: '{}'
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -48,7 +48,10 @@ export const useAuthStore = defineStore('auth', () => {
 
   function getAvatarSrc() {
     if (currentUser.value.avatar) {
-      if (currentUser.value.avatar.startsWith('http') || currentUser.value.avatar.startsWith('data:')) {
+      if (
+        currentUser.value.avatar.startsWith('http') ||
+        currentUser.value.avatar.startsWith('data:')
+      ) {
         return currentUser.value.avatar
       }
       return `/api/user/avatar?t=${Date.now()}`

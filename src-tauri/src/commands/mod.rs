@@ -1,3 +1,4 @@
+pub mod presentation_commands;
 pub mod project_commands;
 pub mod product_commands;
 pub mod file_commands;
@@ -17,6 +18,7 @@ pub mod migration_commands;
 pub mod debug_commands;
 
 pub use project_commands::*;
+pub use presentation_commands::*;
 pub use product_commands::*;
 pub use file_commands::*;
 pub use notes_commands::*;

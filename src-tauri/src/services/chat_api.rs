@@ -72,8 +72,40 @@ pub fn get_chat_config() -> ChatConfig {
 
 pub fn invalidate_chat_config_cache() { if let Ok(mut c) = CONFIG_CACHE.write() { c.1 = Instant::now() - std::time::Duration::from_secs(60); } }
 
-pub async fn chat_completion(system: &str, user: &str, cfg: Option<ChatConfig>) -> Result<String, String> {
-    let config = cfg.unwrap_or_else(get_chat_config);
+/// 从推理模型的 reasoning_content 中提取 JSON（处理 deepseek-r1/v4 等推理模型）
+fn extract_json_from_reasoning(reasoning: &str) -> String {
+    // 找第一个 { 和最后一个 }
+    if let Some(start) = reasoning.find('{') {
+        if let Some(end) = reasoning.rfind('}') {
+            if end > start {
+                let candidate = &reasoning[start..=end];
+                // 验证是合法 JSON 且包含 slides 数组
+                if let Ok(v) = serde_json::from_str::<Value>(candidate) {
+                    if v.get("slides").and_then(|s| s.as_array()).is_some() {
+                        return candidate.to_string();
+                    }
+                }
+            }
+        }
+    }
+    // 降级：找 [ 开头的数组格式
+    if let Some(start) = reasoning.find('[') {
+        if let Some(end) = reasoning.rfind(']') {
+            if end > start {
+                let candidate = &reasoning[start..=end];
+                if serde_json::from_str::<Value>(candidate).is_ok() {
+                    return format!("{{\"slides\":{}}}", candidate);
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// 核心 LLM 调用（支持 max_tokens 覆盖 + 推理模型兜底）
+async fn chat_completion_inner(system: &str, user: &str, cfg: Option<ChatConfig>, max_tokens_override: Option<i32>) -> Result<String, String> {
+    let mut config = cfg.unwrap_or_else(get_chat_config);
+    if let Some(mt) = max_tokens_override { config.max_tokens = mt; }
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let mut req = HTTP_CLIENT.post(&url).json(&json!({"model": config.model, "max_tokens": config.max_tokens, "temperature": config.temperature, "messages": [{"role":"system","content":system}, {"role":"user","content":user}]}));
     if !config.api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", config.api_key)); }
@@ -81,7 +113,36 @@ pub async fn chat_completion(system: &str, user: &str, cfg: Option<ChatConfig>) 
     let st = resp.status();
     if !st.is_success() { let b = resp.text().await.unwrap_or_default(); return Err(format!("chat HTTP {}: {}", st, b)); }
     let body: Value = resp.json().await.map_err(|e| format!("chat json: {}", e))?;
-    Ok(body["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string())
+    let content = body["choices"][0]["message"]["content"].as_str().unwrap_or("");
+    let reasoning = body["choices"][0]["message"]["reasoning_content"].as_str().unwrap_or("");
+    let finish_reason = body["choices"][0]["finish_reason"].as_str().unwrap_or("unknown");
+
+    // 优先用 content
+    if !content.is_empty() {
+        return Ok(content.to_string());
+    }
+
+    // 推理模型兜底：从 reasoning_content 提取 JSON
+    if !reasoning.is_empty() {
+        let extracted = extract_json_from_reasoning(reasoning);
+        if !extracted.is_empty() {
+            log::info!("[chat_completion] 从 reasoning_content 提取 JSON ({} chars), finish_reason={}", extracted.len(), finish_reason);
+            return Ok(extracted);
+        }
+        log::warn!("[chat_completion] reasoning_content 非空但无法提取 JSON, finish_reason={}, reasoning_preview={}", finish_reason, &reasoning[..reasoning.len().min(200)]);
+    }
+
+    log::warn!("[chat_completion] 空内容: finish_reason={}, model={}", finish_reason, config.model);
+    Err(format!("模型输出为空 (finish_reason={})", finish_reason))
+}
+
+pub async fn chat_completion(system: &str, user: &str, cfg: Option<ChatConfig>) -> Result<String, String> {
+    chat_completion_inner(system, user, cfg, None).await
+}
+
+/// 带 max_tokens 覆盖的 LLM 调用（用于 deck 生成等需要高 token 的场景）
+pub async fn chat_completion_ex(system: &str, user: &str, cfg: Option<ChatConfig>, max_tokens: i32) -> Result<String, String> {
+    chat_completion_inner(system, user, cfg, Some(max_tokens)).await
 }
 
 
