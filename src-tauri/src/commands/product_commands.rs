@@ -26,10 +26,9 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     let name = data["name"].as_str().unwrap_or("新产品").to_string();
     let desc = data["description"].as_str().unwrap_or("").to_string();
     let specs = data["fullSpecs"].as_str().unwrap_or("").to_string();
-    let std_specs = data["standardSpecs"].as_str().unwrap_or("").to_string();
     let series_id = data["seriesId"].as_str().map(|s| json!(s));
-    database::run("INSERT INTO products(id,name,series_id,description,price,standard_specs,full_specs) VALUES(?,?,?,?,?,?,?)",
-    &[json!(id),json!(&name),series_id.unwrap_or(Value::Null),json!(&desc),json!(data["price"].as_f64().unwrap_or(0.0)),json!(&std_specs),json!(&specs)]).map_err(|e| e.to_string())?;
+    database::run("INSERT INTO products(id,name,series_id,description,price,full_specs) VALUES(?,?,?,?,?,?)",
+    &[json!(id),json!(&name),series_id.unwrap_or(Value::Null),json!(&desc),json!(data["price"].as_f64().unwrap_or(0.0)),json!(&specs)]).map_err(|e| e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("PRODUCT", &id);
     database::get("SELECT * FROM products WHERE id=?",&[json!(id)]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(Value::Null))
 }
@@ -42,7 +41,6 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     }
     if let Some(v)=data["description"].as_str(){fields.push("description=?".into());values.push(json!(v));}
     if let Some(v)=data["fullSpecs"].as_str(){fields.push("full_specs=?".into());values.push(json!(v));}
-    if let Some(v)=data["standardSpecs"].as_str(){fields.push("standard_specs=?".into());values.push(json!(v));}
     if fields.is_empty(){return Ok(());}
     fields.push("updated_at=datetime('now', 'localtime')".into());
     values.push(json!(id));

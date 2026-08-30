@@ -90,7 +90,7 @@ fn extract_note(note_id: &str) -> (String, String) {
 
 fn extract_product(product_id: &str) -> (String, String) {
     let row = match crate::database::get(
-        "SELECT name, description, series_name, price, standard_specs, full_specs FROM products WHERE id=?1",
+        "SELECT name, description, series_name, price, full_specs FROM products WHERE id=?1",
         &[serde_json::json!(product_id)],
     ) {
         Ok(Some(r)) => r,
@@ -107,9 +107,6 @@ fn extract_product(product_id: &str) -> (String, String) {
     let mut specs = Vec::new();
     if let Some(s) = row["series_name"].as_str().filter(|s| !s.is_empty()) {
         specs.push(format!("系列：{}", s));
-    }
-    if let Some(p) = row["standard_specs"].as_str().filter(|p| !p.is_empty()) {
-        specs.push(format!("标准规格：{}", p));
     }
     if let Some(f) = row["full_specs"].as_str().filter(|f| !f.is_empty()) {
         specs.push(f.to_string());

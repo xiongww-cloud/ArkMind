@@ -677,9 +677,9 @@ fn import_products(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
         for p in products {
             let id = p["id"].as_str().unwrap_or("");
             if id.is_empty() { continue; }
-            database::run("INSERT OR IGNORE INTO products(id,name,series_id,series_name,description,price,standard_specs,full_specs,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)", &[
+            database::run("INSERT OR IGNORE INTO products(id,name,series_id,series_name,description,price,full_specs,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[
                 json!(id), json!(p["name"]), json!(p["series_id"]), json!(p["series_name"]),
-                json!(p["description"]), json!(p["price"]), json!(p["standard_specs"]),
+                json!(p["description"]), json!(p["price"]),
                 json!(p["full_specs"]), json!(p["sort_order"]),
                 json!(p["created_at"]), json!(p["updated_at"]),
             ]).ok();

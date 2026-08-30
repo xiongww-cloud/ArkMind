@@ -793,7 +793,7 @@ fn ingest_pending_notes() {
 /// 摄入产品：将尚未同步到 source_data 的产品写入（名称+指标+规格+描述）
 fn ingest_pending_products() {
     let rows = match crate::database::all(
-        "SELECT p.id, p.name, p.standard_specs, p.full_specs, p.description, p.series_id FROM products p \
+        "SELECT p.id, p.name, p.full_specs, p.description, p.series_id FROM products p \
          WHERE p.id NOT IN (SELECT source_id FROM source_data WHERE source_type='PRODUCT') \
          LIMIT 20",
         &[],
@@ -814,7 +814,6 @@ fn ingest_pending_products() {
             continue;
         }
         let name = row["name"].as_str().unwrap_or("").to_string();
-        let specs = row["standard_specs"].as_str().unwrap_or("").to_string();
         let full = row["full_specs"].as_str().unwrap_or("").to_string();
         let desc = row["description"].as_str().unwrap_or("").to_string();
         let series_id = row["series_id"].as_str().unwrap_or("").to_string();
@@ -831,9 +830,6 @@ fn ingest_pending_products() {
         let mut specs_lines = Vec::new();
         if !path.is_empty() {
             specs_lines.push(format!("系列：{}", path));
-        }
-        if !specs.is_empty() {
-            specs_lines.push(format!("标准规格：{}", specs));
         }
         if !full.is_empty() {
             specs_lines.push(full.to_string());

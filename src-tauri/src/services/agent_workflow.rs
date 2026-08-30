@@ -273,7 +273,7 @@ impl SessionMemory {
             "ext_tool_relations" => 0.6,
             "ext_tool_chunk_navigate" => 0.6,
             "ext_tool_manage_todo" | "ext_tool_manage_project" | "ext_tool_manage_partner" |
-            "ext_tool_manage_contact" | "ext_tool_manage_notification" | "ext_tool_manage_policy" => 0.5,
+            "ext_tool_manage_contact" | "ext_tool_manage_notification" | "ext_tool_manage_policy" | "ext_tool_manage_product" => 0.5,
             "ext_tool_memory" => 0.0,
             _ => 0.3,
         }
@@ -563,11 +563,11 @@ fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collection
 fn execute_object_catalog(entity: &str, field_filters: &[Value], sort: Option<&Value>, args: &Value) -> String {
     let (table, allowed_fields): (&str, &[&str]) = match entity.to_uppercase().as_str() {
         "PROJECT" => ("projects", &["id","name","description","status","owner","budget","bid_time","created_at","updated_at"]),
-        "PRODUCT" => ("products", &["id","name","series_name","description","price","standard_specs","full_specs AS params","sort_order","created_at","updated_at"]),
+        "PRODUCT" => ("(SELECT p.id, p.name, COALESCE(ps.name, '') AS series_name, p.description, p.price, p.full_specs AS params, p.sort_order, p.created_at, p.updated_at FROM products p LEFT JOIN product_series ps ON p.series_id = ps.id)", &["id","name","series_name","description","price","full_specs AS params","sort_order","created_at","updated_at"]),
         "CHANNEL" | "VENDOR" | "CUSTOMER" => ("partners", &["id","type","name","phone","address","remark","contact_person","contact_phone","created_at","updated_at"]),
         "CONTACT" => ("partner_contacts", &["id","name","phone","email","position","remark","created_at"]),
         "TODO" => ("todos", &["id","title","content","done","priority","due_date","repeat","created_at","updated_at"]),
-        "NOTE" => ("notes", &["note_id","title","content","is_daily","notebook_id","deleted_at","created_at","updated_at"]),
+        "NOTE" => ("(SELECT n.note_id, n.title, n.content, n.is_daily, n.notebook_id, nb.name AS notebook_name, n.deleted_at, n.created_at, n.updated_at FROM notes n LEFT JOIN notebooks nb ON n.notebook_id = nb.id)", &["note_id","title","content","is_daily","notebook_id","notebook_name","deleted_at","created_at","updated_at"]),
         "SOLUTION" => ("solutions", &["id","project_id","name","created_at","updated_at"]),
         "SOLUTION_VERSION" => ("solution_versions", &["id","solution_id","version","tags","content","creator","status","created_at","updated_at"]),
         "SOLUTION_ITEM" => ("(SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit_price, si.description AS params, si.row_type, si.sort_order, si.created_at, si.updated_at, sv.version, sv.status AS version_status, s.name AS solution_name, s.project_id, p.name AS project_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN projects p ON p.id=s.project_id)", &["id","solution_version_id","product_id","product_name","device_name","quantity","unit_price","params","row_type","sort_order","created_at","updated_at","version","version_status","solution_name","project_id","project_name"]),
@@ -835,7 +835,7 @@ fn format_catalog_row(entity: &str, row: &Value) -> String {
         "NOTE" => {
             let id = row["note_id"].as_str().unwrap_or(row["id"].as_str().unwrap_or(""));
             let mut s = format!("[NOTE] {} | NOTE-{}", row["title"].as_str().unwrap_or(""), id);
-            if let Some(nb) = row["notebook_id"].as_str().filter(|s| !s.is_empty()) { s.push_str(&format!(" | 笔记本: {}", nb)); }
+            if let Some(nb) = row["notebook_name"].as_str().filter(|s| !s.is_empty()) { s.push_str(&format!(" | 笔记本: {}", nb)); }
             s
         }
         _ => format!("[{}] {}", upper, row["id"].as_str().unwrap_or("")),
@@ -991,6 +991,7 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。查看项目请用 ext_tool_object(type=\"PROJECT\")。action=create/update/delete/add_dynamic/delete_dynamic。add_dynamic=追加项目动态（需project_id+content）。delete_dynamic=删除动态（需dynamic_id）。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","add_dynamic","delete_dynamic"]},"project_id":{"type":"string","description":"项目ID(update/delete/add_dynamic用)"},"name":{"type":"string","description":"项目名称(create用)"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"},"content":{"type":"string","description":"动态内容(add_dynamic必填)"},"dynamic_type":{"type":"string","description":"动态类型(add_dynamic用,默认ai)：ai=AI记录/note=用户记录/system=系统变更"},"dynamic_id":{"type":"string","description":"动态ID(delete_dynamic用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_partner","description":"管理合作伙伴（渠道/厂商/客户）。查看请用 ext_tool_object(type=\"CHANNEL/VENDOR/CUSTOMER\")。action=create/update/delete/link_project/unlink_project。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"partner_id":{"type":"string","description":"合作伙伴ID(update/delete/link_project/unlink_project用)"},"type":{"type":"string","description":"类型: CHANNEL/VENDOR/CUSTOMER(create用)"},"name":{"type":"string","description":"名称(create/update用)"},"phone":{"type":"string","description":"电话"},"address":{"type":"string","description":"地址"},"remark":{"type":"string","description":"备注"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_contact","description":"管理联系人（归属于合作伙伴下的人员）。查看联系人请用 ext_tool_object(type=\"CONTACT\")。action=create/update/delete/link_project/unlink_project。创建联系人时必须提供 partner_id 指定所属合作伙伴。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","link_project","unlink_project"]},"contact_id":{"type":"string","description":"联系人ID(update/delete/link_project/unlink_project用)"},"name":{"type":"string","description":"姓名(create/update用)"},"phone":{"type":"string","description":"电话"},"email":{"type":"string","description":"邮箱"},"position":{"type":"string","description":"职位"},"remark":{"type":"string","description":"备注"},"partner_id":{"type":"string","description":"所属合作伙伴ID(create必填)。联系人是合作伙伴下的人员，必须指定归属。"},"project_id":{"type":"string","description":"项目ID(link_project/unlink_project用)"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_manage_product","description":"管理产品和产品目录。查看产品请用 ext_tool_object(type=\"PRODUCT\")。action=create/update/delete/move/create_series/update_series/delete_series。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","move","create_series","update_series","delete_series"]},"product_id":{"type":"string","description":"产品ID(update/delete/move必填，支持名称模糊匹配)"},"name":{"type":"string","description":"产品或目录名称(create必填)"},"description":{"type":"string","description":"产品描述"},"price":{"type":"number","description":"产品价格"},"full_specs":{"type":"string","description":"产品规格参数"},"series_id":{"type":"string","description":"目标目录ID(create/move用)"},"series_name":{"type":"string","description":"目标目录名称(按名称匹配，优先级低于series_id)"},"parent_id":{"type":"string","description":"父目录ID(create_series用)"},"series":{"type":"string","description":"目录ID(update_series/delete_series用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_memory","description":"记录和检索长期记忆。action=create(创建记忆), action=update(更新记忆内容), action=delete(删除记忆), action=search(搜索记忆，不传query或传*可列出所有记忆)。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","search"],"description":"必填。search=搜索记忆，create=创建记忆，update=更新记忆，delete=删除记忆"},"content":{"type":"string","description":"记忆内容（create/update 必填）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条记忆内容数组"},"memory_id":{"type":"string","description":"记忆ID（update/delete 必填）"},"query":{"type":"string","description":"搜索关键词（search 用）。不传或传 * 可列出所有记忆"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户策略。action=create(新增策略), action=update(更新策略), action=delete(删除策略)。策略会自动注入 prompt，无需手动查询。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"],"description":"必填。create=新增策略，update=更新策略，delete=删除策略"},"id":{"type":"string","description":"策略ID（update/delete 用）"},"content":{"type":"string","description":"策略内容（create/update 用）"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_notification","description":"管理通知。action=create(创建通知)、update(更新通知)、delete(删除通知)、list(查看通知列表)、get(查看通知详情)。只有在发现真正需要用户关注的洞察时才调用，不要滥用。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list","get"],"description":"必填。create=创建通知，update=更新通知，delete=删除通知，list=查看通知，get=查看通知详情"},"notification_id":{"type":"string","description":"通知ID（get/update/delete用）"},"type":{"type":"string","description":"通知类型: todo_due/todo_today/project_stale/bid_deadline/llm_insight"},"title":{"type":"string","description":"通知标题，简短精炼"},"content":{"type":"string","description":"通知详情，使用 Markdown 格式：支持 **加粗**、- 列表、`代码`、> 引用等，让内容结构清晰易读"},"entity_type":{"type":"string","description":"关联实体类型: todo/project/null"},"entity_id":{"type":"string","description":"关联实体ID"},"priority":{"type":"string","enum":["high","medium","low"],"description":"优先级"},"follow_up_of":{"type":"string","description":"跟进的通知ID"},"limit":{"type":"integer","description":"每页条数，默认20"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["action"]}}},
@@ -2263,6 +2264,333 @@ fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str
             };
             envelope.to_json()
         },
+    }
+}
+
+fn ext_tool_manage_product(a: &Value) -> String {
+    let action = a["action"].as_str().unwrap_or("");
+
+    // 辅助：按 UUID 或名称查找产品
+    let find_product = |pid: &str, pname: &str| -> Option<(String, String)> {
+        if !pid.trim().is_empty() {
+            let clean_id = pid.trim().strip_prefix("PRODUCT-").unwrap_or(pid.trim());
+            database::get("SELECT id,name FROM products WHERE id=?1", &[json!(clean_id)])
+                .ok().flatten().map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()))
+        } else if !pname.trim().is_empty() {
+            let like = format!("%{}%", crate::database::escape_like(pname.trim()));
+            database::get("SELECT id,name FROM products WHERE name LIKE ?1 ESCAPE '\\' ORDER BY created_at DESC LIMIT 1", &[json!(&like)])
+                .ok().flatten().map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()))
+        } else { None }
+    };
+
+    // 辅助：按 UUID 或名称查找目录
+    let find_series = |sid: &str, sname: &str| -> Option<(String, String)> {
+        if !sid.trim().is_empty() {
+            let clean_id = sid.trim().strip_prefix("PRODUCT-").unwrap_or(sid.trim());
+            database::get("SELECT id,name FROM product_series WHERE id=?1", &[json!(clean_id)])
+                .ok().flatten().map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()))
+        } else if !sname.trim().is_empty() {
+            database::get("SELECT id,name FROM product_series WHERE name=?1", &[json!(sname.trim())])
+                .ok().flatten().map(|r| (r["id"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()))
+        } else { None }
+    };
+
+    match action {
+        "create" => {
+            let name = a["name"].as_str().unwrap_or("");
+            if name.is_empty() {
+                let envelope = ToolResultEnvelope {
+                    result_type: "object_create_result".to_string(),
+                    data: json!({"success": false}),
+                    summary: Some("创建产品需要提供 name。".to_string()),
+                };
+                return envelope.to_json();
+            }
+            let series_id_val = if let Some((sid, _)) = find_series(
+                a["series_id"].as_str().unwrap_or(""),
+                a["series_name"].as_str().unwrap_or("")
+            ) { Some(sid) } else { None };
+            let mut data = json!({
+                "name": name,
+                "description": a["description"].as_str().unwrap_or(""),
+                "price": a["price"].as_f64().unwrap_or(0.0),
+                "fullSpecs": a["full_specs"].as_str().unwrap_or("")
+            });
+            if let Some(sid) = series_id_val { data["seriesId"] = json!(sid); }
+            match block_on_async(crate::commands::product_commands::product_create(data)) {
+                Ok(created) => {
+                    let pid = created["id"].as_str().unwrap_or("");
+                    let pname = created["name"].as_str().unwrap_or("");
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_create_result".to_string(),
+                        data: json!({"success": true, "id": pid, "name": pname}),
+                        summary: Some(format!("已创建产品「{}」，ID: {}", pname, pid)),
+                    };
+                    envelope.to_json()
+                }
+                Err(e) => {
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_create_result".to_string(),
+                        data: json!({"success": false}),
+                        summary: Some(format!("创建产品失败: {}", e)),
+                    };
+                    envelope.to_json()
+                }
+            }
+        }
+        "update" => {
+            let product_id = a["product_id"].as_str().unwrap_or("");
+            let product_name = a["name"].as_str().unwrap_or("");
+            let target_name = if product_id.is_empty() && !product_name.is_empty() { product_name } else { "" };
+            match find_product(product_id, target_name) {
+                None => {
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_update_result".to_string(),
+                        data: json!({"success": false}),
+                        summary: Some("未找到指定产品，请提供 product_id 或准确的产品名称。".to_string()),
+                    };
+                    envelope.to_json()
+                }
+                Some((fid, _)) => {
+                    let mut data = json!({});
+                    if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { data["name"] = json!(v); }
+                    if let Some(v) = a["description"].as_str().filter(|s| !s.is_empty()) { data["description"] = json!(v); }
+                    if a["price"].as_f64().is_some() { data["price"] = json!(a["price"].as_f64().unwrap()); }
+                    if let Some(v) = a["full_specs"].as_str().filter(|s| !s.is_empty()) { data["fullSpecs"] = json!(v); }
+                    if let Some((sid, _)) = find_series(a["series_id"].as_str().unwrap_or(""), a["series_name"].as_str().unwrap_or("")) {
+                        data["seriesId"] = json!(sid);
+                    }
+                    match block_on_async(crate::commands::product_commands::product_update(fid.clone(), data)) {
+                        Ok(_) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_update_result".to_string(),
+                                data: json!({"success": true, "id": fid}),
+                                summary: Some("产品已更新。".to_string()),
+                            };
+                            envelope.to_json()
+                        }
+                        Err(e) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_update_result".to_string(),
+                                data: json!({"success": false}),
+                                summary: Some(format!("更新产品失败: {}", e)),
+                            };
+                            envelope.to_json()
+                        }
+                    }
+                }
+            }
+        }
+        "delete" => {
+            let product_id = a["product_id"].as_str().unwrap_or("");
+            let product_name = a["name"].as_str().unwrap_or("");
+            let target_name = if product_id.is_empty() && !product_name.is_empty() { product_name } else { "" };
+            match find_product(product_id, target_name) {
+                None => {
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_delete_result".to_string(),
+                        data: json!({"success": false}),
+                        summary: Some("未找到指定产品。".to_string()),
+                    };
+                    envelope.to_json()
+                }
+                Some((fid, fname)) => {
+                    match block_on_async(crate::commands::product_commands::product_delete(fid)) {
+                        Ok(_) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_delete_result".to_string(),
+                                data: json!({"success": true}),
+                                summary: Some(format!("已删除产品「{}」。", fname)),
+                            };
+                            envelope.to_json()
+                        }
+                        Err(e) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_delete_result".to_string(),
+                                data: json!({"success": false}),
+                                summary: Some(format!("删除产品失败: {}", e)),
+                            };
+                            envelope.to_json()
+                        }
+                    }
+                }
+            }
+        }
+        "move" => {
+            let product_id = a["product_id"].as_str().unwrap_or("");
+            let product_name = a["name"].as_str().unwrap_or("");
+            let target_name = if product_id.is_empty() && !product_name.is_empty() { product_name } else { "" };
+            match find_product(product_id, target_name) {
+                None => {
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_update_result".to_string(),
+                        data: json!({"success": false}),
+                        summary: Some("未找到指定产品。".to_string()),
+                    };
+                    envelope.to_json()
+                }
+                Some((fid, fname)) => {
+                    let series_id_val = if let Some((sid, _)) = find_series(
+                        a["series_id"].as_str().unwrap_or(""),
+                        a["series_name"].as_str().unwrap_or("")
+                    ) { sid } else {
+                        let envelope = ToolResultEnvelope {
+                            result_type: "object_update_result".to_string(),
+                            data: json!({"success": false}),
+                            summary: Some("未找到目标目录，请提供 series_id 或 series_name。".to_string()),
+                        };
+                        return envelope.to_json();
+                    };
+                    let data = json!({"seriesId": series_id_val});
+                    match block_on_async(crate::commands::product_commands::product_update(fid, data)) {
+                        Ok(_) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_update_result".to_string(),
+                                data: json!({"success": true}),
+                                summary: Some(format!("已将产品「{}」移动到目标目录。", fname)),
+                            };
+                            envelope.to_json()
+                        }
+                        Err(e) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_update_result".to_string(),
+                                data: json!({"success": false}),
+                                summary: Some(format!("移动产品失败: {}", e)),
+                            };
+                            envelope.to_json()
+                        }
+                    }
+                }
+            }
+        }
+        "create_series" => {
+            let name = a["name"].as_str().unwrap_or("");
+            if name.is_empty() {
+                let envelope = ToolResultEnvelope {
+                    result_type: "object_create_result".to_string(),
+                    data: json!({"success": false}),
+                    summary: Some("创建目录需要提供 name。".to_string()),
+                };
+                return envelope.to_json();
+            }
+            let mut data = json!({"name": name});
+            if let Some(pid) = a["parent_id"].as_str().filter(|s| !s.is_empty()) {
+                data["parentId"] = json!(pid);
+            }
+            match block_on_async(crate::commands::product_commands::product_series_create(data)) {
+                Ok(created) => {
+                    let sid = created["id"].as_str().unwrap_or("");
+                    let sname = created["name"].as_str().unwrap_or("");
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_create_result".to_string(),
+                        data: json!({"success": true, "id": sid, "name": sname}),
+                        summary: Some(format!("已创建目录「{}」，ID: {}", sname, sid)),
+                    };
+                    envelope.to_json()
+                }
+                Err(e) => {
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_create_result".to_string(),
+                        data: json!({"success": false}),
+                        summary: Some(format!("创建目录失败: {}", e)),
+                    };
+                    envelope.to_json()
+                }
+            }
+        }
+        "update_series" => {
+            let series_id = a["series"].as_str()
+                .or_else(|| a["series_id"].as_str())
+                .unwrap_or("");
+            let series_name = a["series_name"].as_str().unwrap_or("");
+            match find_series(series_id, series_name) {
+                None => {
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_update_result".to_string(),
+                        data: json!({"success": false}),
+                        summary: Some("未找到指定目录。".to_string()),
+                    };
+                    envelope.to_json()
+                }
+                Some((sid, _)) => {
+                    let mut data = json!({});
+                    if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { data["name"] = json!(v); }
+                    match block_on_async(crate::commands::product_commands::product_series_update(sid, data)) {
+                        Ok(_) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_update_result".to_string(),
+                                data: json!({"success": true}),
+                                summary: Some("目录已更新。".to_string()),
+                            };
+                            envelope.to_json()
+                        }
+                        Err(e) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_update_result".to_string(),
+                                data: json!({"success": false}),
+                                summary: Some(format!("更新目录失败: {}", e)),
+                            };
+                            envelope.to_json()
+                        }
+                    }
+                }
+            }
+        }
+        "delete_series" => {
+            let series_id = a["series"].as_str()
+                .or_else(|| a["series_id"].as_str())
+                .unwrap_or("");
+            let series_name = a["series_name"].as_str().unwrap_or("");
+            match find_series(series_id, series_name) {
+                None => {
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_delete_result".to_string(),
+                        data: json!({"success": false}),
+                        summary: Some("未找到指定目录。".to_string()),
+                    };
+                    envelope.to_json()
+                }
+                Some((sid, sname)) => {
+                    match block_on_async(crate::commands::product_commands::product_series_delete(sid)) {
+                        Ok(result) => {
+                            let success = result["success"].as_bool().unwrap_or(false);
+                            if success {
+                                let envelope = ToolResultEnvelope {
+                                    result_type: "object_delete_result".to_string(),
+                                    data: json!({"success": true}),
+                                    summary: Some(format!("已删除目录「{}」。", sname)),
+                                };
+                                envelope.to_json()
+                            } else {
+                                let err = result["error"].as_str().unwrap_or("删除失败");
+                                let envelope = ToolResultEnvelope {
+                                    result_type: "object_delete_result".to_string(),
+                                    data: json!({"success": false}),
+                                    summary: Some(format!("删除目录失败: {}", err)),
+                                };
+                                envelope.to_json()
+                            }
+                        }
+                        Err(e) => {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_delete_result".to_string(),
+                                data: json!({"success": false}),
+                                summary: Some(format!("删除目录失败: {}", e)),
+                            };
+                            envelope.to_json()
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            let envelope = ToolResultEnvelope {
+                result_type: "object_error".to_string(),
+                data: json!({"error": format!("未知操作「{}」。支持：create, update, delete, move, create_series, update_series, delete_series。", action)}),
+                summary: Some(format!("未知操作「{}」。支持：create, update, delete, move, create_series, update_series, delete_series。", action)),
+            };
+            envelope.to_json()
+        }
     }
 }
 
@@ -4628,6 +4956,10 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     envelope.to_json()
                                 },
                             };
+                            (res, vec![])
+                        }
+                        "ext_tool_manage_product" => {
+                            let res = ext_tool_manage_product(&a);
                             (res, vec![])
                         }
                         "ext_tool_manage_notification" => {
