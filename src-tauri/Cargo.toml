@@ -94,6 +94,9 @@ objc2-foundation = "0.3"
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5"
 
+[profile.dev]
+panic = "unwind"
+
 [profile.release]
 panic = "abort"
 codegen-units = 1
