@@ -190,7 +190,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
         let result = crate::services::agent_workflow::agent_chat_workflow(
             prompt,
             vec![],
-            Some(6),
+            Some(12),
             Some(handle.clone()),
             true,
             None,

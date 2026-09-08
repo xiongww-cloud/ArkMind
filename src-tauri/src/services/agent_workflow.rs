@@ -2968,7 +2968,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     AGENT_CANCEL.store(false, Ordering::Release);
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
-    let max_iters = max_iterations.unwrap_or(8).clamp(2, 20);
+    let max_iters = max_iterations.unwrap_or(20).clamp(2, 40);
     if query.is_empty() { return Ok(json!({"success":true,"result_type":"answer","answer":"请输入问题。","iterations":0})); }
     crate::services::chat_api::invalidate_chat_config_cache();
     { let mut c = API_CACHE.write().unwrap_or_else(|e| e.into_inner()); c.3 = Instant::now() - std::time::Duration::from_secs(60); }
@@ -3313,7 +3313,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     let (mut iters, mut pt, mut _ct) = (0i32, 0i64, 0i64);
     let mut _cached_total: i64 = 0;
     let mut _prev_pt: i64 = 0;
-    let mut budget = 150i32;  // 增加到150分
+    let mut budget = 300i32;  // 增加到300分
     let mut search_cost = 8i32;  // 降低初始消耗到8分
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     
@@ -3403,7 +3403,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
                 (text_len + tc_len) / 3
             }).sum();
             let budget_info = format!(
-                "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
+                "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
                 scratchpad, chrono::Local::now().format("%Y-%m-%d %A %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
             );
             // 移除上一轮的动态上下文消息
@@ -5388,7 +5388,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                         (text_len + tc_len) / 3
                     }).sum();
                      let budget_info = format!(
-                        "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 150 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/150 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
+                        "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
                         scratchpad, chrono::Local::now().format("%Y-%m-%d %A %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
                     );
                     // 移除上一轮的动态上下文消息
