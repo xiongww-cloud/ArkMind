@@ -242,7 +242,21 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     for m in migrations {
         let _ = conn.execute(m, []);
     }
-    
+
+    // ★ 修复：将"未分类"目录下的产品 series_id 改为 NULL（使其正确显示在未分类中）
+    if let Ok(uncat_id) = conn.query_row(
+        "SELECT id FROM product_series WHERE name='未分类' AND parent_id IS NULL LIMIT 1",
+        [], |r| r.get::<_, String>(0),
+    ) {
+        let fixed = conn.execute(
+            "UPDATE products SET series_id=NULL WHERE series_id=?1",
+            rusqlite::params![uncat_id],
+        ).unwrap_or(0);
+        if fixed > 0 {
+            log::info!("[迁移] 修复 {} 个产品的 series_id（未分类目录 → NULL）", fixed);
+        }
+    }
+
     // 修复 knowledge_chunks.source_data_id 类型：INTEGER → TEXT
     // SQLite 不支持 ALTER COLUMN，需要重建表
     let sd_id_type: String = conn.query_row(

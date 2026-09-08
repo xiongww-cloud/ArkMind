@@ -233,7 +233,7 @@ async function onProductImportConfirm(payload: any) {
   let created = 0, skipped = 0
   try {
     // 确定目标目录
-    importTargetSeriesId.value = (selectedSeriesId.value && selectedSeriesId.value !== store.uncategorizedSeriesId) ? selectedSeriesId.value : (store.uncategorizedSeriesId || null)
+    importTargetSeriesId.value = (selectedSeriesId.value && selectedSeriesId.value !== store.uncategorizedSeriesId) ? selectedSeriesId.value : null
     const seen = new Set<string>()
     for (let i = 0; i < rows.length; i++) {
       const decision = decisions[i]
