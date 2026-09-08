@@ -133,11 +133,13 @@ async function loadProjects() { try { projects.value = await fetchProjects() } c
 onMounted(async () => {
   await loadAll()
   await ensureDailyNote()
+  handleRouteQuery()
 })
 // KeepAlive: 切回笔记 Tab 时仅检查是否需要新建今日闪记
 // 列表数据的刷新交给用户主动操作（点击侧边栏切换视图时自然会 loadAll）
 onActivated(async () => {
   await loadNotes()
+  handleRouteQuery()
 })
 // ★ 响应全局搜索跳转
 let processingSeq = 0
@@ -392,6 +394,35 @@ async function createNote() {
     editor.value?.commands.setContent('')
     editor.value?.commands.focus()
   } catch (e) { console.error('[Notes] create note failed:', e) }
+}
+
+async function createNotePrefilled(title: string, content: string) {
+  await saveBeforeSwitch()
+  const payload: any = { title: title || '', content: content || '', isDaily: false }
+  if (currentView.value === 'notebook' && selectedNotebookId.value) payload.notebookId = selectedNotebookId.value
+  try {
+    const r: any = await notesV2Create(payload)
+    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: title || '', excerpt: '', is_daily: 0, notebook_id: payload.notebookId || null, updated_at: nowLocalDb(), created_at: nowLocalDb(), tags: [] }
+    notes.value.unshift(newNote)
+    selectedNoteId.value = newNote.note_id
+    editTitle.value = title || ''; editContent.value = content || ''; isDirty.value = false
+    await nextTick()
+    if (content) editor.value?.commands.setContent(content)
+    editor.value?.commands.focus()
+  } catch (e) { console.error('[Notes] create note prefilled failed:', e) }
+}
+
+function handleRouteQuery() {
+  const action = route.query.action as string
+  const focus = route.query.focus as string
+  if (action === 'create') {
+    const title = route.query.title as string || ''
+    const content = route.query.content as string || ''
+    createNotePrefilled(title, content)
+  }
+  if (focus) {
+    selectedNoteId.value = focus
+  }
 }
 async function deleteNote(id: string) {
   const ok = await dangerConfirm({ title: '删除笔记', message: '确定删除此笔记？将放入回收站，30天后自动清空。', confirmText: '删除' })

@@ -46,6 +46,7 @@ pub fn sync_entity(source_type: &str, source_id: &str) -> Result<(), String> {
         "TODO" => extract_todo(source_id),
         "FILE" => extract_file(source_id),
         "CHAT" => extract_chat(source_id),
+        "EMAIL" => extract_email(source_id),
         "CONTACT" => extract_contact(source_id),
         "CHANNEL" => extract_channel(source_id),
         "VENDOR" => extract_vendor(source_id),
@@ -304,6 +305,71 @@ fn extract_chat(session_id: &str) -> (String, String) {
         parts.push(chat_text);
     }
     (title, parts.join("\n\n"))
+}
+
+pub fn extract_email(email_id: &str) -> (String, String) {
+    let row = match crate::database::get(
+        "SELECT e.subject, e.from_addr, e.from_name, e.to_addr, e.body_text, e.body_html, e.received_at, e.ai_category, e.folder FROM emails e WHERE e.id=?1",
+        &[serde_json::json!(email_id)],
+    ) {
+        Ok(Some(r)) => r,
+        _ => return (String::new(), String::new()),
+    };
+
+    let subject = row["subject"].as_str().unwrap_or("");
+    let from_name = row["from_name"].as_str().unwrap_or("");
+    let from_addr = row["from_addr"].as_str().unwrap_or("");
+    let to_addr = row["to_addr"].as_str().unwrap_or("");
+    let body_text = row["body_text"].as_str().unwrap_or("");
+    let body_html = row["body_html"].as_str().unwrap_or("");
+    let received_at = row["received_at"].as_str().unwrap_or("");
+    let folder = row["folder"].as_str().unwrap_or("INBOX");
+
+    let title = if subject.is_empty() {
+        format!("邮件: {}", from_addr)
+    } else {
+        subject.to_string()
+    };
+
+    // 构建邮件头部信息（纯文本格式，用于搜索和摘要）
+    let header = format!(
+        "发件人：{} <{}>\n收件人：{}\n时间：{}\n文件夹：{}",
+        from_name, from_addr, to_addr, received_at, folder
+    );
+
+    // 优先使用 HTML 转换为 Markdown（保留表格、列表、链接等结构）
+    // 降级使用纯文本
+    let body = if !body_html.is_empty() {
+        crate::services::file_parser::html_to_markdown_v2(body_html)
+    } else if !body_text.is_empty() {
+        body_text.to_string()
+    } else {
+        String::new()
+    };
+
+    // 附加附件解析文本
+    let mut attachment_parts = Vec::new();
+    if let Ok(attachments) = crate::database::all(
+        "SELECT filename, parsed_text FROM email_attachments WHERE email_id=?1 AND parsed_text != ''",
+        &[serde_json::json!(email_id)],
+    ) {
+        for att in &attachments {
+            let filename = att["filename"].as_str().unwrap_or("");
+            let text = att["parsed_text"].as_str().unwrap_or("");
+            if !text.is_empty() {
+                attachment_parts.push(format!("附件: {}\n{}", filename, text));
+            }
+        }
+    }
+
+    // 组合最终内容：标题 + 头部 + 正文 + 附件
+    let mut content = format!("{}\n{}", header, body);
+    if !attachment_parts.is_empty() {
+        content.push_str("\n\n");
+        content.push_str(&attachment_parts.join("\n\n"));
+    }
+
+    (title, content)
 }
 
 fn extract_contact(contact_id: &str) -> (String, String) {

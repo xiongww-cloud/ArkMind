@@ -84,11 +84,11 @@ async function onPaste(e: ClipboardEvent) {
       } catch (err) { console.warn('[Chat] paste image failed:', err) }
     }
   }
-  // macOS：WebKit 不把剪贴板文件暴露给 clipboardData.files/items，
-  // 若未添加任何附件，回退从后端 NSPasteboard 读取 Finder 复制的文件
-  if (added === 0 && isMac) {
+  // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
+  // 若未添加任何附件，回退从后端读取剪贴板文件列表
+  if (added === 0) {
     try {
-      const r: any = await invoke('chat_read_macos_clipboard_files')
+      const r: any = await invoke('chat_read_clipboard_files')
       if (r?.success && Array.isArray(r.files) && r.files.length) {
         for (const f of r.files) {
           if (pendingAttachments.value.length >= 5) break
@@ -96,7 +96,7 @@ async function onPaste(e: ClipboardEvent) {
           added++
         }
       }
-    } catch (err) { console.warn('[Chat] macos clipboard read failed:', err) }
+    } catch (err) { console.warn('[Chat] clipboard read failed:', err) }
   }
   if (added > 0 && !expanded.value) expandChat()
 }

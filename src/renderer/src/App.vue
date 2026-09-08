@@ -7,8 +7,8 @@ import Toast from '@/components/common/Toast.vue'
 import UploadProgress from '@/components/common/UploadProgress.vue'
 import ActivationModal from '@/components/common/ActivationModal.vue'
 import GuideModal from '@/components/common/GuideModal.vue'
+import WhatsNewModal from '@/components/common/WhatsNewModal.vue'
 import { useAuthStore } from '@/stores/auth'
-import { listen } from '@tauri-apps/api/event'
 
 const sidebarCollapsed = ref(false)
 const authStore = useAuthStore()
@@ -16,6 +16,7 @@ const showActivation = ref(false)
 const showTrialReminder = ref(false)
 const trialRemainingDays = ref(0)
 const guideModalRef = ref<InstanceType<typeof GuideModal> | null>(null)
+const whatsNewModalRef = ref<InstanceType<typeof WhatsNewModal> | null>(null)
 let licensePollTimer = null
 
 function toggleSidebar() {
@@ -76,8 +77,7 @@ async function checkActivation() {
       }
     }
   } catch (e) {
-    console.warn('License check failed, showing modal:', e)
-    showActivation.value = true
+    console.warn('License check failed, will retry on next poll:', e)
   }
 }
 
@@ -86,6 +86,7 @@ async function pollLicenseStatus() {
   try {
     const { fetchLicenseStatus } = await import('@/api/db-client')
     const status = await fetchLicenseStatus()
+    if (status.activated) return
     const trial = status.trial
     if (status.status === 'expired' || (!status.activated && trial?.expired)) {
       showActivation.value = true
@@ -124,10 +125,23 @@ async function checkGuide() {
   }
 }
 
+async function checkWhatsNew() {
+  try {
+    const { getSystemSetting } = await import('@/api/db-client')
+    const r = await getSystemSetting('last_seen_version')
+    if (!r.value || r.value !== __APP_VERSION__) {
+      whatsNewModalRef.value?.open()
+    }
+  } catch (e) {
+    console.warn('WhatsNew check failed:', e)
+  }
+}
+
 onMounted(() => {
   authStore.loadUser()
   checkActivation()
   checkGuide()
+  checkWhatsNew()
   licensePollTimer = setInterval(pollLicenseStatus, LICENSE_POLL_INTERVAL_MS)
 })
 
@@ -168,5 +182,6 @@ onUnmounted(() => {
       @close="onDismissTrialReminder"
     />
     <GuideModal ref="guideModalRef" />
+    <WhatsNewModal ref="whatsNewModalRef" />
   </div>
 </template>

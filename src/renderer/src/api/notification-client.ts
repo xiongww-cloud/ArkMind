@@ -1,5 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 
+export interface NotificationAction {
+  type: string
+  label: string
+  params?: Record<string, unknown>
+}
+
 export interface Notification {
   id: string
   type: string
@@ -12,6 +18,17 @@ export interface Notification {
   source: string
   follow_up_of: string
   created_at: string
+  meta?: string | null
+  actions?: NotificationAction[]
+}
+
+export interface SuggestionMeta {
+  id: string
+  kind: 'todo' | 'project' | 'partner'
+  status: 'pending' | 'done' | 'ignored'
+  result?: { type: string; id: string; name: string }
+  note?: string
+  [key: string]: unknown
 }
 
 export interface NotificationStats {
@@ -46,6 +63,10 @@ export async function notificationDelete(id: string): Promise<void> {
   return invoke('notification_delete', { id })
 }
 
+export async function notificationBatchDelete(ids: string[]): Promise<void> {
+  return invoke('notification_batch_delete', { ids })
+}
+
 export async function notificationStats(): Promise<NotificationStats> {
   return invoke('notification_stats')
 }
@@ -67,4 +88,20 @@ export interface LoopStatus {
 
 export async function notificationLoopStatus(): Promise<LoopStatus> {
   return invoke('notification_loop_status')
+}
+
+// ── 邮件 AI 建议逐条确认 ──
+
+export async function emailActionConfirm(
+  notificationId: string,
+  suggestionId: string
+): Promise<{ success: boolean; items?: SuggestionMeta[]; object?: { type: string; id: string; name: string }; note?: string; linked_files?: number }> {
+  return invoke('email_action_confirm', { notificationId, suggestionId })
+}
+
+export async function emailActionIgnore(
+  notificationId: string,
+  suggestionId: string
+): Promise<{ success: boolean; items?: SuggestionMeta[]; note?: string }> {
+  return invoke('email_action_ignore', { notificationId, suggestionId })
 }

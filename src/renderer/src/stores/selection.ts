@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { reactive } from 'vue'
 
-export type SelectionType = 'product' | 'note' | 'todo' | 'project'
+export type SelectionType = 'product' | 'note' | 'todo' | 'project' | 'contact' | 'partner' | 'email'
 
 export interface JumpExtra {
   tab?: 'overview' | 'notes' | 'todos' | 'files'

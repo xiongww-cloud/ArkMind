@@ -154,22 +154,39 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
          - 关键数据变化趋势、异常波动\n\
          - 多个项目/待办之间的冲突或风险\n\
          - 用户可能忽略的重要信息\n\
-          \n\
-          如果数据中没有值得用户关注的事项，回复\"暂无新发现\"。\n\
-          \n\
-          以下数据是距上次分析之后发生变化的业务数据，每行开头的ID是对象ID。\n\
-          如需查看某个对象的完整详情，可调用 ext_tool_object(id=[\"对象ID\"])。\n\
-          例如：ext_tool_object(id=[\"abc123def456\"]) 查看项目详情。\n\
-          重要：通知的标题和内容中禁止出现对象ID/UUID，只使用对象名称描述，例如「项目“XX项目”已停滞」。\n\
-          如需其他业务数据（合作伙伴、联系人、文件、知识库等）辅助分析，可调用工具检索。\n\
-          {}\n\
-          \n\
-          最近通知：\n{}",
+         \n\
+         创建通知时，请根据通知内容携带合适的操作按钮（actions 参数）：\n\
+         - 涉及邮件的通知：包含 {{ type: \"view_email\", label: \"查看邮件\", params: {{ email_id }} }}\n\
+         - 涉及项目的通知：包含 {{ type: \"view_project\", label: \"查看项目\", params: {{ project_id }} }}\n\
+         - 涉及待办的通知：包含 {{ type: \"view_todo\", label: \"查看待办\", params: {{ todo_id }} }}\n\
+         - 发现需要用户跟进的事项：包含 {{ type: \"create_todo\", label: \"创建待办\", params: {{ title, priority, due_date, content }} }}\n\
+         - 发现新的联系人/客户：包含 {{ type: \"create_contact\", label: \"创建联系人\", params: {{ name, email, phone }} }}\n\
+         - 如果通知涉及多个可创建的对象：包含 {{ type: \"create_all\", label: \"一键全部创建\" }}\n\
+         - 按钮的 params 中预填尽可能多的信息，减少用户手动输入\n\
+         \n\
+         如果数据中没有值得用户关注的事项，回复\"暂无新发现\"。\n\
+         \n\
+         以下数据是距上次分析之后发生变化的业务数据，每行开头的ID是对象ID。\n\
+         如需查看某个对象的完整详情，可调用 ext_tool_object(id=[\"对象ID\"])。\n\
+         例如：ext_tool_object(id=[\"abc123def456\"]) 查看项目详情。\n\
+         重要：通知的标题和内容中禁止出现对象ID/UUID，只使用对象名称描述，例如「项目'XX项目'已停滞」。\n\
+         如需其他业务数据（合作伙伴、联系人、文件、知识库等）辅助分析，可调用工具检索。\n\
+         {}\n\
+         \n\
+         最近通知：\n{}",
         context, recent
     );
 
     let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        // ★ 周期分析只允许只读查询 + 创建通知，禁止直接改业务对象/记忆/策略
+        let allowed_tools: Vec<String> = vec![
+            "ext_tool_search".to_string(),
+            "ext_tool_object".to_string(),
+            "ext_tool_chunk_navigate".to_string(),
+            "ext_tool_relations".to_string(),
+            "ext_tool_manage_notification".to_string(),
+        ];
         let result = crate::services::agent_workflow::agent_chat_workflow(
             prompt,
             vec![],
@@ -177,6 +194,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             Some(handle.clone()),
             true,
             None,
+            Some(allowed_tools),
         ).await;
 
         match result {
@@ -323,6 +341,26 @@ fn build_initial_context(since: &str) -> String {
                 format!("{}({})", n, t)
             }).collect();
             parts.push(format!("新增合作伙伴 ({}个): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
+        }
+    }
+
+    // 新增邮件（收件箱和发件箱）
+    if let Ok(rows) = database::all(
+        "SELECT id, subject, from_addr, from_name, to_addr, received_at, folder FROM emails \
+         WHERE created_at > ?1 \
+         ORDER BY received_at DESC LIMIT 6",
+        &[json!(since)],
+    ) {
+        if !rows.is_empty() {
+            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM emails WHERE created_at > ?1", &[json!(since)])
+                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
+            let items: Vec<String> = rows.iter().take(5).map(|r| {
+                let subject = r["subject"].as_str().unwrap_or("无主题");
+                let from = r["from_name"].as_str().unwrap_or(r["from_addr"].as_str().unwrap_or(""));
+                let folder = r["folder"].as_str().unwrap_or("INBOX");
+                format!("{} (来自:{}, 文件夹:{})", subject, from, folder)
+            }).collect();
+            parts.push(format!("新增邮件 ({}封): {}{}", total, items.join("、"), if total > 5 { " 等" } else { "" }));
         }
     }
 

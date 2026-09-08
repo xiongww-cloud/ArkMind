@@ -168,6 +168,8 @@ onMounted(() => {
   syncFromBackend().then(async () => {
     const report = await projectStore.submitProjectIdMigration()
     if (report?.migrated > 0) await syncFromBackend()
+    // Handle route query after sync
+    handleRouteQuery()
   })
   loadCustomers()
 })
@@ -176,6 +178,7 @@ onActivated(() => {
   nextTick(() => {
     if (tableScrollRef.value) tableScrollRef.value.scrollTop = savedScrollTop
   })
+  handleRouteQuery()
 })
 onDeactivated(() => {
   if (tableScrollRef.value) savedScrollTop = tableScrollRef.value.scrollTop
@@ -551,6 +554,21 @@ function resetForm() {
 function openCreate() {
   resetForm()
   showNewProjectModal.value = true
+}
+
+function handleRouteQuery() {
+  const action = route.query.action as string
+  const focus = route.query.focus as string
+  if (action === 'create') {
+    const name = route.query.name as string || ''
+    resetForm()
+    if (name) projectForm.value.name = name
+    showNewProjectModal.value = true
+  }
+  if (focus) {
+    // Navigate to the project detail
+    router.replace(`/projects/${focus}`)
+  }
 }
 
 function closeModal() {

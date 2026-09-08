@@ -572,8 +572,9 @@ fn execute_object_catalog(entity: &str, field_filters: &[Value], sort: Option<&V
         "SOLUTION_VERSION" => ("solution_versions", &["id","solution_id","version","tags","content","creator","status","created_at","updated_at"]),
         "SOLUTION_ITEM" => ("(SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit_price, si.description AS params, si.row_type, si.sort_order, si.created_at, si.updated_at, sv.version, sv.status AS version_status, s.name AS solution_name, s.project_id, p.name AS project_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN projects p ON p.id=s.project_id)", &["id","solution_version_id","product_id","product_name","device_name","quantity","unit_price","params","row_type","sort_order","created_at","updated_at","version","version_status","solution_name","project_id","project_name"]),
         "PROJECT_DYNAMIC" => ("project_dynamics", &["id","project_id","type","content","operator","created_at"]),
+        "EMAIL" => ("emails", &["id","account_id","folder","from_addr","from_name","to_addr","cc_addr","subject","received_at","has_attachments","ai_category","created_at"]),
         "CHAT" | "FILE" => return format!("{} 不支持结构化筛选，请使用 query 关键词搜索。", entity),
-        _ => return format!("不支持的实体类型: {}。可用: PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/PROJECT_DYNAMIC", entity),
+        _ => return format!("不支持的实体类型: {}。可用: PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/PROJECT_DYNAMIC/EMAIL", entity),
     };
     let mut conditions: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
@@ -748,23 +749,30 @@ fn execute_object_catalog(entity: &str, field_filters: &[Value], sort: Option<&V
             return envelope.to_json();
         }
     } else { " ORDER BY created_at DESC".to_string() };
-    let limit = args["limit"].as_u64().unwrap_or(20).min(100);
+    let limit = args["limit"].as_u64().unwrap_or(50).min(100);
     let offset = args["offset"].as_u64().unwrap_or(0);
     let sql = format!("SELECT {} FROM {}{}{} LIMIT {} OFFSET {}", allowed_fields.join(","), table, where_clause, order, limit, offset);
+    
+    // 先查询总记录数
+    let count_sql = format!("SELECT COUNT(*) as cnt FROM {}{}", table, where_clause);
+    let total: i64 = crate::database::get(&count_sql, &values)
+        .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    
     match crate::database::all(&sql, &values) {
         Ok(rows) => {
             if rows.is_empty() {
                 let envelope = ToolResultEnvelope {
                     result_type: "object_catalog_result".to_string(),
-                    data: json!({"entity": entity, "items": [], "total": 0, "offset": offset}),
+                    data: json!({"entity": entity, "items": [], "total": total, "offset": offset}),
                     summary: Some(format!("未找到匹配的{}对象。", entity)),
                 };
                 return envelope.to_json();
             }
-        let total = rows.len();
             let items: Vec<Value> = rows.iter().map(|row| {
                 json!(row)
             }).collect();
+            let has_more = (offset as i64 + rows.len() as i64) < total;
+            let next_offset = if has_more { Some(offset + rows.len() as u64) } else { None };
             let envelope = ToolResultEnvelope {
                 result_type: "object_catalog_result".to_string(),
                 data: json!({
@@ -772,9 +780,11 @@ fn execute_object_catalog(entity: &str, field_filters: &[Value], sort: Option<&V
                     "items": items,
                     "total": total,
                     "offset": offset,
-                    "limit": limit
+                    "limit": limit,
+                    "has_more": has_more,
+                    "next_offset": next_offset
                 }),
-                summary: Some(format!("显示 {}/{} 条{}对象。", offset as usize + total, total, entity)),
+                summary: Some(format!("显示 {}/{} 条{}对象。", offset as usize + rows.len(), total, entity)),
             };
             envelope.to_json()
         }
@@ -981,11 +991,11 @@ fn resolve_graph_node_name(node_type: &str, id: &str) -> String {
         .unwrap_or_default()
 }
 
-fn build_tools_definitions() -> Value {
-    json!([
+fn build_tools_definitions(allow: Option<&[String]>) -> Value {
+    let all = json!([
         {"type":"function","function":{"name":"ext_tool_search","description":"在知识库中搜索文档内容（全文检索+语义检索）。适用于：找到提到某个关键词的文档、笔记、技术资料。支持时间范围过滤。返回匹配的文档片段及 ChunkID。","parameters":{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"description":"1~4 个核心关键词"},"start_time":{"type":"string","description":"开始时间，格式 2026-06-25 或 昨天"},"end_time":{"type":"string","description":"结束时间，格式 2026-06-25 或 昨天"}},"required":["keywords"]}}},
-        {"type":"function","function":{"name":"ext_tool_object","description":"查询或统计业务对象。必须指定 mode 决定操作类型。如需搜索文档正文内容（笔记、文件、资料），请用 ext_tool_search。","parameters":{"type":"object","properties":{"mode":{"type":"string","enum":["detail","search","filter","count","group","aggregate"],"description":"操作模式：detail=按ID查看详情，search=关键词搜索对象目录（名称/标题），filter=按字段筛选记录，count=统计数量，group=按字段分组统计，aggregate=聚合计算(SUM/AVG/MAX/MIN)"},"id":{"type":"array","items":{"type":"string"},"description":"[detail模式-必填] 对象ID列表，格式 TYPE-UUID 或裸UUID"},"query":{"type":"string","description":"[search模式-必填] 关键词，搜索对象的名称/标题等元数据"},"type":{"type":"string","description":"[filter/count/group/aggregate模式-必填] 对象类型：PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/FILE/SOLUTION/SOLUTION_VERSION(仅filter模式)/SOLUTION_ITEM(仅filter模式)/PROJECT_DYNAMIC(仅filter模式)"},"field_filters":{"type":"array","items":{"type":"object","properties":{"field":{"type":"string"},"op":{"type":"string","enum":["=","!=",">","<",">=","<=","LIKE","IN","IS_NULL","IS_NOT_NULL"]},"value":{"type":["string","number","boolean","null"]}},"required":["field","op","value"]},"description":"[filter/count模式] 结构化字段过滤"},"group_by":{"type":"string","description":"[group模式-必填] 分组字段名"},"aggregate":{"type":"string","description":"[aggregate模式-必填] 聚合表达式：SUM(字段)/AVG(字段)/MAX(字段)/MIN(字段)"},"sort":{"type":"object","properties":{"field":{"type":"string"},"order":{"type":"string","enum":["asc","desc"]}},"description":"排序配置"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页条数，默认50"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["mode"]}}},
-        {"type":"function","function":{"name":"ext_tool_chunk_navigate","description":"在知识块间翻页。next=向后翻页，prev=向前翻页。用于阅读长文档的前后内容。⚠️ chunk_id 是8位短ID，来自 search() 结果的 ChunkID 字段。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"8位短ID，必须来自 search() 结果的 ChunkID 字段"},"edge_type":{"type":"string","enum":["next","prev"],"description":"next=向后翻页；prev=向前翻页"},"radius":{"type":"integer","description":"返回块数量，默认10，最大20"}},"required":["chunk_id","edge_type"]}}},
+        {"type":"function","function":{"name":"ext_tool_object","description":"查询或统计业务对象。必须指定 mode 决定操作类型。如需搜索文档正文内容（笔记、文件、资料），请用 ext_tool_search。","parameters":{"type":"object","properties":{"mode":{"type":"string","enum":["detail","search","filter","count","group","aggregate"],"description":"操作模式：detail=按ID查看详情，search=关键词搜索对象目录（名称/标题），filter=按字段筛选记录，count=统计数量，group=按字段分组统计，aggregate=聚合计算(SUM/AVG/MAX/MIN)"},"id":{"type":"array","items":{"type":"string"},"description":"[detail模式-必填] 对象ID列表，格式 TYPE-UUID 或裸UUID"},"query":{"type":"string","description":"[search模式-必填] 关键词，搜索对象的名称/标题等元数据"},"type":{"type":"string","description":"[filter/count/group/aggregate模式-必填] 对象类型：PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/FILE/SOLUTION/SOLUTION_VERSION(仅filter模式)/SOLUTION_ITEM(仅filter模式)/PROJECT_DYNAMIC(仅filter模式)/EMAIL"},"field_filters":{"type":"array","items":{"type":"object","properties":{"field":{"type":"string"},"op":{"type":"string","enum":["=","!=",">","<",">=","<=","LIKE","IN","IS_NULL","IS_NOT_NULL"]},"value":{"type":["string","number","boolean","null"]}},"required":["field","op","value"]},"description":"[filter/count模式] 结构化字段过滤"},"group_by":{"type":"string","description":"[group模式-必填] 分组字段名"},"aggregate":{"type":"string","description":"[aggregate模式-必填] 聚合表达式：SUM(字段)/AVG(字段)/MAX(字段)/MIN(字段)"},"sort":{"type":"object","properties":{"field":{"type":"string"},"order":{"type":"string","enum":["asc","desc"]}},"description":"排序配置"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"},"limit":{"type":"integer","description":"每页条数，默认50，最多100。返回结果包含 total 和 has_more 字段。"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["mode"]}}},
+        {"type":"function","function":{"name":"ext_tool_chunk_navigate","description":"在知识块间翻页，用于阅读长文档的前后内容。使用场景：当你通过 search() 找到一个相关片段后，想继续阅读同一文档的更多内容时，用该搜索结果中的 ChunkID 调用此工具。chunk_id：传入 search() 结果中「ChunkID：」后面的8位字符串。edge_type：next=向后翻页（看后面的内容），prev=向前翻页（看前面的内容）。","parameters":{"type":"object","properties":{"chunk_id":{"type":"string","description":"传入 search() 结果中「ChunkID：」后面的8位字符串"},"edge_type":{"type":"string","enum":["next","prev"],"description":"next=向后翻页；prev=向前翻页"},"radius":{"type":"integer","description":"返回块数量，默认10，最大20"}},"required":["chunk_id","edge_type"]}}},
         {"type":"function","function":{"name":"ext_tool_relations","description":"查询实体的关联对象（双向）。如：项目关联的方案(SOLUTION)/产品/合作伙伴/文件，方案关联的版本(SOLUTION_VERSION，metadata含金额（元）/设备数/状态)，版本关联的设备实例(SOLUTION_ITEM，metadata含型号/数量/单价（元）)，设备实例关联的产品(PRODUCT)。返回关联对象的名称、类型、ID及边metadata。联系人类型额外返回 phone/email/position。","parameters":{"type":"object","properties":{"entity_type":{"type":"string","description":"源实体类型：PROJECT/PRODUCT/SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/FILE"},"entity_id":{"type":"string","description":"源实体ID"},"target_type":{"type":"string","description":"目标类型过滤：SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/PRODUCT/FILE/NOTE/TODO/CHANNEL/VENDOR/CONTACT/CUSTOMER。不传返回所有关联"},"limit":{"type":"integer","description":"每页条数，默认20"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["entity_type","entity_id"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_todo","description":"管理待办。查看待办请用 ext_tool_object(type=\"TODO\")。action=create/update/delete。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"]},"title":{"type":"string","description":"待标题(create必填)"},"content":{"type":"string","description":"待办详情"},"priority":{"type":"string","description":"优先级: P1/P2/P3 或 高/中/低"},"due_date":{"type":"string","description":"截止日期: YYYY-MM-DD"},"repeat":{"type":"string","description":"循环: daily/weekly/monthly"},"project_id":{"type":"string","description":"关联项目ID"},"done":{"type":"boolean","description":"是否完成(update用)"},"todo_id":{"type":"string","description":"待办ID(update/delete)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_project","description":"管理项目。查看项目请用 ext_tool_object(type=\"PROJECT\")。action=create/update/delete/add_dynamic/delete_dynamic。add_dynamic=追加项目动态（需project_id+content）。delete_dynamic=删除动态（需dynamic_id）。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","add_dynamic","delete_dynamic"]},"project_id":{"type":"string","description":"项目ID(update/delete/add_dynamic用)"},"name":{"type":"string","description":"项目名称(create用)"},"budget":{"type":"number","description":"预算金额，单位：万元"},"description":{"type":"string","description":"项目描述"},"bid_time":{"type":"string","description":"投标时间 YYYY-MM-DD"},"status":{"type":"string","description":"项目状态: Lead/SolutionDesign/Ordered/Won/Lost/Archived"},"content":{"type":"string","description":"动态内容(add_dynamic必填)"},"dynamic_type":{"type":"string","description":"动态类型(add_dynamic用,默认ai)：ai=AI记录/note=用户记录/system=系统变更"},"dynamic_id":{"type":"string","description":"动态ID(delete_dynamic用)"}},"required":["action"]}}},
@@ -994,8 +1004,26 @@ fn build_tools_definitions() -> Value {
         {"type":"function","function":{"name":"ext_tool_manage_product","description":"管理产品和产品目录。查看产品请用 ext_tool_object(type=\"PRODUCT\")。action=create/update/delete/move/create_series/update_series/delete_series。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","move","create_series","update_series","delete_series"]},"product_id":{"type":"string","description":"产品ID(update/delete/move必填，支持名称模糊匹配)"},"name":{"type":"string","description":"产品或目录名称(create必填)"},"description":{"type":"string","description":"产品描述"},"price":{"type":"number","description":"产品价格"},"full_specs":{"type":"string","description":"产品规格参数"},"series_id":{"type":"string","description":"目标目录ID(create/move用)"},"series_name":{"type":"string","description":"目标目录名称(按名称匹配，优先级低于series_id)"},"parent_id":{"type":"string","description":"父目录ID(create_series用)"},"series":{"type":"string","description":"目录ID(update_series/delete_series用)"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_memory","description":"记录和检索长期记忆。action=create(创建记忆), action=update(更新记忆内容), action=delete(删除记忆), action=search(搜索记忆，不传query或传*可列出所有记忆)。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","search"],"description":"必填。search=搜索记忆，create=创建记忆，update=更新记忆，delete=删除记忆"},"content":{"type":"string","description":"记忆内容（create/update 必填）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条记忆内容数组"},"memory_id":{"type":"string","description":"记忆ID（update/delete 必填）"},"query":{"type":"string","description":"搜索关键词（search 用）。不传或传 * 可列出所有记忆"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户策略。action=create(新增策略), action=update(更新策略), action=delete(删除策略)。策略会自动注入 prompt，无需手动查询。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"],"description":"必填。create=新增策略，update=更新策略，delete=删除策略"},"id":{"type":"string","description":"策略ID（update/delete 用）"},"content":{"type":"string","description":"策略内容（create/update 用）"}},"required":["action"]}}},
-        {"type":"function","function":{"name":"ext_tool_manage_notification","description":"管理通知。action=create(创建通知)、update(更新通知)、delete(删除通知)、list(查看通知列表)、get(查看通知详情)。只有在发现真正需要用户关注的洞察时才调用，不要滥用。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list","get"],"description":"必填。create=创建通知，update=更新通知，delete=删除通知，list=查看通知，get=查看通知详情"},"notification_id":{"type":"string","description":"通知ID（get/update/delete用）"},"type":{"type":"string","description":"通知类型: todo_due/todo_today/project_stale/bid_deadline/llm_insight"},"title":{"type":"string","description":"通知标题，简短精炼"},"content":{"type":"string","description":"通知详情，使用 Markdown 格式：支持 **加粗**、- 列表、`代码`、> 引用等，让内容结构清晰易读"},"entity_type":{"type":"string","description":"关联实体类型: todo/project/null"},"entity_id":{"type":"string","description":"关联实体ID"},"priority":{"type":"string","enum":["high","medium","low"],"description":"优先级"},"follow_up_of":{"type":"string","description":"跟进的通知ID"},"limit":{"type":"integer","description":"每页条数，默认20"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["action"]}}},
-    ])
+        {"type":"function","function":{"name":"ext_tool_manage_notification","description":"管理通知。action=create(创建通知)、update(更新通知)、delete(删除通知)、list(查看通知列表)、get(查看通知详情)。只有在发现真正需要用户关注的洞察时才调用，不要滥用。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list","get"],"description":"必填。create=创建通知，update=更新通知，delete=删除通知，list=查看通知，get=查看通知详情"},"notification_id":{"type":"string","description":"通知ID（get/update/delete用）"},"type":{"type":"string","description":"通知类型: todo_due/todo_today/project_stale/bid_deadline/llm_insight"},"title":{"type":"string","description":"通知标题，简短精炼"},"content":{"type":"string","description":"通知详情，使用 Markdown 格式：支持 **加粗**、- 列表、`代码`、> 引用等，让内容结构清晰易读"},"entity_type":{"type":"string","description":"关联实体类型: todo/project/null"},"entity_id":{"type":"string","description":"关联实体ID"},"priority":{"type":"string","enum":["high","medium","low"],"description":"优先级"},"follow_up_of":{"type":"string","description":"跟进的通知ID"},"actions":{"type":"array","description":"操作按钮列表。view_*=跳转查看，create_*=跳转创建，create_all=一键全部创建。由你决定通知需要哪些操作。","items":{"type":"object","properties":{"type":{"type":"string","enum":["view_email","view_project","view_todo","view_note","view_product","view_contact","view_partner","create_todo","create_project","create_note","create_product","create_contact","create_partner","create_all"],"description":"操作类型"},"label":{"type":"string","description":"按钮文字，如'查看邮件'、'创建待办'"},"params":{"type":"object","description":"操作参数。view_*需要对应id(如email_id/project_id)；create_*需要预填字段(如title/name/email/phone/priority/due_date等)"}},"required":["type","label"]}},"limit":{"type":"integer","description":"每页条数，默认20"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["action"]}}},
+    ]);
+    if let Some(allowed) = allow {
+        let filtered: Vec<Value> = all
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter(|t| {
+                        t["function"]["name"]
+                            .as_str()
+                            .map(|n| allowed.iter().any(|a| a == n))
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        return json!(filtered);
+    }
+    all
 }
 
 
@@ -1748,9 +1776,12 @@ async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std:
     }).collect();
     
     let total_hits = chunks.len();
+    let has_multi_parent = chunks.iter().any(|c| c["total_parents"].as_i64().unwrap_or(1) > 1);
     let summary = if total_hits == 0 {
         let kw_display = keywords.join("、");
         format!("未找到关键词「{}」的匹配切片。", kw_display)
+    } else if has_multi_parent {
+        format!("找到 {} 条相关知识片段。部分文档包含多个片段，如需继续阅读某篇文档的更多内容，请使用 chunk_navigate 工具 + 对应的 ChunkID。", total_hits)
     } else {
         format!("找到 {} 条相关知识片段。", total_hits)
     };
@@ -2933,7 +2964,7 @@ async fn summarize_large_attachment(
 }
 
 #[tauri::command]
-pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>) -> Result<Value, String> {
+pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, allowed_tools: Option<Vec<String>>) -> Result<Value, String> {
     AGENT_CANCEL.store(false, Ordering::Release);
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
@@ -2944,7 +2975,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     let (_, api_key, _model) = get_api_endpoint();
     if api_key.is_empty() { return Ok(json!({"success":true,"result_type":"answer","answer":"请先在系统设置中配置 Chat API 密钥。"})); }
 
-    let tools = build_tools_definitions();
+    let tools = build_tools_definitions(allowed_tools.as_deref());
     // ★ Session 缓存：从 chat_sessions.session_state 恢复（始终遍历所有历史）
     let mut session = if let Some(ref sid) = session_id {
         load_session_state(sid).unwrap_or_else(|| {
@@ -3640,6 +3671,8 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: u
     }
     
     let end_pos = (offset + rows.len()).min(total as usize);
+    let has_more = (offset + rows.len()) < total as usize;
+    let next_offset = if has_more { Some(offset + rows.len()) } else { None };
     let summary = format!("显示 {}/{} 条对象。", end_pos, total);
     
     let envelope = ToolResultEnvelope {
@@ -3649,6 +3682,8 @@ fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: u
             "total": total,
             "offset": offset,
             "limit": limit,
+            "has_more": has_more,
+            "next_offset": next_offset,
             "items": items
         }),
         summary: Some(summary),
@@ -3764,6 +3799,8 @@ fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limi
     }
     
     let summary = format!("显示 {}/{} 条对象。", end_pos, total);
+    let has_more = end_pos < total;
+    let next_offset = if has_more { Some(end_pos) } else { None };
     
     let envelope = ToolResultEnvelope {
         result_type: "object_query_result".to_string(),
@@ -3773,6 +3810,8 @@ fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limi
             "total": total,
             "offset": offset,
             "limit": limit,
+            "has_more": has_more,
+            "next_offset": next_offset,
             "items": items
         }),
         summary: Some(summary),
@@ -3948,6 +3987,21 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                         }
                         cached_results_map.insert(i, cached.clone());
                     } else {
+                        // 工具集守卫：不在允许范围内的工具不执行（如周期分析只允许只读+通知）
+                        if let Some(ref allowed) = allowed_tools {
+                            if !allowed.iter().any(|a| a == &tc.function.name) {
+                                let env = serde_json::json!({
+                                    "result_type": "tool_forbidden",
+                                    "data": {"name": tc.function.name},
+                                    "summary": format!("工具「{}」在当前任务中未授权，已跳过执行。", tc.function.name)
+                                });
+                                if let Some(ref h) = app_handle {
+                                    let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": tc.function.name, "forbidden": true}));
+                                }
+                                cached_results_map.insert(i, env.to_string());
+                                continue;
+                            }
+                        }
                         match tc.function.name.as_str() {
                             "ext_tool_search" | "ext_tool_search_knowledge_base" | "ext_tool_batch_search" => {
                                 async_tasks.push((i, tc.function.name.clone(), tc.function.arguments.clone()));
@@ -4976,7 +5030,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         envelope.to_json()
                                     } else {
                                         match crate::database::get(
-                                            "SELECT id, type, title, content, entity_type, entity_id, priority, source, follow_up_of, created_at FROM notifications WHERE id=?1",
+                                            "SELECT id, type, title, content, entity_type, entity_id, priority, source, follow_up_of, actions, created_at FROM notifications WHERE id=?1",
                                             &[json!(nid)],
                                         ) {
                                             Ok(Some(r)) => {
@@ -4987,6 +5041,8 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                                 let entity_id = r["entity_id"].as_str().unwrap_or("");
                                                 let priority = r["priority"].as_str().unwrap_or("medium");
                                                 let follow_up_of = r["follow_up_of"].as_str().unwrap_or("");
+                                                let actions_raw = r["actions"].as_str().unwrap_or("[]");
+                                                let actions: Value = serde_json::from_str(actions_raw).unwrap_or(json!([]));
                                                 let created = r["created_at"].as_str().unwrap_or("");
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "notification_get_result".to_string(),
@@ -4999,6 +5055,7 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                                         "entity_id": entity_id,
                                                         "priority": priority,
                                                         "follow_up_of": follow_up_of,
+                                                        "actions": actions,
                                                         "created_at": created
                                                     }),
                                                     summary: Some(format!("通知「{}」", title)),
@@ -5027,15 +5084,18 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                 "list" => {
                                     let limit = a["limit"].as_u64().unwrap_or(20) as usize;
                                     let offset = a["offset"].as_u64().unwrap_or(0) as usize;
-                                    let sql = "SELECT id, type, title, content, entity_type, entity_id, priority, source, follow_up_of, created_at FROM notifications ORDER BY created_at DESC LIMIT ?1 OFFSET ?2";
+                                    let sql = "SELECT id, type, title, content, entity_type, entity_id, priority, source, follow_up_of, actions, created_at FROM notifications ORDER BY created_at DESC LIMIT ?1 OFFSET ?2";
                                     match crate::database::all(sql, &[json!(limit), json!(offset)]) {
                                         Ok(rows) => {
                                             let items: Vec<Value> = rows.iter().map(|r| {
+                                                let actions_raw = r["actions"].as_str().unwrap_or("[]");
+                                                let actions: Value = serde_json::from_str(actions_raw).unwrap_or(json!([]));
                                                 json!({
                                                     "id": r["id"].as_str().unwrap_or(""),
                                                     "type": r["type"].as_str().unwrap_or(""),
                                                     "title": r["title"].as_str().unwrap_or(""),
                                                     "priority": r["priority"].as_str().unwrap_or("medium"),
+                                                    "actions": actions,
                                                     "created_at": r["created_at"].as_str().unwrap_or("")
                                                 })
                                             }).collect();
@@ -5115,6 +5175,10 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                         if let Some(ei) = a.get("entity_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                                             sets.push("entity_id=?"); params.push(json!(ei));
                                         }
+                                        if let Some(actions_arr) = a.get("actions") {
+                                            let actions_str = serde_json::to_string(actions_arr).unwrap_or_else(|_| "[]".to_string());
+                                            sets.push("actions=?"); params.push(json!(actions_str));
+                                        }
                                         if sets.is_empty() {
                                             let envelope = ToolResultEnvelope {
                                                 result_type: "notification_update_result".to_string(),
@@ -5148,6 +5212,13 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     let entity_id = a["entity_id"].as_str().unwrap_or("");
                                     let priority = a["priority"].as_str().unwrap_or("medium");
                                     let follow_up_of = a["follow_up_of"].as_str().unwrap_or("");
+                                    let actions_str = if let Some(actions_arr) = a.get("actions") {
+                                        actions_arr.as_str().map(String::from).unwrap_or_else(|| {
+                                            serde_json::to_string(actions_arr).unwrap_or_else(|_| "[]".to_string())
+                                        })
+                                    } else {
+                                        "[]".to_string()
+                                    };
                                     let is_dup = if !entity_id.is_empty() {
                                         database::get(
                                             "SELECT id FROM notifications WHERE type=?1 AND entity_id=?2 AND created_at > datetime('now','-1 day')",
@@ -5164,8 +5235,8 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     } else {
                                         let id = uuid::Uuid::new_v4().to_string();
                                         let _ = database::run(
-                                            "INSERT INTO notifications(id,type,title,content,entity_type,entity_id,priority,source,follow_up_of) VALUES(?1,?2,?3,?4,?5,?6,?7,'llm',?8)",
-                                            &[json!(&id), json!(ntype), json!(title), json!(content), json!(entity_type), json!(entity_id), json!(priority), json!(follow_up_of)],
+                                            "INSERT INTO notifications(id,type,title,content,entity_type,entity_id,priority,source,follow_up_of,actions) VALUES(?1,?2,?3,?4,?5,?6,?7,'llm',?8,?9)",
+                                            &[json!(&id), json!(ntype), json!(title), json!(content), json!(entity_type), json!(entity_id), json!(priority), json!(follow_up_of), json!(actions_str)],
                                         );
                                         if let Some(ref h) = app_handle { let _ = h.emit("notification:new", &id); }
                                         let envelope = ToolResultEnvelope {

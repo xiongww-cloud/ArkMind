@@ -376,6 +376,72 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_br_type ON business_relations(relation_type);
         CREATE INDEX IF NOT EXISTS idx_br_updated ON business_relations(updated_at);
 
+        -- ★ 邮件账户配置
+        CREATE TABLE IF NOT EXISTS email_accounts (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email_address TEXT NOT NULL,
+            imap_host TEXT NOT NULL,
+            imap_port INTEGER DEFAULT 993,
+            username TEXT NOT NULL,
+            password_encrypted TEXT NOT NULL,
+            sync_enabled INTEGER DEFAULT 1,
+            last_sync_inbox_uid INTEGER DEFAULT 0,
+            last_sync_sent_uid INTEGER DEFAULT 0,
+            last_sync_at TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+
+        -- ★ 邮件缓存
+        CREATE TABLE IF NOT EXISTS emails (
+            id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            folder TEXT DEFAULT 'INBOX',
+            uid INTEGER NOT NULL,
+            message_id TEXT DEFAULT '',
+            from_addr TEXT DEFAULT '',
+            from_name TEXT DEFAULT '',
+            to_addr TEXT DEFAULT '',
+            subject TEXT DEFAULT '',
+            body_text TEXT DEFAULT '',
+            body_html TEXT DEFAULT '',
+            received_at TEXT DEFAULT '',
+            is_read INTEGER DEFAULT 0,
+            has_attachments INTEGER DEFAULT 0,
+            ai_summary TEXT DEFAULT '',
+            ai_category TEXT DEFAULT 'pending',
+            ai_actions TEXT DEFAULT '',
+            is_deleted INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            UNIQUE(account_id, folder, uid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_emails_account ON emails(account_id, folder);
+        CREATE INDEX IF NOT EXISTS idx_emails_category ON emails(ai_category);
+        CREATE INDEX IF NOT EXISTS idx_emails_deleted ON emails(is_deleted);
+
+        -- ★ 邮件附件
+        CREATE TABLE IF NOT EXISTS email_attachments (
+            id TEXT PRIMARY KEY,
+            email_id TEXT NOT NULL,
+            filename TEXT DEFAULT '',
+            mime_type TEXT DEFAULT '',
+            size INTEGER DEFAULT 0,
+            parsed_text TEXT DEFAULT '',
+            file_asset_id TEXT DEFAULT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_email_attach ON email_attachments(email_id);
+
+        -- ★ 邮件轮询配置
+        CREATE TABLE IF NOT EXISTS email_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO email_config(key,value) VALUES('enabled','1');
+        INSERT OR IGNORE INTO email_config(key,value) VALUES('interval_minutes','1');
+        INSERT OR IGNORE INTO email_config(key,value) VALUES('last_check_at','');
+
 
     ")?;
     Ok(())

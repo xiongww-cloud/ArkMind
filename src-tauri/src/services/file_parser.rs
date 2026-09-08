@@ -702,8 +702,9 @@ pub fn ocr_image_sync_result(base64_uri: &str) -> OcrOutcome {
     for attempt in 0..MAX_ATTEMPTS {
         let t0 = std::time::Instant::now();
         // 检查是否已在 tokio runtime 中，避免 "Cannot start a runtime from within a runtime" panic
-        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(ocr_with_vision_api(base64_uri))
+        let result = if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+            // 在 async 上下文中：使用 block_in_place 安全地执行阻塞调用
+            tokio::task::block_in_place(|| _handle.block_on(ocr_with_vision_api(base64_uri)))
         } else {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -953,7 +954,28 @@ pub fn parse_file_with_hint(path: &str, ext: &str) -> ParseResult {
 // 两级清洗：基础消毒（分格式） vs 向量化清洗
 // ═══════════════════════════════════════════════════════════════
 
-/// 第一步：字符级消毒。所有格式共用——仅移除控制字符 / BOM / 非法 Unicode，
+/// 使用 html2md 库将 HTML 转换为 Markdown（支持表格、列表等复杂结构）
+/// - 删除 <style> 标签及其内容
+/// - 忽略 <img src="cid:..."> 引用
+pub fn html_to_markdown_v2(html: &str) -> String {
+    // 1. 删除 <style>...</style> 标签及其内容
+    let re_style = regex::Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap();
+    let cleaned = re_style.replace_all(html, "");
+    
+    // 2. 删除 <img src="cid:..."> 标签（内嵌图片已在邮件正文中渲染）
+    let re_cid_img = regex::Regex::new(r#"(?i)<img[^>]*src\s*=\s*"cid:[^"]*"[^>]*/?>"#).unwrap();
+    let cleaned = re_cid_img.replace_all(&cleaned, "");
+    
+    // 3. 使用 html2md 库转换
+    let result = html2md::parse_html(&cleaned);
+    
+    // 4. 清理多余的空行
+    let re_empty_lines = regex::Regex::new(r"\n{3,}").unwrap();
+    let result = re_empty_lines.replace_all(&result, "\n\n");
+    
+    result.trim().to_string()
+}
+
 /// 将 TipTap HTML 转换为 Markdown。支持 p/h1-h6/ul/ol/li/strong/em/u/s/a/pre/code/blockquote/hr/table/br。
 pub fn html_to_markdown(html: &str) -> String {
     let mut out = String::with_capacity(html.len());

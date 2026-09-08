@@ -256,6 +256,25 @@ async function handleCreateWithDate(dateKey: string) {
   }
 }
 
+async function handleCreatePrefilled(title: string, priority: string, dueDate: string, content: string) {
+  try {
+    const r = await apiCreateTodo({ title: title || '新待办', priority: priority || undefined, dueDate: dueDate || undefined, content: content || undefined })
+    if (r?.todo) {
+      const t = r.todo
+      todos.value.unshift({
+        id: t.id, title: t.title || '新待办', content: t.content || '',
+        done: false, createdAt: t.created_at || new Date().toISOString(),
+        dueDate: t.due_date || undefined, priority: t.priority || undefined,
+        repeat: t.repeat || undefined,
+        projectId: t.project_id || undefined, projectName: t.project_name || '',
+      })
+      selectedTodoId.value = t.id
+    }
+  } catch (e: any) {
+    toast({ message: '创建失败: ' + (e.message || e), type: 'error' })
+  }
+}
+
 async function updateTodoLocal(id: string, data: Partial<Todo>) {
   const idx = todos.value.findIndex(t => t.id === id)
   if (idx === -1) return
@@ -331,14 +350,21 @@ onMounted(async () => {
 })
 
 // 监听路由参数 + 全局搜索跳转
-watch(() => route.query, (q) => {
-  if (q.create === 'true') {
-    router.replace('/todos').then(() => setTimeout(() => handleCreate(), 50))
+function handleRouteQuery() {
+  const q = route.query
+  if (q.create === 'true' || q.action === 'create') {
+    const title = q.title as string || ''
+    const priority = q.priority as string || ''
+    const dueDate = q.due_date as string || ''
+    const content = q.content as string || ''
+    router.replace('/todos').then(() => setTimeout(() => handleCreatePrefilled(title, priority, dueDate, content), 50))
   }
-  if (q.select) {
-    selectedTodoId.value = q.select as string
+  if (q.select || q.focus) {
+    selectedTodoId.value = (q.select || q.focus) as string
   }
-})
+}
+
+watch(() => route.query, handleRouteQuery)
 watch(() => selectionStore.current.seq, () => {
   if (selectionStore.current.type === 'todo') {
     selectedTodoId.value = selectionStore.current.id
@@ -349,6 +375,7 @@ watch(() => selectionStore.current.seq, () => {
 onActivated(async () => {
   try { projects.value = await fetchProjects() } catch { projects.value = [] }
   await loadTodos()
+  handleRouteQuery()
 })
 
 // ─── Priority helpers ──────────────────────────────────────────────

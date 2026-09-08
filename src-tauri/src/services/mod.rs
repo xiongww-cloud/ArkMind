@@ -24,3 +24,5 @@ pub mod context_compressor;
 pub mod user_guides;
 pub mod vector_vacuum;
 pub mod file_clipboard;
+pub mod email_client;
+pub mod email_polling;

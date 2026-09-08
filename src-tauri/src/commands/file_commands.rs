@@ -89,7 +89,7 @@ fn find_existing_by_hash(hash: &str) -> Option<String> {
 
 // ─── Helpers — file_relations (file_id → file_assets directly) ───
 
-fn add_relation(file_id: &str, entity_type: &str, entity_id: &str, custom_name: &str, creator: &str, folder_id: Option<&str>) {
+pub(crate) fn add_relation(file_id: &str, entity_type: &str, entity_id: &str, custom_name: &str, creator: &str, folder_id: Option<&str>) {
     database::run(
         "INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator,folder_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         &[json!(uuid::Uuid::new_v4().to_string()), json!(file_id), json!(entity_type), json!(entity_id), json!(custom_name), json!(creator), json!(folder_id)]
@@ -548,7 +548,7 @@ pub fn file_remove_temp(path: String) -> Result<Value, String> {
     Ok(json!({"success":true}))
 }
 
-/// 把源文件拷贝到临时目录（macOS 剪贴板文件粘贴用），返回 {path, name}
+/// 把源文件拷贝到临时目录（剪贴板文件粘贴用），返回 {path, name}
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn copy_to_attach_temp(src_path: &str) -> Option<serde_json::Value> {
     let bytes = std::fs::read(src_path).ok()?;
@@ -605,7 +605,7 @@ fn percent_decode(s: &str) -> String {
 /// macOS：从 NSPasteboard 读取 Finder 复制的文件，拷贝到临时目录返回附件列表
 /// 必须在主线程读取剪贴板（AppKit 限制），故通过 run_on_main_thread 同步执行
 #[cfg(target_os = "macos")]
-fn read_macos_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+fn read_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
     use std::sync::mpsc;
 
@@ -638,17 +638,31 @@ fn read_macos_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Va
     rx.recv().unwrap_or_default()
 }
 
-/// Windows/其他平台：无剪贴板文件读取，返回空
-#[cfg(not(target_os = "macos"))]
-fn read_macos_clipboard_files_impl(_app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+/// Windows：从 CF_HDROP 读取资源管理器复制的文件，拷贝到临时目录返回附件列表
+#[cfg(target_os = "windows")]
+fn read_clipboard_files_impl(_app: &tauri::AppHandle) -> Vec<serde_json::Value> {
+    use clipboard_win::{formats, get_clipboard};
+    match get_clipboard::<Vec<String>, _>(formats::FileList) {
+        Ok(paths) => paths.iter().filter_map(|p| copy_to_attach_temp(p)).collect(),
+        Err(e) => {
+            // 剪贴板不是文件列表（如纯文本/图片）时属正常，返回空即可
+            log::debug!("[剪贴板] Windows 读取文件列表失败（可能非文件内容）: {}", e);
+            vec![]
+        }
+    }
+}
+
+/// 其他平台：无系统剪贴板文件读取，返回空
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn read_clipboard_files_impl(_app: &tauri::AppHandle) -> Vec<serde_json::Value> {
     vec![]
 }
 
-/// 读取 macOS 剪贴板中的文件（Finder 复制 → 粘贴），返回附件列表
+/// 读取系统剪贴板中的文件（资源管理器/Finder 复制 → 粘贴），返回附件列表
 #[tauri::command]
-pub async fn chat_read_macos_clipboard_files(app: tauri::AppHandle) -> Result<Value, String> {
-    let files = read_macos_clipboard_files_impl(&app);
-    log::info!("[剪贴板] macOS 读取到 {} 个文件", files.len());
+pub async fn chat_read_clipboard_files(app: tauri::AppHandle) -> Result<Value, String> {
+    let files = read_clipboard_files_impl(&app);
+    log::info!("[剪贴板] 读取到 {} 个文件", files.len());
     Ok(json!({ "success": true, "files": files }))
 }
 

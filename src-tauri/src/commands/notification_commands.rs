@@ -14,7 +14,15 @@ pub async fn notification_list(unread_only: Option<bool>) -> Result<Value, Strin
     } else {
         "SELECT * FROM notifications ORDER BY created_at DESC"
     };
-    let rows = database::all(sql, &[]).map_err(|e| e.to_string())?;
+    let mut rows = database::all(sql, &[]).map_err(|e| e.to_string())?;
+    // 将 actions 从 JSON 字符串解析为数组
+    for row in rows.iter_mut() {
+        if let Some(actions_str) = row.get("actions").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(actions_str) {
+                row["actions"] = parsed;
+            }
+        }
+    }
     Ok(json!({ "success": true, "notifications": rows }))
 }
 
@@ -51,6 +59,16 @@ pub async fn notification_mark_all_read() -> Result<(), String> {
 #[tauri::command]
 pub async fn notification_delete(id: String) -> Result<(), String> {
     database::run("DELETE FROM notifications WHERE id=?", &[json!(id)]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn notification_batch_delete(ids: Vec<String>) -> Result<(), String> {
+    if ids.is_empty() { return Ok(()); }
+    let placeholders: Vec<String> = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+    let sql = format!("DELETE FROM notifications WHERE id IN ({})", placeholders.join(","));
+    let params: Vec<Value> = ids.into_iter().map(|id| json!(id)).collect();
+    database::run(&sql, &params).map_err(|e| e.to_string())?;
     Ok(())
 }
 

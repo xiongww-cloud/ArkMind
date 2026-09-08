@@ -654,18 +654,18 @@ import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession } from '@/api/db-cl
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
+const notifyIntervalOpen = ref(false)
 const loopStatus = ref<LoopStatus>({ success: true, running: false, last_check_at: '', next_check_at: '' })
 let loopStatusTimer: ReturnType<typeof setInterval> | null = null
 
-const intervalOptions = [
+const notifyIntervalOptions = [
   { value: 0, label: '仅启动时' },
-  { value: 30, label: '30分钟' },
-  { value: 60, label: '1小时' },
-  { value: 120, label: '2小时' },
-  { value: 360, label: '6小时' },
-  { value: 720, label: '12小时' },
-  { value: 1440, label: '24小时' },
+  { value: 60, label: '1 小时' },
+  { value: 360, label: '6 小时' },
+  { value: 720, label: '12 小时' },
+  { value: 1440, label: '24 小时' },
 ]
+const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.value === notifyInterval.value)?.label || '1 小时')
 
 // ─── Sprite Settings ────────────────────────────────────────
 const spriteEnabled = ref(false)
@@ -726,6 +726,101 @@ async function saveNotifyConfig() {
 // ─── Pipeline Management ──────────────────────────────────────
 const pipelineData = ref<any>(null)
 const pipelineRunning = ref(false)
+
+// ─── Email Account Config ────────────────────────────────────
+import { emailListAccounts, emailAddAccount, emailUpdateAccount, emailDeleteAccount, emailLoopStatus, emailConfigGet, emailConfigUpdate, type EmailAccount } from '@/api/email-client'
+
+const emailAccounts = ref<EmailAccount[]>([])
+const emailLoopRunning = ref(false)
+const showEmailForm = ref(false)
+const emailSaving = ref(false)
+const editingEmailId = ref<string | null>(null)
+const emailForm = ref({ name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '' })
+
+async function loadEmailAccounts() {
+  try {
+    const res = await emailListAccounts()
+    if (res.success) emailAccounts.value = res.accounts || []
+  } catch {}
+}
+async function loadEmailConfig() {
+  try {
+    const [status] = await Promise.all([emailLoopStatus(), emailConfigGet()])
+    emailLoopRunning.value = status?.running || false
+  } catch {}
+}
+function openAddEmail() {
+  editingEmailId.value = null
+  emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '' }
+  showEmailForm.value = true
+}
+function editEmailAccount(acc: EmailAccount) {
+  editingEmailId.value = acc.id
+  emailForm.value = {
+    name: acc.name,
+    emailAddress: acc.email_address,
+    imapHost: acc.imap_host,
+    imapPort: acc.imap_port,
+    username: acc.username,
+    password: '',
+  }
+  showEmailForm.value = true
+}
+async function addEmailAccount() {
+  const f = emailForm.value
+  if (!f.name || !f.emailAddress || !f.imapHost) {
+    toast({ message: '请填写完整信息', type: 'error' }); return
+  }
+  // 编辑模式下密码可以为空（表示不修改）
+  if (!editingEmailId.value && !f.password) {
+    toast({ message: '请输入密码/授权码', type: 'error' }); return
+  }
+  emailSaving.value = true
+  try {
+    if (editingEmailId.value) {
+      // 编辑模式：更新账户
+      const data: any = {
+        name: f.name,
+        email_address: f.emailAddress,
+        imap_host: f.imapHost,
+        imap_port: f.imapPort,
+        username: f.username,
+      }
+      if (f.password) data.password = f.password
+      const res = await emailUpdateAccount(editingEmailId.value, data)
+      if (res.success) {
+        toast({ message: '账户已更新', type: 'success' })
+        showEmailForm.value = false
+        editingEmailId.value = null
+        emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '' }
+        await loadEmailAccounts()
+      } else {
+        toast({ message: '更新失败', type: 'error' })
+      }
+    } else {
+      // 添加模式
+      const res = await emailAddAccount(f)
+      if (res.success) {
+        toast({ message: '账户已添加', type: 'success' })
+        showEmailForm.value = false
+        emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '' }
+        await loadEmailAccounts()
+      } else {
+        toast({ message: res.error || '添加失败', type: 'error' })
+      }
+    }
+  } catch (e: any) {
+    toast({ message: e?.message || '操作失败', type: 'error' })
+  } finally { emailSaving.value = false }
+}
+async function removeEmailAccount(id: string) {
+  if (!confirm('确定删除此账户？')) return
+  try {
+    await emailDeleteAccount(id)
+    emailAccounts.value = emailAccounts.value.filter(a => a.id !== id)
+    toast({ message: '账户已删除', type: 'success' })
+  } catch { toast({ message: '删除失败', type: 'error' }) }
+}
 // vacuum 时间戳为 epoch 秒字符串
 function formatVacuumTime(epochSecs: string): string {
   const n = parseInt(epochSecs, 10)
@@ -1011,6 +1106,8 @@ onActivated(async () => {
     loadNotifyConfig(),
     loadLoopStatus(),
     loadPipeline(),
+    loadEmailAccounts(),
+    loadEmailConfig(),
   ])
   logTimer = setInterval(refreshLogs, 3000)
   loopStatusTimer = setInterval(loadLoopStatus, 600000)  // 10分钟刷新一次
@@ -1061,7 +1158,7 @@ onDeactivated(() => {
             <span class="text-[11px] text-surface-400">智能通知</span>
           </div>
           <div class="flex items-baseline justify-between">
-            <div class="text-[18px] font-bold" :class="notifyEnabled ? 'text-emerald-600' : 'text-surface-300'">{{ notifyEnabled ? '已启用' : '已关闭' }}<span class="text-[10px] font-normal text-surface-400 ml-1">{{ notifyInterval === 0 ? '仅启动时' : intervalOptions.find(o => o.value === notifyInterval)?.label || '' }}</span></div>
+            <div class="text-[18px] font-bold" :class="notifyEnabled ? 'text-emerald-600' : 'text-surface-300'">{{ notifyEnabled ? '已启用' : '已关闭' }}<span class="text-[10px] font-normal text-surface-400 ml-1">{{ notifyInterval === 0 ? '仅启动时' : notifyIntervalOptions.find(o => o.value === notifyInterval)?.label || '' }}</span></div>
             <span v-if="notifyEnabled && loopStatus.running && loopStatus.next_check_at" class="text-[10px] text-surface-400 shrink-0">下次 {{ loopStatus.next_check_at.slice(11) || loopStatus.next_check_at }}</span>
           </div>
         </div>
@@ -1178,7 +1275,7 @@ onDeactivated(() => {
           </div>
 
           <!-- 智能通知 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+          <div class="relative z-20 bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-visible break-inside-avoid mb-4">
             <div class="flex items-center justify-between px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">智能通知</h2>
               <div v-if="notifyEnabled && notifyInterval !== 0" class="flex items-center gap-1.5">
@@ -1204,15 +1301,16 @@ onDeactivated(() => {
               </div>
               <div class="flex items-center justify-between">
                 <p class="text-[12px] font-medium text-surface-700">分析频率</p>
-                <div class="flex items-center gap-1.5 flex-wrap">
-                  <button v-for="opt in intervalOptions" :key="opt.value"
-                    @click="notifyInterval = opt.value; saveNotifyConfig()"
-                    class="px-2.5 py-1 rounded-md text-[11px] transition-all"
-                    :class="notifyInterval === opt.value
-                      ? 'bg-brand-600 text-white shadow-sm'
-                      : 'bg-surface-100 text-surface-600 hover:bg-surface-200'">
-                    {{ opt.label }}
+                <div class="relative" @focusout="(e: FocusEvent) => { if (!(e.currentTarget as HTMLElement)?.contains(e.relatedTarget as HTMLElement)) notifyIntervalOpen = false }">
+                  <button @click="notifyIntervalOpen = !notifyIntervalOpen" class="flex items-center justify-between h-7 w-[110px] bg-white border border-surface-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors text-surface-700 hover:border-surface-300">
+                    <span>{{ notifyIntervalLabel }}</span>
+                    <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 transition-transform" :class="notifyIntervalOpen ? 'rotate-180' : ''" />
                   </button>
+                  <div v-if="notifyIntervalOpen" class="absolute top-full right-0 mt-1 z-50 w-[110px] bg-white rounded-lg shadow-lg border border-surface-100 py-1">
+                    <button v-for="opt in notifyIntervalOptions" :key="opt.value" @click="notifyInterval = opt.value; notifyIntervalOpen = false; saveNotifyConfig()" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="notifyInterval === opt.value ? 'text-brand-600 bg-brand-50/50 font-medium' : 'text-surface-600 hover:bg-surface-50'">
+                      {{ opt.label }}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1335,6 +1433,38 @@ onDeactivated(() => {
                 <button @click="handleClearAll" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重置全部数据</button>
                 <button @click="handleOrphanCleanup" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-purple-300 text-purple-600 hover:bg-purple-50 transition">清理孤儿数据</button>
               </div>
+            </div>
+          </div>
+
+          <!-- 邮件账户配置 -->
+          <div class="relative z-20 bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-visible break-inside-avoid mb-4">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">邮件账户</h2>
+              <p class="text-[10px] text-surface-400 mt-1">配置 IMAP 邮箱账户，自动收取邮件并写入知识库</p>
+            </div>
+            <div class="p-5 space-y-3">
+              <!-- 已配置账户列表 -->
+              <div v-for="acc in emailAccounts" :key="acc.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="acc.sync_enabled ? 'border-surface-200 hover:border-surface-300' : 'border-surface-100 bg-surface-50'">
+                <div class="w-8 h-8 rounded-lg bg-brand-50 flex items-center justify-center flex-shrink-0">
+                  <AppIcon name="envelope" size="16" class="text-brand-600" />
+                </div>
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ acc.name }}</p>
+                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ acc.email_address }}</p>
+                </div>
+                <button @click="editEmailAccount(acc)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
+                <button @click="removeEmailAccount(acc.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+              </div>
+              <div v-if="emailAccounts.length === 0" class="text-[11px] text-surface-400 text-center py-3">
+                未配置邮件账户
+              </div>
+
+              <div class="flex justify-end">
+                <button @click="openAddEmail" class="btn-primary text-[11px]">
+                  <AppIcon name="plus" size="12" stroke="2.5" /> 添加账户
+                </button>
+              </div>
+
             </div>
           </div>
 
@@ -1635,6 +1765,48 @@ onDeactivated(() => {
               <button @click="clearAllLogs" class="px-3 py-1 text-[11px] text-red-500 hover:text-red-600 border border-surface-200 rounded-lg hover:bg-red-50 transition-colors">清空</button>
               <button @click="refreshLogs" class="px-3 py-1 text-[11px] text-surface-500 hover:text-surface-700 border border-surface-200 rounded-lg hover:bg-surface-50 transition-colors">刷新</button>
             </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+  <!-- Email Account Modal -->
+  <Teleport to="body">
+    <Transition name="modal-fade">
+      <div v-if="showEmailForm" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center">
+        <div class="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[90vw] p-6">
+          <h3 class="text-[14px] font-semibold text-surface-800 mb-4">{{ editingEmailId ? '编辑邮箱账户' : '添加邮箱账户' }}</h3>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">账户名称</label>
+              <input v-model="emailForm.name" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="如：工作邮箱" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">邮箱地址</label>
+              <input v-model="emailForm.emailAddress" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="user@example.com" />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-[10px] font-medium text-surface-400 mb-1">IMAP 服务器</label>
+                <input v-model="emailForm.imapHost" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="imap.example.com" />
+              </div>
+              <div>
+                <label class="block text-[10px] font-medium text-surface-400 mb-1">端口</label>
+                <input v-model.number="emailForm.imapPort" type="number" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" placeholder="993" />
+              </div>
+            </div>
+            <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">用户名</label>
+              <input v-model="emailForm.username" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="通常是邮箱地址" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">密码 / 授权码</label>
+              <input v-model="emailForm.password" type="password" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" :placeholder="editingEmailId ? '留空则不修改' : 'IMAP 授权码'" />
+            </div>
+          </div>
+          <div class="flex items-center justify-end gap-2 mt-5">
+            <button @click="showEmailForm = false; editingEmailId = null" class="btn-secondary text-xs">取消</button>
+            <button @click="addEmailAccount" :disabled="emailSaving" class="btn-primary text-xs">{{ emailSaving ? '保存中...' : (editingEmailId ? '保存' : '添加') }}</button>
           </div>
         </div>
       </div>

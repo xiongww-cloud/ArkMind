@@ -41,6 +41,12 @@ onMounted(async () => {
     error.value = '无法获取机器码，请重启应用后重试'
   }
 
+  // 试用提醒模式：只显示提醒，不自动关闭
+  if (props.trialReminder) {
+    loading.value = false
+    return
+  }
+
   try {
     const status = await fetchLicenseWithRetry()
     if (status.activated && status.status !== 'expired') {

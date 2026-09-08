@@ -18,6 +18,7 @@ const navItems = [
   { path: '/notes', label: '笔记', icon: 'file-doc' },
   { path: '/todos', label: '待办', icon: 'list' },
   { path: '/contacts', label: '通讯录', icon: 'users' },
+  { path: '/email', label: '邮件', icon: 'envelope' },
   { path: '/products', label: '产品', icon: 'cube' },
   { path: '/assets', label: '资料', icon: 'archive' },
   { path: '/knowledge-graph', label: '知识观测台', icon: 'network' },

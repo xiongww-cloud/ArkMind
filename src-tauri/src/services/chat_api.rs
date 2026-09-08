@@ -103,7 +103,7 @@ fn extract_json_from_reasoning(reasoning: &str) -> String {
 }
 
 /// 核心 LLM 调用（支持 max_tokens 覆盖 + 推理模型兜底）
-async fn chat_completion_inner(system: &str, user: &str, cfg: Option<ChatConfig>, max_tokens_override: Option<i32>) -> Result<String, String> {
+pub async fn chat_completion_inner(system: &str, user: &str, cfg: Option<ChatConfig>, max_tokens_override: Option<i32>) -> Result<String, String> {
     let mut config = cfg.unwrap_or_else(get_chat_config);
     if let Some(mt) = max_tokens_override { config.max_tokens = mt; }
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));

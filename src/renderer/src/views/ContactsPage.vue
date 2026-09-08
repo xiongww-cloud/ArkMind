@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, onActivated } from 'vue'
+import { useRoute } from 'vue-router'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
@@ -184,7 +185,64 @@ const tabColors: Record<string, string> = {
   customers: 'bg-green-50 text-green-500',
 }
 
-onMounted(loadAll)
+const route = useRoute()
+
+function handleRouteQuery() {
+  const tab = route.query.tab as string
+  const id = route.query.id as string
+  const contactId = route.query.contactId as string
+  const action = route.query.action as string
+  const focus = route.query.focus as string
+
+  if (tab && ['channels', 'vendors', 'customers'].includes(tab)) {
+    activeTab.value = tab as TabType
+  }
+
+  // Support focus parameter (same as id)
+  const targetId = id || focus
+  if (targetId) {
+    selectedId.value = targetId
+  } else if (contactId) {
+    // Find which partner owns this contact - search in all lists
+    const allLists = [
+      { tab: 'channels' as TabType, list: channels.value },
+      { tab: 'vendors' as TabType, list: vendors.value },
+      { tab: 'customers' as TabType, list: customers.value },
+    ]
+    for (const { tab: tabName, list } of allLists) {
+      for (const entity of list) {
+        if (entity.contacts?.some((c: any) => c.id === contactId)) {
+          activeTab.value = tabName
+          selectedId.value = entity.id
+          return
+        }
+      }
+    }
+  }
+
+  // Support action=create to open create dialog
+  if (action === 'create') {
+    const type = route.query.type as string
+    if (type && ['channels', 'vendors', 'customers'].includes(type)) {
+      activeTab.value = type as TabType
+    }
+    const name = route.query.name as string || ''
+    if (name) {
+      newEntity.value = { name, phone: '', address: '', remark: '', contact_person: '', contact_phone: '' }
+    }
+    showCreateModal.value = true
+  }
+}
+
+onActivated(async () => {
+  await loadAll()
+  handleRouteQuery()
+})
+
+onMounted(async () => {
+  await loadAll()
+  handleRouteQuery()
+})
 </script>
 
 <template>

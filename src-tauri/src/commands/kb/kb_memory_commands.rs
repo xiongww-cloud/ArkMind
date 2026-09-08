@@ -149,6 +149,43 @@ pub async fn search_business(query: String) -> Result<Value, String> {
             }
         }
     }
+    // partners (渠道商/供应商/客户)
+    if let Ok(rows) = database::all("SELECT id, name, type FROM partners WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+        for r in &rows {
+            let id = r["id"].as_str().unwrap_or("").to_string();
+            let name = r["name"].as_str().unwrap_or("").to_string();
+            let ptype = r["type"].as_str().unwrap_or("").to_string();
+            let source_type = match ptype.as_str() {
+                "CHANNEL" => "CHANNEL",
+                "VENDOR" => "VENDOR",
+                "CUSTOMER" => "CUSTOMER",
+                _ => continue,
+            };
+            if seen.insert(format!("{}-{}", source_type, id)) {
+                objects.push(json!({"source_type":source_type,"source_id":id,"title":name}));
+            }
+        }
+    }
+    // partner_contacts (联系人)
+    if let Ok(rows) = database::all("SELECT id, name FROM partner_contacts WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+        for r in &rows {
+            let id = r["id"].as_str().unwrap_or("").to_string();
+            let name = r["name"].as_str().unwrap_or("").to_string();
+            if seen.insert(format!("CONTACT-{}", id)) {
+                objects.push(json!({"source_type":"CONTACT","source_id":id,"title":name}));
+            }
+        }
+    }
+    // emails (邮件，搜索主题和正文)
+    if let Ok(rows) = database::all("SELECT id, subject FROM emails WHERE (subject LIKE ?1 OR body_text LIKE ?1) LIMIT 10", &[json!(&like)]) {
+        for r in &rows {
+            let id = r["id"].as_str().unwrap_or("").to_string();
+            let name = r["subject"].as_str().unwrap_or("").to_string();
+            if seen.insert(format!("EMAIL-{}", id)) {
+                objects.push(json!({"source_type":"EMAIL","source_id":id,"title":name}));
+            }
+        }
+    }
     Ok(json!({"success":true,"objects":objects}))
 }
 
@@ -201,6 +238,16 @@ pub async fn lookup_object_names(ids: Vec<Value>) -> Result<Value, String> {
                 .unwrap_or_default(),
             "TODO" => database::get("SELECT title FROM todos WHERE id=?1", &[json!(sid)])
                 .ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default(),
+            "CHANNEL" => database::get("SELECT name FROM partners WHERE id=?1 AND type='CHANNEL'", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default(),
+            "VENDOR" => database::get("SELECT name FROM partners WHERE id=?1 AND type='VENDOR'", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default(),
+            "CUSTOMER" => database::get("SELECT name FROM partners WHERE id=?1 AND type='CUSTOMER'", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default(),
+            "CONTACT" => database::get("SELECT name FROM partner_contacts WHERE id=?1", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default(),
+            "EMAIL" => database::get("SELECT subject FROM emails WHERE id=?1", &[json!(sid)])
+                .ok().flatten().and_then(|r| r["subject"].as_str().map(String::from)).unwrap_or_default(),
             _ => String::new(),
         };
         if !name.is_empty() {

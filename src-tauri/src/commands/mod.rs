@@ -13,6 +13,7 @@ pub mod window_commands;
 pub mod todo_commands;
 pub mod notification_commands;
 pub mod migration_commands;
+pub mod email_commands;
 #[cfg(debug_assertions)]
 pub mod debug_commands;
 
@@ -31,5 +32,6 @@ pub use window_commands::*;
 pub use todo_commands::*;
 pub use notification_commands::*;
 pub use migration_commands::*;
+pub use email_commands::*;
 #[cfg(debug_assertions)]
 pub use debug_commands::*;

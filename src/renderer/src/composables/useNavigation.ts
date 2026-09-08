@@ -7,6 +7,9 @@ const typeRouteMap: Record<SelectionType, string> = {
   note: '/notes',
   todo: '/todos',
   project: '/projects',
+  contact: '/contacts',
+  partner: '/contacts',
+  email: '/email',
 }
 
 export function useNavigation() {

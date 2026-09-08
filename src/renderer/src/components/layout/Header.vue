@@ -71,6 +71,14 @@ const filteredResults = computed(() => {
   return searchResults.value.filter(r => r.source_type === searchFilter.value)
 })
 
+const typeCountMap = computed(() => {
+  const counts: Record<string, number> = {}
+  for (const r of searchResults.value) {
+    counts[r.source_type] = (counts[r.source_type] || 0) + 1
+  }
+  return counts
+})
+
 function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer)
   const q = searchQuery.value.trim()
@@ -139,17 +147,34 @@ function selectSearchResult(obj: {source_type:string;source_id:string;title:stri
   }
   const map: Record<string, import('@/stores/selection').SelectionType> = {
     PROJECT: 'project', PRODUCT: 'product', NOTE: 'note', TODO: 'todo',
+    CONTACT: 'contact', CHANNEL: 'partner', VENDOR: 'partner', CUSTOMER: 'partner',
   }
   const t = map[obj.source_type]
-  if (t) { navigateTo(t, obj.source_id) }
-  else if (obj.source_type === 'FILE') { invoke('file_open', { versionId: obj.source_id }).catch(() => {}) }
+  if (t === 'partner') {
+    const tab = obj.source_type === 'CHANNEL' ? 'channels' : obj.source_type === 'VENDOR' ? 'vendors' : 'customers'
+    router.push({ path: '/contacts', query: { tab, id: obj.source_id } })
+  } else if (t === 'contact') {
+    router.push({ path: '/contacts', query: { contactId: obj.source_id } })
+  } else if (obj.source_type === 'EMAIL') {
+    router.push({ path: '/email', query: { id: obj.source_id } })
+  } else if (t) {
+    navigateTo(t, obj.source_id)
+  } else if (obj.source_type === 'FILE') {
+    invoke('file_open', { versionId: obj.source_id }).catch(() => {})
+  }
 }
 
-const typeLabelMap: Record<string,string> = { FILE:'文件', NOTE:'笔记', PRODUCT:'产品', PROJECT:'项目', TODO:'待办' }
+const typeLabelMap: Record<string,string> = {
+  FILE:'文件', NOTE:'笔记', PRODUCT:'产品', PROJECT:'项目', TODO:'待办',
+  CONTACT:'联系人', CHANNEL:'渠道商', VENDOR:'供应商', CUSTOMER:'客户', EMAIL:'邮件'
+}
 const typeBadgeMap: Record<string,string> = {
   FILE:'bg-blue-50 text-blue-600', NOTE:'bg-amber-50 text-amber-600',
   PRODUCT:'bg-emerald-50 text-emerald-600', PROJECT:'bg-violet-50 text-violet-600',
   TODO:'bg-slate-100 text-slate-500',
+  CONTACT:'bg-pink-50 text-pink-600', CHANNEL:'bg-cyan-50 text-cyan-600',
+  VENDOR:'bg-orange-50 text-orange-600', CUSTOMER:'bg-teal-50 text-teal-600',
+  EMAIL:'bg-indigo-50 text-indigo-600',
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -319,6 +344,7 @@ const unreadCount = ref(0)
 const showNotifications = ref(false)
 const unlistenNotify = ref<(() => void) | null>(null)
 const notifWrapRef = ref<HTMLElement | null>(null)
+const notifPanelRef = ref<InstanceType<typeof NotificationPanel> | null>(null)
 
 const notifDropdownStyle = computed(() => {
   const el = notifWrapRef.value
@@ -385,7 +411,7 @@ onUnmounted(() => {
         <span v-if="pendingTodoCount > 0" class="ml-1 px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[9px] font-medium leading-none">{{ pendingTodoCount > 99 ? '99+' : pendingTodoCount }}</span>
       </button>
       <!-- Quick todo dropdown -->
-      <div v-if="quickTodoOpen" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-2xl shadow-xl border border-surface-100 w-[360px]" @click.stop>
+      <div v-if="quickTodoOpen" class="titlebar-popover absolute top-full right-0 mt-1 z-50 bg-white rounded-2xl shadow-xl border border-surface-100 w-[360px]" @click.stop>
         <!-- Todo list -->
         <div class="p-3">
           <div class="flex items-center justify-between mb-2">
@@ -423,7 +449,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Todo preview popover -->
-      <div v-if="todoPreview" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/20" @click.self="todoPreview = null">
+      <div v-if="todoPreview" class="titlebar-overlay fixed inset-0 z-[100] flex items-center justify-center bg-black/20" @click.self="todoPreview = null">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-5">
           <div class="flex items-center justify-between mb-3">
             <h3 class="text-sm font-semibold text-surface-800">{{ todoPreview.title }}</h3>
@@ -473,10 +499,11 @@ onUnmounted(() => {
               全部 {{ searchResults.length }}
             </button>
             <button v-for="(label,type) in typeLabelMap" :key="type"
+              v-show="typeCountMap[type]"
               @mousedown.prevent="searchFilter=searchFilter===type?null:type"
               class="text-[10px] px-2 py-1 rounded-full transition-colors"
               :class="searchFilter===type ? 'bg-brand-600 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'">
-              {{ label }} {{ searchResults.filter(r=>r.source_type===type).length }}
+              {{ label }} {{ typeCountMap[type] }}
             </button>
           </div>
           <div v-if="searchLoading" class="px-3 py-4 text-center text-[11px] text-surface-400">搜索中...</div>
@@ -510,12 +537,26 @@ onUnmounted(() => {
       </button>
     </div>
     <!-- Notification dropdown (fixed to viewport) -->
-    <div v-if="showNotifications" class="fixed inset-0 z-40" @mousedown.self="showNotifications = false">
+    <div v-if="showNotifications" class="titlebar-overlay fixed inset-0 z-40" @mousedown.self="showNotifications = false">
       <div :style="notifDropdownStyle" class="fixed w-[440px] max-h-[480px] bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden flex flex-col">
         <div class="flex items-center justify-between px-3 py-2 border-b border-slate-100">
-          <span class="text-[12px] font-semibold text-slate-700">通知中心</span>
-          <div class="flex items-center gap-2">
-            <button v-if="unreadCount > 0" @click="handleMarkAllRead"
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="text-[12px] font-semibold text-slate-700 flex-shrink-0">通知中心</span>
+            <template v-if="notifPanelRef?.multiSelectMode">
+              <button @click="notifPanelRef?.toggleSelectAll()" class="text-[10px] text-blue-600 hover:underline flex-shrink-0">
+                {{ notifPanelRef?.allSelected ? '取消全选' : '全选' }}
+              </button>
+              <button @click="notifPanelRef?.exitMultiSelect()" class="text-[10px] text-slate-400 hover:text-slate-600 flex-shrink-0">取消</button>
+              <span v-if="notifPanelRef?.selectedCount > 0" class="text-[10px] text-slate-400 flex-shrink-0">已选{{ notifPanelRef?.selectedCount }}条</span>
+              <button v-if="notifPanelRef?.selectedCount > 0" @click="notifPanelRef?.batchDelete()"
+                class="text-[10px] text-red-500 hover:underline flex-shrink-0">批量删除</button>
+            </template>
+            <template v-else>
+              <button @click="notifPanelRef?.enterMultiSelect()" class="text-[10px] text-blue-600 hover:underline flex-shrink-0">多选</button>
+            </template>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button v-if="!notifPanelRef?.multiSelectMode && unreadCount > 0" @click="handleMarkAllRead"
               class="text-[10px] text-blue-600 hover:underline">全部已读</button>
             <button @click="showNotifications = false" class="p-0.5 rounded hover:bg-slate-100 transition-colors">
               <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
@@ -523,7 +564,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="flex-1 min-h-0 overflow-y-auto">
-          <NotificationPanel :visible="showNotifications" @close="showNotifications = false" @read="loadNotificationStats" />
+          <NotificationPanel ref="notifPanelRef" :visible="showNotifications" @close="showNotifications = false" @read="loadNotificationStats" />
         </div>
       </div>
     </div>
@@ -542,7 +583,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Quick note bubble — memo style -->
-    <div v-if="quickNoteOpen" class="fixed inset-0 z-50" @click.self="closeWithSave">
+    <div v-if="quickNoteOpen" class="titlebar-overlay fixed inset-0 z-50" @click.self="closeWithSave">
       <div class="absolute w-[340px]" :style="{ top: quickNotePos.top + 'px', right: quickNotePos.right + 'px' }">
         <!-- Memo card body -->
         <div class="quicknote-card">
@@ -580,6 +621,16 @@ onUnmounted(() => {
 }
 .titlebar-btn {
   -webkit-app-region: no-drag;
+}
+/* 弹出层/弹窗：覆盖拖拽区，允许选中文本与交互 */
+.titlebar-popover,
+.titlebar-overlay,
+.titlebar-overlay > * {
+  -webkit-app-region: no-drag;
+}
+.titlebar-popover,
+.titlebar-overlay {
+  user-select: text;
 }
 </style>
 

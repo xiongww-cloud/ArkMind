@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted, nextTick, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
@@ -20,10 +20,6 @@ const DOC_EXTS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'm
 const ALL_EXTS = new Set([...IMG_EXTS, ...DOC_EXTS])
 const MAX_ATTACH = 5
 const MAX_SIZE = 20 * 1024 * 1024
-const isMac = typeof navigator !== 'undefined' && (
-  navigator.platform.toUpperCase().indexOf('MAC') >= 0 ||
-  navigator.userAgent.toUpperCase().indexOf('MAC') >= 0
-)
 
 interface PendingAttachment { path: string; name: string; kind: 'image' | 'doc'; previewUrl?: string }
 const pendingAttachments = ref<PendingAttachment[]>([])
@@ -93,11 +89,11 @@ async function onPaste(e: ClipboardEvent) {
       }
     } catch (err) { console.warn('[Chat] paste image save failed:', err); toast({ message: '粘贴图片失败', type: 'error' }) }
   }
-  // macOS：WebKit 不把剪贴板文件暴露给 clipboardData.files/items，
-  // 若未添加任何附件，回退从后端 NSPasteboard 读取 Finder 复制的文件
-  if (isMac && pendingAttachments.value.length < MAX_ATTACH) {
+  // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
+  // 若未添加任何附件，回退从后端读取剪贴板文件列表
+  if (pendingAttachments.value.length < MAX_ATTACH) {
     try {
-      const r: any = await invoke('chat_read_macos_clipboard_files')
+      const r: any = await invoke('chat_read_clipboard_files')
       if (r?.success && Array.isArray(r.files) && r.files.length) {
         let addedMac = 0
         for (const f of r.files) {
@@ -107,7 +103,7 @@ async function onPaste(e: ClipboardEvent) {
         }
         if (addedMac > 0) toast({ message: `已粘贴 ${addedMac} 个文件`, type: 'success' })
       }
-    } catch (err) { console.warn('[Chat] macos clipboard read failed:', err) }
+    } catch (err) { console.warn('[Chat] clipboard read failed:', err) }
   }
 }
 
@@ -141,10 +137,18 @@ function formatChatTime(ts: number) {
 
 async function renderMessageContent(msgId: string, text: string) {
   if (!text) return
+  const version = (renderVersion.get(msgId) || 0) + 1
+  renderVersion.set(msgId, version)
   const safeText = text.replace(/~/g, '～')
-  agent.rendered.value[msgId] = await agent.renderMd(safeText)
+  const html = await agent.renderMd(safeText)
+  if (renderVersion.get(msgId) === version) {
+    agent.rendered.value[msgId] = html
+  }
 }
 function renderedContent(msgId: string): string { return agent.rendered.value[msgId] || '' }
+
+// 版本号防竞态：防止旧渲染覆盖新渲染
+const renderVersion = new Map<string, number>()
 
 // ─── Typewriter ─────────────────────────────────────────────────
 const activeTypewriters = new Set<ChatMessage>()
@@ -207,6 +211,14 @@ function newSession() {
 
 // ★ 启动时加载持久化会话
 onMounted(async () => {
+  // 恢复输入框文本
+  try {
+    const savedInput = localStorage.getItem('chat_input_backup')
+    if (savedInput) { inputMessage.value = savedInput; localStorage.removeItem('chat_input_backup') }
+    const savedAttachments = localStorage.getItem('chat_attachments_backup')
+    if (savedAttachments) { pendingAttachments.value = JSON.parse(savedAttachments); localStorage.removeItem('chat_attachments_backup') }
+  } catch {}
+  
   try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
   if (!sessions.value.length) { newSession() }
   else if (!currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
@@ -218,7 +230,14 @@ onMounted(async () => {
   nextTick(() => scrollToBottomIfNear())
 })
 // ★ 每次切换回来时重新加载会话（保持与全局对话框同步）
+// 但如果 AI 正在回复中，不要覆盖当前会话状态
 onActivated(async () => {
+  // 如果 AI 正在回复中，跳过重新加载以保留进行中的状态
+  if (agent.isChatting.value) {
+    initialScrollDone = false
+    nextTick(() => scrollToBottomIfNear())
+    return
+  }
   try {
     const r = await kbLoadSessions()
     if (r?.sessions && Array.isArray(r.sessions)) {
@@ -237,6 +256,20 @@ onActivated(async () => {
     // 初始化分页状态
     for (const s of sessions.value) { sessionHasMore.value[s.id] = (s.messages?.length || 0) >= 10 }
   } catch {}
+  // ★ 重新渲染当前会话的所有 assistant 消息（KeepAlive 激活时 rendered 缓存可能为空）
+  if (currentSessionId.value) {
+    const session = sessions.value.find(s => s.id === currentSessionId.value)
+    if (session) {
+      agent.rendered.value = {}
+      renderVersion.clear()
+      await Promise.all(session.messages.map(m => {
+        if (m.role === 'assistant' && m.content && !m.isThinking) {
+          return renderMessageContent(m.id || '', m.content)
+        }
+        return Promise.resolve()
+      }))
+    }
+  }
   initialScrollDone = false
   nextTick(() => scrollToBottomIfNear())
 })
@@ -442,20 +475,25 @@ async function handleSendMessage() {
   nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
   try {
     // ★ 监听 agent:done 事件（后台任务完成时触发）
-    unlistenDone = await listen<any>('agent:done', (ev) => {
+    unlistenDone = await listen<any>('agent:done', async (ev) => {
       console.log('[FE] done received')
       flushTokenQueue()
       const result = ev.payload
       const msg = session.messages[aiIdx]; msg.isThinking = false
       if (result.success) {
         const finalAnswer = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-        agent.setThinkingProgress('')
         if (finalAnswer && !msg.content) msg.content = finalAnswer
-        // ★ 兜底：无论何种情况都确保气泡有内容，避免 isThinking=false + 空内容导致气泡消失
         if (!msg.content) msg.content = result.answer || '（无回复内容）'
-        renderMessageContent(msg.id || '', msg.content)
+        // ★ 先完成渲染，再清空 progress（避免短暂窗口显示原始 Markdown）
+        await renderMessageContent(msg.id || '', msg.content)
+        agent.setThinkingProgress('')
       } else { msg.error = result.answer || result.error || '失败' }
       agent.isChatting.value = false; scrollToBottomIfNear()
+      
+      // ★ 保存会话到数据库（确保 AI 回复被持久化）
+      sessionDirty.value = true
+      saveToStorage()
+      
       try { unlistenDone(); unlistenToken(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
 
@@ -568,6 +606,18 @@ async function saveToNotebook(nbId: string) {
 async function openNotebookPicker(msgId: string) { savingMsgId.value = msgId; notebookSearch.value = ''; try { const r: any = await fetchNotebooks(); notebooks.value = r?.notebooks || [] } catch { notebooks.value = [] }; notebookPickerOpen.value = true }
 
 // ─── Init ───────────────────────────────────────────────────────
+// ★ 页面停用时清理资源（KeepAlive 模式下不会触发 onUnmounted）
+onDeactivated(() => {
+  stopAllTypewriters()
+  // 保存当前输入框文本和待发送附件到 localStorage
+  try {
+    localStorage.setItem('chat_input_backup', inputMessage.value)
+    if (pendingAttachments.value.length > 0) {
+      localStorage.setItem('chat_attachments_backup', JSON.stringify(pendingAttachments.value))
+    }
+  } catch {}
+})
+
 onUnmounted(() => {
   stopAllTypewriters()
   unlistenProgress?.()

@@ -96,6 +96,7 @@ fn ingestion_loop() {
         ingest_pending_products();
         ingest_pending_projects();
         ingest_pending_todos();
+        ingest_pending_emails();
 
         // 空闲时每100ms检查一次（更快响应新任务）
         std::thread::sleep(Duration::from_millis(100));
@@ -974,6 +975,57 @@ fn ingest_pending_todos() {
             "[数据中台] 📋 待办 {} 已摄入 ({} 字符)",
             &id[..id.len().min(8)],
             md_content.len()
+        );
+    }
+}
+
+fn ingest_pending_emails() {
+    let rows = match crate::database::all(
+        "SELECT e.id FROM emails e WHERE e.ai_category='knowledge' AND e.id NOT IN (SELECT source_id FROM source_data WHERE source_type='EMAIL') LIMIT 20",
+        &[],
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            log::info!("[数据中台] ⚠ 查询邮件失败: {}", e);
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+    for row in &rows {
+        let id = row["id"].as_str().unwrap_or("").to_string();
+        if id.is_empty() {
+            continue;
+        }
+        
+        // 统一调用 source_doc_sync::extract_email() 获取邮件内容
+        let (title, content) = crate::services::source_doc_sync::extract_email(&id);
+        if content.is_empty() {
+            continue;
+        }
+        
+        // 检查是否已存在
+        if crate::database::get(
+            "SELECT 1 FROM source_data WHERE source_type='EMAIL' AND source_id=?1",
+            &[serde_json::json!(&id)],
+        )
+        .ok()
+        .flatten()
+        .is_some()
+        {
+            continue;
+        }
+        
+        // 写入 source_data（id = source_id）
+        crate::database::run(
+            "INSERT INTO source_data(id, source_type, source_id, title, content, updated_at) VALUES(?1, 'EMAIL', ?1, ?2, ?3, datetime('now','localtime'))",
+            &[serde_json::json!(&id), serde_json::json!(&title), serde_json::json!(&content)],
+        ).ok();
+        log::info!(
+            "[数据中台] 📧 邮件 {} 已摄入 ({} 字符)",
+            &id[..id.len().min(8)],
+            content.len()
         );
     }
 }

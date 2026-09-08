@@ -230,9 +230,82 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE system_config ADD COLUMN sprite_position TEXT DEFAULT '{}'",
         // 精灵窗口开关
         "ALTER TABLE system_config ADD COLUMN sprite_enabled INTEGER DEFAULT 0",
+        // 邮件附件关联文件资产
+        "ALTER TABLE email_attachments ADD COLUMN file_asset_id TEXT DEFAULT NULL",
+        // 邮件附件 Content-ID 和内嵌标识
+        "ALTER TABLE email_attachments ADD COLUMN content_id TEXT DEFAULT NULL",
+        "ALTER TABLE email_attachments ADD COLUMN is_inline INTEGER DEFAULT 0",
+        "CREATE INDEX IF NOT EXISTS idx_email_attach_content_id ON email_attachments(content_id)",
+        // 邮件抄送地址
+        "ALTER TABLE emails ADD COLUMN cc_addr TEXT DEFAULT ''",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
+    }
+    
+    // 修复 knowledge_chunks.source_data_id 类型：INTEGER → TEXT
+    // SQLite 不支持 ALTER COLUMN，需要重建表
+    let sd_id_type: String = conn.query_row(
+        "SELECT type FROM pragma_table_info('knowledge_chunks') WHERE name='source_data_id'",
+        [], |r| r.get(0),
+    ).unwrap_or_default();
+    
+    if sd_id_type == "INTEGER" {
+        log::info!("[迁移] 修复 knowledge_chunks.source_data_id 类型: INTEGER → TEXT");
+        
+        // 1. 创建新表
+        conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS knowledge_chunks_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_id TEXT NOT NULL DEFAULT '',
+                chunk_type TEXT NOT NULL DEFAULT 'child',
+                parent_id TEXT DEFAULT NULL,
+                source_data_id TEXT DEFAULT NULL,
+                content TEXT NOT NULL,
+                doc_title TEXT DEFAULT '',
+                chunk_index INTEGER DEFAULT 0,
+                content_hash TEXT DEFAULT '',
+                base_weight REAL DEFAULT 1.0,
+                last_access_at INTEGER DEFAULT NULL,
+                access_count INTEGER DEFAULT 0,
+                source_type TEXT DEFAULT '',
+                source_id TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now', 'localtime'))
+            );
+        ")?;
+        
+        // 2. 复制数据（将 source_data_id 转换为 TEXT）
+        conn.execute_batch("
+            INSERT INTO knowledge_chunks_new 
+                (id, chunk_id, chunk_type, parent_id, source_data_id, content, doc_title, 
+                 chunk_index, content_hash, base_weight, last_access_at, access_count, 
+                 source_type, source_id, created_at)
+            SELECT 
+                id, chunk_id, chunk_type, parent_id, 
+                CASE WHEN source_data_id IS NOT NULL THEN CAST(source_data_id AS TEXT) ELSE NULL END,
+                content, doc_title, chunk_index, content_hash, base_weight, last_access_at, 
+                access_count, source_type, source_id, created_at
+            FROM knowledge_chunks;
+        ")?;
+        
+        // 3. 替换旧表
+        conn.execute_batch("
+            DROP TABLE IF EXISTS knowledge_chunks_old;
+            ALTER TABLE knowledge_chunks RENAME TO knowledge_chunks_old;
+            ALTER TABLE knowledge_chunks_new RENAME TO knowledge_chunks;
+        ")?;
+        
+        // 4. 重建索引
+        conn.execute_batch("
+            CREATE INDEX IF NOT EXISTS idx_kc_parent ON knowledge_chunks(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_kc_source ON knowledge_chunks(source_type, source_id);
+            CREATE INDEX IF NOT EXISTS idx_kc_source_data ON knowledge_chunks(source_data_id);
+        ")?;
+        
+        // 5. 清理旧表
+        conn.execute_batch("DROP TABLE IF EXISTS knowledge_chunks_old;")?;
+        
+        log::info!("[迁移] knowledge_chunks.source_data_id 类型修复完成");
     }
 
     // ★ 回填存量 Won 项目的 won_at：优先取状态变更日志的最早时间，找不到回退 updated_at
@@ -712,6 +785,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
 
     // ★ notifications 增加 meta 列（结构化载荷预留）
     let _ = conn.execute_batch("ALTER TABLE notifications ADD COLUMN meta TEXT DEFAULT '{}'");
+
+    // ★ notifications 增加 actions 列（操作按钮 JSON 数组）
+    let _ = conn.execute_batch("ALTER TABLE notifications ADD COLUMN actions TEXT DEFAULT '[]'");
 
     // ★ 归一化 notes 时间戳格式：存量 RFC3339（含 'T'）→ SQLite "YYYY-MM-DD HH:MM:SS" 本地格式。
     //    排序按字符串字典序，混合格式会导致 space(0x20) < 'T'(0x54) 使同一天排序错乱。

@@ -1,4 +1,5 @@
 //! Arkmind - Tauri v2 backend
+#![recursion_limit = "256"]
 
 mod commands;
 mod crypto;
@@ -66,44 +67,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .register_asynchronous_uri_scheme_protocol("pms", move |_ctx, request, responder| {
-            let uri = request.uri().to_string();
-            let path = uri.strip_prefix("pms://").unwrap_or(&uri);
-            let (_host, id) = if let Some(p) = path.find('/') { (&path[..p], &path[p+1..]) } else { (path, "") };
-
-            // 验证 ID 格式：仅允许数字、字母、短横线（防止路径穿越）
-            if id.is_empty() || id.len() > 100 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-                let resp = tauri::http::Response::builder().status(400).body("Invalid ID".as_bytes().to_vec());
-                if let Ok(r) = resp { let _ = responder.respond(r); }
-                return;
-            }
-
-            let file_path: Option<String> =
-                database::get("SELECT content_hash FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.id=?", &[serde_json::json!(id)]).ok().flatten()
-                    .and_then(|r| r["content_hash"].as_str().filter(|h| !h.is_empty()).map(|h| crate::commands::file_commands::flat_disk_path(h)));
-            let resp = match file_path {
-                Some(p) if !p.is_empty() => {
-                    let path = std::path::PathBuf::from(&p);
-                    if !path.exists() { tauri::http::Response::builder().status(404).body("File Missing".as_bytes().to_vec()) }
-                    else {
-                        // 限制文件大小（100MB）
-                        const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
-                        let meta = std::fs::metadata(&path).ok();
-                        if meta.as_ref().map_or(false, |m| m.len() > MAX_FILE_SIZE) {
-                            tauri::http::Response::builder().status(413).body("File too large".as_bytes().to_vec())
-                        } else {
-                            let buf = std::fs::read(&path).unwrap_or_default();
-                            let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
-                                "pdf"=>"application/pdf", "docx"=>"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xlsx"=>"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "png"=>"image/png", "jpg"|"jpeg"=>"image/jpeg", "gif"=>"image/gif", "webp"=>"image/webp", _=>"application/octet-stream"
-                            };
-                            tauri::http::Response::builder().status(200).header("Content-Type", mime).header("Access-Control-Allow-Origin","pms://localhost").body(buf)
-                        }
-                    }
-                }
-                _ => tauri::http::Response::builder().status(404).body("Not Found".as_bytes().to_vec())
-            };
-            let _ = match resp { Ok(r) => responder.respond(r), Err(_) => {} };
-        })
         .setup(|app| {
             // ★ 初始化防抖物化调度器（需 tokio runtime 就绪）
             once_cell::sync::Lazy::force(&services::debounced_sync::SCHEDULER);
@@ -281,6 +244,10 @@ pub fn run() {
             // ★ 启动通知循环：App启动时执行周期后台LLM分析
             services::notification_loop::start_notification_loop(app.handle().clone());
 
+            // ★ 启动邮件轮询：App启动时执行周期IMAP同步+AI分类
+            services::email_polling::init_app_handle(app.handle().clone());
+            services::email_polling::start_email_loop();
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -298,7 +265,7 @@ pub fn run() {
             commands::file_open, commands::file_download, commands::file_get_path, commands::file_has_oss_files, commands::file_migrate_files,
             commands::file_update_meta,
             commands::file_list_by_product, commands::file_open_product, commands::file_download_product,
-            commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes, commands::chat_save_temp_image, commands::file_remove_temp, commands::chat_read_macos_clipboard_files,
+            commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes, commands::chat_save_temp_image, commands::file_remove_temp, commands::chat_read_clipboard_files,
             commands::file_copy_to_clipboard,
             commands::file_list_global,
             commands::file_move, commands::file_tree,
@@ -387,9 +354,18 @@ pub fn run() {
             commands::get_logs, commands::clear_logs,
             // Notifications
             commands::notification_list, commands::notification_create, commands::notification_mark_read,
-            commands::notification_mark_all_read, commands::notification_delete, commands::notification_stats,
+            commands::notification_mark_all_read, commands::notification_delete, commands::notification_batch_delete, commands::notification_stats,
             commands::notification_config_get, commands::notification_config_update,
             commands::notification_loop_status,
+            // 邮件
+            commands::email_add_account, commands::email_list_accounts,
+            commands::email_update_account, commands::email_delete_account,
+            commands::email_list, commands::email_get_detail,
+            commands::email_render_html, commands::email_inline_asset,
+            commands::email_sync, commands::email_loop_status,
+            commands::email_config_update, commands::email_config_get,
+            commands::email_stats, commands::email_action_confirm, commands::email_action_ignore,
+            commands::email_reprocess_knowledge, commands::email_reprocess_attachments,
             // Project ID Migration（canonical ID 收敛）
             commands::migration_submit_project_id_map, commands::migration_project_id_state,
             // Debug（仅 debug 构建注册）
