@@ -15,13 +15,13 @@
  *   - uploaded: 每个文件成功上传后触发 (fileId)
  *   - done: 全部完成后触发 ({ ok, fail })
  */
-import { ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { uploadFile, removeTempFile } from '@/api/db-client'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from '@/composables/useToast'
-import { isMac, pasteShortcut } from '@/utils/platform'
+import { pasteShortcut } from '@/utils/platform'
 
 const props = defineProps<{
   entityType: string
@@ -56,6 +56,32 @@ function extOf(name: string): string {
 }
 
 const pasteArea = ref<HTMLTextAreaElement | null>(null)
+
+// ─── 窗口级 Ctrl/Cmd+V 兜底：不依赖焦点，切回应用后仍可粘贴文件 ───
+function isEditable(el: EventTarget | null): boolean {
+  const t = el as HTMLElement | null
+  if (!t) return false
+  const tag = t.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable
+}
+
+let lastClipRead = 0
+function onPasteKeydown(e: KeyboardEvent) {
+  if (!show.value) return
+  const mod = e.ctrlKey || e.metaKey
+  if (!mod || (e.key.toLowerCase() !== 'v')) return
+  // 焦点在可编辑元素：放行默认行为（文本粘贴由浏览器处理，截图/文件走 textarea @paste）
+  if (isEditable(e.target)) return
+  // 焦点在 body/不可编辑处：切回应用后粘贴场景，preventDefault 后走后端读文件
+  e.preventDefault()
+  const now = Date.now()
+  if (now - lastClipRead < 500) return // 防抖，避免重复后端调用
+  lastClipRead = now
+  readClipboardFiles()
+}
+
+onMounted(() => window.addEventListener('keydown', onPasteKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onPasteKeydown))
 
 function open() {
   pendingUploads.value = []
@@ -122,9 +148,10 @@ async function onUploadPaste(e: ClipboardEvent) {
       }
     }
   }
-  // macOS：WebKit 不把剪贴板文件暴露给 clipboardData，从后端 NSPasteboard 读取
-  if (isMac && added === 0) {
-    await readMacClipboardFiles()
+  // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
+  // 若浏览器侧未取到任何文件，回退从后端读取剪贴板文件列表
+  if (added === 0) {
+    await readClipboardFiles()
   }
   // 处理完成后重新聚焦隐藏 textarea，保持后续粘贴可用
   requestAnimationFrame(() => {
@@ -132,10 +159,10 @@ async function onUploadPaste(e: ClipboardEvent) {
   })
 }
 
-/** macOS：从后端 NSPasteboard 读取 Finder 复制的文件，加入待上传列表 */
-async function readMacClipboardFiles() {
+/** 从后端读取系统剪贴板（资源管理器/Finder 复制）的文件，加入待上传列表 */
+async function readClipboardFiles() {
   try {
-    const r: any = await invoke('chat_read_macos_clipboard_files')
+    const r: any = await invoke('chat_read_clipboard_files')
     if (r?.success && Array.isArray(r.files) && r.files.length) {
       for (const f of r.files) {
         const name = f.name || 'pasted'

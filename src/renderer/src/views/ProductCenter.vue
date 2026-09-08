@@ -15,7 +15,7 @@ import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
-import { isMac, pasteShortcut } from '@/utils/platform'
+import { pasteShortcut } from '@/utils/platform'
 import { formatDateTime } from '@/utils/time'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 
@@ -341,6 +341,33 @@ const editingMaterialId = ref<string|null>(null)
 const editingMaterialName = ref('')
 const assocProductIds = ref<string[]>([])
 
+// ─── 窗口级 Ctrl/Cmd+V 兜底：不依赖焦点，切回应用后仍可粘贴文件 ───
+function isEditableTarget(el: EventTarget | null): boolean {
+  const t = el as HTMLElement | null
+  if (!t) return false
+  const tag = t.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable
+}
+let lastMatClipRead = 0
+let matKeydownHandler: ((e: KeyboardEvent) => void) | null = null
+watch(materialUploadOpen, (open) => {
+  if (open) {
+    matKeydownHandler = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey
+      if (!mod || (e.key.toLowerCase() !== 'v')) return
+      if (isEditableTarget(e.target)) return
+      e.preventDefault()
+      const now = Date.now()
+      if (now - lastMatClipRead < 500) return
+      lastMatClipRead = now
+      readMaterialClipboard()
+    }
+    window.addEventListener('keydown', matKeydownHandler)
+  } else {
+    if (matKeydownHandler) { window.removeEventListener('keydown', matKeydownHandler); matKeydownHandler = null }
+  }
+})
+
 function onMaterialDragOver(e: DragEvent) { e.preventDefault(); materialDragOver.value = true }
 function onMaterialDragLeave() { materialDragOver.value = false }
 function onMaterialDrop(e: DragEvent) {
@@ -393,9 +420,10 @@ async function onMaterialPaste(e: ClipboardEvent) {
       }
     }
   }
-  // macOS：WebKit 不把剪贴板文件暴露给 clipboardData，从后端 NSPasteboard 读取
-  if (isMac && added === 0) {
-    await readMaterialMacClipboard()
+  // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
+  // 若浏览器侧未取到任何文件，回退从后端读取剪贴板文件列表
+  if (added === 0) {
+    await readMaterialClipboard()
   }
   if (added > 0) toast({ message: `已粘贴 ${added} 个文件`, type: 'success' })
   // 处理完成后重新聚焦隐藏 textarea，保持后续粘贴可用
@@ -404,10 +432,10 @@ async function onMaterialPaste(e: ClipboardEvent) {
   })
 }
 
-/** macOS：从后端 NSPasteboard 读取 Finder 复制的文件，加入待上传列表 */
-async function readMaterialMacClipboard() {
+/** 从后端读取系统剪贴板（资源管理器/Finder 复制）的文件，加入待上传列表 */
+async function readMaterialClipboard() {
   try {
-    const r: any = await invoke('chat_read_macos_clipboard_files')
+    const r: any = await invoke('chat_read_clipboard_files')
     if (r?.success && Array.isArray(r.files) && r.files.length) {
       for (const f of r.files) {
         const displayName = f.name || 'pasted'
@@ -612,8 +640,36 @@ onMounted(async () => {
       }
     })
   } catch (e) { console.warn('[ProductCenter] Failed to listen drag-drop:', e) }
+  handleRouteQuery()
 })
-onActivated(() => store.fetchProducts())
+onActivated(() => { store.fetchProducts(); handleRouteQuery() })
+
+function handleRouteQuery() {
+  const action = route.query.action as string
+  const focus = route.query.focus as string
+  if (action === 'create') {
+    const name = route.query.name as string || ''
+    createProductPrefilled(name)
+  }
+  if (focus) {
+    selectedProductId.value = focus
+  }
+}
+
+async function createProductPrefilled(name: string) {
+  try {
+    const productName = name || '新产品'
+    const d: any = { name: productName }
+    if (selectedSeriesId.value && selectedSeriesId.value !== store.uncategorizedSeriesId) {
+      d.seriesId = selectedSeriesId.value
+    }
+    const newProduct = await store.createProduct(d)
+    await store.fetchProducts()
+    if (newProduct?.id) {
+      selectedProductId.value = newProduct.id
+    }
+  } catch (e: any) { toast({ message: e.message || '创建失败', type: 'error' }) }
+}
 // ★ 响应全局搜索跳转
 let processingSeq = 0
 watch(() => selectionStore.current.seq, async () => {
