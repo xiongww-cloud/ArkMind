@@ -1,6 +1,6 @@
 {
   "name": "pms-desktop",
-  "version": "13.4.2",
+  "version": "13.5.0",
   "description": "A Vue + TypeScript desktop application",
   "private": true,
   "scripts": {

@@ -1,6 +1,6 @@
 [package]
 name = "arkmind"
-version = "13.4.2"
+version = "13.5.0"
 description = "Arkmind 鏂硅垷鏅哄簱"
 authors = ["Arkmind Team"]
 edition = "2021"
@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 strum = { version = "0.26", features = ["derive"] }
-tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "macos-private-api"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
@@ -48,6 +48,12 @@ zip = "0.6"
 pdf-extract = "0.7"
 quick-xml = "0.37"
 infer = "0.15"
+html2md = "0.2.17"
+
+# Email (IMAP + MIME parsing)
+imap = "2.4"
+native-tls = "0.2"
+mailparse = "0.14"
 
 # Text chunking
 text-splitter = "0.29"
