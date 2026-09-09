@@ -98,7 +98,6 @@ clipboard-win = "5"
 panic = "unwind"
 
 [profile.release]
-panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
