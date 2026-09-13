@@ -53,8 +53,19 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
     let session_id = data["sessionId"].as_str().map(String::from);
     let attachments: Vec<Value> = data["attachments"].as_array().cloned().unwrap_or_default();
 
+    // 主 Agent 认知协调工具（不含 CRUD 和 policy，这些委托给专业 Agent）
+    let main_agent_tools: Vec<String> = vec![
+        "ext_tool_search".to_string(),
+        "ext_tool_object".to_string(),
+        "ext_tool_chunk_navigate".to_string(),
+        "ext_tool_relations".to_string(),
+        "ext_tool_memory".to_string(),
+        "ext_tool_manage_notification".to_string(),
+        "ext_tool_delegate_agent".to_string(),
+    ];
+
     tauri::async_runtime::spawn(async move {
-        let result = crate::services::agent_workflow::agent_chat_workflow(query, attachments, max_iter, Some(app_handle.clone()), false, session_id.clone(), None).await;
+        let result = crate::services::agent_workflow::agent_chat_workflow(query, attachments, max_iter, Some(app_handle.clone()), false, session_id.clone(), Some(main_agent_tools)).await;
         match result {
             Ok(v) => {
                 // ★ 保存 assistant 消息到 DB（纯内容，无 metadata）

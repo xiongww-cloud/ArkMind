@@ -93,12 +93,7 @@ const AGENT_SYSTEM_PROMPT: &str = r#"
 - 聚合计算 → ext_tool_object(mode="aggregate", type=..., aggregate="SUM(...)")
 - 查看对象关联 → ext_tool_relations
 - 已知 ChunkID 翻页 → ext_tool_chunk_navigate
-- 创建/修改/删除数据 → ext_tool_manage_*
 - 记录记忆 → ext_tool_memory(action="create")
-- 管理策略 → ext_tool_manage_policy
-- 查看项目动态/日志 → ext_tool_object(type="PROJECT_DYNAMIC", field_filters=[{field:"project_id",op:"=",value:"..."}])，可加 created_at >= / <= 做时间范围过滤
-- 追加项目动态 → ext_tool_manage_project(action="add_dynamic", project_id="...", content="...")
-- 删除项目动态 → ext_tool_manage_project(action="delete_dynamic", dynamic_id="...")
 
 ## 6. 业务对象模型
 项目结构图谱：
@@ -112,9 +107,8 @@ PROJECT
 - 设备完整参数快照：ext_tool_object(type="SOLUTION_ITEM") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）
 - 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id；联系人关联项目时，所属合作伙伴必须同时关联到同一项目
 
-## 7. 策略系统（Policy）
-策略是用户设定的做事方法和行为约束，具有指令性和普适性——对所有对话生效（如"报价前必须先确认库存"）。
-规则只能来自用户的输入，禁止在分析数据、回答问题时自行创建或修改策略。
+## 7. 委托
+你做不了的任务可以委托给专业 Agent。从动态上下文的【可用专业 Agent】中选择合适的 Agent。
 
 ## 8. 记忆系统（Memory）
 回答前检查上下文中已检索到的记忆，如果有相关的记忆且内容一致，则跳过记录；仅在发现新信息时调用工具记录。格式为：
