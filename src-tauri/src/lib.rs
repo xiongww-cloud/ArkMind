@@ -368,6 +368,10 @@ pub fn run() {
             commands::email_reprocess_knowledge, commands::email_reprocess_attachments,
             // Project ID Migration（canonical ID 收敛）
             commands::migration_submit_project_id_map, commands::migration_project_id_state,
+            // Agent Profiles
+            commands::agent_available_tools, commands::agent_profile_list, commands::agent_profile_get,
+            commands::agent_profile_create, commands::agent_profile_update, commands::agent_profile_delete,
+            commands::agent_tool_list, commands::agent_tool_assign, commands::agent_profile_reset,
             // Debug（仅 debug 构建注册）
             #[cfg(debug_assertions)]
             commands::save_agent_context,

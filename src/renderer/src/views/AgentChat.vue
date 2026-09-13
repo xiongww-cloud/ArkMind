@@ -16,7 +16,7 @@ const agent = useAgentChat()
 
 // ─── Attachments ─────────────────────────────────────────────────
 const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
-const DOC_EXTS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md', 'csv', 'json'])
+const DOC_EXTS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md', 'csv', 'json'])
 const ALL_EXTS = new Set([...IMG_EXTS, ...DOC_EXTS])
 const MAX_ATTACH = 5
 const MAX_SIZE = 20 * 1024 * 1024
@@ -429,6 +429,9 @@ async function handleSendMessage() {
   const q = inputMessage.value.trim()
   if (!q || agent.isChatting.value) return
   console.log('[FE] handleSendMessage BUILD=streamfix-0719')
+  // ★ 防御：清理上一轮可能泄漏的 listener，防止旧 listener 把新 token 写进旧气泡
+  try { unlistenProgress?.(); unlistenToken?.(); unlistenDone?.(); unlistenError?.() } catch {}
+  unlistenProgress = null; unlistenToken = null; unlistenDone = null; unlistenError = null
   if (q.length > MAX_INPUT_LENGTH) { toast({ message: `输入内容过长（${q.length}/${MAX_INPUT_LENGTH}），请精简后重试`, type: 'error' }); return }
   const session = currentSession.value; if (!session) return
   const atts = [...pendingAttachments.value]
@@ -445,7 +448,7 @@ async function handleSendMessage() {
     scrollToBottomIfNear()
   })
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
-  session.messages.push(aiMsg); const aiIdx = session.messages.length - 1
+  session.messages.push(aiMsg)
   // ★ 初始默认"思考中"，工具调用时才切换预设文本
   agent.setThinkingProgress('思考中')
   // ★ 实时 token 流（打字机队列）
@@ -455,17 +458,15 @@ async function handleSendMessage() {
   const flushTokenQueue = () => {
     if (tokenFlushed) return; tokenFlushed = true
     clearInterval(tokenTimer)
-    const msg = session.messages[aiIdx]; if (!msg) return
-    while (tokenIdx < tokenQueue.length) msg.content += tokenQueue[tokenIdx++]
+    while (tokenIdx < tokenQueue.length) aiMsg.content += tokenQueue[tokenIdx++]
   }
   let lastRenderTime = 0
   const tokenTimer = setInterval(() => {
-    const msg = session.messages[aiIdx]; if (!msg) return
-    if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) agent.setThinkingProgress(''); msg.content += tokenQueue[tokenIdx++] }
+    if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) agent.setThinkingProgress(''); aiMsg.content += tokenQueue[tokenIdx++] }
     const now = Date.now()
-    if (msg.id && msg.content && now - lastRenderTime > 200) {
+    if (aiMsg.id && aiMsg.content && now - lastRenderTime > 200) {
       lastRenderTime = now
-      renderMessageContent(msg.id, msg.content)
+      renderMessageContent(aiMsg.id, aiMsg.content)
     }
     scrollToBottomIfNear()
   }, 15)
@@ -479,15 +480,15 @@ async function handleSendMessage() {
       console.log('[FE] done received')
       flushTokenQueue()
       const result = ev.payload
-      const msg = session.messages[aiIdx]; msg.isThinking = false
+      aiMsg.isThinking = false
       if (result.success) {
         const finalAnswer = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-        if (finalAnswer && !msg.content) msg.content = finalAnswer
-        if (!msg.content) msg.content = result.answer || '（无回复内容）'
+        if (finalAnswer && !aiMsg.content) aiMsg.content = finalAnswer
+        if (!aiMsg.content) aiMsg.content = result.answer || '（无回复内容）'
         // ★ 先完成渲染，再清空 progress（避免短暂窗口显示原始 Markdown）
-        await renderMessageContent(msg.id || '', msg.content)
+        await renderMessageContent(aiMsg.id || '', aiMsg.content)
         agent.setThinkingProgress('')
-      } else { msg.error = result.answer || result.error || '失败' }
+      } else { aiMsg.error = result.answer || result.error || '失败' }
       agent.isChatting.value = false; scrollToBottomIfNear()
       
       // ★ 保存会话到数据库（确保 AI 回复被持久化）
@@ -500,8 +501,8 @@ async function handleSendMessage() {
     // ★ 监听 agent:error 事件
     unlistenError = await listen<any>('agent:error', (ev) => {
       flushTokenQueue()
-      const msg = session.messages[aiIdx]; msg.isThinking = false
-      msg.error = ev.payload.error || 'AI 服务异常'
+      aiMsg.isThinking = false
+      aiMsg.error = ev.payload.error || 'AI 服务异常'
       agent.isChatting.value = false; scrollToBottomIfNear()
       try { unlistenError(); unlistenDone(); unlistenToken(); unlistenProgress() } catch {}
     })
@@ -510,15 +511,17 @@ async function handleSendMessage() {
     invoke('kb_agent_chat', { data: { query: q, sessionId: currentSessionId.value, attachments: atts.map(a => ({ path: a.path, name: a.name })) } }).catch((err) => {
       console.error('[KB] invoke failed:', err)
       flushTokenQueue()
-      const msg = session.messages[aiIdx]; msg.isThinking = false
-      msg.error = String(err)
+      aiMsg.isThinking = false
+      aiMsg.error = String(err)
       agent.isChatting.value = false; scrollToBottomIfNear()
+      try { unlistenDone?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
     })
   } catch (e: any) {
     flushTokenQueue()
-    const msg = session.messages[aiIdx]; msg.isThinking = false
-    msg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
+    aiMsg.isThinking = false
+    aiMsg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
     agent.isChatting.value = false; scrollToBottomIfNear()
+    try { unlistenDone?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
   }
 }
 

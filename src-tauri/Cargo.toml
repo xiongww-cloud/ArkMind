@@ -1,10 +1,10 @@
 [package]
 name = "arkmind"
-version = "13.5.1"
+version = "13.5.2"
 description = "Arkmind 鏂硅垷鏅哄簱"
 authors = ["Arkmind Team"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.85"
 
 [lib]
 name = "arkmind_lib"
@@ -49,6 +49,7 @@ pdf-extract = "0.7"
 quick-xml = "0.37"
 infer = "0.15"
 html2md = "0.2.17"
+rwml = "0.1.4"
 
 # Email (IMAP + MIME parsing)
 imap = "2.4"

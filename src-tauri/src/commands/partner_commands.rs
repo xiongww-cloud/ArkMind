@@ -106,7 +106,8 @@ pub async fn partner_update(data: Value) -> Result<Value, String> {
     if fields.is_empty() { return Ok(json!({"success":true})); }
     fields.push("updated_at=datetime('now','localtime')".into());
     values.push(json!(id));
-    database::run(&format!("UPDATE partners SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
+    let result = database::run(&format!("UPDATE partners SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
+    if result.changes == 0 { return Err(format!("未找到合作伙伴: {}", id)); }
     let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
     crate::services::knowledge_lifecycle::notify_changed(&ptype, id);
     emit_for_partner(id);
@@ -268,7 +269,8 @@ pub async fn partner_contact_update(data: Value) -> Result<Value, String> {
     if let Some(v) = data["remark"].as_str() { fields.push("remark=?".into()); values.push(json!(v)); }
     if fields.is_empty() { return Ok(json!({"success":true})); }
     values.push(json!(id));
-    database::run(&format!("UPDATE partner_contacts SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
+    let result = database::run(&format!("UPDATE partner_contacts SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
+    if result.changes == 0 { return Err(format!("未找到联系人: {}", id)); }
     crate::services::knowledge_lifecycle::notify_changed("CONTACT", id);
     emit_for_partner_contact(id);
     Ok(json!({"success":true}))

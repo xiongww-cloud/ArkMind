@@ -11,7 +11,7 @@ const agent = useAgentChat()
 
 // --- Attachments ---
 const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
-const DOC_EXTS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md', 'csv', 'json'])
+const DOC_EXTS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md', 'csv', 'json'])
 const ALL_EXTS = new Set([...IMG_EXTS, ...DOC_EXTS])
 interface PendingAttachment { path: string; name: string; kind: 'image' | 'doc'; previewUrl?: string }
 const pendingAttachments = ref<PendingAttachment[]>([])

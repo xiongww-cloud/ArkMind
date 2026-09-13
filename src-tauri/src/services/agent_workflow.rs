@@ -1005,6 +1005,7 @@ fn build_tools_definitions(allow: Option<&[String]>) -> Value {
         {"type":"function","function":{"name":"ext_tool_memory","description":"记录和检索长期记忆。action=create(创建记忆), action=update(更新记忆内容), action=delete(删除记忆), action=search(搜索记忆，不传query或传*可列出所有记忆)。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","search"],"description":"必填。search=搜索记忆，create=创建记忆，update=更新记忆，delete=删除记忆"},"content":{"type":"string","description":"记忆内容（create/update 必填）"},"items":{"type":"array","items":{"type":"string"},"description":"批量创建：多条记忆内容数组"},"memory_id":{"type":"string","description":"记忆ID（update/delete 必填）"},"query":{"type":"string","description":"搜索关键词（search 用）。不传或传 * 可列出所有记忆"},"start_time":{"type":"string","description":"开始时间"},"end_time":{"type":"string","description":"结束时间"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_policy","description":"管理用户策略。action=create(新增策略), action=update(更新策略), action=delete(删除策略)。策略会自动注入 prompt，无需手动查询。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"],"description":"必填。create=新增策略，update=更新策略，delete=删除策略"},"id":{"type":"string","description":"策略ID（update/delete 用）"},"content":{"type":"string","description":"策略内容（create/update 用）"}},"required":["action"]}}},
         {"type":"function","function":{"name":"ext_tool_manage_notification","description":"管理通知。action=create(创建通知)、update(更新通知)、delete(删除通知)、list(查看通知列表)、get(查看通知详情)。只有在发现真正需要用户关注的洞察时才调用，不要滥用。","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete","list","get"],"description":"必填。create=创建通知，update=更新通知，delete=删除通知，list=查看通知，get=查看通知详情"},"notification_id":{"type":"string","description":"通知ID（get/update/delete用）"},"type":{"type":"string","description":"通知类型: todo_due/todo_today/project_stale/bid_deadline/llm_insight"},"title":{"type":"string","description":"通知标题，简短精炼"},"content":{"type":"string","description":"通知详情，使用 Markdown 格式：支持 **加粗**、- 列表、`代码`、> 引用等，让内容结构清晰易读"},"entity_type":{"type":"string","description":"关联实体类型: todo/project/null"},"entity_id":{"type":"string","description":"关联实体ID"},"priority":{"type":"string","enum":["high","medium","low"],"description":"优先级"},"follow_up_of":{"type":"string","description":"跟进的通知ID"},"actions":{"type":"array","description":"操作按钮列表。view_*=跳转查看，create_*=跳转创建，create_all=一键全部创建。由你决定通知需要哪些操作。","items":{"type":"object","properties":{"type":{"type":"string","enum":["view_email","view_project","view_todo","view_note","view_product","view_contact","view_partner","create_todo","create_project","create_note","create_product","create_contact","create_partner","create_all"],"description":"操作类型"},"label":{"type":"string","description":"按钮文字，如'查看邮件'、'创建待办'"},"params":{"type":"object","description":"操作参数。view_*需要对应id(如email_id/project_id)；create_*需要预填字段(如title/name/email/phone/priority/due_date等)"}},"required":["type","label"]}},"limit":{"type":"integer","description":"每页条数，默认20"},"offset":{"type":"integer","description":"分页偏移，默认0"}},"required":["action"]}}},
+        {"type":"function","function":{"name":"ext_tool_delegate_agent","description":"将任务委托给专业 Agent 处理。将用户的完整请求作为一个任务委托，不要拆分成多次调用。子 Agent 可在一次执行中完成多个操作。","parameters":{"type":"object","properties":{"agent_id":{"type":"string","description":"目标 Agent ID（从 Agent 列表中选择）"},"task":{"type":"string","description":"要完成的具体任务描述，尽量明确"},"context":{"type":"object","description":"任务上下文（如对象ID、关键信息），帮助子 Agent 快速理解任务"},"expected_output":{"type":"string","description":"期望输出格式（可选），如 'review'、'analysis'、'plan'"}},"required":["agent_id","task"]}}}
     ]);
     if let Some(allowed) = allow {
         let filtered: Vec<Value> = all
@@ -2965,6 +2966,21 @@ async fn summarize_large_attachment(
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, allowed_tools: Option<Vec<String>>) -> Result<Value, String> {
+    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None).await
+}
+
+/// 内部工作流函数，支持自定义 system_prompt
+pub async fn agent_chat_workflow_internal(
+    user_query: String,
+    attachments: Vec<Value>,
+    max_iterations: Option<i32>,
+    app_handle: Option<tauri::AppHandle>,
+    silent: bool,
+    session_id: Option<String>,
+    allowed_tools: Option<Vec<String>>,
+    system_prompt: Option<&str>,
+) -> Result<Value, String> {
+    let effective_prompt = system_prompt.unwrap_or(AGENT_SYSTEM_PROMPT);
     AGENT_CANCEL.store(false, Ordering::Release);
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
@@ -3039,7 +3055,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     };
 
     let mut messages: Vec<ChatMessage> = vec![
-        ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
+        ChatMessage{role:MessageRole::System,content:Some(effective_prompt.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
     ];
 
     // ★ 注入压缩摘要（如果有）
@@ -3190,7 +3206,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
                     }
                     // 压缩后重新加载历史（从 DB 读取压缩后的状态）
                     messages.clear();
-                    messages.push(ChatMessage{role:MessageRole::System,content:Some(AGENT_SYSTEM_PROMPT.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+                    messages.push(ChatMessage{role:MessageRole::System,content:Some(effective_prompt.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
                     // 读取新的压缩摘要
                     let new_session_row = crate::database::get(
@@ -3359,7 +3375,7 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     };
     
     // System Prompt 已是纯静态（today + user_policies 移至动态上下文消息）
-    messages[0].content = Some(AGENT_SYSTEM_PROMPT.to_string());
+    messages[0].content = Some(effective_prompt.to_string());
     let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
     let mut retry_count = 0u32; // ToolCall 清理后重试计数器
 
@@ -5248,6 +5264,16 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                                     }
                                 }
                             };
+                            (res, vec![])
+                        }
+                        "ext_tool_delegate_agent" => {
+                            let agent_id = a["agent_id"].as_str().unwrap_or("");
+                            let task = a["task"].as_str().unwrap_or("");
+                            let context = a.get("context");
+                            let expected_output = a["expected_output"].as_str().unwrap_or("");
+                            let res = super::delegate_agent::execute_delegate_agent(
+                                agent_id, task, context, expected_output, app_handle.clone(),
+                            ).await;
                             (res, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),

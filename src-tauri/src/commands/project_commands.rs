@@ -53,13 +53,15 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     }
     if fields.is_empty() { return Ok(()); }
     fields.push("updated_at=datetime('now', 'localtime')".into()); values.push(json!(id));
-    database::run(&format!("UPDATE projects SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
+    let result = database::run(&format!("UPDATE projects SET {} WHERE id=?", fields.join(",")), &values).map_err(|e| e.to_string())?;
+    if result.changes == 0 { return Err(format!("未找到项目: {}", id)); }
     crate::services::knowledge_lifecycle::notify_changed("PROJECT", &id);
     Ok(())
 }
 #[tauri::command] pub async fn project_delete(id: String) -> Result<Value, String> {
     crate::services::knowledge_lifecycle::notify_deleted("PROJECT", &id);
-    database::run("DELETE FROM projects WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
+    let result = database::run("DELETE FROM projects WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
+    if result.changes == 0 { return Err(format!("未找到项目: {}", id)); }
     database::run("DELETE FROM note_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM partner_project_mapping WHERE project_id=?", &[json!(&id)]).ok();

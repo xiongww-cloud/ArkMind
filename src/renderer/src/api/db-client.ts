@@ -1607,3 +1607,96 @@ export async function kbPipelineDebug(): Promise<{
 }> {
   return invoke('kb_pipeline_debug')
 }
+
+// ─── Agent Profiles ─────────────────────────────────────────────
+
+export interface AgentToolInfo {
+  name: string
+  description: string
+  category: string
+}
+
+export interface AgentProfile {
+  id: string
+  name: string
+  description: string
+  system_prompt: string
+  max_iterations: number
+  can_delegate: number
+  output_format: string
+  status: string
+  is_builtin: number
+  preset_tools: string | string[]
+  tools: string[]
+  created_at: string
+  updated_at: string
+  [key: string]: unknown
+}
+
+/** 获取系统预设工具列表 */
+export async function fetchAgentAvailableTools(): Promise<AgentToolInfo[]> {
+  return invoke('agent_available_tools')
+}
+
+/** 获取 Agent 列表 */
+export async function fetchAgentProfiles(): Promise<AgentProfile[]> {
+  return invoke('agent_profile_list')
+}
+
+/** 获取单个 Agent 详情 */
+export async function fetchAgentProfile(id: string): Promise<AgentProfile> {
+  return invoke('agent_profile_get', { id })
+}
+
+/** 创建 Agent */
+export async function createAgentProfile(data: {
+  name: string
+  description?: string
+  system_prompt?: string
+  max_iterations?: number
+  can_delegate?: number
+  output_format?: string
+  tools?: string[]
+}): Promise<AgentProfile> {
+  return invoke('agent_profile_create', { data })
+}
+
+/** 更新 Agent */
+export async function updateAgentProfile(
+  id: string,
+  data: {
+    name?: string
+    description?: string
+    system_prompt?: string
+    max_iterations?: number
+    can_delegate?: number
+    output_format?: string
+    status?: string
+    tools?: string[]
+  }
+): Promise<void> {
+  return invoke('agent_profile_update', { id, data })
+}
+
+/** 删除 Agent */
+export async function deleteAgentProfile(id: string): Promise<{ success: boolean }> {
+  return invoke('agent_profile_delete', { id })
+}
+
+/** 获取 Agent 的工具分配列表 */
+export async function fetchAgentTools(agentId: string): Promise<string[]> {
+  return invoke('agent_tool_list', { agentId })
+}
+
+/** 批量设置 Agent 工具分配 */
+export async function assignAgentTools(
+  agentId: string,
+  toolNames: string[]
+): Promise<void> {
+  return invoke('agent_tool_assign', { agentId, toolNames })
+}
+
+/** 重置内置 Agent 到默认配置 */
+export async function resetAgentProfile(id: string): Promise<void> {
+  return invoke('agent_profile_reset', { id })
+}

@@ -258,6 +258,12 @@ fn file_to_data_uri(path: &str, mime: &str) -> Option<String> {
     Some(format!("data:{};base64,{}", mime, b64))
 }
 
+/// 将内存中的字节转为 base64 编码的 data URI
+fn bytes_to_data_uri(bytes: &[u8], mime: &str) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    format!("data:{};base64,{}", mime, b64)
+}
+
 /// 调用视觉模型 API 进行 OCR（异步）
 async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     let cfg = get_vision_config().ok_or("未配置视觉模型，请在设置页配置视觉模型")?;
@@ -899,6 +905,12 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
                 let text = std::fs::read_to_string(path).unwrap_or_default();
                 return ParseResult { success: !text.is_empty(), text, ..Default::default() };
             }
+            "application/msword" | "application/x-ole-storage" => {
+                // OLE2 格式（.doc）：使用 rwml 解析
+                if let Ok(t) = read_doc_legacy(path) {
+                    return ParseResult { success: !t.is_empty(), text: t, ..Default::default() };
+                }
+            }
             _ => {} // 未知二进制 — 转入后缀路由
         }
     }
@@ -908,6 +920,7 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     let text = match ext.as_str() {
         "txt" | "md" | "csv" | "json" => std::fs::read_to_string(path).unwrap_or_default(),
         "docx" => read_docx(path).unwrap_or_default(),
+        "doc" => read_doc_legacy(path).unwrap_or_default(),
         "xlsx" | "xls" => read_xlsx(path).unwrap_or_default(),
         "pptx" | "ppt" => read_pptx(path).unwrap_or_default(),
         "pdf" => {
@@ -1309,206 +1322,65 @@ fn read_pptx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// 读取 numbering.xml 获取列表编号格式（基于字符串解析，避免 XML API 兼容问题）
-fn read_numbering(zip: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let Ok(mut num_file) = zip.by_name("word/numbering.xml") else { return map };
-    let mut buf = Vec::new();
-    let _ = std::io::Read::read_to_end(&mut num_file, &mut buf);
-    let text = String::from_utf8_lossy(&buf);
-    let mut num_id = String::new();
-    let mut cur_ilvl = String::new();
-    let mut cur_fmt = String::new();
-    let mut in_num = false;
-    let mut in_lvl = false;
-    for line in text.lines() {
-        let t = line.trim();
-        if t.contains("<w:num ") { in_num = true; }
-        if t.contains("</w:num>") && in_num { in_num = false; num_id.clear(); }
-        if t.contains("<w:lvl ") && in_num { in_lvl = true; cur_ilvl.clear(); cur_fmt.clear(); }
-        if t.contains("</w:lvl>") && in_lvl {
-            if !num_id.is_empty() { map.insert(format!("{}-{}", num_id, cur_ilvl), cur_fmt.clone()); }
-            in_lvl = false;
-        }
-        if in_num {
-            if let Some(v) = extract_attr(t, "w:numId", "w:val") { num_id = v; }
-        }
-        if in_lvl {
-            if let Some(v) = extract_attr(t, "w:ilvl", "w:val") { cur_ilvl = v; }
-            if let Some(v) = extract_attr(t, "w:numFmt", "w:val") { cur_fmt = v; }
-        }
-    }
-    map
-}
-
-fn extract_attr(xml: &str, tag: &str, attr: &str) -> Option<String> {
-    let search = format!("{}=\"", attr);
-    // Find tag first, then search for attr after it
-    if let Some(tag_start) = xml.find(tag) {
-        let after_tag = &xml[tag_start..];
-        if let Some(val_start) = after_tag.find(&search) {
-            let actual_start = val_start + search.len();
-            if let Some(end) = after_tag[actual_start..].find('"') {
-                return Some(after_tag[actual_start..actual_start+end].to_string());
-            }
-        }
-    }
-    None
-}
-
-/// DOCX → Markdown 解析：提取标题、表格、列表、正文
+/// DOCX → Markdown 解析：使用 rwml 库解析，支持完整格式（标题、粗斜体、表格、列表、超链接等）
 fn read_docx_to_markdown(p: &str) -> Result<String, Box<dyn std::error::Error>> {
-    use quick_xml::events::Event;
-    use quick_xml::Reader;
-    use std::io::BufReader;
-
-    fn flush_para(result: &mut String, buf: &mut String, style: &str, numbering: &std::collections::HashMap<String, String>, num_id: &str, ilvl: &str) {
-        let text = buf.trim().to_string();
-        if text.is_empty() { return; }
-        let heading = match style {
-            s if s.starts_with("Heading") || s.starts_with("heading") => {
-                let level = s.trim_start_matches(|c: char| !c.is_ascii_digit()).chars().next().and_then(|c| c.to_digit(10)).unwrap_or(1);
-                format!("{} ", "#".repeat(level as usize))
-            }
-            _ => String::new()
-        };
-        if !heading.is_empty() { result.push_str(&format!("{}{}\n\n", heading, text)); }
-        else if !num_id.is_empty() {
-            let fmt = numbering.get(&format!("{}-{}", num_id, ilvl));
-            let prefix = match fmt.map(|s| s.as_str()) {
-                Some("decimal") => "1. ", Some("lowerLetter") => "a. ", Some("lowerRoman") => "i. ",
-                Some("upperRoman") => "I. ", _ => "- ",
-            };
-            let indent = "  ".repeat(ilvl.parse::<usize>().unwrap_or(0));
-            result.push_str(&format!("{}{}{}\n", indent, prefix, text));
-        } else { result.push_str(&format!("{}\n\n", text)); }
-        buf.clear();
-    }
-
-    let data = std::fs::read(p)?;
-    let cursor = std::io::Cursor::new(data);
-    let mut zip = zip::ZipArchive::new(cursor)?;
-    let numbering = read_numbering(&mut zip);
-    let doc = zip.by_name("word/document.xml")?;
-    let mut reader = Reader::from_reader(BufReader::new(doc));
-    reader.config_mut().trim_text(true);
-
-    let mut buf = Vec::new();
-    let mut out = String::new();
-    let mut para = String::new();
-    let mut style = String::new();
-    //
-    let mut in_cell = false;
-    let mut in_num = false;
-    let mut num_id = String::new();
-    let mut ilvl = String::new();
-    let mut in_tbl = false;
-    let mut first_row = true;
-    let mut row_text = String::new();
-    let mut table_html = String::new(); // buffered <table> rows
-    let mut skip_instr = false; // 跳过 w:instrText 域代码指令文本
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let __name = e.name();
-                let n = std::str::from_utf8(__name.as_ref()).unwrap_or("");
-                match n {
-                    "w:p" => {
-                        if !in_cell { flush_para(&mut out, &mut para, &style, &numbering, &num_id, &ilvl); }
-                        style.clear(); num_id.clear(); ilvl.clear();
-                    }
-                    "w:tc" => { in_cell = true; para.clear(); }
-                    "w:tr" => { row_text.clear(); }
-                    "w:tbl" => { in_tbl = true; first_row = true; table_html.clear(); out.push('\n'); }
-                    "w:instrText" => { skip_instr = true; }
-                    _ => {}
+    let bytes = std::fs::read(p)?;
+    
+    // 使用 rwml 解析 DOCX
+    let doc = rwml::Document::open(&bytes)?;
+    let mut markdown = doc.to_markdown();
+    
+    // OCR 增强：提取嵌入图片并注入 OCR 文本
+    let images = doc.images();
+    for (i, img) in images.iter().enumerate() {
+        if let Some(ref img_bytes) = img.bytes {
+            let mime = img.mime.as_deref().unwrap_or("image/png");
+            let data_uri = bytes_to_data_uri(img_bytes, mime);
+            match ocr_image_sync_result(&data_uri) {
+                OcrOutcome::Ok(text) if !text.trim().is_empty() => {
+                    // 替换 Markdown 中的图片占位符为 OCR 文本
+                    let placeholder = format!("![image{}]()", i);
+                    let replacement = format!("[图片：{}]", text);
+                    markdown = markdown.replace(&placeholder, &replacement);
+                    log::info!("[文件解析] DOCX 图片 {} OCR 成功: {} 字符", i, text.len());
                 }
-            }
-            Ok(Event::Empty(ref e)) => {
-                let __name = e.name();
-                let n = std::str::from_utf8(__name.as_ref()).unwrap_or("");
-                match n {
-                    "w:pStyle" => {
-                        if let Ok(Some(a)) = e.try_get_attribute("w:val") {
-                            style = a.unescape_value().unwrap_or_default().to_string();
-                        }
-                    }
-                    "w:numId" if in_num => {
-                        if let Ok(Some(a)) = e.try_get_attribute("w:val") { num_id = a.unescape_value().unwrap_or_default().to_string(); }
-                    }
-                    "w:ilvl" if in_num => {
-                        if let Ok(Some(a)) = e.try_get_attribute("w:val") { ilvl = a.unescape_value().unwrap_or_default().to_string(); }
-                    }
-                    "w:br" => { para.push('\n'); }
-                    _ => {}
+                OcrOutcome::Blank => {
+                    log::info!("[文件解析] DOCX 图片 {} OCR 空白", i);
                 }
-            }
-            Ok(Event::End(ref e)) => {
-                let __name = e.name();
-                let n = std::str::from_utf8(__name.as_ref()).unwrap_or("");
-                match n {
-                    "w:p" => {
-                        if !in_cell { flush_para(&mut out, &mut para, &style, &numbering, &num_id, &ilvl); }
-                       
-                    }
-                    "w:tc" => {
-                        in_cell = false;
-                        let t = para.trim().to_string();
-                        row_text.push_str(&format!("<td>{}</td>", t));
-                        para.clear();
-                    }
-                    "w:tr" => {
-                        if in_tbl {
-                            let html_row = if first_row {
-                                row_text.replace("<td>", "<th>").replace("</td>", "</th>")
-                            } else {
-                                row_text.clone()
-                            };
-                            table_html.push_str(&format!("<tr>{}</tr>\n", html_row));
-                            row_text.clear();
-                            first_row = false;
-                        }
-                    }
-                    "w:tbl" => {
-                        if !table_html.is_empty() {
-                            out.push_str("<table>\n");
-                            out.push_str(&table_html);
-                            out.push_str("</table>\n\n");
-                            table_html.clear();
-                        }
-                        in_tbl = false;
-                    }
-                    "w:numPr" => { in_num = false; }
-                    "w:instrText" => { skip_instr = false; }
-                    _ => {}
+                OcrOutcome::Failed(e) => {
+                    log::info!("[文件解析] DOCX 图片 {} OCR 失败: {}", i, e);
                 }
+                _ => {}
             }
-            Ok(Event::Text(e)) => {
-                if !skip_instr {
-                    if let Ok(s) = e.unescape() { para.push_str(&s); }
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
-            _ => {}
         }
-        buf.clear();
     }
-    flush_para(&mut out, &mut para, &style, &numbering, &num_id, &ilvl);
-
-    // collapse 3+ newlines to 2
-    let mut result = String::new();
-    let mut empty = 0;
-    for ch in out.chars() {
-        if ch == '\n' { empty += 1; if empty <= 2 { result.push(ch); } }
-        else { empty = 0; result.push(ch); }
-    }
-    Ok(result.trim().to_string())
+    
+    // 后处理：合并相邻的加粗标记
+    markdown = merge_adjacent_emphasis(&markdown);
+    
+    Ok(markdown)
 }
 
 /// DOCX 解析：用 quick-xml 提取 word/document.xml 中的纯文本节点（保留旧接口调用但改用新实现）
 fn read_docx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
     read_docx_to_markdown(p)
+}
+
+/// 合并相邻的加粗/斜体标记
+/// 例如：**text1****text2** → **text1text2**
+fn merge_adjacent_emphasis(markdown: &str) -> String {
+    // 在连续的4个*中间加空格：**** → ** **
+    // 这样 Markdown 解析器可以正确识别相邻的加粗标记
+    let re = regex::Regex::new(r"\*\*\*\*").unwrap();
+    re.replace_all(markdown, "** **").to_string()
+}
+
+/// DOC 解析：使用 rwml 库解析旧版 Word 二进制格式（OLE2），输出 Markdown
+fn read_doc_legacy(p: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(p)?;
+    let doc = rwml::Document::open(&bytes)?;
+    let markdown = doc.to_markdown();
+    Ok(merge_adjacent_emphasis(&markdown))
 }
 
 fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {

@@ -442,6 +442,30 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         INSERT OR IGNORE INTO email_config(key,value) VALUES('interval_minutes','1');
         INSERT OR IGNORE INTO email_config(key,value) VALUES('last_check_at','');
 
+        -- ★ AGENT_PROFILES Agent 配置表
+        CREATE TABLE IF NOT EXISTS agent_profiles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            max_iterations INTEGER DEFAULT 20,
+            can_delegate INTEGER DEFAULT 0,
+            output_format TEXT DEFAULT 'natural',
+            status TEXT DEFAULT 'active',
+            is_builtin INTEGER DEFAULT 0,
+            preset_tools TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+
+        -- ★ AGENT_TOOL_ASSIGNMENTS Agent 工具分配表
+        CREATE TABLE IF NOT EXISTS agent_tool_assignments (
+            agent_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (agent_id, tool_name)
+        );
+
 
     ")?;
     Ok(())

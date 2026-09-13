@@ -6,6 +6,8 @@ import { setSystemSetting } from '@/api/db-client'
 const show = ref(false)
 
 interface ChangelogEntry {
+  version: string
+  date: string
   icon: string
   iconBg: string
   iconColor: string
@@ -15,6 +17,20 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '13.5.2',
+    date: '2026-09-13',
+    icon: 'file-text',
+    iconBg: 'bg-green-50',
+    iconColor: 'text-green-600',
+    title: '文件解析优化',
+    items: [
+      '文件解析支持 .doc 格式',
+      '优化 Word 文件解析质量，格式还原更准确',
+    ],
+  },
+  {
+    version: '13.5.1',
+    date: '2026-09-12',
     icon: 'envelope',
     iconBg: 'bg-blue-50',
     iconColor: 'text-blue-600',
@@ -28,6 +44,8 @@ const changelog: ChangelogEntry[] = [
     ],
   },
   {
+    version: '13.5.1',
+    date: '2026-09-12',
     icon: 'chat-ai',
     iconBg: 'bg-purple-50',
     iconColor: 'text-purple-600',
@@ -38,6 +56,8 @@ const changelog: ChangelogEntry[] = [
     ],
   },
   {
+    version: '13.5.1',
+    date: '2026-09-12',
     icon: 'settings',
     iconBg: 'bg-slate-100',
     iconColor: 'text-slate-600',
@@ -95,7 +115,12 @@ defineExpose({ open })
                 <div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" :class="section.iconBg">
                   <AppIcon :name="section.icon" size="16" :class="section.iconColor" />
                 </div>
-                <h3 class="text-[14px] font-semibold text-surface-800">{{ section.title }}</h3>
+                <div class="flex items-center gap-2">
+                  <h3 class="text-[14px] font-semibold text-surface-800">{{ section.title }}</h3>
+                  <span class="text-[10px] text-surface-400">v{{ section.version }}</span>
+                  <span class="text-[10px] text-surface-300">·</span>
+                  <span class="text-[10px] text-surface-400">{{ section.date }}</span>
+                </div>
               </div>
               <ul class="ml-10 space-y-1.5">
                 <li v-for="(item, j) in section.items" :key="j" class="text-[12px] text-surface-600 leading-relaxed flex items-start gap-2">

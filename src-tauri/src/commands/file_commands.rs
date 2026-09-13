@@ -183,7 +183,7 @@ pub(crate) async fn upload_file_core(
         custom_name.to_string()
     };
     database::run(
-        "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name) VALUES(?1,?2,?3,?4,?5)",
+        "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,datetime('now','localtime'),datetime('now','localtime'))",
         &[json!(&file_id), json!(&ext), json!(file_size as i64), json!(&hash), json!(&original_name)]
     ).map_err(|e| e.to_string())?;
 

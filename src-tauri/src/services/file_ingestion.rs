@@ -26,7 +26,7 @@ pub const UNSUPPORTED_PREFIX: &str = "__UNSUPPORTED__";
 /// 有真实解析器的文件后缀白名单（与 file_parser::parse_file_smart 的路由一致）
 const SUPPORTED_PARSE_EXTS: &[&str] = &[
     "txt", "md", "csv", "json",
-    "docx", "xlsx", "xls", "pptx", "ppt",
+    "doc", "docx", "xlsx", "xls", "pptx", "ppt",
     "pdf",
     "png", "jpg", "jpeg", "webp", "bmp",
 ];

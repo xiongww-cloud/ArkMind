@@ -821,6 +821,182 @@ async function removeEmailAccount(id: string) {
     toast({ message: '账户已删除', type: 'success' })
   } catch { toast({ message: '删除失败', type: 'error' }) }
 }
+
+// ─── Agent Profile Management ──────────────────────────────────
+import { fetchAgentProfiles, fetchAgentAvailableTools, createAgentProfile, updateAgentProfile, deleteAgentProfile, resetAgentProfile, type AgentProfile, type AgentToolInfo } from '@/api/db-client'
+
+const agentProfiles = ref<AgentProfile[]>([])
+const availableTools = ref<AgentToolInfo[]>([])
+const showAgentModal = ref(false)
+const agentSaving = ref(false)
+const editingAgentId = ref<string | null>(null)
+const agentForm = ref({
+  name: '',
+  description: '',
+  system_prompt: '',
+  max_iterations: 20,
+  can_delegate: false,
+  tools: [] as string[],
+  presetTools: [] as string[],
+})
+const agentFormError = ref('')
+
+async function loadAgentProfiles() {
+  try {
+    agentProfiles.value = await fetchAgentProfiles()
+  } catch {}
+}
+
+async function loadAvailableTools() {
+  try {
+    availableTools.value = await fetchAgentAvailableTools()
+  } catch {}
+}
+
+function openAddAgent() {
+  editingAgentId.value = null
+  agentForm.value = {
+    name: '',
+    description: '',
+    system_prompt: '',
+    max_iterations: 20,
+    can_delegate: false,
+    tools: [],
+  }
+  agentFormError.value = ''
+  showAgentModal.value = true
+}
+
+function editAgent(agent: AgentProfile) {
+  editingAgentId.value = agent.id
+  const presetTools = Array.isArray(agent.preset_tools) ? agent.preset_tools : (typeof agent.preset_tools === 'string' && agent.preset_tools ? JSON.parse(agent.preset_tools) : [])
+  agentForm.value = {
+    name: agent.name,
+    description: agent.description || '',
+    system_prompt: agent.system_prompt || '',
+    max_iterations: agent.max_iterations || 20,
+    can_delegate: !!agent.can_delegate,
+    tools: agent.tools || [],
+    presetTools: presetTools,
+  }
+  agentFormError.value = ''
+  showAgentModal.value = true
+}
+
+function closeAgentModal() {
+  showAgentModal.value = false
+  editingAgentId.value = null
+  agentFormError.value = ''
+}
+
+function toggleAgentTool(toolName: string) {
+  const idx = agentForm.value.tools.indexOf(toolName)
+  if (idx >= 0) {
+    agentForm.value.tools.splice(idx, 1)
+  } else {
+    agentForm.value.tools.push(toolName)
+  }
+}
+
+// 按分类分组工具
+const toolsByCategory = computed(() => {
+  const groups: Record<string, AgentToolInfo[]> = {}
+  for (const tool of availableTools.value) {
+    if (!groups[tool.category]) groups[tool.category] = []
+    groups[tool.category].push(tool)
+  }
+  return groups
+})
+
+const categoryLabels: Record<string, string> = {
+  knowledge: '知识检索',
+  data: '数据查询',
+  project: '项目管理',
+  partner: '合作伙伴',
+  product: '产品管理',
+  memory: '记忆管理',
+  policy: '策略管理',
+  notification: '通知管理',
+}
+
+async function saveAgent() {
+  const f = agentForm.value
+  if (!f.name.trim()) {
+    agentFormError.value = '请输入 Agent 名称'
+    return
+  }
+  if (!f.system_prompt.trim()) {
+    agentFormError.value = '请输入 System Prompt'
+    return
+  }
+  agentSaving.value = true
+  agentFormError.value = ''
+  try {
+    // 确保预设工具始终包含在内
+    const allTools = [...new Set([...f.tools, ...f.presetTools])]
+    if (editingAgentId.value) {
+      await updateAgentProfile(editingAgentId.value, {
+        name: f.name,
+        description: f.description,
+        system_prompt: f.system_prompt,
+        max_iterations: f.max_iterations,
+        can_delegate: f.can_delegate ? 1 : 0,
+        tools: allTools,
+      })
+      toast({ message: 'Agent 已更新', type: 'success' })
+    } else {
+      await createAgentProfile({
+        name: f.name,
+        description: f.description,
+        system_prompt: f.system_prompt,
+        max_iterations: f.max_iterations,
+        can_delegate: f.can_delegate ? 1 : 0,
+        tools: allTools,
+      })
+      toast({ message: 'Agent 已创建', type: 'success' })
+    }
+    closeAgentModal()
+    await loadAgentProfiles()
+  } catch (e: any) {
+    agentFormError.value = e?.message || '保存失败'
+  } finally {
+    agentSaving.value = false
+  }
+}
+
+async function removeAgent(id: string) {
+  if (!confirm('确定删除此 Agent？关联的工具分配将同时删除。')) return
+  try {
+    await deleteAgentProfile(id)
+    agentProfiles.value = agentProfiles.value.filter(a => a.id !== id)
+    toast({ message: 'Agent 已删除', type: 'success' })
+  } catch (e: any) {
+    toast({ message: e?.message || '删除失败', type: 'error' })
+  }
+}
+
+async function resetAgent(id: string) {
+  if (!confirm('确定还原此 Agent 到默认配置？当前配置将被覆盖。')) return
+  try {
+    await resetAgentProfile(id)
+    await loadAgentProfiles()
+    toast({ message: 'Agent 已还原到默认配置', type: 'success' })
+  } catch (e: any) {
+    toast({ message: e?.message || '还原失败', type: 'error' })
+  }
+}
+
+async function toggleAgentStatus(agent: AgentProfile) {
+  const newStatus = agent.status === 'active' ? 'disabled' : 'active'
+  try {
+    await updateAgentProfile(agent.id, { status: newStatus })
+    agent.status = newStatus
+    toast({ message: newStatus === 'active' ? 'Agent 已启用' : 'Agent 已禁用', type: 'success' })
+  } catch (e: any) {
+    toast({ message: e?.message || '操作失败', type: 'error' })
+  }
+}
+
 // vacuum 时间戳为 epoch 秒字符串
 function formatVacuumTime(epochSecs: string): string {
   const n = parseInt(epochSecs, 10)
@@ -1108,6 +1284,8 @@ onActivated(async () => {
     loadPipeline(),
     loadEmailAccounts(),
     loadEmailConfig(),
+    loadAgentProfiles(),
+    loadAvailableTools(),
   ])
   logTimer = setInterval(refreshLogs, 3000)
   loopStatusTimer = setInterval(loadLoopStatus, 600000)  // 10分钟刷新一次
@@ -1467,6 +1645,122 @@ onDeactivated(() => {
 
             </div>
           </div>
+
+          <!-- Agent 管理（暂时隐藏） -->
+          <div v-if="false" class="relative z-20 bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-visible break-inside-avoid mb-4">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">Agent 管理</h2>
+              <p class="text-[10px] text-surface-400 mt-1">创建和配置自定义 Agent，分配工具能力</p>
+            </div>
+            <div class="p-5 space-y-3">
+              <!-- Agent 列表 -->
+              <div v-for="agent in agentProfiles" :key="agent.id" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-surface-200 hover:border-surface-300 transition-colors">
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-[12px] font-medium text-surface-700 truncate">{{ agent.name }}</span>
+                    <span class="text-[9px] px-1 py-0.5 rounded bg-surface-50 text-surface-500 flex-shrink-0">工具{{ agent.tools?.length || 0 }}</span>
+                    <span class="text-[9px] px-1 py-0.5 rounded bg-surface-50 text-surface-500 flex-shrink-0">迭代{{ agent.max_iterations }}</span>
+                    <span v-if="agent.can_delegate" class="text-[9px] px-1 py-0.5 rounded bg-blue-50 text-blue-600 flex-shrink-0">可委托</span>
+                    <span v-if="agent.is_builtin" class="text-[9px] px-1 py-0.5 rounded bg-emerald-50 text-emerald-600 flex-shrink-0">系统预设</span>
+                  </div>
+                  <p class="text-[10px] text-surface-400 truncate mt-0.5">{{ agent.description || '暂无描述' }}</p>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer flex-shrink-0" :title="agent.status === 'active' ? '已启用' : '已禁用'">
+                  <input type="checkbox" :checked="agent.status === 'active'" @change="toggleAgentStatus(agent)" class="sr-only peer">
+                  <div class="w-8 h-[18px] bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-brand-600"></div>
+                </label>
+                <button @click="editAgent(agent)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="11" /></button>
+                <button v-if="agent.is_builtin" @click="resetAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-amber-500" title="还原默认"><AppIcon name="undo" size="11" /></button>
+                <button v-if="!agent.is_builtin" @click="removeAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="11" /></button>
+              </div>
+              <div v-if="agentProfiles.length === 0" class="text-[11px] text-surface-400 text-center py-3">
+                尚未创建 Agent
+              </div>
+
+              <div class="flex justify-end">
+                <button @click="openAddAgent" class="btn-primary text-[11px]">
+                  <AppIcon name="plus" size="12" stroke="2.5" /> 添加 Agent
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Agent 编辑弹窗 -->
+          <Teleport to="body">
+            <Transition name="modal-fade">
+              <div v-if="showAgentModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center">
+                <div class="bg-white rounded-2xl shadow-2xl w-[600px] max-w-[90vw] h-[85vh] flex flex-col">
+                  <!-- 固定头部 -->
+                  <div class="px-6 pt-5 pb-3 border-b border-surface-100 flex-shrink-0">
+                    <h3 class="text-[14px] font-semibold text-surface-800">{{ editingAgentId ? '编辑 Agent' : '创建 Agent' }}</h3>
+                  </div>
+                  <!-- 可滚动内容区 -->
+                  <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                    <!-- 名称 -->
+                    <div>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">名称 *</label>
+                      <input v-model="agentForm.name" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="例如：方案专家" />
+                    </div>
+                    <!-- 描述 -->
+                    <div>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">描述</label>
+                      <input v-model="agentForm.description" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="简要描述此 Agent 的职责" />
+                    </div>
+                    <!-- System Prompt -->
+                    <div>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">System Prompt *</label>
+                      <textarea v-model="agentForm.system_prompt" rows="8" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400 resize-y" placeholder="定义 Agent 的身份、目标和行为规则..."></textarea>
+                    </div>
+                    <!-- 最大迭代次数 + 允许委托 -->
+                    <div class="flex items-center gap-4">
+                      <div class="flex-1">
+                        <label class="block text-[10px] font-medium text-surface-400 mb-1">最大迭代次数</label>
+                        <input v-model.number="agentForm.max_iterations" type="number" min="1" max="50" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
+                      </div>
+                      <div class="flex items-center gap-2 pt-4">
+                        <label class="relative inline-flex items-center cursor-pointer">
+                          <input type="checkbox" v-model="agentForm.can_delegate" class="sr-only peer">
+                          <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
+                        </label>
+                        <span class="text-[11px] text-surface-600">允许委托其他 Agent</span>
+                      </div>
+                    </div>
+                    <!-- 工具分配 -->
+                    <div>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-2">工具分配</label>
+                      <div class="border border-surface-200 rounded-lg p-3 space-y-3 max-h-[240px] overflow-y-auto">
+                        <div v-for="(tools, category) in toolsByCategory" :key="category">
+                          <p class="text-[10px] font-medium text-surface-500 mb-1.5">{{ categoryLabels[category] || category }}</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <div v-for="tool in tools" :key="tool.name" class="flex items-center gap-1.5">
+                              <label class="flex items-center gap-1.5 flex-1 min-w-0" :class="(agentForm.presetTools || []).includes(tool.name) ? '' : 'cursor-pointer'">
+                                <input type="checkbox"
+                                  :checked="(agentForm.tools || []).includes(tool.name)"
+                                  :disabled="(agentForm.presetTools || []).includes(tool.name)"
+                                  @change="!(agentForm.presetTools || []).includes(tool.name) && toggleAgentTool(tool.name)"
+                                  class="w-3.5 h-3.5 rounded border-surface-300 text-brand-600 flex-shrink-0 disabled:opacity-60" />
+                                <span class="text-[10px] text-surface-600 truncate" :class="(agentForm.presetTools || []).includes(tool.name) ? 'text-surface-400' : ''">{{ tool.name.replace('ext_tool_', '') }}</span>
+                              </label>
+                              <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0" :title="tool.name + '：' + tool.description">?</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <p class="text-[9px] text-surface-400 mt-1">已选择 {{ agentForm.tools.length }} 个工具</p>
+                    </div>
+                    <p v-if="agentFormError" class="text-[10px] text-red-500">{{ agentFormError }}</p>
+                  </div>
+                  <!-- 固定底部按钮 -->
+                  <div class="px-6 py-3 border-t border-surface-100 flex items-center justify-end gap-2 flex-shrink-0">
+                    <button @click="closeAgentModal" class="btn-secondary text-xs">取消</button>
+                    <button @click="saveAgent" :disabled="agentSaving" class="btn-primary text-xs">
+                      {{ agentSaving ? '保存中...' : '保存' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </Transition>
+          </Teleport>
 
           <!-- 数据管理 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
