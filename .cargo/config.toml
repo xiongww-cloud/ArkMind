@@ -1,2 +1,9 @@
-[env]
-PDFIUM_STATIC_LIB_PATH = { value = "D:\\Projects\\ArkMind\\src-tauri\\bin", force = true }
+# 注意：不要在这里设置 PDFIUM_STATIC_LIB_PATH！
+#
+# 原因：[env] 中的 force=true 路径是平台特定的（Windows 用 D:\，macOS 用 /Users/...），
+# 硬编码会导致另一个平台编译失败。
+#
+# PDFIUM_STATIC_LIB_PATH 由 scripts/tauri-build.mjs 跨平台设置，
+# 该脚本根据项目根目录自动解析 src-tauri/bin 的正确路径。
+#
+# 请始终使用 `npm run tauri:build` 编译，不要直接运行 `cargo build`。
