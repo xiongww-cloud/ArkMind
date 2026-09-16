@@ -361,18 +361,22 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         log::info!("[数据库] 清理了 {} 条产品的 source_data（移除 Params: 前缀）", updated2);
     }
 
-    // ★ 插入默认输出规则到 policies 表
-    let has_default_rules: bool = conn.query_row(
-        "SELECT 1 FROM policies WHERE id='default-output-rules'",
-        [], |_| Ok(true),
-    ).unwrap_or(false);
-    if !has_default_rules {
-        let default_rules = "- 思考过程禁止出现在最终回答中\n- 禁止提及工具名称\n- 禁止在回答中添加时间戳（上下文中的时间戳仅供你参考时间顺序）\n- 来自记忆：标注「根据记忆」，简要说明记忆内容要点\n- 来自知识库：标注「根据资料」，具体说明参考了哪些文档或对象（如产品名称、项目名称等）\n- 多个来源时，逐一列出每个来源\n- 当用户要求查找某个产品的参数时，应首先直接给出产品的参数原文，然后在参数原文之后，可以加上分析、提醒或建议等额外内容。\n- 日期范围用「至」代替「~」，使用口语化表达";
-        conn.execute(
-            "INSERT INTO policies (id, content, updated_at) VALUES ('default-output-rules', ?1, datetime('now','localtime'))",
-            rusqlite::params![default_rules],
-        ).ok();
-        log::info!("[数据库] 插入默认输出规则到 policies 表");
+    // ★ 输出规范已固化到系统提示词第9节，删除存量 default-output-rules 策略行（不再动态注入，避免重复）
+    let _ = conn.execute("DELETE FROM policies WHERE id='default-output-rules'", []);
+
+    // ★ 清理 policies 表遗留列（旧schema的 agent_types/scope，代码已无任何读写；新库无此列则跳过）
+    for legacy_col in ["agent_types", "scope"] {
+        let has_col: bool = conn
+            .prepare("PRAGMA table_info(policies)")
+            .and_then(|mut s| {
+                let cols = s.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(cols.filter_map(|x| x.ok()).any(|c| c == legacy_col))
+            })
+            .unwrap_or(false);
+        if has_col {
+            let _ = conn.execute(&format!("ALTER TABLE policies DROP COLUMN {}", legacy_col), []);
+            log::info!("[数据库] 清理 policies 表遗留列 {}", legacy_col);
+        }
     }
 
     // ★ 预置业务助手 Agent
@@ -870,6 +874,34 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     //    真正的数据迁移由前端启动后提交 identity map 触发（migration_submit_project_id_map），
     //    因为 run_migrations 执行时前端尚未启动，无法获得 localId→backendId 映射。
     crate::database::project_id_migration::ensure_migration_infrastructure(conn);
+
+    // ★ 存量 emails.received_at 归一化：原始 RFC2822 字符串（如 "Mon, 15 Sep 2026 10:30:00 +0800"）
+    //    无法字典序排序，统一转为本地时间 'YYYY-MM-DD HH:MM:SS'。
+    //    幂等：转换后匹配 GLOB 模式，下次启动不再命中。解析失败的行回退 created_at。
+    let bad_rows: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT id, received_at, created_at FROM emails \
+             WHERE received_at != '' AND received_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]'",
+        )
+        .and_then(|mut s| s.query_map([], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2).unwrap_or_default(),
+        ))).map(|rows| rows.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
+    let mut fixed = 0i64;
+    for (id, raw, created) in &bad_rows {
+        let normalized = chrono::DateTime::parse_from_rfc2822(raw)
+            .or_else(|_| chrono::DateTime::parse_from_rfc3339(raw))
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+            .or_else(|| if created.is_empty() { None } else { Some(created.clone()) });
+        if let Some(n) = normalized {
+            let _ = conn.execute("UPDATE emails SET received_at=?1 WHERE id=?2", rusqlite::params![n, id]);
+            fixed += 1;
+        }
+    }
+    if fixed > 0 {
+        log::info!("[数据库] emails.received_at 时间戳归一化: {} 条 (RFC2822 → 本地时间)", fixed);
+    }
 
     Ok(())
 }

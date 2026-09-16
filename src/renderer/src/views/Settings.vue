@@ -862,6 +862,7 @@ function openAddAgent() {
     max_iterations: 20,
     can_delegate: false,
     tools: [],
+    presetTools: [],
   }
   agentFormError.value = ''
   showAgentModal.value = true
@@ -914,9 +915,20 @@ const categoryLabels: Record<string, string> = {
   project: '项目管理',
   partner: '合作伙伴',
   product: '产品管理',
-  memory: '记忆管理',
-  policy: '策略管理',
   notification: '通知管理',
+}
+
+const toolLabels: Record<string, { name: string; brief: string }> = {
+  ext_tool_search: { name: '知识搜索', brief: '全文+语义检索文档、笔记、技术资料' },
+  ext_tool_object: { name: '数据查询', brief: '查看/筛选/统计业务对象' },
+  ext_tool_chunk_navigate: { name: '文档翻页', brief: '在知识块间前后翻页阅读' },
+  ext_tool_relations: { name: '关联查询', brief: '查看实体间的关联关系' },
+  ext_tool_manage_project: { name: '项目管理', brief: '创建/编辑/删除项目及动态' },
+  ext_tool_manage_todo: { name: '待办管理', brief: '创建/编辑/删除待办事项' },
+  ext_tool_manage_partner: { name: '合作伙伴', brief: '管理渠道/厂商/客户' },
+  ext_tool_manage_contact: { name: '联系人', brief: '管理合作伙伴下的联系人' },
+  ext_tool_manage_product: { name: '产品管理', brief: '管理产品及产品目录' },
+  ext_tool_manage_notification: { name: '通知管理', brief: '创建/查看系统通知' },
 }
 
 async function saveAgent() {
@@ -1646,8 +1658,8 @@ onDeactivated(() => {
             </div>
           </div>
 
-          <!-- Agent 管理（暂时隐藏） -->
-          <div v-if="false" class="relative z-20 bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-visible break-inside-avoid mb-4">
+          <!-- Agent 管理 -->
+          <div class="relative z-20 bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-visible break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">Agent 管理</h2>
               <p class="text-[10px] text-surface-400 mt-1">创建和配置自定义 Agent，分配工具能力</p>
@@ -1669,8 +1681,7 @@ onDeactivated(() => {
                   <input type="checkbox" :checked="agent.status === 'active'" @change="toggleAgentStatus(agent)" class="sr-only peer">
                   <div class="w-8 h-[18px] bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-brand-600"></div>
                 </label>
-                <button @click="editAgent(agent)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="11" /></button>
-                <button v-if="agent.is_builtin" @click="resetAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-amber-500" title="还原默认"><AppIcon name="undo" size="11" /></button>
+                <button v-if="!agent.is_builtin" @click="editAgent(agent)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="11" /></button>
                 <button v-if="!agent.is_builtin" @click="removeAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="11" /></button>
               </div>
               <div v-if="agentProfiles.length === 0" class="text-[11px] text-surface-400 text-center py-3">
@@ -1731,17 +1742,23 @@ onDeactivated(() => {
                       <div class="border border-surface-200 rounded-lg p-3 space-y-3 max-h-[240px] overflow-y-auto">
                         <div v-for="(tools, category) in toolsByCategory" :key="category">
                           <p class="text-[10px] font-medium text-surface-500 mb-1.5">{{ categoryLabels[category] || category }}</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <div v-for="tool in tools" :key="tool.name" class="flex items-center gap-1.5">
-                              <label class="flex items-center gap-1.5 flex-1 min-w-0" :class="(agentForm.presetTools || []).includes(tool.name) ? '' : 'cursor-pointer'">
-                                <input type="checkbox"
-                                  :checked="(agentForm.tools || []).includes(tool.name)"
-                                  :disabled="(agentForm.presetTools || []).includes(tool.name)"
-                                  @change="!(agentForm.presetTools || []).includes(tool.name) && toggleAgentTool(tool.name)"
-                                  class="w-3.5 h-3.5 rounded border-surface-300 text-brand-600 flex-shrink-0 disabled:opacity-60" />
-                                <span class="text-[10px] text-surface-600 truncate" :class="(agentForm.presetTools || []).includes(tool.name) ? 'text-surface-400' : ''">{{ tool.name.replace('ext_tool_', '') }}</span>
-                              </label>
-                              <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0" :title="tool.name + '：' + tool.description">?</span>
+                          <div class="grid grid-cols-3 gap-1.5">
+                            <div v-for="tool in tools" :key="tool.name"
+                              class="flex flex-col p-2 rounded-lg border transition-colors relative select-none"
+                              :class="[
+                                (agentForm.presetTools || []).includes(tool.name) ? 'border-surface-200 bg-surface-50 opacity-60' :
+                                (agentForm.tools || []).includes(tool.name) ? 'border-brand-400 bg-brand-50 cursor-pointer ring-1 ring-brand-200' : 'border-surface-200 bg-white cursor-pointer hover:border-brand-200'
+                              ]"
+                              @click="!(agentForm.presetTools || []).includes(tool.name) && toggleAgentTool(tool.name)">
+                              <div class="flex items-start justify-between">
+                                <span class="text-[11px] font-medium leading-tight" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-700' : 'text-surface-700'">{{ toolLabels[tool.name]?.name || tool.name }}</span>
+                                <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0 ml-1" :title="tool.description">?</span>
+                              </div>
+                              <span v-if="(agentForm.presetTools || []).includes(tool.name)" class="text-[8px] px-1 py-0.5 rounded bg-surface-100 text-surface-400 w-fit mt-0.5">预设</span>
+                              <p class="text-[9px] mt-0.5 leading-relaxed line-clamp-2" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-500' : 'text-surface-400'">{{ toolLabels[tool.name]?.brief || '' }}</p>
+                              <span v-if="(agentForm.tools || []).includes(tool.name)" class="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-brand-600 flex items-center justify-center">
+                                <AppIcon name="check" size="10" class="text-white" />
+                              </span>
                             </div>
                           </div>
                         </div>

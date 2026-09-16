@@ -17,11 +17,13 @@ const AVAILABLE_TOOLS: &[(&str, &str, &str)] = &[
     ("ext_tool_manage_notification", "管理通知。支持：create=创建通知（可附带操作按钮）、update=更新通知、delete=删除通知、list=查看通知列表、get=查看通知详情。只有在发现真正需要用户关注的事项时才创建通知，不要滥用。", "notification"),
 ];
 
-/// 获取系统预设工具列表
+/// 获取系统预设工具列表（过滤掉主 Agent 专属工具）
 #[tauri::command]
 pub async fn agent_available_tools() -> Result<Vec<Value>, String> {
+    const MAIN_AGENT_ONLY: &[&str] = &["ext_tool_manage_policy", "ext_tool_delegate_agent", "ext_tool_memory", "ext_tool_search", "ext_tool_chunk_navigate"];
     let tools: Vec<Value> = AVAILABLE_TOOLS
         .iter()
+        .filter(|(name, _, _)| !MAIN_AGENT_ONLY.contains(name))
         .map(|(name, desc, category)| {
             json!({
                 "name": name,
@@ -109,46 +111,55 @@ pub async fn agent_profile_create(data: Value) -> Result<Value, String> {
     agent_profile_get(id).await
 }
 
-/// 更新 Agent
+/// 更新 Agent（内置 Agent 只允许修改 status 开关）
 #[tauri::command]
 pub async fn agent_profile_update(id: String, data: Value) -> Result<(), String> {
     // 检查是否存在
-    let existing = database::get("SELECT id FROM agent_profiles WHERE id=?1", &[json!(id)])
+    let existing = database::get("SELECT id, is_builtin FROM agent_profiles WHERE id=?1", &[json!(id)])
         .map_err(|e| e.to_string())?;
-    if existing.is_none() {
-        return Err(format!("Agent 不存在: {}", id));
-    }
+    let existing = existing.ok_or_else(|| format!("Agent 不存在: {}", id))?;
+
+    let is_builtin = existing["is_builtin"].as_i64().unwrap_or(0) != 0;
 
     let mut fields: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
 
-    if let Some(v) = data["name"].as_str() {
-        fields.push("name=?".into());
-        values.push(json!(v));
-    }
-    if let Some(v) = data["description"].as_str() {
-        fields.push("description=?".into());
-        values.push(json!(v));
-    }
-    if let Some(v) = data["system_prompt"].as_str() {
-        fields.push("system_prompt=?".into());
-        values.push(json!(v));
-    }
-    if let Some(v) = data["max_iterations"].as_i64() {
-        fields.push("max_iterations=?".into());
-        values.push(json!(v));
-    }
-    if let Some(v) = data["can_delegate"].as_i64() {
-        fields.push("can_delegate=?".into());
-        values.push(json!(v));
-    }
-    if let Some(v) = data["output_format"].as_str() {
-        fields.push("output_format=?".into());
-        values.push(json!(v));
-    }
-    if let Some(v) = data["status"].as_str() {
-        fields.push("status=?".into());
-        values.push(json!(v));
+    if is_builtin {
+        // ★ 内置 Agent 只允许修改 status（启用/禁用）
+        if let Some(v) = data["status"].as_str() {
+            fields.push("status=?".into());
+            values.push(json!(v));
+        }
+        // 忽略其他字段
+    } else {
+        if let Some(v) = data["name"].as_str() {
+            fields.push("name=?".into());
+            values.push(json!(v));
+        }
+        if let Some(v) = data["description"].as_str() {
+            fields.push("description=?".into());
+            values.push(json!(v));
+        }
+        if let Some(v) = data["system_prompt"].as_str() {
+            fields.push("system_prompt=?".into());
+            values.push(json!(v));
+        }
+        if let Some(v) = data["max_iterations"].as_i64() {
+            fields.push("max_iterations=?".into());
+            values.push(json!(v));
+        }
+        if let Some(v) = data["can_delegate"].as_i64() {
+            fields.push("can_delegate=?".into());
+            values.push(json!(v));
+        }
+        if let Some(v) = data["output_format"].as_str() {
+            fields.push("output_format=?".into());
+            values.push(json!(v));
+        }
+        if let Some(v) = data["status"].as_str() {
+            fields.push("status=?".into());
+            values.push(json!(v));
+        }
     }
 
     if !fields.is_empty() {
@@ -161,16 +172,18 @@ pub async fn agent_profile_update(id: String, data: Value) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     }
 
-    // 更新工具分配
-    if let Some(tools) = data["tools"].as_array() {
-        // 先删除旧的
-        database::run(
-            "DELETE FROM agent_tool_assignments WHERE agent_id=?1",
-            &[json!(id)],
-        )
-        .map_err(|e| e.to_string())?;
-        // 再插入新的
-        save_agent_tools(&id, tools)?;
+    // 更新工具分配（内置 Agent 工具锁定，不允许修改）
+    if !is_builtin {
+        if let Some(tools) = data["tools"].as_array() {
+            // 先删除旧的
+            database::run(
+                "DELETE FROM agent_tool_assignments WHERE agent_id=?1",
+                &[json!(id)],
+            )
+            .map_err(|e| e.to_string())?;
+            // 再插入新的
+            save_agent_tools(&id, tools)?;
+        }
     }
 
     Ok(())
@@ -207,13 +220,15 @@ pub async fn agent_profile_delete(id: String) -> Result<Value, String> {
     Ok(json!({"success": true}))
 }
 
-/// 获取 Agent 的工具分配列表
+/// 获取 Agent 的工具分配列表（过滤掉主 Agent 专属工具）
 #[tauri::command]
 pub async fn agent_tool_list(agent_id: String) -> Result<Vec<String>, String> {
-    get_agent_tools(&agent_id)
+    let tools = get_agent_tools(&agent_id)?;
+    const MAIN_AGENT_ONLY: &[&str] = &["ext_tool_manage_policy", "ext_tool_delegate_agent", "ext_tool_memory", "ext_tool_search", "ext_tool_chunk_navigate"];
+    Ok(tools.into_iter().filter(|t| !MAIN_AGENT_ONLY.contains(&t.as_str())).collect())
 }
 
-/// 批量设置 Agent 工具分配
+/// 批量设置 Agent 工具分配（过滤掉主 Agent 专属工具）
 #[tauri::command]
 pub async fn agent_tool_assign(agent_id: String, tool_names: Vec<String>) -> Result<(), String> {
     // 检查 Agent 是否存在
@@ -226,6 +241,10 @@ pub async fn agent_tool_assign(agent_id: String, tool_names: Vec<String>) -> Res
         return Err(format!("Agent 不存在: {}", agent_id));
     }
 
+    // ★ 过滤主 Agent 专属工具
+    const MAIN_AGENT_ONLY: &[&str] = &["ext_tool_manage_policy", "ext_tool_delegate_agent", "ext_tool_memory", "ext_tool_search", "ext_tool_chunk_navigate"];
+    let filtered: Vec<String> = tool_names.into_iter().filter(|t| !MAIN_AGENT_ONLY.contains(&t.as_str())).collect();
+
     // 先删除旧的
     database::run(
         "DELETE FROM agent_tool_assignments WHERE agent_id=?1",
@@ -234,7 +253,7 @@ pub async fn agent_tool_assign(agent_id: String, tool_names: Vec<String>) -> Res
     .map_err(|e| e.to_string())?;
 
     // 插入新的
-    save_agent_tools(&agent_id, &tool_names.iter().map(|t| json!(t)).collect::<Vec<_>>())?;
+    save_agent_tools(&agent_id, &filtered.iter().map(|t| json!(t)).collect::<Vec<_>>())?;
 
     Ok(())
 }

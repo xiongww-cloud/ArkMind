@@ -108,7 +108,11 @@ PROJECT
 - 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id；联系人关联项目时，所属合作伙伴必须同时关联到同一项目
 
 ## 7. 委托
-你做不了的任务可以委托给专业 Agent。从动态上下文的【可用专业 Agent】中选择合适的 Agent。
+你做不了的任务可以委托给专业 Agent。从下方【可用专业 Agent】中选择合适的 Agent。
+委托返回的 status 语义：
+- completed：artifacts 为已完成操作的结构化清单
+- partial：结合 artifacts（已完成的操作，禁止重复执行）和 missing（缺失信息）处理：你自行补齐所需信息后，仅将剩余未完成的操作再次委托
+- failed / cancelled：同一任务最多重试一次；仍失败则向用户说明原因
 
 ## 8. 记忆系统（Memory）
 回答前检查上下文中已检索到的记忆，如果有相关的记忆且内容一致，则跳过记录；仅在发现新信息时调用工具记录。格式为：
@@ -118,6 +122,15 @@ PROJECT
 - 记忆中不得出现"主人""老板"等称呼，一律用"用户"指代
 - 新旧记忆冲突时，以时间更近的为准
 - 已有记忆有更新时，更新旧记忆
+
+## 9. 输出规范（必须遵守）
+- 思考过程禁止出现在最终回答中
+- 禁止提及工具名称
+- 禁止在回答中添加时间戳（上下文中的时间戳仅供你参考时间顺序）
+- 来自记忆：标注「根据记忆」，简要说明记忆内容要点
+- 来自知识库：标注「根据资料」，具体说明参考了哪些文档或对象（如产品名称、项目名称等）
+- 多个来源时，逐一列出每个来源
+- 日期范围用「至」代替「~」，使用口语化表达
 "#;
 
 // Data structures
@@ -557,7 +570,7 @@ fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collection
 fn execute_object_catalog(entity: &str, field_filters: &[Value], sort: Option<&Value>, args: &Value) -> String {
     let (table, allowed_fields): (&str, &[&str]) = match entity.to_uppercase().as_str() {
         "PROJECT" => ("projects", &["id","name","description","status","owner","budget","bid_time","created_at","updated_at"]),
-        "PRODUCT" => ("(SELECT p.id, p.name, COALESCE(ps.name, '') AS series_name, p.description, p.price, p.full_specs AS params, p.sort_order, p.created_at, p.updated_at FROM products p LEFT JOIN product_series ps ON p.series_id = ps.id)", &["id","name","series_name","description","price","full_specs AS params","sort_order","created_at","updated_at"]),
+        "PRODUCT" => ("(SELECT p.id, p.name, COALESCE(ps.name, '') AS series_name, p.description, p.price, p.full_specs AS params, p.sort_order, p.created_at, p.updated_at FROM products p LEFT JOIN product_series ps ON p.series_id = ps.id)", &["id","name","series_name","description","price","params","sort_order","created_at","updated_at"]),
         "CHANNEL" | "VENDOR" | "CUSTOMER" => ("partners", &["id","type","name","phone","address","remark","contact_person","contact_phone","created_at","updated_at"]),
         "CONTACT" => ("partner_contacts", &["id","name","phone","email","position","remark","created_at"]),
         "TODO" => ("todos", &["id","title","content","done","priority","due_date","repeat","created_at","updated_at"]),
@@ -2884,6 +2897,18 @@ fn fetch_parent_chunks(source_data_id: &str, source_type: &str, source_id: &str,
     })
 }
 
+/// 中文日期时间格式："YYYY-MM-DD 周X HH:MM"（注入 LLM 的所有时间戳统一用此格式，保证 prompt cache 前缀一致）
+fn cn_datetime_str(nd: chrono::NaiveDateTime) -> String {
+    const WEEKDAYS: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    let wd = chrono::Datelike::weekday(&nd).num_days_from_monday() as usize;
+    format!("{} {} {}", nd.format("%Y-%m-%d"), WEEKDAYS[wd], nd.format("%H:%M"))
+}
+
+/// 当前本地时间的中文格式（同上）
+fn cn_now_str() -> String {
+    cn_datetime_str(chrono::Local::now().naive_local())
+}
+
 fn relative_time(created_at: &str) -> String {
     if created_at.is_empty() { return String::new(); }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
@@ -2960,10 +2985,12 @@ async fn summarize_large_attachment(
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, allowed_tools: Option<Vec<String>>) -> Result<Value, String> {
-    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None).await
+    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0).await
 }
 
 /// 内部工作流函数，支持自定义 system_prompt
+/// is_root: true=顶层工作流（控制 AGENT_CANCEL 生命周期），false=子Agent（保留取消信号向上传播）
+/// delegate_depth: 当前委托深度（0=主Agent，≥1=子Agent）
 pub async fn agent_chat_workflow_internal(
     user_query: String,
     attachments: Vec<Value>,
@@ -2973,9 +3000,33 @@ pub async fn agent_chat_workflow_internal(
     session_id: Option<String>,
     allowed_tools: Option<Vec<String>>,
     system_prompt: Option<&str>,
+    is_root: bool,
+    delegate_depth: u8,
 ) -> Result<Value, String> {
     let effective_prompt = system_prompt.unwrap_or(AGENT_SYSTEM_PROMPT);
-    AGENT_CANCEL.store(false, Ordering::Release);
+    // ★ 加载可用专业 Agent 列表，注入系统提示词（仅当有委托能力时）
+    let has_delegate = allowed_tools.as_ref().map_or(true, |t| t.iter().any(|x| x == "ext_tool_delegate_agent"));
+    let agent_section = if has_delegate {
+        let agents: Vec<Value> = database::all(
+            "SELECT id, name, description FROM agent_profiles WHERE status='active'",
+            &[],
+        ).unwrap_or_default();
+        if agents.is_empty() {
+            String::new()
+        } else {
+            let lines: Vec<String> = agents.iter().filter_map(|a| {
+                let id = a["id"].as_str()?;
+                let name = a["name"].as_str()?;
+                let desc = a["description"].as_str().unwrap_or("无描述");
+                Some(format!("- {}: {} (agent_id: \"{}\")", name, desc, id))
+            }).collect();
+            format!("\n\n【可用专业 Agent】\n{}", lines.join("\n"))
+        }
+    } else {
+        String::new()
+    };
+    // ★ 仅顶层工作流重置取消信号；子Agent保留信号向上传播
+    if is_root { AGENT_CANCEL.store(false, Ordering::Release); }
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
     let max_iters = max_iterations.unwrap_or(20).clamp(2, 40);
@@ -3031,7 +3082,7 @@ pub async fn agent_chat_workflow_internal(
             if db_content.is_empty() { return None; }
 
             // 为 user 和 assistant 消息添加时间戳（格式与发送时一致，保证 prompt cache 命中）
-            let time_str = created_at.get(11..19).unwrap_or("");
+            let time_str = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S").map(cn_datetime_str).unwrap_or_default();
             let content_with_timestamp = if role == "user" && !time_str.is_empty() {
                 format!("时间：{}\n提问：{}", time_str, db_content)
             } else if role == "assistant" && !time_str.is_empty() {
@@ -3173,7 +3224,7 @@ pub async fn agent_chat_workflow_internal(
     }
 
     // ★ 追加本轮新问题（带时间戳前缀，与历史加载格式一致，保证 LLM prompt cache 命中）
-    let now = chrono::Local::now().format("%H:%M:%S").to_string();
+    let now = cn_now_str();
     let timestamped = format!("时间：{}\n提问：{}", now, augmented_query);
     messages.push(ChatMessage{role:MessageRole::User,content:Some(timestamped),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
@@ -3233,7 +3284,7 @@ pub async fn agent_chat_workflow_internal(
                             if db_content.is_empty() { return None; }
 
                             // 为 user 和 assistant 消息添加时间戳（格式与发送时一致）
-                            let time_str = created_at.get(11..19).unwrap_or("");
+                            let time_str = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S").map(cn_datetime_str).unwrap_or_default();
                             let content_with_timestamp = if role == "user" && !time_str.is_empty() {
                                 format!("时间：{}\n提问：{}", time_str, db_content)
                             } else if role == "assistant" && !time_str.is_empty() {
@@ -3327,56 +3378,36 @@ pub async fn agent_chat_workflow_internal(
     let mut search_cost = 8i32;  // 降低初始消耗到8分
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     
-    // 加载用户策略（policy）— 从 policies 表读取
-    let user_policies = {
-        // 1. 加载默认输出规则
-        let default_rules = crate::database::get(
-            "SELECT content FROM policies WHERE id='default-output-rules'",
-            &[],
-        ).ok().flatten().and_then(|r| r["content"].as_str().map(|s| s.to_string()))
-        .unwrap_or_default();
-
-        // 2. 加载其他用户策略
-        let other_policies = crate::database::all(
-            "SELECT id, content, updated_at FROM policies WHERE id != 'default-output-rules' ORDER BY updated_at DESC",
+    // 加载用户策略（policy）— 仅主Agent注入；输出规范已固化在系统提示词第9节，不再动态注入
+    let user_policies = if is_root {
+        let policies = crate::database::all(
+            "SELECT id, content, updated_at FROM policies ORDER BY updated_at DESC",
             &[],
         ).unwrap_or_default();
-
-        // 3. 拼接
-        let mut parts = Vec::new();
-
-        if !default_rules.is_empty() {
-            parts.push(format!("【输出规范（必须遵守）】\n{}", default_rules));
-        }
-
-        if !other_policies.is_empty() {
-            let lines: Vec<String> = other_policies.iter().filter_map(|r| {
-                let sid = r["id"].as_str()?;
-                let content = r["content"].as_str()?;
-                let date = r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
-                Some(format!("[ID:{}] {} {}", sid, date, content))
-            }).collect();
-            if !lines.is_empty() {
-                parts.push(format!("【用户策略】\n{}", lines.join("\n")));
-            }
-        }
-
-        if parts.is_empty() {
+        let lines: Vec<String> = policies.iter().filter_map(|r| {
+            let sid = r["id"].as_str()?;
+            let content = r["content"].as_str()?;
+            let date = r["updated_at"].as_str().unwrap_or("").get(..10).unwrap_or("");
+            Some(format!("[ID:{}] {} {}", sid, date, content))
+        }).collect();
+        if lines.is_empty() {
             "无特殊策略要求。".to_string()
         } else {
-            parts.join("\n\n")
+            format!("【用户策略】\n{}", lines.join("\n"))
         }
+    } else {
+        String::new()
     };
     
-    // System Prompt 已是纯静态（today + user_policies 移至动态上下文消息）
-    messages[0].content = Some(effective_prompt.to_string());
+    // System Prompt 注入可用 Agent 列表
+    messages[0].content = Some(format!("{}{}", effective_prompt, agent_section));
     let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
     let mut retry_count = 0u32; // ToolCall 清理后重试计数器
 
     loop {
-        // ★ 检查停止信号
+        // ★ 检查停止信号（仅顶层清除标志，子Agent保留信号向上传播）
         if AGENT_CANCEL.load(Ordering::Acquire) {
-            AGENT_CANCEL.store(false, Ordering::Release);
+            if is_root { AGENT_CANCEL.store(false, Ordering::Release); }
             log::info!("收到停止信号，中断执行");
             let ws = session.generate_scratchpad();
             return Ok(json!({"success":true,"result_type":"answer","answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
@@ -3414,13 +3445,13 @@ pub async fn agent_chat_workflow_internal(
             }).sum();
             let budget_info = format!(
                 "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
-                scratchpad, chrono::Local::now().format("%Y-%m-%d %A %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
+                scratchpad, cn_now_str(), iters, search_cost, budget, status, context_tokens
             );
             // 移除上一轮的动态上下文消息
             if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
                 messages.remove(pos);
             }
-            messages.push(ChatMessage{role:MessageRole::User, content: Some(format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info)), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+            messages.push(ChatMessage{role:MessageRole::User, content: Some(if user_policies.is_empty() { format!("[DYNAMIC_CONTEXT]\n{}", budget_info) } else { format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info) }), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
         }
 
         // ★ 调试：保存 context 到文件（供 debug_server.py 读取）—— 仅 debug 构建
@@ -4124,15 +4155,56 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             let mode = a["mode"].as_str().unwrap_or("");
                             let res = match mode {
                                 "detail" => {
-                                    // ★ 按ID查看详情
-                                    let ids_arr = a["id"].as_array().filter(|arr| !arr.is_empty());
-                                    let ids: Vec<String> = ids_arr.map(|arr| {
-                                        arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                                    }).unwrap_or_default();
+                                    // ★ 按ID查看详情：业务对象走数据库结构化查询，文档对象走chunk回忆
+                                    let ids: Vec<String> = match a.get("id") {
+                                        Some(v) if v.is_array() => v.as_array().unwrap().iter().filter_map(|x| x.as_str().map(String::from)).collect(),
+                                        Some(v) if v.is_string() => vec![v.as_str().unwrap().to_string()],
+                                        _ => vec![],
+                                    };
                                     if ids.is_empty() {
                                         "错误：detail模式需要传入id参数".to_string()
                                     } else {
-                                        execute_batch_recall(&ids, &visited_chunks_snapshot, &visited_sources_snapshot).await
+                                        let business_types = ["PROJECT", "PRODUCT", "CHANNEL", "VENDOR", "CUSTOMER", "CONTACT", "TODO", "SOLUTION"];
+                                        let mut biz_ids = Vec::new();
+                                        let mut doc_ids = Vec::new();
+                                        for id in &ids {
+                                            let (tp, _) = parse_source_id(id);
+                                            if business_types.contains(&tp.as_str()) {
+                                                biz_ids.push(id.clone());
+                                            } else {
+                                                doc_ids.push(id.clone());
+                                            }
+                                        }
+                                        let mut results = Vec::new();
+                                        // 业务对象：直接查数据库
+                                        for bid in &biz_ids {
+                                            let (tp, raw_id) = parse_source_id(bid);
+                                            let row = match tp.as_str() {
+                                                "PROJECT" => database::get("SELECT id, name, description, status, owner, budget, bid_time, created_at FROM projects WHERE id=?1", &[json!(raw_id)]),
+                                                "PRODUCT" => database::get("SELECT p.id, p.name, COALESCE(ps.name,'') AS series_name, p.description, p.price, p.full_specs AS params, p.sort_order, p.created_at FROM products p LEFT JOIN product_series ps ON p.series_id=ps.id WHERE p.id=?1", &[json!(raw_id)]),
+                                                "CHANNEL" | "VENDOR" | "CUSTOMER" => database::get("SELECT id, type, name, phone, address, remark, contact_person, contact_phone, created_at FROM partners WHERE id=?1 AND type=?2", &[json!(raw_id), json!(tp)]),
+                                                "CONTACT" => database::get("SELECT id, name, phone, email, position, remark, created_at FROM partner_contacts WHERE id=?1", &[json!(raw_id)]),
+                                                "TODO" => database::get("SELECT id, title, content, done, priority, due_date, repeat, created_at, updated_at FROM todos WHERE id=?1", &[json!(raw_id)]),
+                                                "SOLUTION" => database::get("SELECT id, project_id, name, created_at FROM solutions WHERE id=?1", &[json!(raw_id)]),
+                                                _ => Ok(None),
+                                            };
+                                            match row {
+                                                Ok(Some(r)) => results.push(json!({"id": bid, "type": tp, "found": true, "data": r})),
+                                                _ => results.push(json!({"id": bid, "type": tp, "found": false})),
+                                            }
+                                        }
+                                        // 文档对象：走chunk回忆
+                                        if !doc_ids.is_empty() {
+                                            let doc_result = execute_batch_recall(&doc_ids, &visited_chunks_snapshot, &visited_sources_snapshot).await;
+                                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&doc_result) {
+                                                if let Some(objects) = v["data"]["objects"].as_array() {
+                                                    for obj in objects { results.push(obj.clone()); }
+                                                } else {
+                                                    results.push(v);
+                                                }
+                                            }
+                                        }
+                                        json!({"result_type": "object_detail_batch", "data": {"objects": results}, "summary": format!("查询 {} 个对象", results.len())}).to_string()
                                     }
                                 },
                                 "search" => {
@@ -5266,8 +5338,20 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                             let context = a.get("context");
                             let expected_output = a["expected_output"].as_str().unwrap_or("");
                             let res = super::delegate_agent::execute_delegate_agent(
-                                agent_id, task, context, expected_output, app_handle.clone(),
+                                agent_id, task, context, expected_output, app_handle.clone(), delegate_depth,
                             ).await;
+                            // ★ 取消透传：子Agent返回cancelled时，传播取消信号
+                            if let Ok(v) = serde_json::from_str::<Value>(&res) {
+                                if v["data"]["cancelled"].as_bool() == Some(true) {
+                                    AGENT_CANCEL.store(true, Ordering::Release);
+                                }
+                            }
+                            // ★ 委托扣费：主Agent感知委托成本
+                            if let Ok(v) = serde_json::from_str::<Value>(&res) {
+                                let iters = v["data"]["iterations"].as_i64().unwrap_or(0) as i32;
+                                budget -= 40 + iters * 2;
+                                search_cost += 30;
+                            }
                             (res, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
@@ -5327,6 +5411,29 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     session.tool_history.push(step_desc);
                     let tool_name = t["tool"].as_str().unwrap_or("");
                     session.update_from_tool_result(tool_name, &result_str);
+                }
+
+                // ★ 子Agent单轮执行跳过总结：首个工具轮全部为成功的执行类调用
+                //   → 跳过后续LLM总结轮，直接返回工具摘要（链式任务天然需要多轮，不受影响）
+                if !is_root && tool_log.len() == 1 && !round_tools.is_empty() {
+                    let all_exec_success = round_tools.iter().all(|t| {
+                        t["tool"].as_str().unwrap_or("").starts_with("ext_tool_manage_")
+                            && serde_json::from_str::<Value>(t["result"].as_str().unwrap_or(""))
+                                .ok()
+                                .map(|v| v["data"]["success"].as_bool() == Some(true))
+                                .unwrap_or(false)
+                    });
+                    if all_exec_success {
+                        let summaries: Vec<String> = round_tools.iter().filter_map(|t| {
+                            serde_json::from_str::<Value>(t["result"].as_str().unwrap_or(""))
+                                .ok()
+                                .and_then(|v| v["summary"].as_str().map(|s| s.to_string()))
+                        }).collect();
+                        let answer = if summaries.is_empty() { "所有操作已完成。".to_string() } else { summaries.join("\n") };
+                        log::info!("[子Agent跳过总结] 单轮 {} 次执行类调用全部成功，省去总结轮", round_tools.len());
+                        let ws = session.generate_scratchpad();
+                        return Ok(json!({"success":true,"result_type":"answer","answer":answer,"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
+                    }
                 }
 
                 // ★ 状态驱动熔断检查
@@ -5409,13 +5516,13 @@ fn execute_object_get(query: &str, obj_type: &str, time_range: Option<(String, S
                     }).sum();
                      let budget_info = format!(
                         "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
-                        scratchpad, chrono::Local::now().format("%Y-%m-%d %A %H:%M:%S").to_string(), iters, search_cost, budget, status, context_tokens
+                        scratchpad, cn_now_str(), iters, search_cost, budget, status, context_tokens
                     );
                     // 移除上一轮的动态上下文消息
                     if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
                         messages.remove(pos);
                     }
-            messages.push(ChatMessage{role:MessageRole::User, content: Some(format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info)), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+            messages.push(ChatMessage{role:MessageRole::User, content: Some(if user_policies.is_empty() { format!("[DYNAMIC_CONTEXT]\n{}", budget_info) } else { format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info) }), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
                 }
                 // ★ 调试：每轮工具调用后保存完整上下文 —— 仅 debug 构建
                 #[cfg(debug_assertions)]

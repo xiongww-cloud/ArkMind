@@ -42,6 +42,7 @@ const emit = defineEmits<{
 
   <!-- Session List -->
   <div class="flex-1 overflow-y-auto py-2 px-2 space-y-0.5 scrollbar-thin">
+    <div v-if="!sessions.length" class="text-[11px] text-surface-400 text-center py-6">暂无会话，发送消息自动创建</div>
     <div v-for="s in sessions" :key="s.id" @click="emit('select', s.id)"
       class="group flex items-center gap-2.5 px-3 py-2 rounded-lg cursor-pointer text-[12px] transition-all duration-150"
       :class="s.id === currentSessionId ? 'bg-brand-50/70 text-brand-700 font-medium' : 'text-surface-600 hover:bg-surface-100'">
@@ -67,7 +68,7 @@ const emit = defineEmits<{
           <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
         </button>
         <!-- Delete button -->
-        <button v-if="sessions.length > 1" @click.stop="emit('confirmDelete', s.id)"
+        <button @click.stop="emit('confirmDelete', s.id)"
           class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" title="删除">
           <AppIcon name="trash" size="12"/>
         </button>

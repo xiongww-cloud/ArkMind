@@ -220,8 +220,8 @@ onMounted(async () => {
   } catch {}
   
   try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
-  if (!sessions.value.length) { newSession() }
-  else if (!currentSessionId.value) { currentSessionId.value = sessions.value[0].id }
+  // ★ 允许无会话状态：首次发送消息时自动创建
+  if (!currentSessionId.value && sessions.value.length) { currentSessionId.value = sessions.value[0].id }
   // 初始化分页状态：初始不足 10 条的会话没有更早消息
   for (const s of sessions.value) { sessionHasMore.value[s.id] = (s.messages?.length || 0) >= 10 }
   // 渲染当前会话的消息
@@ -308,7 +308,7 @@ function saveToStorage() {
 }
 async function loadFromStorage() {
   try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return rest }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
-  if (!sessions.value.length) { newSession(); return }
+  if (!sessions.value.length) { currentSessionId.value = null; return }
   currentSessionId.value = sessions.value[0].id
   // 初始化内容快照
   const s = currentSession.value
@@ -433,6 +433,8 @@ async function handleSendMessage() {
   try { unlistenProgress?.(); unlistenToken?.(); unlistenDone?.(); unlistenError?.() } catch {}
   unlistenProgress = null; unlistenToken = null; unlistenDone = null; unlistenError = null
   if (q.length > MAX_INPUT_LENGTH) { toast({ message: `输入内容过长（${q.length}/${MAX_INPUT_LENGTH}），请精简后重试`, type: 'error' }); return }
+  // ★ 无会话时自动创建一个（首次发消息即建会话）
+  if (!currentSession.value) { newSession() }
   const session = currentSession.value; if (!session) return
   const atts = [...pendingAttachments.value]
   session.messages.push({ id: crypto.randomUUID(), role: 'user', content: q, attachments: atts.length ? atts : undefined, timestamp: Date.now() })
@@ -648,6 +650,14 @@ onUnmounted(() => {
   <div class="flex-1 flex flex-col min-w-0 relative bg-surface-50/30">
     <!-- Messages Feed -->
     <div ref="feedScrollRef" class="flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 space-y-5 scrollbar-thin" @scroll="onFeedScroll">
+      <!-- Empty State（无会话 或 会话无消息时显示） -->
+      <div v-if="!currentSession || currentSession.messages.length === 0" class="flex flex-col items-center justify-center h-full text-center px-8 py-16">
+        <div class="w-20 h-20 mb-6 rounded-3xl bg-gradient-to-br from-[#2563eb]/10 to-[#93c5fd]/10 flex items-center justify-center ring-1 ring-[#2563eb]/10">
+          <svg class="w-10 h-10 text-[#2563eb]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+        </div>
+        <h2 class="text-[17px] font-semibold text-[#1d1d1f] mb-2">AI 知识助手</h2>
+        <p class="text-[13px] text-[#86868b] max-w-md leading-relaxed">基于知识与记忆系统的AI智能助手，帮你检索、理解和推断项目、产品、文档等信息。</p>
+      </div>
       <template v-if="currentSession">
         <!-- 加载更早消息提示 -->
         <div v-if="loadingMore" class="flex items-center justify-center py-2">
@@ -655,14 +665,6 @@ onUnmounted(() => {
         </div>
         <div v-else-if="currentSession.messages.length > 0 && sessionHasMore[currentSession.id] === false" class="flex items-center justify-center py-2">
           <span class="text-[11px] text-surface-300">没有更早的消息了</span>
-        </div>
-        <!-- Empty State -->
-        <div v-if="currentSession.messages.length === 0" class="flex flex-col items-center justify-center h-full text-center px-8 py-16">
-          <div class="w-20 h-20 mb-6 rounded-3xl bg-gradient-to-br from-[#2563eb]/10 to-[#93c5fd]/10 flex items-center justify-center ring-1 ring-[#2563eb]/10">
-            <svg class="w-10 h-10 text-[#2563eb]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
-          </div>
-          <h2 class="text-[17px] font-semibold text-[#1d1d1f] mb-2">AI 知识助手</h2>
-          <p class="text-[13px] text-[#86868b] max-w-md leading-relaxed">基于知识与记忆系统的AI智能助手，帮你检索、理解和推断项目、产品、文档等信息。</p>
         </div>
 
         <!-- Messages -->

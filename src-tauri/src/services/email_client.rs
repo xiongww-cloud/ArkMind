@@ -220,6 +220,38 @@ pub fn detect_sent_folder(account: &EmailAccount) -> String {
     "Sent".to_string()
 }
 
+/// 将邮件 Date 头解析为标准格式 YYYY-MM-DD HH:MM:SS
+fn normalize_email_date(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+
+    // 尝试 RFC 2822 格式: "Mon, 15 Sep 2026 10:30:00 +0800"（统一转为本地时间，保证跨时区可排序）
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(trimmed) {
+        return dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+
+    // 尝试 RFC 3339/ISO 8601: "2026-09-15T10:30:00Z" / "2026-09-15T10:30:00+08:00"
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+        return dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+
+    // 尝试常见格式: "2026-09-15 10:30:00"
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S") {
+        return dt.format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+
+    // 尝试: "2026-09-15T10:30:00"
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S") {
+        return dt.format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+
+    // 回退：使用当前时间
+    log::warn!("[邮件] 无法解析日期: {}", trimmed);
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 /// 解析 MIME 邮件
 fn parse_email(raw: &[u8]) -> Result<ParsedEmail, String> {
     let parsed = mailparse::parse_mail(raw).map_err(|e| format!("MIME 解析失败: {}", e))?;
@@ -230,7 +262,8 @@ fn parse_email(raw: &[u8]) -> Result<ParsedEmail, String> {
     let to_raw = get_header(headers, "To");
     let cc_raw = get_header(headers, "Cc");
     let subject = get_header(headers, "Subject");
-    let date = get_header(headers, "Date");
+    let date_raw = get_header(headers, "Date");
+    let date = normalize_email_date(&date_raw);
 
     let (from_name, from_addr) = parse_from(&from_raw);
 

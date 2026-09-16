@@ -145,7 +145,7 @@ pub async fn email_list(
     let offset = offset.unwrap_or(0);
 
     let sql = format!(
-        "SELECT id, account_id, folder, from_addr, from_name, to_addr, subject, received_at, has_attachments, ai_summary, ai_category, created_at FROM emails {} ORDER BY created_at DESC LIMIT {} OFFSET {}",
+        "SELECT id, account_id, folder, from_addr, from_name, to_addr, subject, received_at, has_attachments, ai_summary, ai_category, created_at FROM emails {} ORDER BY received_at DESC, created_at DESC LIMIT {} OFFSET {}",
         where_clause, limit, offset
     );
 

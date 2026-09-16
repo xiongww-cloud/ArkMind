@@ -106,7 +106,8 @@ fn tick(app_handle: &tauri::AppHandle) -> Result<u64, String> {
             let diff = now.naive_local().signed_duration_since(last_time);
             let diff_minutes = diff.num_minutes();
             if diff_minutes < interval {
-                let wait = (interval - diff_minutes) as u64 * 60;
+                // ★ 短睡眠+墙钟重估：封顶60秒，避免 Mac 休眠导致单调时钟冻结、长 sleep 漂移
+                let wait = ((interval - diff_minutes).max(1) as u64 * 60).min(60);
                 log::debug!("[通知循环] 距上次分析{}分钟，需等待{}秒", diff_minutes, wait);
                 return Ok(wait);
             }
@@ -117,8 +118,8 @@ fn tick(app_handle: &tauri::AppHandle) -> Result<u64, String> {
     log::info!("[通知循环] 开始周期分析...");
     run_analysis(app_handle);
 
-    // 5. 等待一个完整间隔后再检查
-    Ok(interval as u64 * 60)
+    // ★ 短睡眠：下次 tick 用墙钟自行判断是否到期
+    Ok(60)
 }
 
 /// 执行 LLM 分析
@@ -178,6 +179,10 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     );
 
     let handle = app_handle.clone();
+    // ★ 先更新时间戳再 spawn：UI 的下次检查时间立即正确（since 已在上方捕获，增量分析不受影响）
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    set_config("last_check_at", &now);
+    let since_for_retry = since.clone();
     tauri::async_runtime::spawn(async move {
         // ★ 周期分析只允许只读查询 + 创建通知，禁止直接改业务对象/记忆/策略
         let allowed_tools: Vec<String> = vec![
@@ -206,14 +211,14 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             }
             Err(e) => {
                 log::error!("[通知循环] 分析失败: {}", e);
+                // ★ 回滚时间戳，本轮增量数据下个周期重试
+                set_config("last_check_at", &since_for_retry);
             }
         }
 
         let _ = handle.emit("agent:done", serde_json::json!({}));
 
         update_call_stats();
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-        set_config("last_check_at", &now);
     });
 }
 
