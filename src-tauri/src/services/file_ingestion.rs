@@ -82,7 +82,8 @@ fn ingestion_loop() {
         log::info!("[数据中台] 冷启动：已清理 {} 条孤立缓存", cache_cleaned);
     }
 
-    let mut file_backfill_tick: u32 = 0;
+    let mut idle_rounds: u32 = 0;
+    let mut last_backfill = std::time::Instant::now();
 
     loop {
         if !INGESTION_RUNNING.load(Ordering::Acquire) {
@@ -91,7 +92,7 @@ fn ingestion_loop() {
         }
 
         // 1. 优先处理 knowledge_push_queue 中的待处理任务（非阻塞）
-        process_push_queue_non_blocking();
+        let claimed = process_push_queue_non_blocking();
 
         // 2. 轮询式补漏（处理历史遗留数据）
         ingest_pending_notes();
@@ -100,15 +101,18 @@ fn ingestion_loop() {
         ingest_pending_todos();
         ingest_pending_emails();
 
-        // 3. FILE 兜底扫描（约每30s）：上传后入队前崩溃 → 有资产无队列记录，永久漏解析的缺口在此收敛
-        file_backfill_tick = file_backfill_tick.wrapping_add(1);
-        if file_backfill_tick >= 300 {
-            file_backfill_tick = 0;
+        // 3. FILE 兜底扫描（每30s）：上传后入队前崩溃 → 有资产无队列记录，永久漏解析的缺口在此收敛
+        if last_backfill.elapsed() >= Duration::from_secs(30) {
+            last_backfill = std::time::Instant::now();
             backfill_missing_file_sources();
         }
 
-        // 空闲时每100ms检查一次（更快响应新任务）
-        std::thread::sleep(Duration::from_millis(100));
+        // 空闲指数退避：无任务时 100ms→200→400→…封顶3s，消除常驻忙轮询（有任务/在途立即恢复 100ms）
+        idle_rounds = if claimed == 0 && ACTIVE_TASKS.load(Ordering::Relaxed) == 0 { idle_rounds + 1 } else { 0 };
+        let sleep_ms: u64 = if idle_rounds == 0 { 100 } else { (100u64 << idle_rounds.min(5)).min(3000) };
+
+        // 空闲时退避轮询
+        std::thread::sleep(Duration::from_millis(sleep_ms));
     }
 }
 
@@ -143,8 +147,8 @@ fn backfill_missing_file_sources() {
 // 核心调度：从 knowledge_push_queue 获取任务（并发处理）
 // ═══════════════════════════════════════════════════════════════
 
-/// 从 knowledge_push_queue 表获取待处理任务并并发执行（非阻塞）
-fn process_push_queue_non_blocking() {
+/// 从 knowledge_push_queue 表原子领取任务并并发执行（非阻塞）；返回本轮领取数
+fn process_push_queue_non_blocking() -> usize {
     // 自愈：重置卡在 processing 超过 5 分钟的条目为 pending（崩溃/静默失败残留自动恢复）
     let stale_reset = crate::database::run(
         "UPDATE knowledge_push_queue SET status='pending', retry_count=0, updated_at=datetime('now','localtime') \
@@ -158,39 +162,47 @@ fn process_push_queue_non_blocking() {
     // 检查是否还有并发槽位
     let current_active = ACTIVE_TASKS.load(Ordering::Relaxed);
     if current_active >= MAX_CONCURRENT {
-        return; // 没有可用槽位，跳过本轮
+        return 0; // 没有可用槽位，跳过本轮
     }
 
     let available_slots = MAX_CONCURRENT - current_active;
+    // 单语句原子领取（UPDATE…RETURNING）：SELECT 与标记分离时，并发入队/重启窗口会让同一行被领取两次
     let tasks = match crate::database::all(
         &format!(
-            "SELECT id, source_type, source_id, operation, retry_count \
-             FROM knowledge_push_queue \
-             WHERE status='pending' AND (debounce_until IS NULL OR debounce_until <= datetime('now','localtime')) \
-             ORDER BY created_at ASC LIMIT {}",
+            "UPDATE knowledge_push_queue SET status='processing', updated_at=datetime('now','localtime') \
+             WHERE id IN (SELECT id FROM knowledge_push_queue \
+                 WHERE status='pending' AND (debounce_until IS NULL OR debounce_until <= datetime('now','localtime')) \
+                 ORDER BY created_at ASC LIMIT {}) \
+               AND status='pending' \
+             RETURNING id, source_type, source_id, operation, retry_count",
             available_slots
         ),
         &[],
     ) {
         Ok(r) => r,
         Err(e) => {
-            log::info!("[数据中台] ⚠ 查询 knowledge_push_queue 失败: {}", e);
-            return;
+            log::info!("[数据中台] ⚠ 领取 knowledge_push_queue 任务失败: {}", e);
+            return 0;
         }
     };
 
     if tasks.is_empty() {
-        return;
+        return 0;
     }
 
     let task_count = tasks.len();
-    log::info!("[数据中台] 本次处理 {} 条待推送变更（当前活跃 {}/{})", task_count, current_active, MAX_CONCURRENT);
+    log::info!("[数据中台] 本次领取 {} 条待推送变更（当前活跃 {}/{})", task_count, current_active, MAX_CONCURRENT);
 
     // 创建线程处理所有任务（不等待完成）
     for (idx, task) in tasks.into_iter().enumerate() {
-        // 检查并发槽位
+        // 检查并发槽位（槽位耗尽则把剩余已领取任务退回 pending）
         if ACTIVE_TASKS.load(Ordering::Relaxed) >= MAX_CONCURRENT {
-            log::info!("[数据中台] 并发槽位已满，剩余任务等待下一轮");
+            let id = task["id"].clone();
+            let _ = crate::database::run(
+                "UPDATE knowledge_push_queue SET status='pending', updated_at=datetime('now','localtime') WHERE id=?1 AND status='processing'",
+                &[id],
+            );
+            log::info!("[数据中台] 并发槽位已满，剩余任务退回 pending");
             break;
         }
 
@@ -215,6 +227,7 @@ fn process_push_queue_non_blocking() {
             log::info!("[数据中台] ← 完成任务 {}/{} (耗时 {}ms) [剩余活跃 {}]", source_type, source_id, elapsed, ACTIVE_TASKS.load(Ordering::Relaxed));
         });
     }
+    task_count
 }
 
 /// 检查任务对应的业务对象是否仍存在（未知类型保守返回 true 不拦截）

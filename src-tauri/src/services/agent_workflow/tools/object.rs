@@ -377,16 +377,16 @@ pub(crate) async fn execute_batch_recall(ids: &[String], visited_chunks: &std::c
             // ── Object Retrieval (dual-mode: timeline + keyword) ─────────────────
 
 pub(crate) fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize, offset: usize) -> String {
-    // 先获取总数
+    // 先获取总数（date() 包裹列使 updated_at 索引失效，改字符串区间比较可走索引）
     let total: i64 = database::get(
-        "SELECT COUNT(*) as cnt FROM source_data WHERE (source_type=?1 OR ?1='') AND date(updated_at)>=?2 AND date(updated_at)<=?3",
+        "SELECT COUNT(*) as cnt FROM source_data WHERE (source_type=?1 OR ?1='') AND updated_at>=?2 AND updated_at<date(?3,'+1 day')",
         &[json!(obj_type), json!(start), json!(end)],
     ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
     
     let rows = database::all(
-        "SELECT source_type, source_id, title, content as preview, updated_at FROM source_data
+        "SELECT source_type, source_id, title, substr(content,1,300) as preview, length(content) as content_len, updated_at FROM source_data
          WHERE (source_type=?1 OR ?1='')
-           AND date(updated_at) >= ?2 AND date(updated_at) <= ?3
+           AND updated_at >= ?2 AND updated_at < date(?3,'+1 day')
          ORDER BY updated_at DESC LIMIT ?4 OFFSET ?5",
         &[json!(obj_type), json!(start), json!(end), json!(limit), json!(offset)],
     ).unwrap_or_default();
@@ -413,7 +413,7 @@ pub(crate) fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize
         let name = r["title"].as_str().unwrap_or("");
         let preview_full = r["preview"].as_str().unwrap_or("");
         let preview = {
-            let char_count = preview_full.chars().count();
+            let char_count = r["content_len"].as_i64().map(|n| n as usize).unwrap_or_else(|| preview_full.chars().count());
             if char_count <= 200 {
                 preview_full.to_string()
             } else {
@@ -530,7 +530,7 @@ pub(crate) fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end:
     if matched.is_empty() {
         let like = format!("%{}%", crate::database::escape_like(&q));
         if let Ok(rows) = database::all(
-            "SELECT source_type, source_id, title, content as preview, updated_at FROM source_data WHERE (title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\') AND (source_type=?2 OR ?2='') ORDER BY updated_at DESC",
+            "SELECT source_type, source_id, title, substr(content,1,500) as preview, updated_at FROM source_data WHERE (title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\') AND (source_type=?2 OR ?2='') ORDER BY updated_at DESC LIMIT 200",
             &[json!(&like), json!(obj_type)],
         ) {
             for r in &rows {

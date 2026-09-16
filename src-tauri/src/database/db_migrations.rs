@@ -672,6 +672,21 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         ").ok();
     }
 
+    // ★ 热点谓词索引化（审计P2）：先建新名索引（消除 idx_kc_source 一名两义），再删旧名
+    let _ = conn.execute_batch("
+        CREATE INDEX IF NOT EXISTS idx_kc_sd_id ON knowledge_chunks(source_data_id);
+        CREATE INDEX IF NOT EXISTS idx_kc_st_sid ON knowledge_chunks(source_type, source_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_kc_chunk_id ON knowledge_chunks(chunk_id) WHERE chunk_id <> '';
+        DROP INDEX IF EXISTS idx_kc_source;
+        CREATE INDEX IF NOT EXISTS idx_sd_updated_at ON source_data(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_sd_source_id ON source_data(source_id);
+        CREATE INDEX IF NOT EXISTS idx_pushq_status_created ON knowledge_push_queue(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_pushq_st_sid ON knowledge_push_queue(source_type, source_id);
+        DELETE FROM knowledge_push_queue WHERE status='pending' AND id NOT IN (SELECT MIN(id) FROM knowledge_push_queue WHERE status='pending' GROUP BY source_type, source_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pushq_pending_uniq ON knowledge_push_queue(source_type, source_id) WHERE status='pending';
+        CREATE INDEX IF NOT EXISTS idx_emails_acct_folder_recv ON emails(account_id, folder, received_at);
+    ");
+
     // ★ 重置失败的同步任务（已完成的不动）
     let _ = conn.execute("UPDATE ai_sync_queue SET is_embedded=0,retry_count=0,last_error='' WHERE is_embedded=-1", []);
     if conn.changes() > 0 {
@@ -1164,7 +1179,7 @@ pub fn migrate_source_data_to_text_id(conn: &Connection) -> SqliteResult<()> {
     
     // 7. 重建索引
     conn.execute_batch("
-        CREATE INDEX IF NOT EXISTS idx_kc_source ON knowledge_chunks(source_type, source_id);
+        CREATE INDEX IF NOT EXISTS idx_kc_st_sid ON knowledge_chunks(source_type, source_id);
         CREATE INDEX IF NOT EXISTS idx_sd_type_id ON source_data(source_type, source_id);
     ")?;
     
