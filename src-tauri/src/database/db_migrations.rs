@@ -259,16 +259,24 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         }
     }
 
-    // 修复 knowledge_chunks.source_data_id 类型：INTEGER → TEXT
-    // SQLite 不支持 ALTER COLUMN，需要重建表
+    // 修复 knowledge_chunks 结构：source_data_id INTEGER → TEXT，并补齐 source_type/source_id 列。
+    // SQLite 不支持 ALTER COLUMN → 重建表；对缺列的远古表做防御式拷贝（缺什么补默认值）。
+    let kc_cols: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('knowledge_chunks')")
+        .and_then(|mut s| Ok(s.query_map([], |r| r.get::<_, String>(0))?.filter_map(|x| x.ok()).collect()))
+        .unwrap_or_default();
     let sd_id_type: String = conn.query_row(
         "SELECT type FROM pragma_table_info('knowledge_chunks') WHERE name='source_data_id'",
         [], |r| r.get(0),
     ).unwrap_or_default();
-    
-    if sd_id_type == "INTEGER" {
-        log::info!("[迁移] 修复 knowledge_chunks.source_data_id 类型: INTEGER → TEXT");
-        
+    let need_rebuild = !kc_cols.is_empty()
+        && (sd_id_type == "INTEGER"
+            || !kc_cols.iter().any(|c| c == "source_type")
+            || !kc_cols.iter().any(|c| c == "source_id"));
+
+    if need_rebuild {
+        log::info!("[迁移] 重建 knowledge_chunks：source_data_id→TEXT + 补齐 source_type/source_id");
+
         // 1. 创建新表
         conn.execute_batch("
             CREATE TABLE IF NOT EXISTS knowledge_chunks_new (
@@ -277,6 +285,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
                 chunk_type TEXT NOT NULL DEFAULT 'child',
                 parent_id TEXT DEFAULT NULL,
                 source_data_id TEXT DEFAULT NULL,
+                source_type TEXT DEFAULT '',
+                source_id TEXT DEFAULT '',
                 content TEXT NOT NULL,
                 doc_title TEXT DEFAULT '',
                 chunk_index INTEGER DEFAULT 0,
@@ -284,44 +294,52 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
                 base_weight REAL DEFAULT 1.0,
                 last_access_at INTEGER DEFAULT NULL,
                 access_count INTEGER DEFAULT 0,
-                source_type TEXT DEFAULT '',
-                source_id TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now', 'localtime'))
             );
         ")?;
-        
-        // 2. 复制数据（将 source_data_id 转换为 TEXT）
-        conn.execute_batch("
-            INSERT INTO knowledge_chunks_new 
-                (id, chunk_id, chunk_type, parent_id, source_data_id, content, doc_title, 
-                 chunk_index, content_hash, base_weight, last_access_at, access_count, 
-                 source_type, source_id, created_at)
-            SELECT 
-                id, chunk_id, chunk_type, parent_id, 
-                CASE WHEN source_data_id IS NOT NULL THEN CAST(source_data_id AS TEXT) ELSE NULL END,
-                content, doc_title, chunk_index, content_hash, base_weight, last_access_at, 
-                access_count, source_type, source_id, created_at
-            FROM knowledge_chunks;
-        ")?;
-        
+
+        // 2. 防御式复制：仅拷贝新旧表都存在的普通列；特殊列用表达式兜底
+        let plain_cols = ["chunk_id", "chunk_type", "parent_id", "content", "doc_title",
+            "chunk_index", "content_hash", "base_weight", "last_access_at", "access_count", "created_at"];
+        let mut insert_cols: Vec<String> = vec!["id".into()];
+        let mut select_cols: Vec<String> = vec!["id".into()];
+        for c in plain_cols {
+            if kc_cols.iter().any(|x| x == c) {
+                insert_cols.push(c.into());
+                select_cols.push(c.into());
+            }
+        }
+        insert_cols.push("source_data_id".into());
+        select_cols.push(if kc_cols.iter().any(|x| x == "source_data_id") {
+            "CAST(source_data_id AS TEXT)".into()
+        } else { "NULL".into() });
+        for c in ["source_type", "source_id"] {
+            insert_cols.push(c.into());
+            select_cols.push(if kc_cols.iter().any(|x| x == c) { c.into() } else { "''".into() });
+        }
+        conn.execute_batch(&format!(
+            "INSERT INTO knowledge_chunks_new ({}) SELECT {} FROM knowledge_chunks;",
+            insert_cols.join(", "), select_cols.join(", ")
+        ))?;
+
         // 3. 替换旧表
         conn.execute_batch("
             DROP TABLE IF EXISTS knowledge_chunks_old;
             ALTER TABLE knowledge_chunks RENAME TO knowledge_chunks_old;
             ALTER TABLE knowledge_chunks_new RENAME TO knowledge_chunks;
         ")?;
-        
+
         // 4. 重建索引
         conn.execute_batch("
             CREATE INDEX IF NOT EXISTS idx_kc_parent ON knowledge_chunks(parent_id);
             CREATE INDEX IF NOT EXISTS idx_kc_source ON knowledge_chunks(source_type, source_id);
             CREATE INDEX IF NOT EXISTS idx_kc_source_data ON knowledge_chunks(source_data_id);
         ")?;
-        
+
         // 5. 清理旧表
         conn.execute_batch("DROP TABLE IF EXISTS knowledge_chunks_old;")?;
-        
-        log::info!("[迁移] knowledge_chunks.source_data_id 类型修复完成");
+
+        log::info!("[迁移] knowledge_chunks 结构修复完成");
     }
 
     // ★ 回填存量 Won 项目的 won_at：优先取状态变更日志的最早时间，找不到回退 updated_at
@@ -600,7 +618,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
                 chunk_id TEXT NOT NULL DEFAULT '',
                 chunk_type TEXT NOT NULL DEFAULT 'child',
                 parent_id TEXT DEFAULT NULL,
-                source_data_id INTEGER DEFAULT NULL,
+                source_data_id TEXT DEFAULT NULL,
+                source_type TEXT DEFAULT '',
+                source_id TEXT DEFAULT '',
                 content TEXT NOT NULL,
                 doc_title TEXT DEFAULT '',
                 chunk_index INTEGER DEFAULT 0,
@@ -1265,5 +1285,52 @@ mod tests {
         let schema2 = schema_dump(&conn);
 
         assert_eq!(schema1, schema2, "run_migrations 二次执行不得改变 schema");
+    }
+
+    #[test]
+    fn test_knowledge_chunks_legacy_rebuild_is_defensive() {
+        // 模拟远古库：source_data_id 为 INTEGER 且缺 source_type/source_id/base_weight 等列，
+        // 迁移须防御式重建（缺列补默认值）并保留存量数据，而不是报错。
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db_schema::create_schema(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute_batch("
+            DROP INDEX IF EXISTS idx_kc_source;
+            DROP TABLE knowledge_chunks;
+            CREATE TABLE knowledge_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_id TEXT NOT NULL DEFAULT '',
+                chunk_type TEXT NOT NULL DEFAULT 'child',
+                parent_id TEXT DEFAULT NULL,
+                source_data_id INTEGER DEFAULT NULL,
+                content TEXT NOT NULL,
+                doc_title TEXT DEFAULT '',
+                chunk_index INTEGER DEFAULT 0,
+                content_hash TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now','localtime'))
+            );
+            INSERT INTO knowledge_chunks(id, chunk_id, chunk_type, source_data_id, content)
+                VALUES (5, 'abc123', 'parent', 42, 'hello');
+            INSERT OR IGNORE INTO source_data(id, source_type, source_id, title, content)
+                VALUES ('42', 'NOTE', 'sid-42', 't', 'c');
+        ").unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let sd_type: String = conn.query_row(
+            "SELECT type FROM pragma_table_info('knowledge_chunks') WHERE name='source_data_id'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(sd_type, "TEXT", "source_data_id 应已迁移为 TEXT");
+        let has_cols: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('knowledge_chunks') WHERE name IN ('source_type','source_id')",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(has_cols, 2, "source_type/source_id 列应已补齐");
+        let (sid, content, base_w): (String, String, f64) = conn.query_row(
+            "SELECT source_data_id, content, base_weight FROM knowledge_chunks WHERE id=5",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(sid, "42");
+        assert_eq!(content, "hello");
+        assert_eq!(base_w, 1.0, "缺列应补默认值");
     }
 }

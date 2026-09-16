@@ -249,7 +249,9 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             chunk_id TEXT NOT NULL DEFAULT '',
             chunk_type TEXT NOT NULL DEFAULT 'child',    -- 'parent' | 'child'
             parent_id TEXT DEFAULT NULL,                  -- 子块 → 父块.chunk_id；父块=NULL
-            source_data_id INTEGER DEFAULT NULL,          -- 父块 → source_data.id；子块=NULL
+            source_data_id TEXT DEFAULT NULL,             -- 父块 → source_data.id；子块=NULL
+            source_type TEXT DEFAULT '',                  -- 冗余来源类型（PROJECT/FILE/NOTE...）
+            source_id TEXT DEFAULT '',                    -- 冗余来源业务 ID
             content TEXT NOT NULL,
             doc_title TEXT DEFAULT '',                     -- 业务名称（文件为空）
             chunk_index INTEGER DEFAULT 0,                -- 父块：源文档中的顺序；子块：父块中的顺序
