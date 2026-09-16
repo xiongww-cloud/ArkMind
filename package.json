@@ -8,6 +8,7 @@
     "lint": "eslint --cache .",
     "dev": "vite",
     "build": "vite build",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.web.json",
     "tauri:dev": "node scripts/tauri-build.mjs dev",
     "tauri:build": "node scripts/tauri-build.mjs build",
     "license-gen": "start tools/license-gen/index.html",

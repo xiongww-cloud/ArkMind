@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, onBeforeUnmount, watch, nextTick } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import GuideModal from '@/components/common/GuideModal.vue'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
@@ -449,6 +449,9 @@ async function confirmProviderForm() {
 async function removeProvider(provider) {
   const ok = await dangerConfirm({ title: '删除模型', message: `确定删除 LLM 模型「${provider.modelName}」？`, confirmText: '删除' })
   if (!ok) return
+  const prevProviders = [...aiProviders.value]
+  const prevActive = activeProviderId.value
+  const prevPending = pendingDefaultId.value
   aiProviders.value = aiProviders.value.filter(p => p.id !== provider.id)
   if (activeProviderId.value === provider.id) {
     activeProviderId.value = aiProviders.value[0]?.id || null
@@ -456,11 +459,19 @@ async function removeProvider(provider) {
   if (pendingDefaultId.value === provider.id) {
     pendingDefaultId.value = activeProviderId.value
   }
-  // Auto-save
-  updateAiConfig({
-    providers: aiProviders.value,
-    activeProviderId: activeProviderId.value,
-  }).catch(() => {})
+  // Auto-save（失败回滚列表并提示，避免"显示已删、重启复活"）
+  try {
+    await updateAiConfig({
+      providers: aiProviders.value,
+      activeProviderId: activeProviderId.value,
+    })
+    toast({ message: '已删除模型', type: 'success' })
+  } catch {
+    aiProviders.value = prevProviders
+    activeProviderId.value = prevActive
+    pendingDefaultId.value = prevPending
+    toast({ message: '删除失败，请重试', type: 'error' })
+  }
 }
 
 function setPendingDefault(providerId) {
@@ -575,13 +586,24 @@ async function confirmVisionForm() {
 async function removeVision(provider: any) {
   const ok = await dangerConfirm({ title: '删除模型', message: `确定删除 视觉模型「${provider.modelName}」？`, confirmText: '删除' })
   if (!ok) return
+  const prevProviders = [...visionProviders.value]
+  const prevActive = visionActiveId.value
+  const prevPending = visionPendingId.value
   visionProviders.value = visionProviders.value.filter((p: any) => p.id !== provider.id)
   if (visionActiveId.value === provider.id) { visionActiveId.value = visionProviders.value[0]?.id || null }
   if (visionPendingId.value === provider.id) { visionPendingId.value = visionActiveId.value }
-  await updateAiConfig({
-    visionProviders: visionProviders.value,
-    activeVisionId: visionActiveId.value,
-  }).catch(() => {})
+  try {
+    await updateAiConfig({
+      visionProviders: visionProviders.value,
+      activeVisionId: visionActiveId.value,
+    })
+    toast({ message: '已删除模型', type: 'success' })
+  } catch {
+    visionProviders.value = prevProviders
+    visionActiveId.value = prevActive
+    visionPendingId.value = prevPending
+    toast({ message: '删除失败，请重试', type: 'error' })
+  }
 }
 
 function setVisionPending(id) { visionPendingId.value = id }
@@ -673,7 +695,10 @@ async function loadSpriteConfig() {
 async function toggleSprite() {
   try {
     await setSpriteEnabled(spriteEnabled.value)
-  } catch {}
+  } catch {
+    spriteEnabled.value = !spriteEnabled.value
+    toast({ message: '精灵开关保存失败', type: 'error' })
+  }
 }
 
 async function clearSpriteChat() {
@@ -714,7 +739,10 @@ async function saveNotifyConfig() {
       interval_minutes: notifyInterval.value === 0 ? '60' : notifyInterval.value.toString(),
       startup_only: notifyInterval.value === 0 ? '1' : '0',
     })
-  } catch {}
+  } catch {
+    notifyEnabled.value = !notifyEnabled.value
+    toast({ message: '通知设置保存失败', type: 'error' })
+  }
 }
 
 // ─── Pipeline Management ──────────────────────────────────────
@@ -1287,8 +1315,18 @@ function clearAllLogs() {
 
 // ─── Init ────────────────────────────────────────────────────────────────
 let pipelineTimer: ReturnType<typeof setInterval> | null = null
-onActivated(async () => {
-  await Promise.all([
+function stopPollTimers() {
+  if (logTimer) { clearInterval(logTimer); logTimer = null }
+  if (loopStatusTimer) { clearInterval(loopStatusTimer); loopStatusTimer = null }
+  if (pipelineTimer) { clearInterval(pipelineTimer); pipelineTimer = null }
+}
+onActivated(() => {
+  // timer 先建后加载：若等 await 完成再建，用户在加载期间离开页面时 onDeactivated 无 timer 可清，interval 永久泄漏
+  stopPollTimers()
+  logTimer = setInterval(refreshLogs, 3000)
+  loopStatusTimer = setInterval(loadLoopStatus, 600000)  // 10分钟刷新一次
+  pipelineTimer = setInterval(loadPipeline, 3000)
+  Promise.all([
     loadStorageConfig(),
     loadLicense(),
     loadAiConfig(),
@@ -1300,17 +1338,11 @@ onActivated(async () => {
     loadEmailConfig(),
     loadAgentProfiles(),
     loadAvailableTools(),
-  ])
-  logTimer = setInterval(refreshLogs, 3000)
-  loopStatusTimer = setInterval(loadLoopStatus, 600000)  // 10分钟刷新一次
-  pipelineTimer = setInterval(loadPipeline, 3000)
+  ]).catch(() => {})
 })
 
-onDeactivated(() => {
-  if (logTimer) { clearInterval(logTimer); logTimer = null }
-  if (loopStatusTimer) { clearInterval(loopStatusTimer); loopStatusTimer = null }
-  if (pipelineTimer) { clearInterval(pipelineTimer); pipelineTimer = null }
-})
+onDeactivated(stopPollTimers)
+onBeforeUnmount(stopPollTimers)
 </script>
 
 <template>

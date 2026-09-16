@@ -201,6 +201,7 @@ const sessionNameEdit = ref('')
 const editingSessionId = ref<string|null>(null)
 const sessionDirty = ref(false)  // 标记当前会话是否有变更
 let lastSavedContent = ''  // 上次保存时的内容快照
+let activeTokenTimer: ReturnType<typeof setInterval> | null = null  // 当前轮打字机定时器（done 丢失时由 deactivate/unmount 兜底清理）
 
 function newSession() {
   stopAllTypewriters()
@@ -209,8 +210,12 @@ function newSession() {
   currentSessionId.value = id; saveToStorage()
 }
 
+// ★ 会话加载序号守卫：KeepAlive 首挂时 onMounted/onActivated 并发加载，晚发请求的结果必须覆盖早到者
+let sessionsLoadSeq = 0
+
 // ★ 启动时加载持久化会话
 onMounted(async () => {
+  const mySeq = ++sessionsLoadSeq
   // 恢复输入框文本
   try {
     const savedInput = localStorage.getItem('chat_input_backup')
@@ -219,7 +224,7 @@ onMounted(async () => {
     if (savedAttachments) { pendingAttachments.value = JSON.parse(savedAttachments); localStorage.removeItem('chat_attachments_backup') }
   } catch {}
   
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
+  try { const r = await kbLoadSessions(); if (mySeq !== sessionsLoadSeq) return; if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
   // ★ 允许无会话状态：首次发送消息时自动创建
   if (!currentSessionId.value && sessions.value.length) { currentSessionId.value = sessions.value[0].id }
   // 初始化分页状态：初始不足 10 条的会话没有更早消息
@@ -239,7 +244,9 @@ onActivated(async () => {
     return
   }
   try {
+    const mySeq = ++sessionsLoadSeq
     const r = await kbLoadSessions()
+    if (mySeq !== sessionsLoadSeq) return
     if (r?.sessions && Array.isArray(r.sessions)) {
       sessions.value = r.sessions.map((s: any) => ({
         ...s,
@@ -290,19 +297,22 @@ async function selectSession(id: string) {
 }
 const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
 
-function saveToStorage() { 
-  const s = currentSession.value; 
-  if (s && s.messages.length > 0 && sessionDirty.value) {
-    // 只有内容实际变化时才更新时间戳
+function saveToStorage(target?: ChatSession) { 
+  // 可显式传入提问时的会话：AI 回答期间用户切会话/新建后，回复必须存回原会话而非当前会话
+  const s = target || currentSession.value; 
+  if (s && s.messages.length > 0) {
+    const isCurrent = s === currentSession.value
     const currentContent = JSON.stringify(s.messages)
-    if (currentContent === lastSavedContent) {
+    if (isCurrent && currentContent === lastSavedContent) {
       sessionDirty.value = false
       return
     }
     s.updatedAt = new Date().toLocaleString('sv-SE'); 
-    sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()); 
-    sessionDirty.value = false;
-    lastSavedContent = currentContent
+    if (isCurrent) {
+      sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()); 
+      sessionDirty.value = false;
+      lastSavedContent = currentContent
+    }
     kbSaveSessions([s]).catch((e) => console.error('[Agent] 保存会话失败:', e)); 
   }
 }
@@ -390,7 +400,12 @@ let unlistenError: (() => void) | null = null
 async function confirmDeleteSession(id: string) {
   const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？此操作不可撤销。', confirmText: '删除' })
   if (!ok) return
-  kbDeleteSession(id).catch(() => {})
+  try {
+    await kbDeleteSession(id)
+  } catch {
+    toast({ message: '删除失败，会话未从后端移除', type: 'error' })
+    return
+  }
   sessions.value = sessions.value.filter(s => s.id !== id)
   if (currentSessionId.value === id) {
     const nextId = sessions.value[0]?.id ?? null
@@ -457,9 +472,11 @@ async function handleSendMessage() {
   const tokenQueue: string[] = []
   let tokenIdx = 0
   let tokenFlushed = false
+  if (activeTokenTimer) { clearInterval(activeTokenTimer); activeTokenTimer = null }
   const flushTokenQueue = () => {
     if (tokenFlushed) return; tokenFlushed = true
     clearInterval(tokenTimer)
+    if (activeTokenTimer === tokenTimer) activeTokenTimer = null
     while (tokenIdx < tokenQueue.length) aiMsg.content += tokenQueue[tokenIdx++]
   }
   let lastRenderTime = 0
@@ -472,6 +489,7 @@ async function handleSendMessage() {
     }
     scrollToBottomIfNear()
   }, 15)
+  activeTokenTimer = tokenTimer
   unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
     tokenQueue.push(ev.payload.token)
   })
@@ -493,9 +511,8 @@ async function handleSendMessage() {
       } else { aiMsg.error = result.answer || result.error || '失败' }
       agent.isChatting.value = false; scrollToBottomIfNear()
       
-      // ★ 保存会话到数据库（确保 AI 回复被持久化）
-      sessionDirty.value = true
-      saveToStorage()
+      // ★ 保存会话到数据库（确保 AI 回复被持久化；显式存回提问时的会话）
+      saveToStorage(session)
       
       try { unlistenDone(); unlistenToken(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
@@ -614,6 +631,7 @@ async function openNotebookPicker(msgId: string) { savingMsgId.value = msgId; no
 // ★ 页面停用时清理资源（KeepAlive 模式下不会触发 onUnmounted）
 onDeactivated(() => {
   stopAllTypewriters()
+  if (activeTokenTimer) { clearInterval(activeTokenTimer); activeTokenTimer = null }
   // 保存当前输入框文本和待发送附件到 localStorage
   try {
     localStorage.setItem('chat_input_backup', inputMessage.value)
@@ -625,6 +643,7 @@ onDeactivated(() => {
 
 onUnmounted(() => {
   stopAllTypewriters()
+  if (activeTokenTimer) { clearInterval(activeTokenTimer); activeTokenTimer = null }
   unlistenProgress?.()
   unlistenToken?.()
   unlistenDone?.()

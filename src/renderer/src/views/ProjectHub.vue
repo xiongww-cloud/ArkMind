@@ -126,6 +126,7 @@ async function syncFromBackend() {
         match._customerName = r.customer_name || ''
         match.createdAt = r.created_at || match.createdAt
         match.updatedAt = r.updated_at || null
+        match.isArchived = r.isArchived ?? String(r.status || '').toLowerCase() === 'archived'
         match.wonAt = r.won_at || ''
         match.bidTime = r.bid_time || ''
         match.expectedOrderDate = r.expected_order_date || ''
@@ -139,6 +140,7 @@ async function syncFromBackend() {
           _customerName: r.customer_name || '',
           createdAt: r.created_at || new Date().toISOString().slice(0, 10),
           updatedAt: r.updated_at || null,
+          isArchived: r.isArchived ?? String(r.status || '').toLowerCase() === 'archived',
           wonAt: r.won_at || '',
           bidTime: r.bid_time || '',
           expectedOrderDate: r.expected_order_date || '',

@@ -352,7 +352,7 @@ export const useProjectStore = defineStore('project', () => {
     project.displayId = remote.displayId || ''
     project.createdAt = remote.created_at || project.createdAt
     project.updatedAt = remote.updated_at || null
-    project.isArchived = remote.isArchived || false
+    project.isArchived = remote.isArchived ?? String(remote.status || '').toLowerCase() === 'archived'
     project.bidTime = remote.bid_time || ''
     project.wonAt = remote.won_at || ''
     project.expectedOrderDate = remote.expected_order_date || ''

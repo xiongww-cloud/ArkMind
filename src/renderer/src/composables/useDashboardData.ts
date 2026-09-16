@@ -410,7 +410,7 @@ export function useDashboardData() {
     { label: '供应商', count: vendors.value.length, route: '/contacts' },
     { label: '产品', count: products.value.length, route: '/products' },
     { label: '笔记', count: allNotes.value.length, route: '/notes' },
-    { label: '文件', count: files.value.length, route: '/files' },
+    { label: '文件', count: files.value.length, route: '/assets' },
     { label: '知识碎片', count: kbTotalChunks.value, route: '/knowledge' },
   ])
 

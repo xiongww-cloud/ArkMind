@@ -160,7 +160,7 @@ onUnmounted(() => {
       <AppHeader @toggle-sidebar="toggleSidebar" />
       <main class="flex-1 overflow-y-auto p-[10px]">
         <router-view v-slot="{ Component }">
-          <KeepAlive>
+          <KeepAlive :max="6">
             <component :is="Component" />
           </KeepAlive>
         </router-view>
