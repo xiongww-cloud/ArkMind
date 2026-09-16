@@ -51,11 +51,10 @@ pub async fn execute_delegate_agent(
     }
 
     let first = &rows[0];
-    // ★ 主 Agent 专属工具，子 Agent 不可使用
-    const MAIN_AGENT_ONLY: &[&str] = &["ext_tool_manage_policy", "ext_tool_delegate_agent", "ext_tool_memory", "ext_tool_search", "ext_tool_chunk_navigate"];
+    // ★ 主 Agent 专属工具清单：agent_workflow::tools::MAIN_AGENT_ONLY（唯一数据源）
     let allowed_tools: Vec<String> = rows.iter()
         .filter_map(|r| r["tool_name"].as_str().map(|s| s.to_string()))
-        .filter(|t| !MAIN_AGENT_ONLY.contains(&t.as_str()))
+        .filter(|t| !crate::services::agent_workflow::tools::MAIN_AGENT_ONLY.contains(&t.as_str()))
         .collect();
 
     // system_prompt 直接用 Agent 配置的提示词（工具说明已由 API tools schema 提供，不再重复注入）

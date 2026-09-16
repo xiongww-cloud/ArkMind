@@ -1,4 +1,5 @@
 use crate::database;
+use crate::services::agent_workflow::tools::MAIN_AGENT_ONLY;
 use serde_json::{json, Value};
 
 /// 系统预设工具列表（供前端展示和分配）
@@ -20,7 +21,6 @@ const AVAILABLE_TOOLS: &[(&str, &str, &str)] = &[
 /// 获取系统预设工具列表（过滤掉主 Agent 专属工具）
 #[tauri::command]
 pub async fn agent_available_tools() -> Result<Vec<Value>, String> {
-    const MAIN_AGENT_ONLY: &[&str] = &["ext_tool_manage_policy", "ext_tool_delegate_agent", "ext_tool_memory", "ext_tool_search", "ext_tool_chunk_navigate"];
     let tools: Vec<Value> = AVAILABLE_TOOLS
         .iter()
         .filter(|(name, _, _)| !MAIN_AGENT_ONLY.contains(name))
@@ -224,7 +224,6 @@ pub async fn agent_profile_delete(id: String) -> Result<Value, String> {
 #[tauri::command]
 pub async fn agent_tool_list(agent_id: String) -> Result<Vec<String>, String> {
     let tools = get_agent_tools(&agent_id)?;
-    const MAIN_AGENT_ONLY: &[&str] = &["ext_tool_manage_policy", "ext_tool_delegate_agent", "ext_tool_memory", "ext_tool_search", "ext_tool_chunk_navigate"];
     Ok(tools.into_iter().filter(|t| !MAIN_AGENT_ONLY.contains(&t.as_str())).collect())
 }
 
@@ -241,8 +240,7 @@ pub async fn agent_tool_assign(agent_id: String, tool_names: Vec<String>) -> Res
         return Err(format!("Agent 不存在: {}", agent_id));
     }
 
-    // ★ 过滤主 Agent 专属工具
-    const MAIN_AGENT_ONLY: &[&str] = &["ext_tool_manage_policy", "ext_tool_delegate_agent", "ext_tool_memory", "ext_tool_search", "ext_tool_chunk_navigate"];
+    // ★ 过滤主 Agent 专属工具（唯一数据源：agent_workflow::tools::MAIN_AGENT_ONLY）
     let filtered: Vec<String> = tool_names.into_iter().filter(|t| !MAIN_AGENT_ONLY.contains(&t.as_str())).collect();
 
     // 先删除旧的
