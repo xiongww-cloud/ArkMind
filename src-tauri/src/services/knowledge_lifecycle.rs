@@ -118,7 +118,11 @@ fn restore_fts_triggers() {
     let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_update", &[]);
     let _ = crate::database::run("CREATE TRIGGER kk_chunks_fts_insert AFTER INSERT ON knowledge_chunks WHEN new.chunk_type='child' BEGIN INSERT INTO kk_chunks_fts(rowid, doc_title, content) VALUES (new.rowid, new.doc_title, new.content); END", &[]);
     let _ = crate::database::run("CREATE TRIGGER kk_chunks_fts_update AFTER UPDATE ON knowledge_chunks WHEN old.chunk_type='child' OR new.chunk_type='child' BEGIN DELETE FROM kk_chunks_fts WHERE rowid = old.rowid; INSERT INTO kk_chunks_fts(rowid, doc_title, content) SELECT new.rowid, new.doc_title, new.content WHERE new.chunk_type='child'; END", &[]);
-    let _ = crate::database::run("CREATE TRIGGER IF NOT EXISTS kk_chunks_fts_delete AFTER DELETE ON knowledge_chunks BEGIN INSERT INTO kk_chunks_fts(kk_chunks_fts, rowid) VALUES('delete', old.rowid); END", &[]);
+    // ★ 不创建 kk_chunks_fts_delete 触发器（对齐 mod.rs 权威定义）：
+    //   FTS 行清理由应用代码负责（ai_sync/file_ingestion 删 chunk 前先手动 DELETE FROM kk_chunks_fts），
+    //   而 self-content FTS5 的 'delete' 命令要求完整列值，旧版 VALUES('delete', old.rowid) 缺列必然报错，
+    //   与手动删除叠加会使 reset_pipeline 之后的物化删除事务失败直到下次重启。
+    let _ = crate::database::run("DROP TRIGGER IF EXISTS kk_chunks_fts_delete", &[]);
     // 清理已废弃的 ai_tag 触发器（ai_tag 管线已移除，这些触发器只会产生无消费者的数据）
     for t in &["ai_tag_notes_insert", "ai_tag_notes_update", "ai_tag_products_insert", "ai_tag_products_update", "ai_tag_projects_insert", "ai_tag_projects_update", "ai_tag_todos_insert", "ai_tag_todos_update"] {
         let _ = crate::database::run(&format!("DROP TRIGGER IF EXISTS {}", t), &[]);

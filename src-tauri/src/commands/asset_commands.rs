@@ -58,8 +58,10 @@ use serde_json::{json, Value}; use crate::database;
         let result = crate::services::file_parser::parse_file_with_hint(&path, ext);
         if result.success && !result.text.is_empty() {
             // 写入 source_data（纯轮询：sync_loop 扫描时统一入队物化）
-            crate::database::file_sync_to_source_data(fid, &result.text);
-            migrated += 1;
+            match crate::database::file_sync_to_source_data(fid, &result.text) {
+                Ok(_) => migrated += 1,
+                Err(e) => log::warn!("[资产重跑] source_data 写入失败 file={}: {}", fid, e),
+            }
         }
     }
     Ok(json!({"success":true,"sourceCount":files.len(),"migrated":migrated}))

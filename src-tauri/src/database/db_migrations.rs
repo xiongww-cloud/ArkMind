@@ -685,6 +685,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         DELETE FROM knowledge_push_queue WHERE status='pending' AND id NOT IN (SELECT MIN(id) FROM knowledge_push_queue WHERE status='pending' GROUP BY source_type, source_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_pushq_pending_uniq ON knowledge_push_queue(source_type, source_id) WHERE status='pending';
         CREATE INDEX IF NOT EXISTS idx_emails_acct_folder_recv ON emails(account_id, folder, received_at);
+        DELETE FROM file_relations WHERE id NOT IN (SELECT MIN(id) FROM file_relations GROUP BY file_id, entity_type, entity_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_frel_file_entity ON file_relations(file_id, entity_type, entity_id);
     ");
 
     // ★ 重置失败的同步任务（已完成的不动）

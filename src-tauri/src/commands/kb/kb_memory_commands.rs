@@ -7,12 +7,12 @@ pub async fn kb_memory_objects(query: String) -> Result<Value, String> {
     let q = query.trim().to_string();
     if q.is_empty() { return Ok(json!({"success":true,"objects":[]})); }
     let like = format!("%{}%", crate::database::escape_like(&q));
-    // FTS5 try first, fallback to LIKE
+    // FTS5 try first（表名修正：source_data_fts 从不存在，正确的镜像表是 global_search_fts）, fallback to LIKE
     let fts_q = q.split_whitespace().map(|k| format!("\"{}\"", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
     let mut objects: Vec<Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     if let Ok(rows) = database::all(
-        "SELECT rowid, source_type, source_id, title FROM source_data_fts WHERE source_data_fts MATCH ?1 LIMIT 30",
+        "SELECT rowid, source_type, source_id, title FROM global_search_fts WHERE global_search_fts MATCH ?1 LIMIT 30",
         &[json!(&fts_q)],
     ) {
         for r in &rows {

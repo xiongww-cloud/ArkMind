@@ -314,7 +314,7 @@ pub fn run() {
             commands::kb_diagnose, commands::kb_search_debug, commands::kb_data_browse, commands::kb_browse_parents, commands::kb_browse_vectors, commands::kb_inspect_fts5,
             commands::kb_fts5_inspector, commands::kb_get_table_chunks, commands::execute_production_rag,
             commands::kb_test_embedding, commands::kb_test_chat,
-            commands::ext_tool_search_knowledge_base, commands::ext_tool_get_document_page,
+            commands::ext_tool_search_knowledge_base,
             commands::ext_tool_find_related_knowledge,
             commands::ext_tool_get_project_context,
             commands::kb_memory_objects, commands::search_business, commands::search_source_data, commands::lookup_object_names, commands::kb_project_note_ids, commands::kb_memory_parents,

@@ -161,10 +161,7 @@ pub async fn ext_tool_search_knowledge_base(keywords: Vec<String>, project_id: O
     let _ = project_id;
     Ok(output.trim().to_string())
 }
-#[tauri::command] pub async fn ext_tool_get_document_page(doc_id: String, _page_num: usize) -> Result<String, String> {
-    let doc = database::get("SELECT content FROM documents_parent WHERE document_id=? LIMIT 1",&[json!(doc_id)]).ok().flatten();
-    match doc.and_then(|d| d["content"].as_str().map(|s| s.to_string())) { Some(c) => Ok(format!("文档 {} 内容:\n{}", doc_id, c)), None => Ok(format!("文档 {} 未找到", doc_id)) }
-}
+// ext_tool_get_document_page 已移除：其查询的 documents_parent 表早已 DROP，翻页功能由 ext_tool_chunk_navigate 承接
 #[tauri::command] pub async fn ext_tool_find_related_knowledge(_doc_id: String) -> Result<String, String> { Ok("[]".to_string()) }
 
 #[tauri::command]

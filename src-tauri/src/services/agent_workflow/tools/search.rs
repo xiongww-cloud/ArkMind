@@ -4,15 +4,6 @@ use crate::database;
 use serde_json::{json, Value};
 use crate::services::agent_workflow::*;
 
-/// 关键词 → 横向检索：纯数据库外键级联（标签查询已移除）。
-pub(crate) fn execute_horizontal_search(keywords: &[String]) -> String {
-    if keywords.is_empty() { return String::new(); }
-    let _like = format!("%{}%", crate::database::escape_like(&keywords.join(" ")));
-
-    if true { return String::new(); }
-    String::new()
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // Tool executors
 // ═══════════════════════════════════════════════════════════════════
@@ -64,7 +55,6 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
     let keywords = filtered_keywords.as_slice();
     let query = keywords.join(" ");
 
-    let tag_rowids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut obj_head = String::new();
     let mut matched_sources: std::collections::HashSet<(String,String)> = std::collections::HashSet::new();
     if !keywords.is_empty() {
@@ -117,14 +107,8 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
     log::info!("Search keywords={:?}, scope={}", keywords, scope_rowids.as_ref().map(|s| format!("Some({} rowids)", s.len())).unwrap_or_else(|| "None".to_string()));
     log::info!("Search FTS5 hits={}, Vector hits={}", fts_rowids.len(), vec_rowids.len());
 
-    let fuse = |rows: Vec<(String,f64)>| -> Vec<(String,f64)> {
-        if tag_rowids.is_empty() { return rows; }
-        rows.into_iter().filter(|(id,_)| id.parse::<i64>().map(|r| tag_rowids.contains(&r)).unwrap_or(false)).collect()
-    };
-
-    let fts_filtered = fuse(fts_rowids.clone());
-    let vec_filtered = fuse(vec_rowids.clone());
-    let fused = search_assets::rrf_fusion(&fts_filtered, &vec_filtered, 60.0);
+    // 标签预过滤已随标签系统移除，融合直接进 RRF
+    let fused = search_assets::rrf_fusion(&fts_rowids, &vec_rowids, 60.0);
 
     if fused.is_empty() {
         let kw_display = keywords.join("、");
@@ -316,9 +300,6 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
         }
     }
 
-    // 合并知识检索结果
-    let _horizontal = execute_horizontal_search(keywords);
-    
     // 构建 chunks 数组
     let chunks: Vec<Value> = non_memory.iter().map(|(score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)| {
         let short_chunk_id: String = chunk_id.chars().take(8).collect();

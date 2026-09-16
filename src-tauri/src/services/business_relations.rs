@@ -267,14 +267,13 @@ pub(crate) fn upsert_on(
     metadata: &str,
 ) -> Result<(), String> {
     if source_id.is_empty() || target_id.is_empty() { return Ok(()); }
-    let changes = conn.execute(
-        "UPDATE business_relations SET metadata=?, updated_at=datetime('now','localtime') WHERE source_type=? AND source_id=? AND target_type=? AND target_id=? AND relation_type=?",
-        rusqlite::params![metadata, source_type, source_id, target_type, target_id, relation_type],
-    ).map_err(|e| e.to_string())?;
-    if changes > 0 { return Ok(()); }
+    // 单语句原子 upsert（idx_br_unique 已覆盖五元组）：原 UPDATE→INSERT 两步在并发下 INSERT 撞唯一约束
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,datetime('now','localtime'),datetime('now','localtime'))",
+        "INSERT INTO business_relations(id, source_type, source_id, target_type, target_id, relation_type, metadata, created_at, updated_at) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,datetime('now','localtime'),datetime('now','localtime')) \
+         ON CONFLICT(source_type, source_id, target_type, target_id, relation_type) \
+         DO UPDATE SET metadata=excluded.metadata, updated_at=datetime('now','localtime')",
         rusqlite::params![id, source_type, source_id, target_type, target_id, relation_type, metadata],
     ).map_err(|e| e.to_string())?;
     Ok(())

@@ -352,9 +352,6 @@ export interface KbParentItem {
 }
 
 // ─── Ext tool types ─────────────────────────────────────────────
-export interface ExtToolDocumentPage {
-  [key: string]: unknown
-}
 export interface ExtToolRelatedKnowledge {
   [key: string]: unknown
 }
@@ -1191,12 +1188,6 @@ export async function extToolSearchKnowledgeBase(
     projectId: projectId || null,
     filterTags: filterTags || null
   })
-}
-export async function extToolGetDocumentPage(
-  docId: string,
-  page: number
-): Promise<ExtToolDocumentPage> {
-  return invoke('ext_tool_get_document_page', { docId, page })
 }
 export async function extToolFindRelatedKnowledge(docId: string): Promise<ExtToolRelatedKnowledge> {
   return invoke('ext_tool_find_related_knowledge', { docId })

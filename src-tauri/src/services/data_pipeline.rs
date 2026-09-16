@@ -1,6 +1,4 @@
-pub struct DataPipeline;
-impl DataPipeline { pub fn process_file_stream(&self, _table: &str, _id: &str, text: String) -> String { text } }
-pub fn get_pipeline() -> DataPipeline { DataPipeline }
+// DataPipeline 透传桩已移除（process_file_stream 恒等返回且无实际处理，误导注释一并清除）
 
 /// 清除 HTML 标签，用于 notes/todos 等富文本内容预处理
 /// 块级元素替换为换行，再剥离所有 <> 标签，合并连续空行

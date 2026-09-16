@@ -169,12 +169,13 @@ pub async fn pipeline_resync() -> Result<Value, String> {
     crate::database::run("DELETE FROM source_data", &[]).ok();
     crate::database::with_db(|conn| {
         conn.execute_batch(
-            "INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'NOTE',n.note_id,n.title,'title: '||n.title||CASE WHEN COALESCE(n.content,'')!='' THEN CHAR(10)||'content: '||n.content ELSE '' END FROM notes n WHERE n.deleted_at IS NULL;
-             INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'PRODUCT',p.id,p.name,'name: '||p.name||CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END FROM products p;
-             INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'PROJECT',p.id,p.name,'name: '||p.name||CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END FROM projects p;
-             INSERT OR IGNORE INTO source_data(source_type,source_id,title,content) SELECT 'TODO',t.id,t.title,'title: '||t.title||CASE WHEN COALESCE(t.content,'')!='' THEN CHAR(10)||'content: '||t.content ELSE '' END FROM todos t;"
+            // id 列必须显式提供（source_data.id 现为 TEXT PRIMARY KEY，无默认值；旧代码漏 id 导致整批 NOT NULL 违约被 .ok() 吞→静默无事发生）。约定 id=source_id。
+            "INSERT OR IGNORE INTO source_data(id,source_type,source_id,title,content) SELECT n.note_id,'NOTE',n.note_id,n.title,'title: '||n.title||CASE WHEN COALESCE(n.content,'')!='' THEN CHAR(10)||'content: '||n.content ELSE '' END FROM notes n WHERE n.deleted_at IS NULL;
+             INSERT OR IGNORE INTO source_data(id,source_type,source_id,title,content) SELECT p.id,'PRODUCT',p.id,p.name,'name: '||p.name||CASE WHEN COALESCE(p.description,'')!='' THEN CHAR(10)||'description: '||p.description ELSE '' END FROM products p;
+             INSERT OR IGNORE INTO source_data(id,source_type,source_id,title,content) SELECT p.id,'PROJECT',p.id,p.name,'name: '||p.name||CASE WHEN COALESCE(p.status,'')!='' THEN CHAR(10)||'status: '||p.status ELSE '' END FROM projects p;
+             INSERT OR IGNORE INTO source_data(id,source_type,source_id,title,content) SELECT t.id,'TODO',t.id,t.title,'title: '||t.title||CASE WHEN COALESCE(t.content,'')!='' THEN CHAR(10)||'content: '||t.content ELSE '' END FROM todos t;"
         )
-    }).ok();
+    }).map_err(|e| format!("source_data 重灌失败: {}", e))?;
     // 重新入队所有已有文件（重新解析写入 source_data，而非插入空内容行）
     let _ = crate::database::run("DELETE FROM knowledge_push_queue WHERE source_type='FILE'", &[]);
     let _ = crate::database::run(

@@ -204,9 +204,6 @@ async fn import_sync_document(
 // Materialize and Store (new interface, used by knowledge_pipeline)
 // ═══════════════════════════════════════════════════════════════════
 
-/// 已禁用：改用时间戳驱动的物化管线
-pub fn trigger_sync(_source_table: &str, _source_id: &str) {}
-
 /// 从 source_data 读取内容并物化（供防抖调度器调用）
 pub async fn process_single_entity(source_type: &str, source_id: &str) -> bool {
     match database::get(
@@ -250,18 +247,8 @@ pub async fn materialize_and_store(
         "NOTE" | "TODO" => {
             text = crate::services::data_pipeline::strip_html_for_chunking(&text);
         }
-        "FILE" => {
-            // 文件内容不需要额外清洗
-        }
-        _ => {
-            // 其他类型（PROJECT, PRODUCT, CHAT 等）通过管道处理
-            let source_table = match source_type {
-                "CHAT" => "chat_sessions".to_string(),
-                _ => source_type.to_lowercase().trim_end_matches('s').to_string(),
-            };
-            let pipeline = crate::services::data_pipeline::get_pipeline();
-            text = pipeline.process_file_stream(&source_table, source_id, text);
-        }
+        // FILE / PROJECT / PRODUCT / CHAT 等：内容已在 source_data 中规范化，无需二次清洗
+        _ => {}
     }
 
     if text.trim().is_empty() {

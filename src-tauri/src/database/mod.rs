@@ -114,13 +114,9 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
     // ★ 迁移 user_policies → source_data (POLICY)
     db_migrations::migrate_user_policies_to_source_data(&conn);
 
-    // ★ 添加缺失的索引
+    // ★ 添加缺失的索引（channel_partners/channel_contacts/vendor_partners/vendor_contacts 四表已在迁移中 DROP，对应索引创建移除）
     let _ = conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_cp_project ON channel_partners(project_id);
-         CREATE INDEX IF NOT EXISTS idx_cc_channel ON channel_contacts(channel_id);
-         CREATE INDEX IF NOT EXISTS idx_vp_project ON vendor_partners(project_id);
-         CREATE INDEX IF NOT EXISTS idx_vc_vendor ON vendor_contacts(vendor_id);
-         CREATE INDEX IF NOT EXISTS idx_pd_project ON project_dynamics(project_id);
+        "CREATE INDEX IF NOT EXISTS idx_pd_project ON project_dynamics(project_id);
          CREATE INDEX IF NOT EXISTS idx_si_version ON solution_items(solution_version_id);"
     );
 

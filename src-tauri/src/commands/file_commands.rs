@@ -80,15 +80,6 @@ pub fn cleanup_preview_links() {
     }
 }
 
-fn find_existing_by_hash(hash: &str) -> Option<String> {
-    database::get("SELECT id FROM file_assets WHERE content_hash=? LIMIT 1",&[json!(hash)])
-        .ok().flatten()
-        .and_then(|r| r["id"].as_str().map(|s| s.to_string()))
-        .filter(|_| { let dp = flat_disk_path(hash); std::path::Path::new(&dp).exists() })
-}
-
-// ─── Helpers — file_relations (file_id → file_assets directly) ───
-
 pub(crate) fn add_relation(file_id: &str, entity_type: &str, entity_id: &str, custom_name: &str, creator: &str, folder_id: Option<&str>) {
     database::run(
         "INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator,folder_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
@@ -156,8 +147,18 @@ pub(crate) async fn upload_file_core(
         .await.map_err(|e| format!("计算 hash 失败: {}", e))?
         .map_err(|e| e.to_string())?;
 
-    // CAS 复用
-    if let Some(existing_id) = find_existing_by_hash(&hash) {
+    // CAS 复用：DB 有同 hash 行即复用（原实现要求磁盘也在，否则落到新分支 INSERT 撞 content_hash UNIQUE 永久失败）
+    let db_existing_id: Option<String> = database::get("SELECT id FROM file_assets WHERE content_hash=? LIMIT 1",&[json!(&hash)])
+        .ok().flatten().and_then(|r| r["id"].as_str().map(|s| s.to_string()));
+    if let Some(existing_id) = db_existing_id {
+        // 磁盘文件可能丢失（换机/清理/漂移）→ 用刚上传的临时文件补回，再复用
+        let disk_path = flat_disk_path(&hash);
+        if !disk_path.is_empty() && !std::path::Path::new(&disk_path).exists() {
+            if let Some(p) = std::path::Path::new(&disk_path).parent() { let _ = std::fs::create_dir_all(p); }
+            let dp = disk_path.clone();
+            let fp2 = file_path.to_string();
+            let _ = tauri::async_runtime::spawn_blocking(move || std::fs::copy(&fp2, &dp)).await;
+        }
         for &eid in entity_ids {
             add_relation_with_desc(&existing_id, entity_type, eid, custom_name, creator, note);
         }
@@ -337,6 +338,16 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
     Ok(json!({"folders":folders,"files":files}))
 }
 
+/// 资产是否仍被引用：file_relations 或 email_attachments（邮件附件可引用库内资产，漏算会导致附件碎裂）
+fn asset_still_referenced(asset_id: &str) -> bool {
+    let rels: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?", &[json!(asset_id)])
+        .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    if rels > 0 { return true; }
+    let emails: i64 = database::get("SELECT COUNT(*) as cnt FROM email_attachments WHERE file_asset_id=?", &[json!(asset_id)])
+        .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+    emails > 0
+}
+
 /// 简化删除：按 file_relations.id 删除关联，无剩余引用时清理 file_assets
 #[tauri::command] pub async fn file_delete(file_id: String) -> Result<Value, String> {
     // file_id is file_relations.id
@@ -357,9 +368,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 
     // 3. If no remaining references, clean up asset + KB + physical file
     if let Some(ref aid) = asset_id {
-        let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?", &[json!(aid)])
-            .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-        if remaining == 0 {
+        if !asset_still_referenced(aid) {
             crate::services::knowledge_lifecycle::notify_deleted("FILE", aid);
             if let Some(p) = get_physical_path(aid) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
             database::run("DELETE FROM library_file_locations WHERE file_id=?", &[json!(aid)]).ok();
@@ -394,9 +403,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 
     // 4. If file_assets has no remaining relations, clean up everything
     if let Some(ref aid) = asset_id {
-        let remaining: i64 = database::get("SELECT COUNT(*) as cnt FROM file_relations WHERE file_id=?", &[json!(aid)])
-            .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-        if remaining == 0 {
+        if !asset_still_referenced(aid) {
             crate::services::knowledge_lifecycle::notify_deleted("FILE", aid);
             if let Some(p) = get_physical_path(aid) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
             database::run("DELETE FROM library_file_locations WHERE file_id=?", &[json!(aid)]).ok();
