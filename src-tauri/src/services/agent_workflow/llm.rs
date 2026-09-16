@@ -3,6 +3,23 @@
 use serde_json::{json, Value};
 use crate::services::agent_workflow::*;
 
+/// 从 buffer 头部取出一个完整 SSE 行并识别 data 载荷。
+/// 返回 None = 无完整行（等待更多数据）；Some(None) = 非 data 行或空载荷；Some(Some(payload)) = 完整 data 载荷。
+/// 关键：`data:` 前缀只认行首，JSON 字符串值内出现 "data:"（如 base64 URI）不再破坏边界。
+pub(crate) fn extract_sse_data(buf: &mut String) -> Option<Option<String>> {
+    let nl = buf.find('\n')?;
+    let line = buf[..nl].to_string();
+    *buf = buf[nl + 1..].to_string();
+    let line = line.trim_end_matches('\r');
+    match line.strip_prefix("data:") {
+        Some(rest) => {
+            let p = rest.trim();
+            if p.is_empty() { Some(None) } else { Some(Some(p.to_string())) }
+        }
+        None => Some(None),
+    }
+}
+
 /// 单请求流式调用：一次请求同时完成
 ///   - content 的 token 流式输出到前端（agent:token / agent:start-answer）
 ///   - tool_calls delta 按 index 累积（工具调用决策）
@@ -65,19 +82,20 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
     let mut st = SseState { buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(), usage: None, count: 0, token_buf: String::new(), token_buf_start: 0, suppress_tokens: false, done: false };
     let mut stream = resp.bytes_stream();
 
-    // 尝试从 buffer 头部提取一个完整的 SSE JSON 并处理；返回 false 表示数据不完整
+    // 逐行解析 SSE：data: 前缀仅认行首，一行到达即完整事件（内容含 "data:" 不再破坏边界）
     let try_process_one = |st: &mut SseState, app: &Option<tauri::AppHandle>| -> bool {
-        let trimmed_start = st.buf.find("data:").unwrap_or(0);
-        if trimmed_start > 0 { st.buf = st.buf[trimmed_start..].to_string(); }
-        let after_prefix = if st.buf.starts_with("data: ") { 6 } else if st.buf.starts_with("data:") { 5 } else { return false; };
-        let json_part = &st.buf[after_prefix..];
-        let json_end = json_part.find("data:").unwrap_or(json_part.len());
-        let json_str = json_part[..json_end].trim();
-        if json_str.is_empty() { return false; }
-        if json_str.starts_with("[DONE]") { st.done = true; st.buf = st.buf[after_prefix + json_end..].to_string(); return true; }
-        match serde_json::from_str::<Value>(json_str) {
+        let mut processed_any = false;
+        loop {
+            if st.done { return false; }
+            let payload = match extract_sse_data(&mut st.buf) {
+                Some(Some(p)) => p,
+                Some(None) => continue,
+                None => return processed_any,
+            };
+            processed_any = true;
+            if payload == "[DONE]" { st.done = true; return true; }
+            match serde_json::from_str::<Value>(&payload) {
             Ok(chunk) => {
-                st.buf = st.buf[after_prefix + json_end..].to_string();
                 if chunk["usage"].is_object() { st.usage = Some(chunk["usage"].clone()); }
                 if let Some(choices) = chunk["choices"].as_array() {
                     for c in choices {
@@ -130,9 +148,9 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
                         }
                     }
                 }
-                true
             }
-            Err(_) => false // JSON 不完整，等下一个 chunk
+            Err(e) => { log::warn!("[SSE] 事件载荷解析失败，跳过: {}", e); }
+            }
         }
     };
 
@@ -150,7 +168,8 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
             return Err("cancelled".into());
         }
     }
-    // 流结束后处理剩余数据
+    // 流结束后处理剩余数据（最后一行可能无换行结尾，补一个再解析）
+    if !st.buf.is_empty() { st.buf.push('\n'); }
     while try_process_one(&mut st, &app_handle) {}
     // 流结束后 flush 残余 buffer
     if !st.suppress_tokens && !st.token_buf.is_empty() {
@@ -208,3 +227,38 @@ pub(crate) async fn call_llm_without_tools(messages: &[ChatMessage], app_handle:
 
 // ═══════════════════════════════════════════════════════════════════
 // Chunk metadata enrichment
+
+#[cfg(test)]
+mod tests {
+    use super::extract_sse_data;
+
+    #[test]
+    fn data_prefix_inside_json_value_does_not_break_boundary() {
+        // 回归：回答含 base64 data URI 时，旧实现把内容里的 "data:" 当事件边界导致整流卡死
+        let mut buf = String::from(r#"data: {"choices":[{"delta":{"content":"img data:image/png;base64,AAAA"}}]}"#);
+        buf.push('\n');
+        buf.push('\n');
+        let first = extract_sse_data(&mut buf).expect("line").expect("payload");
+        assert_eq!(first, r#"{"choices":[{"delta":{"content":"img data:image/png;base64,AAAA"}}]}"#);
+        // 后续空行为 Some(None)，再之后无完整行 → None
+        assert!(matches!(extract_sse_data(&mut buf), Some(None)));
+        assert!(extract_sse_data(&mut buf).is_none());
+    }
+
+    #[test]
+    fn incomplete_line_waits_for_more() {
+        let mut buf = String::from("data: {\"choi");
+        assert!(extract_sse_data(&mut buf).is_none());
+        buf.push_str("ces\":[{\"delta\":{\"content\":\"hi\"}}]}\n");
+        let p = extract_sse_data(&mut buf).unwrap().unwrap();
+        assert_eq!(p, r#"{"choices":[{"delta":{"content":"hi"}}]}"#);
+    }
+
+    #[test]
+    fn crlf_and_done_and_non_data_lines() {
+        let mut buf = String::from("event: message\r\ndata: [DONE]\r\n\r\n");
+        assert!(matches!(extract_sse_data(&mut buf), Some(None))); // event: 行
+        assert_eq!(extract_sse_data(&mut buf).unwrap().unwrap(), "[DONE]");
+        assert!(matches!(extract_sse_data(&mut buf), Some(None))); // 空行
+    }
+}

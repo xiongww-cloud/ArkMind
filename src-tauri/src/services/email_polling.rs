@@ -77,7 +77,8 @@ async fn tick() -> Result<u64, String> {
             let now = chrono::Local::now().naive_local();
             let diff = now.signed_duration_since(last_time).num_minutes();
             if diff < 1 {
-                return Ok(((1 - diff) as u64) * 60);
+                // 封顶 60s：时钟回拨时 (1-diff) 无上界，曾导致一次性 sleep 数天（同 notification_loop 已修问题）
+                return Ok(((1 - diff).clamp(0, 1) as u64) * 60);
             }
         }
     }
@@ -185,10 +186,44 @@ async fn run_sync() -> Result<(), String> {
 }
 
 /// 存储邮件到数据库（异步，含附件落盘入库）
+/// 顺序：查重 → 邮件行落库成功 → 才处理附件（防冲突忽略后附件挂到不存在的 email_id 成幽灵行）
 async fn store_email(account: &EmailAccount, folder: &str, email: &ParsedEmail) -> String {
+    // 同封邮件（account+folder+uid 唯一）已存在 → 复用现有 id，跳过重复落附件
+    let existing: Option<String> = database::get(
+        "SELECT id FROM emails WHERE account_id=?1 AND folder=?2 AND uid=?3",
+        &[json!(&account.id), json!(folder), json!(email.uid)],
+    ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from));
+    if let Some(eid) = existing { return eid; }
+
     let id = uuid::Uuid::new_v4().to_string();
 
-    // 存储附件并落盘入库（content_id 保留原始 CID，供 email_render_html 渲染时内联解析）
+    // 先存邮件（保留原始 body_html，内嵌图片由 email_render_html 在渲染时以 data URL 内联解析）
+    let inserted = database::run(
+        "INSERT OR IGNORE INTO emails(id, account_id, folder, uid, message_id, from_addr, from_name, to_addr, cc_addr, subject, body_text, body_html, received_at, has_attachments) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        &[
+            json!(id), json!(account.id), json!(folder), json!(email.uid),
+            json!(email.message_id), json!(email.from_addr), json!(email.from_name),
+            json!(email.to_addr), json!(email.cc_addr), json!(email.subject), json!(email.body_text),
+            json!(email.body_html), json!(email.received_at), json!(email.has_attachments),
+        ],
+    );
+    match inserted {
+        Ok(r) if r.changes == 0 => {
+            // 并发窗口内已被其他任务插入 → 回查真实 id
+            let real = database::get(
+                "SELECT id FROM emails WHERE account_id=?1 AND folder=?2 AND uid=?3",
+                &[json!(&account.id), json!(folder), json!(email.uid)],
+            ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from));
+            return real.unwrap_or(id);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            log::error!("[邮件轮询] 邮件行写入失败，跳过附件存储: {}", e);
+            return id;
+        }
+    }
+
+    // 邮件行已确认存在，再存附件
     for att in &email.attachments {
         let att_id = uuid::Uuid::new_v4().to_string();
 
@@ -199,26 +234,15 @@ async fn store_email(account: &EmailAccount, folder: &str, email: &ParsedEmail) 
             None
         };
 
-        database::run(
+        if let Err(e) = database::run(
             "INSERT INTO email_attachments(id, email_id, filename, mime_type, size, parsed_text, file_asset_id, content_id, is_inline) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             &[
                 json!(att_id), json!(id), json!(att.filename), json!(att.mime_type),
                 json!(att.size), json!(att.parsed_text), json!(file_asset_id),
                 json!(att.content_id), json!(att.is_inline as i32),
             ],
-        ).ok();
+        ) { log::warn!("[邮件轮询] 附件行写入失败 ({}): {}", att.filename, e); }
     }
-
-    // 存储邮件（保留原始 body_html，内嵌图片由 email_render_html 在渲染时以 data URL 内联解析）
-    database::run(
-        "INSERT OR IGNORE INTO emails(id, account_id, folder, uid, message_id, from_addr, from_name, to_addr, cc_addr, subject, body_text, body_html, received_at, has_attachments) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-        &[
-            json!(id), json!(account.id), json!(folder), json!(email.uid),
-            json!(email.message_id), json!(email.from_addr), json!(email.from_name),
-            json!(email.to_addr), json!(email.cc_addr), json!(email.subject), json!(email.body_text),
-            json!(email.body_html), json!(email.received_at), json!(email.has_attachments),
-        ],
-    ).ok();
 
     id
 }

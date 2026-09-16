@@ -176,6 +176,30 @@ async fn sync_loop() {
             save_sync_cursor(&new_cursor);
         }
 
+        // 物化债务补偿：捞取到期实体重新入队（在捞起瞬间推迟 next_at，防重复捞取空转）
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64).unwrap_or(0);
+            let due = crate::database::all(
+                "SELECT source_type, source_id FROM materialize_retry WHERE next_at <= ?1 LIMIT 20",
+                &[json!(now)],
+            ).unwrap_or_default();
+            for r in due {
+                let st = r["source_type"].as_str().unwrap_or("").to_string();
+                let sid = r["source_id"].as_str().unwrap_or("").to_string();
+                if st.is_empty() || sid.is_empty() { continue; }
+                let _ = crate::database::run(
+                    "UPDATE materialize_retry SET next_at=?3 WHERE source_type=?1 AND source_id=?2",
+                    &[json!(&st), json!(&sid), json!(now + 1800)],
+                );
+                log::info!("[知识管线] 债务补偿入队: {st}:{sid}");
+                if !crate::services::debounced_sync::SCHEDULER.is_tracked(&st, &sid) {
+                    crate::services::debounced_sync::SCHEDULER.enqueue(&st, &sid);
+                }
+            }
+        }
+
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }

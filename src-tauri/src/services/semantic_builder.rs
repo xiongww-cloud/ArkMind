@@ -431,7 +431,11 @@ fn decode_entities(text: &str) -> String {
     let mut i = 0;
     while i < c.len() {
         if c[i] == '&' {
-            let end = c[i..].iter().position(|&x| x == ';').map(|p| i + p + 1).unwrap_or(c.len());
+            // 无 ';' 闭合的孤立 '&'（含文本以 & 结尾）：直接输出 &，旧代码 end-1 切片会 panic
+            let end = match c[i..].iter().position(|&x| x == ';') {
+                Some(p) => i + p + 1,
+                None => { out.push('&'); i += 1; continue; }
+            };
             let ent: String = c[i+1..end-1].iter().collect();
             let d = match ent.as_str() {
                 "amp" => "&", "lt" => "<", "gt" => ">",

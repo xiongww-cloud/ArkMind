@@ -54,6 +54,14 @@ pub(crate) fn migrate_files_to_file_assets(conn: &Connection) {
     let has_old = conn.prepare("SELECT global_name FROM file_assets LIMIT 0").is_ok();
     if has_old {
         log::info!("[数据库] 检测到旧版 file_assets，正在重建...");
+        // 破坏性重建前强制快照：备份失败则放弃本次迁移（下次启动重试），绝不裸删
+        if let Err(e) = backup_before_destructive(conn, "pre_files_rebuild") {
+            log::error!("[数据库] 迁移前备份失败，跳过 file_assets 破坏性重建: {}", e);
+            return;
+        }
+        // 不再 DROP source_data/global_search_fts：清洗文本语料（NOTE/EMAIL/FILE）保留，
+        // source_data 的 id 类型转换由其后的 migrate_source_data_to_text_id 处理；
+        // 指向已清空 file_assets 的孤儿行由启动孤儿清理收敛
         let _ = conn.execute_batch("
             DELETE FROM file_project_mapping WHERE file_id IN (SELECT id FROM file_assets);
             DELETE FROM file_product_mapping WHERE file_id IN (SELECT id FROM file_assets);
@@ -62,10 +70,8 @@ pub(crate) fn migrate_files_to_file_assets(conn: &Connection) {
             DROP TABLE IF EXISTS file_library_mapping;
             DROP TABLE IF EXISTS file_product_mapping;
             DROP TABLE IF EXISTS file_project_mapping;
-            DROP TABLE IF EXISTS source_data;
-            DROP TABLE IF EXISTS global_search_fts;
-            CREATE TABLE source_data (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+            CREATE TABLE IF NOT EXISTS source_data (
+                id TEXT PRIMARY KEY,
                 source_type TEXT NOT NULL, source_id TEXT NOT NULL,
                 title TEXT DEFAULT '', content TEXT NOT NULL DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now', 'localtime')),
@@ -75,6 +81,7 @@ pub(crate) fn migrate_files_to_file_assets(conn: &Connection) {
             CREATE TABLE file_assets (
                 id TEXT PRIMARY KEY, file_ext TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
                 content_hash TEXT NOT NULL UNIQUE, parse_status TEXT DEFAULT 'PENDING',
+                original_name TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))
             );
             CREATE TABLE library_folders (
@@ -103,10 +110,27 @@ pub(crate) fn migrate_files_to_file_assets(conn: &Connection) {
                 custom_name TEXT DEFAULT '', global_name TEXT DEFAULT '',
                 PRIMARY KEY (file_id, project_id)
             );
-            CREATE VIRTUAL TABLE IF NOT EXISTS global_search_fts USING fts5(source_type UNINDEXED, source_id UNINDEXED, title, content, content='source_data', content_rowid='rowid');
         ");
-        log::info!("[数据库] 文件相关表已重建为新 schema");
+        log::info!("[数据库] 文件相关表已重建为新 schema（source_data 语料已保留）");
     }
+}
+
+/// 破坏性迁移前的库内快照：VACUUM INTO 到数据目录 backups/，失败上抛由调用方中止迁移
+fn backup_before_destructive(conn: &Connection, prefix: &str) -> Result<(), String> {
+    let db_file: String = conn.query_row(
+        "SELECT file FROM pragma_database_list WHERE name='main'", [], |r| r.get(0),
+    ).unwrap_or_default();
+    let dir = std::path::Path::new(&db_file).parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| "无法确定数据目录".to_string())?;
+    let backups = dir.join("backups");
+    std::fs::create_dir_all(&backups).map_err(|e| format!("创建备份目录失败: {}", e))?;
+    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let dst = backups.join(format!("{}_{}.db", prefix, ts));
+    conn.execute("VACUUM INTO ?1", rusqlite::params![dst.to_string_lossy().as_ref()])
+        .map_err(|e| format!("VACUUM INTO 失败: {}", e))?;
+    log::warn!("[数据库] 破坏性迁移前快照已生成: {:?}", dst);
+    Ok(())
 }
 
 /// ★ 从旧版 file_objects/file_versions 反填 file_relations.file_id，然后清理旧表
@@ -492,8 +516,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     let _ = conn.execute_batch("DROP TABLE IF EXISTS customer_contacts;");
 
     // ★ 迁移项目-合作伙伴映射到 business_relations（仅首次执行，后续跳过）
+    // 注意：system_config 没有 key 列（PK 是 tenant_id），旧代码查错表导致标记恒为 false、每次启动全量重跑
     let migration_done: bool = conn.query_row(
-        "SELECT COUNT(*) FROM system_config WHERE key='migration_br_mapping_done'",
+        "SELECT COUNT(*) FROM system_settings WHERE key='migration_br_mapping_done'",
         [], |r| r.get::<_,i64>(0),
     ).unwrap_or(0) > 0;
 
@@ -544,7 +569,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         // 全部成功才标记迁移完成；失败则下次启动重试（INSERT OR IGNORE 幂等，重试安全）
         if all_ok {
             conn.execute(
-                "INSERT OR REPLACE INTO system_config (key, value) VALUES ('migration_br_mapping_done', '1')",
+                "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('migration_br_mapping_done', '1')",
                 [],
             ).ok();
             log::info!("[迁移] business_relations 映射迁移完成");
@@ -560,8 +585,11 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     ).unwrap_or(0) > 0;
     if has_partner_id {
         // 旧表有 partner_id 列，需要迁移数据并重建表
+        // 先无条件删除残留备份：若上次在 DROP 与 RENAME 之间崩溃，IF NOT EXISTS 会跳过重建，
+        // 导致 DROP 正表后 RENAME 陈旧备份 = 静默丢新数据
         let _ = conn.execute_batch("
-            CREATE TABLE IF NOT EXISTS partner_contacts_backup AS SELECT id, name, phone, email, position, remark, created_at FROM partner_contacts;
+            DROP TABLE IF EXISTS partner_contacts_backup;
+            CREATE TABLE partner_contacts_backup AS SELECT id, name, phone, email, position, remark, created_at FROM partner_contacts;
             DROP TABLE IF EXISTS partner_contacts;
             ALTER TABLE partner_contacts_backup RENAME TO partner_contacts;
         ");

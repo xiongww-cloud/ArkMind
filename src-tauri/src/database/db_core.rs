@@ -58,7 +58,7 @@ pub(crate) fn all(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<V
         let p: Vec<rusqlite::types::Value> = params.iter().map(json_to_sqlite).collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(p.iter()), |row| {
             let mut map = serde_json::Map::new();
-            for (i,name) in cols.iter().enumerate() { map.insert(name.clone(), sqlite_to_json(row.get_unwrap(i))); }
+            for (i,name) in cols.iter().enumerate() { map.insert(name.clone(), sqlite_to_json(row.get::<_, rusqlite::types::Value>(i).unwrap_or(rusqlite::types::Value::Null))); }
             Ok(serde_json::Value::Object(map))
         })?;
         Ok(rows.filter_map(|r|r.ok()).collect())
@@ -93,7 +93,7 @@ pub(crate) fn run(sql: &str, params: &[serde_json::Value]) -> rusqlite::Result<R
 }
 
 pub(crate) fn save() -> rusqlite::Result<()> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let last = LAST_CHECKPOINT.load(Ordering::Relaxed);
     if now - last < CHECKPOINT_INTERVAL_SECS {
         return Ok(());
@@ -105,7 +105,7 @@ pub(crate) fn save() -> rusqlite::Result<()> {
 #[allow(dead_code)]
 pub(crate) fn save_forced() -> rusqlite::Result<()> {
     LAST_CHECKPOINT.store(
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64,
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
         Ordering::Relaxed,
     );
     with_db(|conn| conn.pragma_update(None, "wal_checkpoint", "TRUNCATE"))

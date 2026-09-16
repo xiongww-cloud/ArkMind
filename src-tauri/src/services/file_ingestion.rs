@@ -82,6 +82,8 @@ fn ingestion_loop() {
         log::info!("[数据中台] 冷启动：已清理 {} 条孤立缓存", cache_cleaned);
     }
 
+    let mut file_backfill_tick: u32 = 0;
+
     loop {
         if !INGESTION_RUNNING.load(Ordering::Acquire) {
             log::info!("[数据中台] 收到停止信号，退出轮询");
@@ -98,9 +100,43 @@ fn ingestion_loop() {
         ingest_pending_todos();
         ingest_pending_emails();
 
+        // 3. FILE 兜底扫描（约每30s）：上传后入队前崩溃 → 有资产无队列记录，永久漏解析的缺口在此收敛
+        file_backfill_tick = file_backfill_tick.wrapping_add(1);
+        if file_backfill_tick >= 300 {
+            file_backfill_tick = 0;
+            backfill_missing_file_sources();
+        }
+
         // 空闲时每100ms检查一次（更快响应新任务）
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// FILE 补漏：file_assets 存在、但 source_data 无文本且队列无任何在途/终态记录 → 重新入队解析
+fn backfill_missing_file_sources() {
+    let missing = match crate::database::all(
+        "SELECT f.id FROM file_assets f \
+         WHERE f.created_at < datetime('now','localtime','-2 minutes') \
+           AND NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type='FILE' AND sd.source_id=f.id) \
+           AND NOT EXISTS (SELECT 1 FROM knowledge_push_queue q \
+               WHERE q.source_type='FILE' AND q.source_id=f.id \
+                 AND q.status IN ('pending','processing','failed','unsupported')) \
+         LIMIT 20",
+        &[],
+    ) { Ok(r) => r, Err(_) => return };
+    if missing.is_empty() { return; }
+    for r in &missing {
+        let fid = match r["id"].as_str() { Some(s) => s, None => continue };
+        let _ = crate::database::run(
+            "DELETE FROM knowledge_push_queue WHERE source_type='FILE' AND source_id=?1 AND status='pending'",
+            &[json!(fid)],
+        );
+        let _ = crate::database::run(
+            "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) VALUES('FILE', ?1, 'change', 'pending')",
+            &[json!(fid)],
+        );
+    }
+    log::info!("[数据中台] FILE 兜底扫描：补入队 {} 个漏解析文件", missing.len());
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -452,8 +488,8 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
         return Err("清洗后无有效文本".to_string());
     }
 
-    // 写入 source_data
-    crate::database::file_sync_to_source_data(&file_id, &clean_text);
+    // 写入 source_data（失败则任务重试，不吞错）
+    crate::database::file_sync_to_source_data(&file_id, &clean_text)?;
 
     // 清理临时缓存
     let _ = crate::database::run(
@@ -501,8 +537,8 @@ fn process_pdf_text_only(file_id: &str, path: &str, _total_pages: u16, source_ty
         return Err("清洗后无有效文本".to_string());
     }
 
-    // 写入 source_data
-    crate::database::file_sync_to_source_data(file_id, &clean_text);
+    // 写入 source_data（失败则任务重试，不吞错）
+    crate::database::file_sync_to_source_data(file_id, &clean_text)?;
 
     // 清理临时缓存
     let _ = crate::database::run(
@@ -690,23 +726,31 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     );
 
     // ════════════════════════════════════════
-    // ③ 写入 source_data
+    // ③ 写入 source_data（失败则任务重试，不吞错）
     // ════════════════════════════════════════
-    crate::database::file_sync_to_source_data(&file_id, &clean_text);
+    crate::database::file_sync_to_source_data(&file_id, &clean_text)?;
 
-    // 验证写入是否成功
+    // 验证写入是否成功（失败上抛进重试）
     let check = crate::database::get(
         "SELECT 1 FROM source_data WHERE source_type='FILE' AND source_id=?",
         &[json!(&file_id)],
     );
-    if check.is_ok() && check.unwrap().is_some() {
-        log::info!(
-            "[数据摄入中台] {} 写入 source_data 完成 ({} 字符)",
-            log_tag,
-            clean_text.len()
-        );
-    } else {
-        log::info!("[数据摄入中台] {} source_data 写入后验证失败!", log_tag);
+    match check {
+        Ok(Some(_)) => {
+            log::info!(
+                "[数据摄入中台] {} 写入 source_data 完成 ({} 字符)",
+                log_tag,
+                clean_text.len()
+            );
+        }
+        Ok(None) => {
+            log::warn!("[数据摄入中台] {} source_data 写入后验证失败，任务重试!", log_tag);
+            return Err("source_data 写入后验证失败".to_string());
+        }
+        Err(e) => {
+            log::warn!("[数据摄入中台] {} source_data 验证查询失败: {}", log_tag, e);
+            return Err(format!("source_data 验证查询失败: {}", e));
+        }
     }
 
     log::info!(

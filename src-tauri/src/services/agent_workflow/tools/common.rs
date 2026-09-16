@@ -88,7 +88,9 @@ pub(crate) fn resolve_project_id(project_id: &str) -> Option<String> {
 pub(crate) fn resolve_time(s: &str) -> String {
     let s = s.trim();
     if s.is_empty() { return String::new(); }
-    if s.len() >= 10 && s.contains('-') { return s[..10].to_string(); }
+    // ISO 日期前缀直通：仅接受 ASCII 数字与连字符构成的前10字符（防多字节字符串按字节切片 panic）
+    let head: String = s.chars().take(10).collect();
+    if head.chars().count() == 10 && head.bytes().all(|b| b.is_ascii_digit() || b == b'-') && head.contains('-') { return head; }
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     // Handle relative expressions via simple matching
     if s.contains("昨天") || s.contains("昨天") { let d = chrono::Local::now() - chrono::Duration::days(1); return d.format("%Y-%m-%d").to_string(); }

@@ -298,11 +298,20 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             retry_count INTEGER DEFAULT 0,
             last_error TEXT DEFAULT '',
             debounce_until TEXT DEFAULT NULL,
-            progress_page INTEGER DEFAULT 0,
-            progress_total INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now', 'localtime')),
-            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
-        );
+              progress_page INTEGER DEFAULT 0,
+              progress_total INTEGER DEFAULT 0,
+              created_at TEXT DEFAULT (datetime('now', 'localtime')),
+              updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+          );
+
+          -- 物化债务表：调度器重试耗尽后落此表，由 sync_loop 按退避时间持续补偿，杜绝「永久缺失」
+          CREATE TABLE IF NOT EXISTS materialize_retry (
+              source_type TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              retry_count INTEGER NOT NULL DEFAULT 0,
+              next_at INTEGER NOT NULL,
+              PRIMARY KEY (source_type, source_id)
+          );
 
         -- 临时解析缓存：存储PDF每页OCR结果，支持断点续传
         CREATE TABLE IF NOT EXISTS file_parse_cache (

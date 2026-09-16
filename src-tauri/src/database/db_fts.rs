@@ -41,8 +41,9 @@ pub fn fts5_search_content(query: &str, limit: i64) -> SqliteResult<Vec<Fts5Resu
 }
 
 /// 文件解析完成后写入 source_data（FTS5 external content 自动同步索引）
-pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) {
-    if parsed_text.is_empty() { return; }
+/// 返回 Err 时调用方必须失败重试——此前吞错导致解析成果蒸发且队列照常删除
+pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) -> Result<(), String> {
+    if parsed_text.is_empty() { return Err("source_data 写入跳过：文本为空".to_string()); }
     // 从 file_assets 获取原始文件名作为 title
     let title = with_db(|c| {
         c.query_row(
@@ -57,11 +58,16 @@ pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) {
             rusqlite::params![file_id, title, parsed_text],
         ).map(|_|())
     });
-    if let Err(e) = result {
-        log::info!("[数据库] 写入 source_data 失败 (file={}): {}", file_id, e);
-    } else {
-        // source_data 写入成功后触发同步入队和打标
-        crate::services::ai_sync::trigger_sync("files", file_id);
+    match result {
+        Ok(_) => {
+            // source_data 写入成功后触发同步入队和打标
+            crate::services::ai_sync::trigger_sync("files", file_id);
+            Ok(())
+        }
+        Err(e) => {
+            log::warn!("[数据库] 写入 source_data 失败 (file={}): {}", file_id, e);
+            Err(format!("写入 source_data 失败: {}", e))
+        }
     }
 }
 

@@ -38,6 +38,37 @@ const DEBOUNCE_WINDOW_SECS: u64 = 5;
 /// 此处限制避免过多任务同时排队等待锁。
 const MAX_CONCURRENT_MATERIALIZATIONS: usize = 4;
 
+/// ─── 物化债务表（materialize_retry）：重试耗尽后落库持久补偿，杜绝永久缺失 ───
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// 记债/加债：退避 10min×n 封顶 2h；超过 50 次降为每日一次（不再静默丢弃）
+pub fn record_materialize_debt(source_type: &str, source_id: &str) {
+    let prev: i64 = crate::database::get(
+        "SELECT retry_count FROM materialize_retry WHERE source_type=?1 AND source_id=?2",
+        &[serde_json::json!(source_type), serde_json::json!(source_id)],
+    ).ok().flatten().and_then(|r| r["retry_count"].as_i64()).unwrap_or(0);
+    let n = prev + 1;
+    let delay = if n > 50 { 86_400 } else { (600 * n).min(7_200) };
+    let r = crate::database::run(
+        "INSERT OR REPLACE INTO materialize_retry(source_type, source_id, retry_count, next_at) VALUES(?1, ?2, ?3, ?4)",
+        &[serde_json::json!(source_type), serde_json::json!(source_id), serde_json::json!(n), serde_json::json!(now_secs() + delay)],
+    );
+    if r.is_ok() {
+        log::warn!("[防抖调度器] 物化失败已记债(第{}次，{}s后补偿): {}:{}", n, delay, source_type, source_id);
+    }
+}
+
+/// 销债：物化成功后清理
+pub fn clear_materialize_debt(source_type: &str, source_id: &str) {
+    let _ = crate::database::run(
+        "DELETE FROM materialize_retry WHERE source_type=?1 AND source_id=?2",
+        &[serde_json::json!(source_type), serde_json::json!(source_id)],
+    );
+}
+
 /// 单实体物化最大重试次数（失败后按退避间隔重试）
 const MAX_MATERIALIZE_RETRIES: u32 = 5;
 
@@ -269,20 +300,23 @@ impl DebouncedMaterializer {
                         } else {
                             log::info!("[防抖调度器] 已物化: {st}:{sid}");
                         }
+                        clear_materialize_debt(&st, &sid);
                     } else {
                         // 物化失败 → 记录重试次数，按退避间隔重新排队
                         let mut n = retries_ref.entry(key_clone.clone()).or_insert(0);
                         // O9: 重试队列达到上限时放弃新失败实体（已跟踪的继续重试）
                         if *n == 0 && retries_ref.len() >= MAX_RETRY_TRACKED {
                             state_ref.remove(&key_clone);
-                            log::warn!("[防抖调度器] 重试队列已满，放弃（sync_loop 兜底）: {st}:{sid}");
+                            record_materialize_debt(&st, &sid);
+                            log::warn!("[防抖调度器] 重试队列已满，落债务表: {st}:{sid}");
                         } else {
                             *n += 1;
                             let count = *n;
                             if count >= MAX_MATERIALIZE_RETRIES {
                                 retries_ref.remove(&key_clone);
                                 state_ref.remove(&key_clone);
-                                log::error!("[防抖调度器] 物化失败 {count} 次，放弃: {st}:{sid}");
+                                record_materialize_debt(&st, &sid);
+                                log::error!("[防抖调度器] 物化失败 {count} 次，落债务表持续补偿: {st}:{sid}");
                             } else {
                                 state_ref.insert(
                                     key_clone.clone(),
