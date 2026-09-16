@@ -144,8 +144,12 @@ pub(crate) async fn upload_file_core(
     note: &str,
     folder_id: Option<&str>,
 ) -> Result<(String, String), String> {
-    let ext = std::path::Path::new(file_path)
-        .extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+    // ★ 内容权威：魔数嗅探优先决定 file_ext，文件名（含 Outlook CID 垃圾后缀）仅作回退
+    let fp0 = file_path.to_string();
+    let name0 = std::path::Path::new(file_path)
+        .file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let ext = tauri::async_runtime::spawn_blocking(move || crate::services::file_parser::sniff_file_ext(&fp0, &name0))
+        .await.map_err(|e| format!("嗅探失败: {}", e))?;
 
     let fp = file_path.to_string();
     let (hash, file_size) = tauri::async_runtime::spawn_blocking(move || compute_file_hash(&fp))

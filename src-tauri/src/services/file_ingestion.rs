@@ -616,8 +616,9 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     let parse_elapsed = parse_start.elapsed().as_millis();
 
     if !parse_result.success || parse_result.text.is_empty() {
-        // 后缀不在解析器白名单内且暴力兜底也失败 → 不支持的格式，终态不再重试
-        if !is_supported_parse_ext(&ext) {
+        // ★ 内容权威判定：魔数命中 → 类型已知，报错即真实解析错误（含NON_RETRYABLE前缀），不标unsupported；
+        //   魔数未命中且后缀也不在白名单 → 才是真·不支持格式，终态不再重试
+        if parse_result.inferred_ext.is_none() && !is_supported_parse_ext(&ext) {
             return Err(format!("{}不支持的文件格式: .{}", UNSUPPORTED_PREFIX, ext));
         }
         return Err(if !parse_result.error.is_empty() {
@@ -650,7 +651,9 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     // ② 文本清洗
     // ════════════════════════════════════════
     let clean_start = std::time::Instant::now();
-    let clean_text = crate::services::file_parser::clean_extracted_text_with_hint(&parse_result.text, &ext);
+    // ★ 清洗提示优先用魔数识别的真实类型
+    let effective_ext = parse_result.inferred_ext.clone().unwrap_or_else(|| ext.clone());
+    let clean_text = crate::services::file_parser::clean_extracted_text_with_hint(&parse_result.text, &effective_ext);
     let clean_elapsed = clean_start.elapsed().as_micros();
     let reduction = if parse_result.text.len() > 0 {
         100.0 - (clean_text.len() as f64 / parse_result.text.len() as f64 * 100.0)
@@ -659,14 +662,24 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     };
 
     if clean_text.trim().is_empty() {
-        // 非白名单后缀清洗后无有效内容 → 视为不支持，终态不再重试
-        if !is_supported_parse_ext(&ext) {
+        // 魔数未命中且后缀非白名单，清洗后无有效内容 → 视为不支持，终态不再重试
+        if parse_result.inferred_ext.is_none() && !is_supported_parse_ext(&ext) {
             return Err(format!("{}不支持的文件格式: .{}（清洗后无有效文本）", UNSUPPORTED_PREFIX, ext));
         }
         return Err(format!(
             "清洗后无有效文本 (原始 {} 字符)",
             parse_result.text.len()
         ));
+    }
+    // ★ 魔数识别出的真实类型与库中后缀不符 → 自愈 file_assets.file_ext（内容权威）
+    if let Some(ie) = &parse_result.inferred_ext {
+        if !ie.is_empty() && *ie != ext {
+            let _ = crate::database::run(
+                "UPDATE file_assets SET file_ext=?1 WHERE id=?2",
+                &[json!(ie), json!(&file_id)],
+            );
+            log::info!("[数据摄入中台] {} file_ext 自愈: .{} → .{}", log_tag, ext, ie);
+        }
     }
     log::info!(
         "[数据摄入中台] {} 文本清洗完成 → clean_text={} 字符 (压缩 {:.1}%, 耗时 {}μs)",

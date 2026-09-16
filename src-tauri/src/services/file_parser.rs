@@ -23,7 +23,7 @@ static VISION_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
 });
 
 #[derive(Default)]
-pub struct ParseResult { pub text: String, pub success: bool, pub error: String }
+pub struct ParseResult { pub text: String, pub success: bool, pub error: String, pub inferred_ext: Option<String> }
 
 // ═══════════════════════════════════════════════════════════════
 // OCR via Vision API
@@ -854,6 +854,32 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
         acc
     })
 }
+/// ★ 内容权威嗅探：读文件头 4KB 用 infer 识别真实类型。
+/// 命中返回真实扩展名；未命中回退文件名扩展（自动剥离 Outlook CID 尾巴如 `image.jpg@hex.hash`）；再无则空。
+pub fn sniff_file_ext(path: &str, file_name: &str) -> String {
+    if let Ok(bytes) = std::fs::File::open(path).and_then(|mut f| {
+        use std::io::Read;
+        let mut buf = vec![0u8; 4096];
+        let n = f.read(&mut buf)?;
+        buf.truncate(n);
+        Ok(buf)
+    }) {
+        if let Some(kind) = infer::get(&bytes) {
+            return kind.extension().to_string();
+        }
+    }
+    // 回退：文件名扩展；若扩展呈十六进制长尾（疑似 CID 垃圾后缀），取 '@' 前主名的扩展
+    let raw = std::path::Path::new(file_name)
+        .extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let looks_hex_junk = raw.len() >= 6 && raw.chars().all(|c| c.is_ascii_hexdigit());
+    if !raw.is_empty() && !looks_hex_junk {
+        return raw;
+    }
+    let base = file_name.split('@').next().unwrap_or(file_name);
+    std::path::Path::new(base)
+        .extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()
+}
+
 pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     if !std::path::Path::new(path).exists() {
         return ParseResult { text: String::new(), success: false, ..Default::default() };
@@ -863,6 +889,9 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     let head = std::fs::read(path).unwrap_or_default();
     let probe = &head[..head.len().min(4096)];
     let inferred = infer::get(probe);
+    // ★ 内容权威：魔数命中即记录真实类型扩展名（文件名后缀不可信）
+    let magic_ext: Option<String> = inferred.map(|k| k.extension().to_string());
+    let mk = |text: String, error: String| { let success = !text.is_empty(); ParseResult { text, success, error, inferred_ext: magic_ext.clone() } };
 
     // ── 嗅探命中：直接路由 ──
     if let Some(kind) = inferred {
@@ -871,44 +900,44 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
                 // PDF: OCR（pdfium + 视觉模型）优先 → pdfium 纯文本 → pdf-extract
                 let ocr_result = try_ocr_pdf(path);
                 if !ocr_result.is_empty() {
-                    return ParseResult { success: true, text: ocr_result, ..Default::default() };
+                    return mk(ocr_result, String::new());
                 }
                 // 视觉模型未配置 → pdfium 纯文本
                 let pdfium_text = try_pdfium_extract(path);
                 if !pdfium_text.is_empty() {
-                    return ParseResult { success: true, text: pdfium_text, ..Default::default() };
+                    return mk(pdfium_text, String::new());
                 }
                 log::info!("[文件解析] PDF 解析失败，回退到 pdf-extract");
                 let text = read_pdf(path);
-                return ParseResult { success: !text.is_empty(), text, ..Default::default() };
+                return mk(text, String::new());
             }
             "image/png" | "image/jpeg" | "image/webp" | "image/bmp" => {
                 return match try_ocr_image_result(path, kind.mime_type()) {
-                    Ok(text) => ParseResult { success: true, text, ..Default::default() },
-                    Err(e) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: {}", crate::services::file_ingestion::NON_RETRYABLE_PREFIX, e) },
+                    Ok(text) => mk(text, String::new()),
+                    Err(e) => mk(String::new(), format!("{}视觉模型解析失败: {}", crate::services::file_ingestion::NON_RETRYABLE_PREFIX, e)),
                 };
             }
             "application/zip" | "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                 // ZIP 基类：可能是 docx / xlsx / 纯 zip
                 // 优先尝试 DOCX（内部 XML），失败回退 XLSX
                 if let Ok(t) = read_docx(path) {
-                    return ParseResult { success: !t.is_empty(), text: t, ..Default::default() };
+                    return mk(t, String::new());
                 }
                 if let Ok(t) = read_xlsx(path) {
-                    return ParseResult { success: !t.is_empty(), text: t, ..Default::default() };
+                    return mk(t, String::new());
                 }
                 if let Ok(t) = read_pptx(path) {
-                    return ParseResult { success: !t.is_empty(), text: t, ..Default::default() };
+                    return mk(t, String::new());
                 }
             }
             "text/plain" | "text/csv" | "application/json" => {
                 let text = std::fs::read_to_string(path).unwrap_or_default();
-                return ParseResult { success: !text.is_empty(), text, ..Default::default() };
+                return mk(text, String::new());
             }
             "application/msword" | "application/x-ole-storage" => {
                 // OLE2 格式（.doc）：使用 rwml 解析
                 if let Ok(t) = read_doc_legacy(path) {
-                    return ParseResult { success: !t.is_empty(), text: t, ..Default::default() };
+                    return mk(t, String::new());
                 }
             }
             _ => {} // 未知二进制 — 转入后缀路由
@@ -936,8 +965,8 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
             };
             return match try_ocr_image_result(path, mime) {
                 Ok(t) if !t.is_empty() => ParseResult { success: true, text: t, ..Default::default() },
-                Ok(_) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: OCR 未返回内容", crate::services::file_ingestion::NON_RETRYABLE_PREFIX) },
-                Err(e) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: {}", crate::services::file_ingestion::NON_RETRYABLE_PREFIX, e) },
+                Ok(_) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: OCR 未返回内容", crate::services::file_ingestion::NON_RETRYABLE_PREFIX), inferred_ext: None },
+                Err(e) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: {}", crate::services::file_ingestion::NON_RETRYABLE_PREFIX, e), inferred_ext: None },
             };
         }
         _ => String::new(),

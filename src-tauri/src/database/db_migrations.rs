@@ -890,6 +890,34 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         let _ = conn.execute_batch(&format!("CREATE INDEX IF NOT EXISTS {idx_name} ON notes({col});"));
     }
 
+    // ★ 存量自愈：Outlook CID 垃圾后缀（image.jpg@hex.hash 之类）导致 file_ext 为十六进制串、
+    //   解析任务被误标 unsupported。按磁盘文件内容魔数修正 file_ext，并重置对应 unsupported 任务重新解析。
+    //   幂等：仅"嗅探出真实类型且与现值不同"才修正+重入队；魔数未命中的（WMF等）保持 unsupported。
+    {
+        let suspects: Vec<(String, String, String)> = conn
+            .prepare("SELECT a.id, a.file_ext, a.content_hash FROM file_assets a \
+                      JOIN knowledge_push_queue q ON q.source_id=a.id AND q.source_type='FILE' AND q.status='unsupported'")
+            .and_then(|mut s| Ok(s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+                .filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        let mut fixed = 0usize;
+        for (id, cur_ext, hash) in suspects {
+            if cur_ext == "bin" || cur_ext.is_empty() { continue; }
+            let path = crate::commands::file_commands::flat_disk_path(&hash);
+            let true_ext = crate::services::file_parser::sniff_file_ext(&path, "");
+            if !true_ext.is_empty() && true_ext != cur_ext {
+                let _ = conn.execute("UPDATE file_assets SET file_ext=?1 WHERE id=?2", rusqlite::params![&true_ext, &id]);
+                let _ = conn.execute(
+                    "UPDATE knowledge_push_queue SET status='pending', last_error='', retry_count=0 WHERE source_type='FILE' AND source_id=?1 AND status='unsupported'",
+                    rusqlite::params![&id]);
+                fixed += 1;
+            }
+        }
+        if fixed > 0 {
+            log::info!("[数据库] file_ext 内容嗅探自愈: 修正 {} 个文件并重新入队解析", fixed);
+        }
+    }
+
     // ★ 项目 canonical ID 迁移：阶段 A —— 仅准备状态字段与审计表。
     //    真正的数据迁移由前端启动后提交 identity map 触发（migration_submit_project_id_map），
     //    因为 run_migrations 执行时前端尚未启动，无法获得 localId→backendId 映射。
