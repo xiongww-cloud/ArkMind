@@ -79,11 +79,8 @@ function toggleMoreMenu() { showMoreMenu.value = !showMoreMenu.value }
 async function handleExportProject() {
   showMoreMenu.value = false
   try {
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const savePath = await save({
-      defaultPath: `${project.value?.name || 'project'}_export.ark`,
-      filters: [{ name: 'ArkMind 项目包', extensions: ['ark'] }],
-    })
+    const { pickSavePath } = await import('@/api/db-client')
+    const savePath = await pickSavePath(`${project.value?.name || 'project'}_export.ark`, ['ark'])
     if (!savePath) return
     const { exportProject } = await import('@/api/db-client')
     const result = await exportProject(projectId.value, savePath)

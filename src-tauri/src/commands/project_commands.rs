@@ -901,6 +901,7 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
 #[tauri::command] pub async fn project_export(project_id: String, save_path: Option<String>) -> Result<Value, String> {
     let mut result = project_export_inner(&project_id).await?;
     if let Some(sp) = save_path {
+        super::export_guard::ensure_registered(&sp)?;
         let tmp_path = result["exportPath"].as_str().unwrap_or("");
         if !tmp_path.is_empty() {
             std::fs::copy(tmp_path, &sp).map_err(|e| format!("保存失败: {}", e))?;
@@ -912,6 +913,7 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
 #[tauri::command] pub async fn project_export_files(_project_id: String) -> Result<Value, String> { Ok(json!({"success":true})) }
 #[tauri::command] pub async fn projects_batch_export(project_ids: Vec<String>, file_path: String) -> Result<Value, String> {
     if project_ids.is_empty() { return Err("无项目".into()); }
+    super::export_guard::ensure_registered(&file_path)?;
     let file = std::fs::File::create(&file_path).map_err(|e| format!("创建文件失败: {}", e))?;
     let mut zip_writer = zip::ZipWriter::new(file);
     let opts = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -1191,6 +1193,7 @@ fn emit_for_version(version_id: &str) {
     if save_path.is_empty() {
         return Ok(json!({"success":false,"error":"未指定保存路径"}));
     }
+    super::export_guard::ensure_registered(save_path)?;
     let buffer = data["buffer"].as_array().map(|arr| {
         arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect::<Vec<u8>>()
     }).unwrap_or_default();

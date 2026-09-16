@@ -6,6 +6,7 @@ use tauri::Emitter;
 /// 导出全部或指定域数据，写入 save_path
 #[tauri::command]
 pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: tauri::AppHandle) -> Result<Value, String> {
+    super::export_guard::ensure_registered(&save_path)?;
     let total = domains.len();
     let handle = app_handle.clone();
     // ★ 使用 spawn_blocking 执行同步 I/O，避免阻塞事件循环
@@ -226,6 +227,7 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
 /// 一键备份：打包所有数据到单个 ZIP 文件
 #[tauri::command]
 pub async fn backup_all(save_path: String, app_handle: tauri::AppHandle) -> Result<Value, String> {
+    super::export_guard::ensure_registered(&save_path)?;
     let handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
         eprintln!("[备份] 开始一键备份 -> {}", save_path);
@@ -917,6 +919,7 @@ fn import_contacts(data: &Value) -> Result<(), String> {
 
 /// 通用 buffer 写盘（供前端 exceljs 等生成的二进制内容保存到本地）
 #[tauri::command] pub async fn export_write_buffer(save_path: String, buffer: Vec<u8>) -> Result<Value, String> {
+    super::export_guard::ensure_registered(&save_path)?;
     if save_path.is_empty() {
         return Ok(json!({"success":false,"error":"未指定保存路径"}));
     }

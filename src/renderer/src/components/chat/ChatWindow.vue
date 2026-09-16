@@ -366,7 +366,7 @@ onUnmounted(() => {
             </div>
             <div v-else class="bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
               <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
-              <div v-else class="markdown-body chat-md" v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || m.content || agent.thinkingProgress.value || '思考中'"></div>
+              <div v-else class="markdown-body chat-md" v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
             </div>
           </div>
         </div>

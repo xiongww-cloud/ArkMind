@@ -128,11 +128,8 @@ const selectedDomains = ref([
 async function handleExportData() {
   isExporting.value = true
   try {
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const savePath = await save({
-      defaultPath: 'arkmind_export.ark',
-      filters: [{ name: 'ArkMind 数据包', extensions: ['ark'] }],
-    })
+    const { pickSavePath } = await import('@/api/db-client')
+    const savePath = await pickSavePath('arkmind_export.ark', ['ark'])
     if (!savePath) { isExporting.value = false; return }
     const domains = selectedDomains.value.filter((d: any) => d.selected).map((d: any) => d.key)
     if (domains.length === 0) { alert({ title: '提示', message: '请至少选择一个业务域' }); isExporting.value = false; return }
@@ -195,11 +192,8 @@ async function handleImportData() {
 async function handleBackupAll() {
   isBackingUp.value = true
   try {
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const savePath = await save({
-      defaultPath: `arkmind-backup-${new Date().toISOString().slice(0,10)}.zip`,
-      filters: [{ name: 'ZIP 文件', extensions: ['zip'] }],
-    })
+    const { pickSavePath } = await import('@/api/db-client')
+    const savePath = await pickSavePath(`arkmind-backup-${new Date().toISOString().slice(0,10)}.zip`, ['zip'])
     if (!savePath) { isBackingUp.value = false; return }
 
     // 复用上传进度弹窗显示备份进度

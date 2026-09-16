@@ -83,11 +83,8 @@ async function handleBatchExport() {
   exporting.value = true
   try {
     const ids = [...selectedProjectIds.value]
-    const { save: saveDialog } = await import('@tauri-apps/plugin-dialog')
-    const filePath = await saveDialog({
-      defaultPath: `project_export_${ids.length}.ark`,
-      filters: [{ name: 'ArkMind 项目包', extensions: ['ark'] }],
-    })
+    const { pickSavePath } = await import('@/api/db-client')
+    const filePath = await pickSavePath(`project_export_${ids.length}.ark`, ['ark'])
     if (!filePath) return
     const { batchExportProjects } = await import('@/api/db-client')
     const result = await batchExportProjects(ids, filePath)

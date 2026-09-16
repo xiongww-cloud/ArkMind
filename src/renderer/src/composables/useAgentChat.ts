@@ -111,7 +111,8 @@ export function useAgentChat() {
   function setThinkingProgress(text: string) {
     thinkingProgress.value = text
     if (text) {
-      renderedProgress.value = THINKING_SPINNER + text.replace(/~/g, '～')
+      const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      renderedProgress.value = THINKING_SPINNER + esc.replace(/~/g, '～')
     } else {
       renderedProgress.value = ''
     }
@@ -264,9 +265,9 @@ export function useAgentChat() {
             // 如果有对象引用，渲染对象卡片
             if (objectRefs.length > 0) {
               const refsHtml = renderObjectReference({ objects: objectRefs })
-              renderMd(finalAnswer.replace(/~/g, '～')).then(mdHtml => {
+              renderMd(finalAnswer.replace(/~/g, '～')).then(async mdHtml => {
                 if (!msg.content) msg.content = finalAnswer
-                if (msg.id) rendered.value[msg.id!] = `<div class="object-references">${refsHtml}</div><div class="answer-content">${mdHtml}</div>`
+                if (msg.id) rendered.value[msg.id!] = await sanitizeHtml(`<div class="object-references">${refsHtml}</div><div class="answer-content">${mdHtml}</div>`)
               })
             } else {
               // 普通 Markdown 渲染

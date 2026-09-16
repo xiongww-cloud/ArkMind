@@ -5,12 +5,33 @@ use tauri::Emitter;
 #[tauri::command] pub async fn kb_get_config() -> Result<Value, String> {
     let row = database::get("SELECT kb_config FROM system_config WHERE tenant_id='local-user'", &[]).map_err(|e| e.to_string())?;
     let config: Value = row.and_then(|r| r["kb_config"].as_str().map(|s| s.to_string())).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
-    Ok(json!({"success":true,"embeddingApiUrl":config["embeddingApiUrl"],"embeddingApiKey":config["embeddingApiKey"],"embeddingModelName":config["embeddingModelName"],"embeddingActive":config["embeddingActive"],"chatApiUrl":config["chatApiUrl"],"chatApiKey":config["chatApiKey"],"chatModelName":config["chatModelName"]}))
+    Ok(json!({"success":true,"embeddingApiUrl":config["embeddingApiUrl"],"embeddingApiKey":crate::crypto::mask_secret(config["embeddingApiKey"].as_str().unwrap_or("")),"embeddingModelName":config["embeddingModelName"],"embeddingActive":config["embeddingActive"],"chatApiUrl":config["chatApiUrl"],"chatApiKey":crate::crypto::mask_secret(config["chatApiKey"].as_str().unwrap_or("")),"chatModelName":config["chatModelName"]}))
 }
 #[tauri::command] pub async fn kb_update_config(data: Value) -> Result<Value, String> {
-    database::run("UPDATE system_config SET kb_config=?,updated_at=datetime('now', 'localtime') WHERE tenant_id='local-user'", &[json!(data.to_string())]).map_err(|e| e.to_string())?;
+    let machine = crate::license::get_machine_hash();
+    let mut config = data;
+    // 密钥字段：脱敏占位=未改动，沿用库内旧值；新值加密存储
+    for key in &["chatApiKey", "embeddingApiKey"] {
+        let incoming = config.get(*key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if incoming.is_empty() || crate::crypto::is_masked_placeholder(&incoming) {
+            if let Some(existing) = existing_kb_key(key) {
+                config[key] = json!(existing);
+            }
+        } else if !crate::crypto::is_encrypted(&incoming) {
+            config[key] = json!(crate::crypto::encrypt_api_key(&incoming, &machine));
+        }
+    }
+    database::run("UPDATE system_config SET kb_config=?,updated_at=datetime('now', 'localtime') WHERE tenant_id='local-user'", &[json!(config.to_string())]).map_err(|e| e.to_string())?;
     crate::services::embedding_client::invalidate_embedding_config_cache();
+    crate::services::chat_api::invalidate_chat_config_cache();
     Ok(json!({"success":true}))
+}
+
+fn existing_kb_key(field: &str) -> Option<String> {
+    database::get("SELECT kb_config FROM system_config WHERE tenant_id='local-user'", &[]).ok().flatten()
+        .and_then(|r| r["kb_config"].as_str().map(|s| s.to_string()))
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v[field].as_str().map(|s| s.to_string()))
 }
 
 /// 将 tool_log 转换为 tool_calls + tool_results 格式

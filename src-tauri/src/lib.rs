@@ -343,7 +343,7 @@ pub fn run() {
             // Chat Window
             commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::expand_chat_window, commands::set_chat_dialog_mode,
             // Export
-            commands::export_data, commands::import_data, commands::backup_all, commands::restore_all, commands::export_write_buffer,
+            commands::export_data, commands::export_pick_save_path, commands::import_data, commands::backup_all, commands::restore_all, commands::export_write_buffer,
             commands::solution_download_excel,
             // Todos
             commands::todos_list, commands::todos_create, commands::todos_update, commands::todos_delete,

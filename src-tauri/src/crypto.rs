@@ -73,6 +73,21 @@ pub fn is_encrypted(value: &str) -> bool {
     value.starts_with("enc:")
 }
 
+/// 展示用脱敏：保留首尾少量字符便于识别，中段以 **** 替代；短值全遮蔽
+pub fn mask_secret(value: &str) -> String {
+    if value.is_empty() { return String::new(); }
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= 8 { return "****".to_string(); }
+    let head: String = chars[..4].iter().collect();
+    let tail: String = chars[chars.len()-4..].iter().collect();
+    format!("{}****{}", head, tail)
+}
+
+/// 检测前端回传的脱敏占位值（原样提交打码串会覆盖真实密钥，需跳过）
+pub fn is_masked_placeholder(value: &str) -> bool {
+    value.contains("****")
+}
+
 pub fn encrypt_config_api_keys(config: &serde_json::Value, machine_hash: &str) -> serde_json::Value {
     let mut config = config.clone();
 

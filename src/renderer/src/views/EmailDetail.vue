@@ -50,7 +50,6 @@ async function loadRenderedHtml(id: string) {
           ADD_TAGS: ['img', 'a'],
           ADD_ATTR: ['src', 'alt', 'width', 'height', 'href', 'target', 'id', 'style', 'border'],
           ADD_DATA_URI_TAGS: ['img'],
-          ALLOW_UNKNOWN_PROTOCOLS: true,
         })
       : ''
     if (lazy) lazyEmailId = id

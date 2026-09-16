@@ -12,6 +12,22 @@ use tauri::Manager;
             let rename = |from: &str, _to: &str| -> serde_json::Value {
                 r.get(from).cloned().unwrap_or(serde_json::Value::Null)
             };
+            let mask = |v: &serde_json::Value| -> serde_json::Value {
+                match v.as_str() { Some(s) => json!(crypto::mask_secret(s)), None => v.clone() }
+            };
+            // kb_config 字符串内部密钥同样脱敏后再回传
+            let kb_masked: serde_json::Value = match r.get("kb_config").and_then(|v| v.as_str()) {
+                Some(s) => {
+                    let mut cfg: Value = serde_json::from_str(s).unwrap_or(json!({}));
+                    for k in ["chatApiKey", "embeddingApiKey"] {
+                        if let Some(v) = cfg.get(k).and_then(|v| v.as_str()) {
+                            cfg[k] = json!(crypto::mask_secret(&crypto::decrypt_api_key(v, &license::get_machine_hash())));
+                        }
+                    }
+                    json!(cfg.to_string())
+                }
+                None => rename("kb_config", "kbConfig"),
+            };
             Ok(json!({
                 "tenantId": rename("tenant_id", "tenantId"),
                 "activeStorage": rename("active_storage", "activeStorage"),
@@ -19,11 +35,11 @@ use tauri::Manager;
                 "ossRegion": rename("oss_region", "ossRegion"),
                 "ossBucket": rename("oss_bucket", "ossBucket"),
                 "ossAk": rename("oss_ak", "ossAk"),
-                "ossSk": rename("oss_sk", "ossSk"),
-                "ossEncryptKey": rename("oss_encrypt_key", "ossEncryptKey"),
-                "encryptPasswordSalt": rename("encrypt_password_salt", "encryptPasswordSalt"),
+                "ossSk": mask(&rename("oss_sk", "ossSk")),
+                "ossEncryptKey": mask(&rename("oss_encrypt_key", "ossEncryptKey")),
+                "encryptPasswordSalt": mask(&rename("encrypt_password_salt", "encryptPasswordSalt")),
                 "aiConfig": rename("ai_config", "aiConfig"),
-                "kbConfig": rename("kb_config", "kbConfig"),
+                "kbConfig": kb_masked,
                 "storageCards": rename("storage_cards", "storageCards"),
                 "activeCardId": rename("active_card_id", "activeCardId"),
                 "createdAt": rename("created_at", "createdAt"),
@@ -40,9 +56,10 @@ use tauri::Manager;
     if !data["ossRegion"].is_null() { fields.push("oss_region=?".into()); values.push(json!(data["ossRegion"].as_str().unwrap_or(""))); }
     if !data["ossBucket"].is_null() { fields.push("oss_bucket=?".into()); values.push(json!(data["ossBucket"].as_str().unwrap_or(""))); }
     if !data["ossAk"].is_null() { fields.push("oss_ak=?".into()); values.push(json!(data["ossAk"].as_str().unwrap_or(""))); }
-    if !data["ossSk"].is_null() { fields.push("oss_sk=?".into()); values.push(json!(data["ossSk"].as_str().unwrap_or(""))); }
-    if !data["ossEncryptKey"].is_null() { fields.push("oss_encrypt_key=?".into()); values.push(json!(data["ossEncryptKey"].as_str().unwrap_or(""))); }
-    if !data["encryptPasswordSalt"].is_null() { fields.push("encrypt_password_salt=?".into()); values.push(json!(data["encryptPasswordSalt"].as_str().unwrap_or(""))); }
+    // 秘密字段：收到脱敏占位串视为未改动，跳过写回（防打码值覆盖真实密钥）
+    if let Some(v) = data["ossSk"].as_str() { if !crypto::is_masked_placeholder(v) { fields.push("oss_sk=?".into()); values.push(json!(v)); } }
+    if let Some(v) = data["ossEncryptKey"].as_str() { if !crypto::is_masked_placeholder(v) { fields.push("oss_encrypt_key=?".into()); values.push(json!(v)); } }
+    if let Some(v) = data["encryptPasswordSalt"].as_str() { if !crypto::is_masked_placeholder(v) { fields.push("encrypt_password_salt=?".into()); values.push(json!(v)); } }
     if let Some(v)=data["aiConfig"].as_str(){fields.push("ai_config=?".into());values.push(json!(v));}
     if fields.is_empty(){return Ok(json!({"success":true}));}
     fields.push("updated_at=datetime('now', 'localtime')".into());
@@ -165,7 +182,17 @@ pub async fn ai_test_embedding(data: Value) -> Result<Value, String> {
 #[tauri::command] pub async fn user_profile() -> Result<Value, String> { database::get("SELECT * FROM users LIMIT 1",&[]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(json!({"id":"local-admin","name":"本地管理员","username":"local-admin","role":"OWNER"}))) }
 #[tauri::command] pub async fn user_profile_update(data: Value) -> Result<Value, String> { let mut fields: Vec<String>=Vec::new(); let mut values: Vec<Value>=Vec::new(); if let Some(v)=data["name"].as_str(){fields.push("name=?".into());values.push(json!(v));} if let Some(v)=data["phone"].as_str(){fields.push("phone=?".into());values.push(json!(v));} if fields.is_empty(){return Ok(json!({"success":true}));} fields.push("updated_at=datetime('now', 'localtime')".into()); let sql = format!("UPDATE users SET {} WHERE id='local-admin'", fields.join(",")); database::run(&sql, &values).map_err(|e| e.to_string())?; Ok(json!({"success":true})) }
 // Storage
-#[tauri::command] pub async fn storage_get_config() -> Result<Value, String> { database::get("SELECT * FROM system_config WHERE tenant_id='local-user'",&[]).map_err(|e| e.to_string()).map(|r| r.unwrap_or(json!({}))) }
+#[tauri::command] pub async fn storage_get_config() -> Result<Value, String> {
+    let row = database::get("SELECT * FROM system_config WHERE tenant_id='local-user'",&[]).map_err(|e| e.to_string())?;
+    let mut v = row.unwrap_or(json!({}));
+    // 秘密字段脱敏，渲染层拿不到明文
+    if let Some(obj) = v.as_object_mut() {
+        for k in ["oss_sk", "oss_encrypt_key", "encrypt_password_salt"] {
+            if let Some(s) = obj.get(k).and_then(|x| x.as_str()) { obj.insert(k.to_string(), json!(crypto::mask_secret(s))); }
+        }
+    }
+    Ok(v)
+}
 #[tauri::command] pub async fn storage_update_config(_data: Value) -> Result<Value, String> { Ok(json!({"success":true})) }
 #[tauri::command] pub async fn oss_test_connection() -> Result<Value, String> { Ok(json!({"success":true,"message":"OSS test OK"})) }
 #[tauri::command] pub async fn storage_migrate(_data: Value) -> Result<Value, String> { Ok(json!({"success":true})) }

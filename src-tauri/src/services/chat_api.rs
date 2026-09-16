@@ -54,7 +54,7 @@ pub fn get_chat_config() -> ChatConfig {
             if let Some(s) = row["kb_config"].as_str() {
                 if let Ok(v) = serde_json::from_str::<Value>(s) {
                     if let Some(u) = v.get("chatApiUrl").and_then(|v|v.as_str()) { config.base_url = u.to_string(); }
-                    if let Some(k) = v.get("chatApiKey").and_then(|v|v.as_str()) { config.api_key = k.to_string(); }
+                    if let Some(k) = v.get("chatApiKey").and_then(|v|v.as_str()) { config.api_key = crate::crypto::decrypt_api_key(k, &crate::license::get_machine_hash()); }
                     if let Some(m) = v.get("chatModelName").and_then(|v|v.as_str()) { config.model = m.to_string(); }
                 }
             }

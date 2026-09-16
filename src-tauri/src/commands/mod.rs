@@ -1,4 +1,5 @@
 pub mod project_commands;
+pub mod export_guard;
 pub mod product_commands;
 pub mod file_commands;
 pub mod notes_commands;
@@ -19,6 +20,7 @@ pub mod agent_commands;
 pub mod debug_commands;
 
 pub use project_commands::*;
+pub use export_guard::*;
 pub use product_commands::*;
 pub use file_commands::*;
 pub use notes_commands::*;

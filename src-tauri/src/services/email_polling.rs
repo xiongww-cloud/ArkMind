@@ -17,6 +17,16 @@ pub fn init_app_handle(handle: tauri::AppHandle) {
     let _ = APP_HANDLE.set(handle);
 }
 
+/// 从 MIME 文件名安全提取扩展名：仅允许 1-10 位字母数字，否则回退 bin（防路径穿越）
+pub fn safe_attachment_ext(filename: &str) -> String {
+    let raw = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    if !raw.is_empty() && raw.len() <= 10 && raw.chars().all(|c| c.is_ascii_alphanumeric()) {
+        raw
+    } else {
+        "bin".to_string()
+    }
+}
+
 
 
 /// 启动邮件轮询服务（幂等）
@@ -220,11 +230,7 @@ async fn save_attachment_to_library(
     _mime_type: &str,
     email_id: &str,
 ) -> Option<String> {
-    let ext = filename
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = safe_attachment_ext(filename);
 
     let tmp_path = std::env::temp_dir().join(format!(
         "email_att_{}.{}",

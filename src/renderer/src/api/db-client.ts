@@ -557,6 +557,14 @@ export async function updateFileMeta(fileId: string, data: Record<string, unknow
 export async function copyFileToClipboard(fileId: string): Promise<{ success: boolean; fileName?: string; error?: string }> {
   return invoke('file_copy_to_clipboard', { fileId })
 }
+// ─── 保存路径选择（后端弹框+写路径白名单，防渲染层被注入后任意写盘）───
+export async function pickSavePath(defaultPath?: string, extensions?: string[]): Promise<string | null> {
+  const r = await invoke<{ cancelled: boolean; path?: string }>('export_pick_save_path', {
+    defaultPath: defaultPath || null,
+    filterExtensions: extensions || null,
+  })
+  return r.cancelled ? null : (r.path || null)
+}
 export async function openFile(fileId: string): Promise<void> {
   return invoke('file_open', { versionId: fileId })
 }
@@ -564,9 +572,8 @@ export async function downloadFile(
   versionId: string,
   suggestedName?: string
 ): Promise<{ success: boolean; error?: string }> {
-  const { save } = await import('@tauri-apps/plugin-dialog')
   const name = suggestedName || 'download'
-  const p = await save({ defaultPath: name })
+  const p = await pickSavePath(name)
   if (!p) return { success: false, error: 'cancelled' }
   return invoke('file_download', { data: { versionId, savePath: p } })
 }
@@ -585,10 +592,9 @@ export async function previewFile(fileId: string): Promise<FilePreviewResult> {
   return invoke('file_preview', { fileId })
 }
 export async function exportFile(fileId: string): Promise<FileExportResult> {
-  const { save } = await import('@tauri-apps/plugin-dialog')
   const r: FileExportResult = await invoke('file_export', { fileId })
   if (!r?.success) return r
-  const p = await save({ defaultPath: r.fileName || 'download' })
+  const p = await pickSavePath(r.fileName || 'download')
   if (!p) return { success: false, error: '已取消' }
   await invoke('file_export_to_path', { filePath: r.filePath, savePath: p })
   return { success: true }
@@ -1049,11 +1055,7 @@ export async function solutionDownloadExcel(data: {
   buffer: number[]
   fileName: string
 }): Promise<{ success: boolean; savedPath?: string; error?: string }> {
-  const { save } = await import('@tauri-apps/plugin-dialog')
-  const sp = await save({
-    defaultPath: data.fileName,
-    filters: [{ name: 'Excel', extensions: ['xlsx'] }]
-  })
+  const sp = await pickSavePath(data.fileName, ['xlsx'])
   if (!sp) return { success: false, error: 'cancelled' }
   return invoke('solution_download_excel', { data: { buffer: data.buffer, savePath: sp } })
 }
@@ -1061,11 +1063,7 @@ export async function exportWriteBuffer(data: {
   buffer: number[]
   fileName: string
 }): Promise<{ success: boolean; savedPath?: string; error?: string }> {
-  const { save } = await import('@tauri-apps/plugin-dialog')
-  const sp = await save({
-    defaultPath: data.fileName,
-    filters: [{ name: 'Excel', extensions: ['xlsx'] }]
-  })
+  const sp = await pickSavePath(data.fileName, ['xlsx'])
   if (!sp) return { success: false, error: 'cancelled' }
   return invoke('export_write_buffer', { savePath: sp, buffer: data.buffer })
 }

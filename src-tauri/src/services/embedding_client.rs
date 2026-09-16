@@ -46,7 +46,7 @@ pub fn get_embedding_config() -> EmbeddingConfig {
     // ★ 回退：从 system_config.kb_config 读取（旧路径）
     if config.api_key.is_empty() {
         let row = crate::database::get("SELECT kb_config FROM system_config WHERE tenant_id='local-user'", &[]).ok().flatten();
-        if let Some(r) = row { if let Some(s) = r["kb_config"].as_str() { if let Ok(v) = serde_json::from_str::<Value>(s) { if let Some(u) = v.get("embeddingApiUrl").and_then(|v|v.as_str()) { config.base_url = u.to_string(); } if let Some(k) = v.get("embeddingApiKey").and_then(|v|v.as_str()) { config.api_key = k.to_string(); } if let Some(m) = v.get("embeddingModelName").and_then(|v|v.as_str()) { config.model = m.to_string(); } db_ok = true; } } }
+        if let Some(r) = row { if let Some(s) = r["kb_config"].as_str() { if let Ok(v) = serde_json::from_str::<Value>(s) { if let Some(u) = v.get("embeddingApiUrl").and_then(|v|v.as_str()) { config.base_url = u.to_string(); } if let Some(k) = v.get("embeddingApiKey").and_then(|v|v.as_str()) { config.api_key = crate::crypto::decrypt_api_key(k, &crate::license::get_machine_hash()); } if let Some(m) = v.get("embeddingModelName").and_then(|v|v.as_str()) { config.model = m.to_string(); } db_ok = true; } } }
     }
 
     // ★ DB 读取失败时保留上次有效配置，不回退到 OpenAI 默认值

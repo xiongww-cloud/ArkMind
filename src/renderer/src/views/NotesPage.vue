@@ -25,6 +25,7 @@ import {
 } from '@/api/db-client'
 import { useLinkModals } from '@/composables/useLinkModals'
 import { nowLocalDb, tsMillis } from '@/utils/time'
+import { sanitizeHtmlSync } from '@/utils/sanitize'
 
 type ViewType = 'daily'|'orphan'|'notebook'|'trash'
 interface Note { note_id:string; id:string; title:string; excerpt:string; content?:string; is_daily:number; notebook_id?:string; deleted_at?:string; updated_at:string; created_at:string; tags?:any[] }
@@ -814,7 +815,7 @@ const restoreNotebookList = computed(() => {
         <p class="text-xs text-amber-700">此笔记在回收站中，30天后自动永久删除。</p>
       </div>
       <div class="px-6 pt-4 pb-1"><h1 class="text-lg font-semibold text-surface-800">{{ editTitle||'未命名笔记' }}</h1></div>
-      <div class="flex-1 overflow-y-auto px-6 pb-8"><div class="text-sm text-surface-600 leading-relaxed" v-html="editContent || ''"></div></div>
+      <div class="flex-1 overflow-y-auto px-6 pb-8"><div class="text-sm text-surface-600 leading-relaxed" v-html="sanitizeHtmlSync(editContent || '')"></div></div>
     </template>
     <div v-else class="flex-1 flex items-center justify-center text-surface-400 text-sm">选择左侧笔记查看内容</div>
   </div>

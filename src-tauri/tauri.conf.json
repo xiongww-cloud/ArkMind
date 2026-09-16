@@ -25,10 +25,10 @@
     ],
     "security": {
       "csp": "default-src 'self' asset: https://asset.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://asset.localhost blob: data:; font-src 'self'; connect-src 'self' https://api.openai.com https://api.siliconflow.cn https://dashscope.aliyuncs.com; media-src 'self'",
-      "assetProtocol": {
-        "enable": true,
-        "scope": ["**"]
-      }
+    "assetProtocol": {
+      "enable": true,
+      "scope": ["$APPDATA/com.arkmind.app/**", "$TEMP/arkmind_attach/**", "$TEMP/email_att_*"]
+    }
     }
   },
   "bundle": {

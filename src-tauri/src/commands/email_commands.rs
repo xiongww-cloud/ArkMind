@@ -326,12 +326,8 @@ async fn save_attachment_to_library(
     _mime_type: &str,
     email_id: &str,
 ) -> Option<String> {
-    // 从 mime_type 或文件名推断扩展名
-    let ext = filename
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
+    // 从文件名安全提取扩展名（白名单防路径穿越）
+    let ext = crate::services::email_polling::safe_attachment_ext(filename);
 
     // 写入临时文件
     let tmp_path = std::env::temp_dir().join(format!(

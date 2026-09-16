@@ -42,8 +42,8 @@ pub fn storage_base() -> String {
 pub fn invalidate_storage_base() { *STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()) = None; }
 
 pub fn flat_disk_path(hash: &str) -> String {
-    // 校验 hash 格式：只允许十六进制字符，防止路径穿越（如 "../../../evil"）
-    if hash.is_empty() || hash.contains('/') || hash.contains('\\') || hash.contains("..") {
+    // 强校验：sha256 hex 恰为 64 位十六进制，其余一律拒绝（黑名单可被短名越出扁平命名空间）
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return String::new();
     }
     std::path::Path::new(storage_base().trim_end_matches(&['\\','/'][..]))
@@ -500,7 +500,10 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
 #[tauri::command] pub async fn file_preview(file_id: String) -> Result<Value, String> {
     match resolve_file_info(&file_id) {
         Some((src, name, ext)) => {
-            let base = if name.is_empty() { "ARK-unknown" } else { name.as_str() };
+            let base: String = if name.is_empty() { "ARK-unknown".to_string() } else {
+                // 只取路径末段，防 custom_name 含 ../ 时硬链接逃逸临时目录
+                std::path::Path::new(&name).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "ARK-unknown".to_string())
+            };
             let tmp_name = if ext.is_empty() || base.to_lowercase().ends_with(&format!(".{}", ext.to_lowercase())) {
                 format!("ARK-{}", base)
             } else { format!("ARK-{}.{}", base, ext) };
@@ -532,7 +535,12 @@ pub async fn chat_save_temp_image(bytes: Vec<u8>, ext: String, orig_name: Option
     if safe_ext.is_empty() { return Err("无效的文件扩展名".into()); }
     let dir = std::env::temp_dir().join("arkmind_attach");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
-    let display_name = orig_name.filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{}.{}", uuid::Uuid::new_v4(), safe_ext));
+    // display_name 只取路径末段（防 .. 或绝对路径经 join 逃逸临时目录）
+    let uuid_name = format!("{}.{}", uuid::Uuid::new_v4(), safe_ext);
+    let display_name = orig_name
+        .filter(|n| !n.is_empty())
+        .and_then(|n| std::path::Path::new(&n).file_name().map(|f| f.to_string_lossy().to_string()))
+        .unwrap_or(uuid_name);
     let path = dir.join(&display_name);
     std::fs::write(&path, &bytes).map_err(|e| format!("写入临时文件失败: {}", e))?;
     Ok(json!({"success": true, "path": path.to_string_lossy(), "name": display_name}))
@@ -684,21 +692,18 @@ pub async fn chat_read_clipboard_files(app: tauri::AppHandle) -> Result<Value, S
 }
 
 #[tauri::command] pub async fn file_export_to_path(file_path: String, save_path: String) -> Result<Value, String> {
-    // 路径安全验证：禁止相对路径穿越
+    // 目标必须是用户刚在保存对话框确认过的路径；源必须位于资料库 storage 目录内
+    super::export_guard::ensure_registered(&save_path)?;
     let src = std::path::Path::new(&file_path);
-    let dst = std::path::Path::new(&save_path);
-    if src.is_relative() || dst.is_relative() {
+    if src.is_relative() {
         return Ok(json!({"success":false,"error":"不支持相对路径"}));
     }
-    // 检查路径规范化后是否仍包含 ..
-    if let (Ok(canonical_src), Ok(canonical_dst)) = (src.canonicalize(), dst.canonicalize()) {
-        for comp in canonical_src.components().chain(canonical_dst.components()) {
-            if let std::path::Component::ParentDir = comp {
-                return Ok(json!({"success":false,"error":"路径包含非法穿越"}));
-            }
-        }
+    let canonical_src = src.canonicalize().map_err(|_| "源文件不存在".to_string())?;
+    let base = std::path::Path::new(&storage_base()).canonicalize().unwrap_or_else(|_| std::path::PathBuf::from(storage_base()));
+    if !canonical_src.starts_with(&base) {
+        return Ok(json!({"success":false,"error":"仅允许导出资料库内文件"}));
     }
-    std::fs::copy(&file_path, &save_path).map_err(|e| format!("拷贝失败: {}", e))?;
+    std::fs::copy(&canonical_src, &save_path).map_err(|e| format!("拷贝失败: {}", e))?;
     Ok(json!({"success":true}))
 }
 
