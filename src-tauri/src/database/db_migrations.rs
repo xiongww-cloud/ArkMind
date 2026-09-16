@@ -1360,6 +1360,53 @@ mod tests {
         assert_eq!(schema1, schema2, "run_migrations 二次执行不得改变 schema");
     }
 
+    /// 真实数据回归：对运行时库的临时副本跑完整迁移，验证 P1/P2 改动在存量数据上
+    /// 无损（计数不变）、幂等、索引批次与债务表落地、idx_kc_source 歧义消除。
+    /// 副本不存在（CI/其他机器）时跳过。
+    #[test]
+    fn test_migrations_on_live_db_copy_are_lossless() {
+        let live = {
+            let mut p = match std::env::var("APPDATA") { Ok(a) => std::path::PathBuf::from(a), Err(_) => return };
+            p.push("com.arkmind.app"); p.push("arkmind.db"); p
+        };
+        if !live.exists() { return; }
+        let tmp = std::env::temp_dir().join(format!("arkmind_mig_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::copy(&live, &tmp).expect("copy live db");
+
+        let conn = rusqlite::Connection::open(&tmp).unwrap();
+        let count = |t: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {}", t), [], |r| r.get(0)).unwrap_or(-1)
+        };
+        let before_emails = count("emails");
+        let before_assets = count("file_assets");
+        let before_sd = count("source_data");
+
+        run_migrations(&conn).expect("first run_migrations on live copy");
+
+        assert_eq!(count("emails"), before_emails, "emails 不得丢失");
+        assert_eq!(count("file_assets"), before_assets, "file_assets 不得丢失");
+        assert_eq!(count("source_data"), before_sd, "source_data 语料不得丢失");
+
+        let has_debt: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='materialize_retry'", [], |r| r.get(0)).unwrap();
+        assert_eq!(has_debt, 1, "materialize_retry 表必须存在");
+        let legacy_idx: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_kc_source'", [], |r| r.get(0)).unwrap();
+        assert_eq!(legacy_idx, 0, "idx_kc_source 歧义索引必须被清除");
+        for idx in ["idx_kc_sd_id", "idx_kc_st_sid", "idx_kc_chunk_id", "idx_sd_updated_at", "idx_pushq_status_created", "idx_pushq_pending_uniq", "idx_emails_acct_folder_recv", "idx_frel_file_entity"] {
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1", [idx], |r| r.get(0)).unwrap();
+            assert_eq!(n, 1, "索引 {} 必须存在", idx);
+        }
+
+        let schema1 = schema_dump(&conn);
+        run_migrations(&conn).expect("second run_migrations on live copy");
+        assert_eq!(schema1, schema_dump(&conn), "真实库副本上迁移也必须幂等");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
     #[test]
     fn test_knowledge_chunks_legacy_rebuild_is_defensive() {
         // 模拟远古库：source_data_id 为 INTEGER 且缺 source_type/source_id/base_weight 等列，
