@@ -1227,6 +1227,9 @@ export async function pipelineClearVectors(): Promise<SuccessResponse> {
 export async function pipelineRevectorize(): Promise<SuccessResponse & { chunk_count?: number }> {
   return invoke('pipeline_revectorize')
 }
+export async function pipelineRetryFailed(): Promise<SuccessResponse & { count?: number }> {
+  return invoke('pipeline_retry_failed')
+}
 export async function pipelineClearAll(): Promise<SuccessResponse> {
   return invoke('pipeline_clear_all')
 }

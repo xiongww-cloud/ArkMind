@@ -84,12 +84,35 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
         "SELECT f.original_name AS name, q.progress_page AS page, q.progress_total AS total FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id WHERE q.source_type='FILE' AND q.status='processing' ORDER BY q.id DESC LIMIT 1",
         &[],
     ).ok().flatten();
+    // 解析失败/不支持的文件明细（供设置页展示，便于用户确认是哪些文件）
+    let failed_files: Vec<Value> = crate::database::all(
+        "SELECT COALESCE(NULLIF(f.original_name, ''), q.source_id) AS name, q.last_error AS error, q.retry_count AS retries, q.updated_at AS at \
+         FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id \
+         WHERE q.source_type='FILE' AND q.status='failed' ORDER BY q.updated_at DESC LIMIT 500",
+        &[],
+    ).unwrap_or_default();
+    let unsupported_files: Vec<Value> = crate::database::all(
+        "SELECT COALESCE(NULLIF(f.original_name, ''), q.source_id) AS name, q.last_error AS error, q.updated_at AS at \
+         FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id \
+         WHERE q.source_type='FILE' AND q.status='unsupported' ORDER BY q.updated_at DESC LIMIT 500",
+        &[],
+    ).unwrap_or_default();
     Ok(json!({
         "knowledge": {"chunks":chunks,"parents":parents,"children":children,"vectorized":vectorized,"childrenNonempty":children_nonempty,"vectorizedValid":vectorized_valid,"embedPending":embed_pending,"lastEmbedError":last_embed_error},
         "source": {"files":source_files,"notes":source_notes,"products":source_products,"projects":source_projects,"todos":source_todos,"total":source_total},
-        "fileParse": {"done":files_done.max(0),"pending":files_pending,"processing":files_processing,"failed":files_failed,"unsupported":files_unsupported,"total":files_total,"current":current_file},
+        "fileParse": {"done":files_done.max(0),"pending":files_pending,"processing":files_processing,"failed":files_failed,"unsupported":files_unsupported,"total":files_total,"current":current_file,"failedFiles":failed_files,"unsupportedFiles":unsupported_files},
         "vectorVacuum": crate::services::vector_vacuum::vacuum_status(),
     }))
+}
+
+/// 立即重试所有 failed 状态的解析任务（免冷启动）；unsupported 为终态不重试
+#[tauri::command]
+pub async fn pipeline_retry_failed() -> Result<Value, String> {
+    let count = crate::database::run(
+        "UPDATE knowledge_push_queue SET status='pending', retry_count=0, last_error='', debounce_until=NULL WHERE status='failed'",
+        &[],
+    ).map(|r| r.changes).map_err(|e| e.to_string())?;
+    Ok(json!({"success": true, "count": count}))
 }
 
 #[tauri::command]

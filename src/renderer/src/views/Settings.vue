@@ -10,7 +10,7 @@ import {
   updateAiConfig, fetchAiConfig,
   migrateFiles, pipelineClearVectors,
   pipelineClearKnowledge, pipelineClearAll,
-  pipelineRevectorize, cleanupOrphanData,
+  pipelineRevectorize, pipelineRetryFailed,
   pipelineDebugStatus, knowledgePipelineStatus,
   getLogs, clearLogs,
 } from '@/api/db-client'
@@ -1038,9 +1038,17 @@ async function handleClearAll() {
   try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }) }
   catch { toast({ message: '重置失败', type: 'error' }) }
 }
-async function handleOrphanCleanup() {
-  try { await cleanupOrphanData(); toast({ message: '孤儿数据清理已完成', type: 'success' }) }
-  catch { toast({ message: '清理失败', type: 'error' }) }
+// ─── 解析失败明细弹窗 / 重试 / 高级操作折叠 ───
+const showParseErrorsModal = ref(false)
+const showAdvancedOps = ref(false)
+async function handleRetryFailed() {
+  const count = pipelineData.value?.fileParse?.failed ?? 0
+  if (!(await dangerConfirm({ title: '重试失败任务', message: `将把 ${count} 个解析失败的任务重新入队立即执行（不修复根因时结果可能相同，失败原因见明细）。`, confirmText: '重试' }))) return
+  try {
+    const r = await pipelineRetryFailed()
+    toast({ message: `已重新入队 ${r.count ?? 0} 个任务`, type: 'success' })
+    await loadPipeline()
+  } catch { toast({ message: '重试请求失败', type: 'error' }) }
 }
 
 function loadVecConfig(config) {
@@ -1594,8 +1602,8 @@ onDeactivated(() => {
                       <span class="text-emerald-600">{{ pipelineData.fileParse?.done ?? 0 }}</span>
                       <span class="text-surface-300 mx-0.5">/</span>
                       <span>{{ pipelineData.fileParse?.total ?? 0 }}</span>
-                      <span v-if="pipelineData.fileParse?.failed" class="text-red-400 ml-1">({{ pipelineData.fileParse.failed }} 失败)</span>
-                      <span v-if="pipelineData.fileParse?.unsupported" class="text-surface-400 ml-1">({{ pipelineData.fileParse.unsupported }} 不支持)</span>
+                      <button v-if="pipelineData.fileParse?.failed" @click="showParseErrorsModal = true" class="text-red-400 ml-1 hover:underline cursor-pointer" title="点击查看失败文件明细">({{ pipelineData.fileParse.failed }} 失败)</button>
+                      <button v-if="pipelineData.fileParse?.unsupported" @click="showParseErrorsModal = true" class="text-surface-400 ml-1 hover:text-surface-600 hover:underline cursor-pointer" title="点击查看不支持的文件明细">({{ pipelineData.fileParse.unsupported }} 不支持)</button>
                     </span>
                   </div>
                   <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
@@ -1618,11 +1626,69 @@ onDeactivated(() => {
               </div>
               <p v-else class="text-[11px] text-surface-300 text-center py-4 mb-4">加载中...</p>
               <div class="flex flex-wrap gap-2 justify-end">
+                <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重试失败文件（{{ pipelineData.fileParse.failed }}）</button>
                 <button @click="handleRevectorize" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-blue-300 text-blue-600 hover:bg-blue-50 transition">重新向量化</button>
-                <button @click="handleClearKnowledge" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-amber-300 text-amber-600 hover:bg-amber-50 transition">重置知识管线</button>
-                <button @click="handleClearAll" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重置全部数据</button>
-                <button @click="handleOrphanCleanup" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-purple-300 text-purple-600 hover:bg-purple-50 transition">清理孤儿数据</button>
+                <button @click="showAdvancedOps = !showAdvancedOps" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-surface-200 text-surface-500 hover:bg-surface-50 transition flex items-center gap-1">高级操作<AppIcon name="chevron-down" size="10" class="transition-transform" :class="showAdvancedOps ? 'rotate-180' : ''" /></button>
               </div>
+              <div v-if="showAdvancedOps" class="mt-2 rounded-lg border border-surface-200 bg-surface-50/60 px-3 py-2 space-y-2">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="text-[11px] text-surface-600">重置知识管线</div>
+                    <div class="text-[9px] text-surface-400">知识碎片与源数据不一致时使用，将全量重新物化</div>
+                  </div>
+                  <button @click="handleClearKnowledge" class="h-6 px-2.5 text-[10px] font-medium rounded-md border border-amber-300 text-amber-600 hover:bg-amber-50 transition flex-shrink-0">重置</button>
+                </div>
+                <div class="flex items-center justify-between gap-3 border-t border-surface-100 pt-2">
+                  <div class="min-w-0">
+                    <div class="text-[11px] text-surface-600">重置全部数据</div>
+                    <div class="text-[9px] text-surface-400">重新从业务数据抓取并物化，管线严重异常时的最后手段</div>
+                  </div>
+                  <button @click="handleClearAll" class="h-6 px-2.5 text-[10px] font-medium rounded-md border border-red-300 text-red-600 hover:bg-red-50 transition flex-shrink-0">重置</button>
+                </div>
+              </div>
+              <!-- 解析问题明细弹窗 -->
+              <Teleport to="body">
+                <Transition name="modal-fade">
+                  <div v-if="showParseErrorsModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="showParseErrorsModal = false">
+                    <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] max-h-[70vh] flex flex-col">
+                      <div class="px-5 pt-4 pb-3 border-b border-surface-100 flex items-center justify-between flex-shrink-0">
+                        <h3 class="text-[14px] font-semibold text-surface-800">解析问题明细</h3>
+                        <button @click="showParseErrorsModal = false" class="w-6 h-6 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition"><AppIcon name="x" size="13" /></button>
+                      </div>
+                      <div class="flex-1 overflow-y-auto px-5 py-3 space-y-4">
+                        <div v-if="!pipelineData?.fileParse?.failedFiles?.length && !pipelineData?.fileParse?.unsupportedFiles?.length" class="text-[11px] text-surface-400 text-center py-6">暂无问题文件</div>
+                        <div v-if="pipelineData?.fileParse?.failedFiles?.length">
+                          <div class="text-[11px] font-medium text-red-500 mb-1.5">解析失败（{{ pipelineData.fileParse.failed }}）</div>
+                          <div v-for="(f, i) in pipelineData.fileParse.failedFiles" :key="'f'+i" class="flex items-start gap-2 py-1 border-b border-surface-50 last:border-0">
+                            <AppIcon name="alert-circle" size="12" class="text-red-400 flex-shrink-0 mt-0.5" />
+                            <div class="flex-1 min-w-0">
+                              <div class="text-[11px] text-surface-700 truncate">{{ f.name }}</div>
+                              <div class="text-[10px] text-surface-400 break-all">{{ f.error || '解析失败' }}</div>
+                            </div>
+                            <span v-if="f.retries > 0" class="text-[9px] text-surface-400 flex-shrink-0 mt-1">已试{{ f.retries }}次</span>
+                          </div>
+                          <div v-if="pipelineData.fileParse.failed > pipelineData.fileParse.failedFiles.length" class="text-[10px] text-surface-400 mt-1">另有 {{ pipelineData.fileParse.failed - pipelineData.fileParse.failedFiles.length }} 个未列出</div>
+                        </div>
+                        <div v-if="pipelineData?.fileParse?.unsupportedFiles?.length">
+                          <div class="text-[11px] font-medium text-surface-500 mb-1.5">不支持的格式（{{ pipelineData.fileParse.unsupported }}）</div>
+                          <div v-for="(f, i) in pipelineData.fileParse.unsupportedFiles" :key="'u'+i" class="flex items-start gap-2 py-1 border-b border-surface-50 last:border-0">
+                            <AppIcon name="file" size="12" class="text-surface-400 flex-shrink-0 mt-0.5" />
+                            <div class="flex-1 min-w-0">
+                              <div class="text-[11px] text-surface-600 truncate">{{ f.name }}</div>
+                              <div class="text-[10px] text-surface-400 break-all">{{ (f.error || '').replace('__UNSUPPORTED__','') || '格式不支持' }}</div>
+                            </div>
+                          </div>
+                          <div v-if="pipelineData.fileParse.unsupported > pipelineData.fileParse.unsupportedFiles.length" class="text-[10px] text-surface-400 mt-1">另有 {{ pipelineData.fileParse.unsupported - pipelineData.fileParse.unsupportedFiles.length }} 个未列出</div>
+                        </div>
+                      </div>
+                      <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2 flex-shrink-0">
+                        <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重试失败任务</button>
+                        <button @click="showParseErrorsModal = false" class="h-7 px-3 text-[11px] font-medium rounded-lg bg-surface-100 text-surface-600 hover:bg-surface-200 transition">关闭</button>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+              </Teleport>
             </div>
           </div>
 
