@@ -1761,7 +1761,7 @@ async function saveProfileEditor() {
 
             <!-- 联网搜索 Tab -->
             <div v-show="aiTab === 'web'" class="p-5 space-y-3">
-              <p class="text-[10px] text-surface-400">接入博查搜索（bochaai.com 注册获取 Key，新用户有免费额度）后，AI 问答与智能通知可联网查证外部信息；未配置时 AI 不会感知该能力</p>
+              <p class="text-[10px] text-surface-400">接入博查搜索（<a href="https://bochaai.com" @click.prevent="openUrl('https://bochaai.com').catch(() => toast({ message: '打开网页失败', type: 'error' }))" class="text-blue-500 hover:underline cursor-pointer">bochaai.com</a> 注册获取 Key，新用户有免费额度）后，AI 问答与智能通知可联网查证外部信息；未配置时 AI 不会感知该能力</p>
               <div>
                 <label class="text-[11px] text-surface-500">博查 API Key</label>
                 <input v-model="webSearchKey" type="password" autocomplete="off" placeholder="sk-..." class="mt-1 w-full px-2.5 py-1.5 text-[12px] font-mono border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
