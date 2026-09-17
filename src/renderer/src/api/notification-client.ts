@@ -53,6 +53,10 @@ export async function profileFactSave(content: string, notificationId?: string):
   return invoke('profile_fact_save', { content, notificationId: notificationId ?? null })
 }
 
+export async function profileFactMerge(ids: string[], content: string, notificationId?: string): Promise<{ success: boolean; id: string }> {
+  return invoke('profile_fact_merge', { ids, content, notificationId: notificationId ?? null })
+}
+
 export interface ProfileFact {
   id: string
   content: string

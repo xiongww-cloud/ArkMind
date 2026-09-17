@@ -59,7 +59,8 @@ pub struct Whoami {
     pub company: String,
     pub work_city: String,
     pub emails: Vec<String>,
-    pub facts: Vec<String>,
+    /// (memory_id, 陈述文本)
+    pub facts: Vec<(String, String)>,
 }
 
 impl Whoami {
@@ -87,19 +88,17 @@ impl Whoami {
             .filter(|s| !s.is_empty())
             .collect();
         w.facts = crate::database::all(
-            "SELECT content FROM memories WHERE source='profile' ORDER BY updated_at DESC LIMIT ?1",
+            "SELECT id, content FROM memories WHERE source='profile' ORDER BY updated_at DESC LIMIT ?1",
             &[json!(FACT_LIMIT as i64)],
         )
         .unwrap_or_default()
         .iter()
-        .filter_map(|r| r["content"].as_str().map(|s| s.to_string()))
-        .map(|s| {
-            let t: String = s.chars().take(FACT_TRUNC).collect();
-            if t.chars().count() < s.chars().count() {
-                format!("{}…", t)
-            } else {
-                t
-            }
+        .filter_map(|r| {
+            let id = r["id"].as_str()?.to_string();
+            let c = r["content"].as_str()?.to_string();
+            let t: String = c.chars().take(FACT_TRUNC).collect();
+            let text = if t.chars().count() < c.chars().count() { format!("{}…", t) } else { t };
+            Some((id, text))
         })
         .collect();
         w
@@ -133,9 +132,9 @@ impl Whoami {
             s.push_str(&format!("【关于我】\n{}\n", lines.join("\n")));
         }
         if !self.facts.is_empty() {
-            let facts: Vec<String> = self.facts.iter().map(|f| format!("- {f}")).collect();
+            let facts: Vec<String> = self.facts.iter().map(|(id, f)| format!("- {} (id:{})", f, id)).collect();
             s.push_str(&format!(
-                "\n【用户画像】（用户确认的个人事实）\n{}\n",
+                "\n【用户画像】（用户确认的个人事实；括号内 id 可用于 ext_tool_memory 的 update/delete 定位）\n{}\n",
                 facts.join("\n")
             ));
         }
@@ -474,13 +473,13 @@ mod tests {
         w.name = "熊某某".into();
         w.title = "项目经理".into();
         w.emails = vec!["a@x.com".into()];
-        w.facts = vec!["用户习惯周三前交付方案".into()];
+        w.facts = vec![("m1".into(), "用户习惯周三前交付方案".into())];
         let b = w.prompt_block();
         assert!(b.contains("【关于我】"));
         assert!(b.contains("姓名: 熊某某"));
         assert!(b.contains("我的邮箱: a@x.com"));
         assert!(b.contains("【用户画像】"));
-        assert!(b.contains("- 用户习惯周三前交付方案"));
+        assert!(b.contains("- 用户习惯周三前交付方案 (id:m1)"));
     }
 
     #[test]

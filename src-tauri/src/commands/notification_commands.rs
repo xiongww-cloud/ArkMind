@@ -188,6 +188,22 @@ pub async fn profile_fact_save(content: String, notification_id: Option<String>)
     create_confirmed_fact(&content, notification_id.as_deref(), "profile")
 }
 
+/// 用户从通知的 merge_profile 按钮确认整合画像：删除零散旧条目，写入整合后的一条
+#[tauri::command]
+pub async fn profile_fact_merge(ids: Vec<String>, content: String, notification_id: Option<String>) -> Result<Value, String> {
+    let c = content.trim().to_string();
+    if c.is_empty() { return Err("整合后的画像陈述不能为空".into()); }
+    if c.chars().count() > 500 { return Err("整合后的画像陈述不能超过 500 字符".into()); }
+    let ids: Vec<String> = ids.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).map(String::from).collect();
+    if !ids.is_empty() {
+        let placeholders = vec!["?1"; ids.len()].join(",");
+        let sql = format!("DELETE FROM memories WHERE source='profile' AND id IN ({})", placeholders);
+        let params: Vec<Value> = ids.iter().map(|i| json!(i)).collect();
+        database::run(&sql, &params).map_err(|e| e.to_string())?;
+    }
+    create_confirmed_fact(&c, notification_id.as_deref(), "profile")
+}
+
 /// 画像事实列表（设置页"我的档案"卡用）
 #[tauri::command]
 pub async fn profile_facts_list() -> Result<Value, String> {

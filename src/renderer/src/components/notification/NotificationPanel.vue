@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { profileIdentityRevert } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
@@ -175,6 +175,7 @@ const ACTION_ICONS: Record<string, string> = {
   create_all: 'check-circle',
   save_memory: 'save',
   save_profile: 'user',
+  merge_profile: 'refresh',
   revert_profile: 'undo',
 }
 
@@ -277,6 +278,20 @@ async function handleAction(n: Notification, action: NotificationAction) {
           notifications.value = notifications.value.filter(x => x.id !== n.id)
         } else {
           toast({ message: '保存失败', type: 'error' })
+        }
+        break
+      }
+      case 'merge_profile': {
+        const content = (p.content as string || '').trim()
+        const ids = Array.isArray(p.ids) ? (p.ids as string[]).filter(x => typeof x === 'string' && x.trim()) : []
+        if (!content) { toast({ message: '该通知未提供整合结果', type: 'info' }); break }
+        try {
+          await profileFactMerge(ids, content, n.id)
+          toast({ message: '画像已整合', type: 'success' })
+          await notificationMarkRead(n.id)
+          notifications.value = notifications.value.filter(x => x.id !== n.id)
+        } catch {
+          toast({ message: '整合失败', type: 'error' })
         }
         break
       }

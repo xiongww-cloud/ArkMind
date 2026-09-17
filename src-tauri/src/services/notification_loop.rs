@@ -76,7 +76,7 @@ WATCH: <一句话观察 + 需要下轮验证什么>
 
 ## 通知输出契约（硬性格式）
 - 发现必须调用 ext_tool_manage_notification 创建，不得直接在回复里输出通知内容
-- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；多对象可 create_all
+- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；多对象可 create_all
 - 标题与正文禁止出现对象ID/UUID，只用名称；正文用 Markdown（加粗重点、列表分条），一事一通知
 - 输入数据行尾的 (id:xxx) 仅供你调用工具查证使用，不得出现在通知内容里"#;
 
