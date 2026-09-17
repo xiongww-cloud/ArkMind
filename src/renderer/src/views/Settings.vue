@@ -1666,12 +1666,9 @@ async function savePolicyEditor() {
 
           <!-- 我的档案 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
-            <div class="px-5 pt-5 pb-0 flex items-start justify-between gap-2">
-              <div>
-                <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
-                <p class="text-[10px] text-surface-400 mt-1">智能问答与智能通知依据此档案认识你</p>
-              </div>
-              <button @click="openProfileEditor" class="btn-secondary text-xs shrink-0">编辑</button>
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
+              <p class="text-[10px] text-surface-400 mt-1">智能问答与智能通知依据此档案认识你</p>
             </div>
             <div class="p-5 pt-3 space-y-2.5">
               <p v-if="profSummary" class="text-[13px] font-medium text-surface-700">{{ profSummary }}</p>
@@ -1687,6 +1684,9 @@ async function savePolicyEditor() {
                   </div>
                   <p v-if="profileFacts.length > 3" class="text-[10px] text-surface-400 pl-1">…共 {{ profileFacts.length }} 条，在「编辑」中查看全部</p>
                 </div>
+              </div>
+              <div class="flex justify-end pt-1">
+                <button @click="openProfileEditor" class="btn-primary text-xs">编辑</button>
               </div>
             </div>
           </div>
@@ -1753,12 +1753,9 @@ async function savePolicyEditor() {
 
           <!-- 行为准则（policy） -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
-            <div class="px-5 pt-5 pb-0 flex items-start justify-between gap-2">
-              <div>
-                <h2 class="text-[13px] font-semibold text-surface-700">行为准则</h2>
-                <p class="text-[10px] text-surface-400 mt-1">你给 AI 定的规则（必须/不要），智能问答每次自动遵守</p>
-              </div>
-              <button @click="openPolicyEditor" class="btn-secondary text-xs shrink-0">编辑</button>
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">行为准则</h2>
+              <p class="text-[10px] text-surface-400 mt-1">你给 AI 定的规则（必须/不要），智能问答每次自动遵守</p>
             </div>
             <div class="p-5 pt-3 space-y-1.5">
               <p v-if="!policyList.length" class="text-[10px] text-surface-400">还没有准则。点「编辑」添加，或直接在对话里说"以后必须……"</p>
@@ -1766,6 +1763,9 @@ async function savePolicyEditor() {
                 <span class="block truncate text-[11px] text-surface-600 leading-snug cursor-default" @mouseenter="onPolicyEnter($event, p.content)" @mouseleave="hideTip">{{ p.content }}</span>
               </div>
               <p v-if="policyList.length > 3" class="text-[10px] text-surface-400 pl-1">…共 {{ policyList.length }} 条，在「编辑」中查看全部</p>
+              <div class="flex justify-end pt-1">
+                <button @click="openPolicyEditor" class="btn-primary text-xs">编辑</button>
+              </div>
             </div>
           </div>
 
@@ -1952,7 +1952,7 @@ async function savePolicyEditor() {
                   </div>
                   <div class="flex items-center gap-2 flex-shrink-0">
                     <button v-if="focusText" @click="clearFocusRequirements" :disabled="focusSaving" class="h-6 px-2.5 text-[10px] rounded-md border border-amber-300 text-amber-600 hover:bg-amber-50 disabled:opacity-50">清空</button>
-                    <button @click="openFocusModal" class="h-6 px-2.5 text-[10px] rounded-md border border-surface-200 text-surface-600 hover:bg-surface-50">{{ focusText ? '编辑' : '添加要求' }}</button>
+                    <button @click="openFocusModal" class="btn-primary text-xs">{{ focusText ? '编辑' : '添加要求' }}</button>
                   </div>
                 </div>
                 <pre v-if="coreRulesOpen" class="mt-2 w-full max-h-56 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ coreRulesText }}</pre>
