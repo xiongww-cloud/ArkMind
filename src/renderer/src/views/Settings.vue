@@ -668,7 +668,7 @@ const vecSavedData = ref<any>(null)
 const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
-import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, type LoopStatus, type ProfileFact } from '@/api/notification-client'
+import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, profileFactSave, type LoopStatus, type ProfileFact } from '@/api/notification-client'
 import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
@@ -1405,7 +1405,6 @@ const profEmails = ref<string[]>([])
 const profileSaving = ref(false)
 const profileFacts = ref<ProfileFact[]>([])
 const identityMeta = ref<{ updated_at?: string; source?: string }>({})
-const profEditing = ref(false)
 
 const profSummary = computed(() => {
   const parts = [profName.value, profTitle.value, profCompany.value].filter(Boolean)
@@ -1433,30 +1432,56 @@ async function loadProfile() {
 }
 loadProfile()
 
-function startProfEdit() { profEditing.value = true }
-function cancelProfEdit() { profEditing.value = false }
+// 档案编辑弹窗：身份信息 + 画像事实统一管理
+const profileEditorOpen = ref(false)
+const editName = ref('')
+const editTitle = ref('')
+const editCompany = ref('')
+interface DraftFact { id: string; content: string }
+const draftFacts = ref<DraftFact[]>([])
 
-async function saveProfile() {
+function openProfileEditor() {
+  editName.value = profName.value
+  editTitle.value = profTitle.value
+  editCompany.value = profCompany.value
+  draftFacts.value = profileFacts.value.map(f => ({ id: f.id, content: f.content }))
+  profileEditorOpen.value = true
+}
+
+function addDraftFact() { draftFacts.value.push({ id: '', content: '' }) }
+function removeDraftFact(i: number) { draftFacts.value.splice(i, 1) }
+
+async function saveProfileEditor() {
   if (profileSaving.value) return
   profileSaving.value = true
   try {
-    await updateUserProfile({ name: profName.value.trim(), title: profTitle.value.trim(), company: profCompany.value.trim() })
+    await updateUserProfile({ name: editName.value.trim(), title: editTitle.value.trim(), company: editCompany.value.trim() })
+    const oldIds = new Set(profileFacts.value.map(f => f.id))
+    const kept = new Set<string>()
+    for (const d of draftFacts.value) {
+      const c = d.content.trim()
+      if (!c) continue
+      if (d.id && oldIds.has(d.id)) {
+        kept.add(d.id)
+        const orig = profileFacts.value.find(f => f.id === d.id)
+        if (orig && orig.content !== c) {
+          await profileFactDelete(d.id)
+          await profileFactSave(c)
+        }
+      } else {
+        await profileFactSave(c)
+      }
+    }
+    for (const id of oldIds) {
+      if (!kept.has(id)) await profileFactDelete(id)
+    }
     toast({ message: '档案已保存', type: 'success' })
-    profEditing.value = false
+    profileEditorOpen.value = false
     await loadProfile()
   } catch (e: any) {
     toast({ message: '保存失败: ' + (e?.message || e), type: 'error' })
   } finally {
     profileSaving.value = false
-  }
-}
-
-async function removeProfileFact(id: string) {
-  try {
-    await profileFactDelete(id)
-    profileFacts.value = profileFacts.value.filter(x => x.id !== id)
-  } catch {
-    toast({ message: '删除失败', type: 'error' })
   }
 }
 </script>
@@ -1529,45 +1554,76 @@ async function removeProfileFact(id: string) {
 
           <!-- 我的档案 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
-            <div class="px-5 pt-5 pb-0">
-              <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
-              <p class="text-[10px] text-surface-400 mt-1">告诉 AI 你是谁——智能问答与智能通知会依据此档案认识你；填得越全，回答和洞察越贴近你</p>
+            <div class="px-5 pt-5 pb-0 flex items-start justify-between gap-2">
+              <div>
+                <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
+                <p class="text-[10px] text-surface-400 mt-1">智能问答与智能通知依据此档案认识你</p>
+              </div>
+              <button @click="openProfileEditor" class="btn-secondary text-xs shrink-0">编辑</button>
             </div>
             <div class="p-5 pt-3 space-y-2.5">
-              <!-- 只读陈述 -->
-              <div v-if="!profEditing">
-                <p v-if="profSummary" class="text-[13px] font-medium text-surface-700">{{ profSummary }}</p>
-                <p v-else class="text-[12px] text-surface-400">暂未识别出你的身份信息</p>
-                <div class="flex items-center justify-between gap-2 mt-1">
-                  <p class="text-[10px] text-surface-400">{{ profSourceText }}</p>
-                  <button @click="startProfEdit" class="btn-secondary text-xs shrink-0">纠正</button>
-                </div>
-              </div>
-              <!-- 纠正表单（逃生舱，默认收起） -->
-              <div v-else class="space-y-2">
-                <div class="grid grid-cols-3 gap-2">
-                  <input v-model="profName" maxlength="30" placeholder="姓名" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
-                  <input v-model="profTitle" maxlength="30" placeholder="职位" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
-                  <input v-model="profCompany" maxlength="50" placeholder="公司" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
-                </div>
-                <div class="flex items-center justify-end gap-2">
-                  <button @click="cancelProfEdit" class="btn-secondary text-xs">取消</button>
-                  <button @click="saveProfile" :disabled="profileSaving" class="btn-primary text-xs">{{ profileSaving ? '保存中...' : '保存' }}</button>
-                </div>
-              </div>
+              <p v-if="profSummary" class="text-[13px] font-medium text-surface-700">{{ profSummary }}</p>
+              <p v-else class="text-[12px] text-surface-400">暂未识别出你的身份信息</p>
+              <p class="text-[10px] text-surface-400">{{ profSourceText }}</p>
               <p class="text-[10px] text-surface-400 truncate">我的邮箱：<span v-if="!profEmails.length" class="text-surface-300">未配置，在「邮件账户」添加后自动识别</span><span v-else>{{ profEmails.join('、') }}</span></p>
               <div class="pt-1 border-t border-surface-100">
-                <p class="text-[11px] font-medium text-surface-600 mt-2">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20，来自你在通知中的确认，自动注入 AI 上下文）</span></p>
-                <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">智能通知里点「记入画像」后沉淀在这里</p>
+                <p class="text-[11px] font-medium text-surface-600 mt-2">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20，自动注入 AI 上下文）</span></p>
+                <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">可在智能通知里点「记入画像」沉淀，或在「编辑」中添加</p>
                 <div v-else class="mt-1.5 space-y-1 max-h-40 overflow-y-auto">
-                  <div v-for="f in profileFacts" :key="f.id" class="group flex items-start gap-2 px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
-                    <span class="flex-1 text-[11px] text-surface-600 leading-snug">{{ f.content }}</span>
-                    <button @click="removeProfileFact(f.id)" class="shrink-0 text-surface-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition" title="删除"><AppIcon name="x" size="11" /></button>
+                  <div v-for="f in profileFacts" :key="f.id" class="px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
+                    <span class="text-[11px] text-surface-600 leading-snug">{{ f.content }}</span>
                   </div>
                 </div>
               </div>
             </div>
           </div>
+
+          <!-- 档案编辑弹窗：身份信息 + 画像事实统一管理 -->
+          <Teleport to="body">
+            <Transition name="modal-fade">
+              <div v-if="profileEditorOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="profileEditorOpen = false">
+                <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] max-h-[85vh] flex flex-col">
+                  <div class="px-5 pt-4 pb-2 border-b border-surface-100">
+                    <h3 class="text-[14px] font-semibold text-surface-800">编辑我的档案</h3>
+                    <p class="text-[10px] text-surface-400 mt-0.5">姓名/职位/公司平时由 AI 从你的发件邮件自动维护；手动编辑后该字段以你写的为准</p>
+                  </div>
+                  <div class="px-5 py-3 space-y-3 overflow-y-auto">
+                    <div class="grid grid-cols-3 gap-2">
+                      <div>
+                        <label class="text-[10px] text-surface-400">姓名</label>
+                        <input v-model="editName" maxlength="30" placeholder="姓名" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                      </div>
+                      <div>
+                        <label class="text-[10px] text-surface-400">职位</label>
+                        <input v-model="editTitle" maxlength="30" placeholder="职位" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                      </div>
+                      <div>
+                        <label class="text-[10px] text-surface-400">公司</label>
+                        <input v-model="editCompany" maxlength="50" placeholder="公司" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                      </div>
+                    </div>
+                    <div class="border-t border-surface-100 pt-3">
+                      <div class="flex items-center justify-between">
+                        <p class="text-[11px] font-medium text-surface-600">画像事实 <span class="text-surface-400 font-normal">（{{ draftFacts.length }}/20，一句一条，以"用户"为主语）</span></p>
+                        <button @click="addDraftFact" :disabled="draftFacts.length >= 20" class="text-[11px] text-brand-600 hover:text-brand-700 disabled:opacity-40">+ 添加</button>
+                      </div>
+                      <div class="mt-2 space-y-1.5">
+                        <div v-for="(f, i) in draftFacts" :key="i" class="flex items-center gap-1.5">
+                          <input v-model="f.content" maxlength="500" placeholder="例：用户习惯每周三前交付方案" class="flex-1 px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                          <button @click="removeDraftFact(i)" class="shrink-0 w-6 h-6 flex items-center justify-center rounded text-surface-300 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+                        </div>
+                        <p v-if="!draftFacts.length" class="text-[10px] text-surface-400">还没有画像事实。智能通知里的「记入画像」会自动沉淀到这里，也可以直接添加。</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
+                    <button @click="profileEditorOpen = false" class="btn-secondary text-xs">取消</button>
+                    <button @click="saveProfileEditor" :disabled="profileSaving" class="btn-primary text-xs">{{ profileSaving ? '保存中...' : '保存' }}</button>
+                  </div>
+                </div>
+              </div>
+            </Transition>
+          </Teleport>
 
           <!-- AI 模型配置 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
