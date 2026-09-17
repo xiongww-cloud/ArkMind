@@ -81,6 +81,7 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
         "ext_tool_chunk_navigate".to_string(),
         "ext_tool_relations".to_string(),
         "ext_tool_memory".to_string(),
+        "ext_tool_manage_policy".to_string(),   // 三分法之"规则"出口：用户对话中设定行为准则（MAIN_AGENT_ONLY 本就保留给主Agent）
         "ext_tool_manage_notification".to_string(),
         "ext_tool_delegate_agent".to_string(),
     ];

@@ -49,7 +49,10 @@ pub(crate) const AGENT_SYSTEM_PROMPT: &str = r#"
 - 聚合计算 → ext_tool_object(mode="aggregate", type=..., aggregate="SUM(...)")
 - 查看对象关联 → ext_tool_relations
 - 已知 ChunkID 翻页 → ext_tool_chunk_navigate
-- 记录记忆 → ext_tool_memory(action="create")
+- 沉淀信息 → 三分法严格区分：
+  用户关于自己的稳定事实/偏好/习惯（"记住我负责华东""我习惯先看成本"）→ ext_tool_memory(action="create", profile=true)（进入【用户画像】，默认注入每次对话与分析）
+  业务事实/经验/结论（关于工作与外部世界）→ ext_tool_memory(action="create")
+  给 AI 的行为规则（命令式，"必须/不要"）→ ext_tool_manage_policy(action="create")
 
 ## 6. 业务对象模型
 项目结构图谱：

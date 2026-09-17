@@ -4,7 +4,7 @@ use crate::database;
 use serde_json::{json, Value};
 use crate::services::agent_workflow::*;
 
-pub(crate) fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &str, query: &str, keywords_json: &str, start_time: &str, end_time: &str) -> String {
+pub(crate) fn ext_tool_memory(action: &str, content: &str, items_json: &str, memory_id: &str, query: &str, keywords_json: &str, start_time: &str, end_time: &str, profile: bool) -> String {
     match action {
         "create" => {
             let contents: Vec<String> = if !items_json.trim().is_empty() {
@@ -25,13 +25,14 @@ pub(crate) fn ext_tool_memory(action: &str, content: &str, items_json: &str, mem
                 }
                 vec![s]
             };
+            let source = if profile { "profile" } else { "user" };
             let mut created = 0;
             let mut ids: Vec<String> = Vec::new();
             for statement in &contents {
                 let id = uuid::Uuid::new_v4().to_string();
                 if let Ok(r) = database::run(
-                    "INSERT INTO memories(id,content,updated_at) VALUES(?1,?2,datetime('now','localtime'))",
-                    &[json!(&id), json!(statement)],
+                    "INSERT INTO memories(id,content,source,updated_at) VALUES(?1,?2,?3,datetime('now','localtime'))",
+                    &[json!(&id), json!(statement), json!(source)],
                 ) {
                     if r.changes > 0 {
                         created += 1;
@@ -39,12 +40,13 @@ pub(crate) fn ext_tool_memory(action: &str, content: &str, items_json: &str, mem
                     }
                 }
             }
+            let verb = if profile { "已记入你的画像" } else { "已记住" };
             let summary = if created == 1 {
                 let short_id = &ids[0];
-                format!("已记住 1 条事实，ID: {}", short_id)
+                format!("{} 1 条，ID: {}", verb, short_id)
             } else {
                 let short_ids: Vec<&str> = ids.iter().map(|id| id.as_str()).collect();
-                format!("已记住 {} 条事实，ID: {}", created, short_ids.join(", "))
+                format!("{} {} 条，ID: {}", verb, created, short_ids.join(", "))
             };
             let envelope = ToolResultEnvelope {
                 result_type: "memory_create_result".to_string(),

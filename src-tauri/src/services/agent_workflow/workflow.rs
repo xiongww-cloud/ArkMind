@@ -1055,6 +1055,7 @@ pub async fn agent_chat_workflow_internal(
                                 &keywords_str,
                                 a["start_time"].as_str().unwrap_or(""),
                                 a["end_time"].as_str().unwrap_or(""),
+                                a["profile"].as_bool().unwrap_or(false),
                             );
                             (res, vec![])
                         }
@@ -1066,6 +1067,7 @@ pub async fn agent_chat_workflow_internal(
                                 "",
                                 a["start_time"].as_str().unwrap_or(""),
                                 a["end_time"].as_str().unwrap_or(""),
+                                false,
                             );
                             (res, vec![])
                         }
