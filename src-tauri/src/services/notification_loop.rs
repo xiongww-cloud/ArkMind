@@ -54,7 +54,6 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
    ② 已存在但联系方式/单位/职位有变 → 通知提示更新（view_contact + 差异说明）
    ③ 已存在且一致 → 无事
 3. 未处理的历史建档建议不得重复播报——记入 WATCH 跟踪用户是否已创建。
-4. 【关于我】缺姓名/职位/公司时，创建一条 medium 通知提醒去「设置-我的档案」点"AI完善"（一键从你的邮件中提取）；用 WATCH 跟踪是否已完善，不重复播报。
 
 ## 五副洞察透镜（深挖时逐副过一遍）
 - 时间：太快/太慢/停滞/该出现的节点没出现？
@@ -196,6 +195,13 @@ fn tick(app_handle: &tauri::AppHandle) -> Result<u64, String> {
 
 /// 执行一轮分析：种子（变化线索）+ 基线（趋势参照）+ 观察池（跨轮跟踪）→ 深挖 → 通知/WATCH
 fn run_analysis(app_handle: &tauri::AppHandle) {
+    // ★ 身份层自动维护（host 直调，不经分析师的手；证据=用户自己发出的邮件，注入面小）
+    {
+        let h = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::services::whoami::auto_update_identity(&h).await;
+        });
+    }
     let since = get_config("last_check_at").unwrap_or_else(|| {
         chrono::Local::now().checked_sub_signed(chrono::Duration::days(7))
             .unwrap_or_else(chrono::Local::now)

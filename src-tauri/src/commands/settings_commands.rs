@@ -179,106 +179,14 @@ pub async fn ai_test_embedding(data: Value) -> Result<Value, String> {
         Err(e) => Ok(json!({"success":false,"error":format!("「{}」连接失败: {}", model, e)})),
     }
 }
-#[tauri::command] pub async fn user_profile() -> Result<Value, String> { let r = database::get("SELECT * FROM users WHERE id='local-admin' LIMIT 1",&[]).map_err(|e| e.to_string())?.unwrap_or(json!({"id":"local-admin","name":"本地管理员","username":"local-admin","role":"OWNER"})); let mut v = match r { Value::Object(m)=>m, _=>serde_json::Map::new() }; v.insert("email_addresses".into(), json!(crate::services::whoami::Whoami::load().emails)); Ok(Value::Object(v)) }
-#[tauri::command] pub async fn user_profile_update(data: Value) -> Result<Value, String> { let mut fields: Vec<String>=Vec::new(); let mut values: Vec<Value>=Vec::new(); for k in ["name","phone","title","company"] { if let Some(v)=data[k].as_str(){fields.push(format!("{k}=?"));values.push(json!(v.trim()));} } if fields.is_empty(){return Ok(json!({"success":true}));} database::run("INSERT OR IGNORE INTO users (id,name,username,role) VALUES ('local-admin','本地管理员','local-admin','OWNER')", &[]).map_err(|e| e.to_string())?; fields.push("updated_at=datetime('now', 'localtime')".into()); let sql = format!("UPDATE users SET {} WHERE id='local-admin'", fields.join(",")); database::run(&sql, &values).map_err(|e| e.to_string())?; Ok(json!({"success":true})) }
-// ─── AI 完善档案（证据提取 → 用户确认，不自动写入）────────────
-/// 收集"用户是谁"的确定性证据：本人发出邮件的显示名分布 + 签名档样本（正文尾部）
-pub(crate) fn collect_profile_evidence(w: &crate::services::whoami::Whoami) -> String {
-    let mut ev: Vec<String> = Vec::new();
-    let mut sig_lines: Vec<String> = Vec::new();
-    for me in &w.emails {
-        let rows = database::all(
-            "SELECT from_name, COUNT(*) AS n FROM emails WHERE lower(from_addr)=?1 AND from_name<>'' GROUP BY from_name ORDER BY n DESC LIMIT 3",
-            &[json!(me)],
-        ).unwrap_or_default();
-        for r in rows {
-            ev.push(format!("- 发件显示名「{}」出现 {} 次（邮箱 {}）",
-                r["from_name"].as_str().unwrap_or(""), r["n"].as_i64().unwrap_or(0), me));
-        }
-        let bodies = database::all(
-            "SELECT body_text FROM emails WHERE lower(from_addr)=?1 AND body_text<>'' ORDER BY received_at DESC LIMIT 5",
-            &[json!(me)],
-        ).unwrap_or_default();
-        for r in bodies.iter().take(3) {
-            let b = r["body_text"].as_str().unwrap_or("");
-            let tail: String = b.chars().rev().take(260).collect::<Vec<_>>().into_iter().rev().collect();
-            let tail = tail.trim();
-            if !tail.is_empty() { sig_lines.push(format!("- 「…{}」", tail.replace('\n', " / "))); }
-        }
-    }
-    if ev.is_empty() && sig_lines.is_empty() { return String::new(); }
-    let mut out = String::new();
-    if !ev.is_empty() { out.push_str(&format!("发件人显示名统计：\n{}\n", ev.join("\n"))); }
-    if !sig_lines.is_empty() { out.push_str(&format!("\n本人发出邮件的正文尾部片段（签名档常在末尾）：\n{}\n", sig_lines.join("\n"))); }
-    out
-}
+#[tauri::command] pub async fn user_profile() -> Result<Value, String> { let r = database::get("SELECT * FROM users WHERE id='local-admin' LIMIT 1",&[]).map_err(|e| e.to_string())?.unwrap_or(json!({"id":"local-admin","name":"本地管理员","username":"local-admin","role":"OWNER"})); let mut v = match r { Value::Object(m)=>m, _=>serde_json::Map::new() }; let w = crate::services::whoami::Whoami::load(); v.insert("email_addresses".into(), json!(w.emails)); v.insert("identity_meta".into(), json!(crate::services::whoami::identity_meta())); Ok(Value::Object(v)) }
+#[tauri::command] pub async fn user_profile_update(data: Value) -> Result<Value, String> { let mut fields: Vec<String>=Vec::new(); let mut values: Vec<Value>=Vec::new(); let mut changed: Vec<&str>=Vec::new(); for k in ["name","phone","title","company"] { if let Some(v)=data[k].as_str(){fields.push(format!("{k}=?"));values.push(json!(v.trim()));changed.push(k);} } if fields.is_empty(){return Ok(json!({"success":true}));} database::run("INSERT OR IGNORE INTO users (id,name,username,role) VALUES ('local-admin','本地管理员','local-admin','OWNER')", &[]).map_err(|e| e.to_string())?; fields.push("updated_at=datetime('now', 'localtime')".into()); let sql = format!("UPDATE users SET {} WHERE id='local-admin'", fields.join(",")); database::run(&sql, &values).map_err(|e| e.to_string())?; let ident: Vec<&str> = changed.into_iter().filter(|k| crate::services::whoami::IDENTITY_FIELDS.iter().any(|f| *f == *k)).collect(); if (!ident.is_empty()) { crate::services::whoami::clear_rejected_for(&ident); } Ok(json!({"success":true})) }
 
-/// 从 LLM 回复中提取首个 JSON 对象（容忍 ```json 围栏与前后闲文；按括号平衡扫描，不被后续对象干扰）
-pub(crate) fn extract_json_object(s: &str) -> Option<Value> {
-    let bytes: Vec<char> = s.chars().collect();
-    for (i, c) in bytes.iter().enumerate() {
-        if *c != '{' { continue; }
-        let mut depth = 0i32;
-        let mut in_str = false;
-        let mut esc = false;
-        for (j, d) in bytes.iter().enumerate().skip(i) {
-            if in_str {
-                if esc { esc = false; }
-                else if *d == '\\' { esc = true; }
-                else if *d == '"' { in_str = false; }
-                continue;
-            }
-            match d {
-                '"' => in_str = true,
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        if let Ok(v) = serde_json::from_str::<Value>(&bytes[i..=j].iter().collect::<String>()) {
-                            return Some(v);
-                        }
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    None
-}
-
+/// 用户撤销一次自动档案更新（通知"撤销"按钮）：回写 before + 被撤销值记入 rejected
 #[tauri::command]
-pub async fn profile_ai_fill(app: tauri::AppHandle) -> Result<Value, String> {
-    let w = crate::services::whoami::Whoami::load();
-    let evidence = collect_profile_evidence(&w);
-    if evidence.is_empty() {
-        return Err("还没有可分析的邮件证据：请先在「邮件」配置账户并同步收发件".into());
-    }
-    let msgs = vec![
-        crate::services::agent_workflow::ChatMessage {
-            role: crate::services::agent_workflow::MessageRole::System,
-            content: Some("你是用户档案提取器。根据用户自己发出邮件的证据（显示名统计、正文尾部签名档），提取用户的姓名、职位、公司。只输出一个JSON对象：{\"name\":\"\",\"title\":\"\",\"company\":\"\"}。提取不到的字段必须留空字符串，严禁猜测编造。注意：签名档证据可能混有正文尾巴或免责声明，从中辨别真正的姓名/职位/公司。".to_string()),
-            tool_calls: None, tool_call_id: None, name: None, reasoning_content: None,
-        },
-        crate::services::agent_workflow::ChatMessage {
-            role: crate::services::agent_workflow::MessageRole::User,
-            content: Some(evidence.clone()),
-            tool_calls: None, tool_call_id: None, name: None, reasoning_content: None,
-        },
-    ];
-    // 后台单发任务：silent=true 不向聊天泄漏 token；cancel_aware=false 与聊天取消隔离
-    let raw = crate::services::agent_workflow::llm::call_llm_without_tools(&msgs, &Some(app), true, false).await
-        .map_err(|e| format!("AI 分析失败: {}", e))?;
-    let parsed = extract_json_object(&raw).ok_or_else(|| "AI 返回结果无法解析，请重试".to_string())?;
-    let clean = |k: &str| -> String {
-        let s = parsed[k].as_str().unwrap_or("").trim().to_string();
-        if s.chars().count() > 50 { s.chars().take(50).collect() } else { s }
-    };
-    Ok(json!({
-        "success": true,
-        "name": clean("name"), "title": clean("title"), "company": clean("company"),
-        "evidence_preview": evidence.chars().take(600).collect::<String>(),
-    }))
+pub async fn profile_identity_revert(before: Value, revert_rejected: Value) -> Result<Value, String> {
+    crate::services::whoami::revert_identity(&before, &revert_rejected)?;
+    Ok(json!({ "success": true }))
 }
 
 // Storage
@@ -410,24 +318,3 @@ pub async fn set_sprite_enabled(enabled: bool, app: tauri::AppHandle) -> Result<
     Ok(json!({"success": true}))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_json_object_tolerates_fences_and_prose() {
-        let v = extract_json_object("好的：\n```json\n{\"name\":\"熊某\",\"title\":\"\"}\n```").unwrap();
-        assert_eq!(v["name"], json!("熊某"));
-        assert_eq!(v["title"], json!(""));
-        assert!(extract_json_object("没有大括号").is_none());
-        assert!(extract_json_object("} 先闭后开 {").is_none());
-        assert!(extract_json_object("{ 残缺不闭").is_none());
-    }
-
-    #[test]
-    fn extract_json_object_picks_first_to_last_braces() {
-        let v = extract_json_object("前置闲话 {\"a\":1} 尾巴 {\"b\":2}").unwrap();
-        // 取首 { 到末 } 的跨度——内层非法则整体失败，属预期宽容边界
-        assert!(v.is_null() || v["a"] == json!(1));
-    }
-}
