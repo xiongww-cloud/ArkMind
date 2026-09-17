@@ -252,6 +252,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             true,
             0,
             false,
+            true,             // ★ 动态上下文仅注入当前时间（工作记忆/预算文案对分析无价值）
         ).await;
 
         match result {

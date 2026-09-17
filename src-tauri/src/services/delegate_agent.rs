@@ -91,6 +91,7 @@ pub async fn execute_delegate_agent(
         false,            // ★ is_root=false：不重置/不清除 AGENT_CANCEL
         delegate_depth + 1, // ★ 深度+1
         true,             // ★ cancel_aware=true：委托链响应聊天"停止"，取消向上传播
+        false,            // ★ 子Agent保留完整动态上下文（工作记忆/预算对其有价值）
     ))
     .await;
 

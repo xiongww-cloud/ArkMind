@@ -66,7 +66,7 @@ async fn summarize_large_attachment(
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, allowed_tools: Option<Vec<String>>) -> Result<Value, String> {
-    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true).await
+    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false).await
 }
 
 /// 内部工作流函数，支持自定义 system_prompt
@@ -85,6 +85,7 @@ pub async fn agent_chat_workflow_internal(
     is_root: bool,
     delegate_depth: u8,
     respond_cancel: bool,
+    time_only_context: bool,
 ) -> Result<Value, String> {
     let effective_prompt = system_prompt.unwrap_or(AGENT_SYSTEM_PROMPT);
     // ★ 加载可用专业 Agent 列表，注入系统提示词（仅当有委托能力时）
@@ -461,8 +462,8 @@ pub async fn agent_chat_workflow_internal(
     let mut search_cost = 8i32;  // 降低初始消耗到8分
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     
-    // 加载用户策略（policy）— 仅主Agent注入；输出规范已固化在系统提示词第9节，不再动态注入
-    let user_policies = if is_root {
+    // 加载用户策略（policy）— 仅智能问答主Agent注入（自定义 system_prompt 的运行体如分析师/子Agent不注入）；输出规范已固化在系统提示词第9节，不再动态注入
+    let user_policies = if is_root && system_prompt.is_none() {
         let policies = crate::database::all(
             "SELECT id, content, updated_at FROM policies ORDER BY updated_at DESC",
             &[],
@@ -534,7 +535,7 @@ pub async fn agent_chat_workflow_internal(
             if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
                 messages.remove(pos);
             }
-            messages.push(ChatMessage{role:MessageRole::User, content: Some(if user_policies.is_empty() { format!("[DYNAMIC_CONTEXT]\n{}", budget_info) } else { format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info) }), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+            messages.push(ChatMessage{role:MessageRole::User, content: Some(if time_only_context { format!("[DYNAMIC_CONTEXT]\n当前时间: {}", cn_now_str()) } else if user_policies.is_empty() { format!("[DYNAMIC_CONTEXT]\n{}", budget_info) } else { format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info) }), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
         }
 
         // ★ 调试：保存 context 到文件（供 debug_server.py 读取）—— 仅 debug 构建
@@ -1253,7 +1254,7 @@ pub async fn agent_chat_workflow_internal(
                     if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
                         messages.remove(pos);
                     }
-            messages.push(ChatMessage{role:MessageRole::User, content: Some(if user_policies.is_empty() { format!("[DYNAMIC_CONTEXT]\n{}", budget_info) } else { format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info) }), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+            messages.push(ChatMessage{role:MessageRole::User, content: Some(if time_only_context { format!("[DYNAMIC_CONTEXT]\n当前时间: {}", cn_now_str()) } else if user_policies.is_empty() { format!("[DYNAMIC_CONTEXT]\n{}", budget_info) } else { format!("[DYNAMIC_CONTEXT]\n{}\n\n{}", user_policies, budget_info) }), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
                 }
                 // ★ 调试：每轮工具调用后保存完整上下文 —— 仅 debug 构建
                 #[cfg(debug_assertions)]
