@@ -669,7 +669,7 @@ const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
 import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, type LoopStatus, type ProfileFact } from '@/api/notification-client'
-import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession, fetchUserProfile, updateUserProfile, profileAiFill, type ProfileAiFillResult } from '@/api/db-client'
+import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
@@ -1404,6 +1404,20 @@ const profCompany = ref('')
 const profEmails = ref<string[]>([])
 const profileSaving = ref(false)
 const profileFacts = ref<ProfileFact[]>([])
+const identityMeta = ref<{ updated_at?: string; source?: string }>({})
+const profEditing = ref(false)
+
+const profSummary = computed(() => {
+  const parts = [profName.value, profTitle.value, profCompany.value].filter(Boolean)
+  return parts.length ? parts.join(' · ') : ''
+})
+const profSourceText = computed(() => {
+  if (identityMeta.value.updated_at) {
+    const src = identityMeta.value.source === 'auto' ? '从你的发件邮件自动维护' : '手动维护'
+    return `${src} · ${identityMeta.value.updated_at} 更新`
+  }
+  return '接入邮箱后将根据你的发件邮件自动建立，也可手动纠正'
+})
 
 async function loadProfile() {
   try {
@@ -1412,11 +1426,15 @@ async function loadProfile() {
     profTitle.value = p?.title || ''
     profCompany.value = p?.company || ''
     profEmails.value = p?.email_addresses || []
+    identityMeta.value = p?.identity_meta || {}
     const f = await profileFactsList()
     profileFacts.value = f.facts || []
   } catch { /* 档案加载失败静默，保存时再报错 */ }
 }
 loadProfile()
+
+function startProfEdit() { profEditing.value = true }
+function cancelProfEdit() { profEditing.value = false }
 
 async function saveProfile() {
   if (profileSaving.value) return
@@ -1424,6 +1442,7 @@ async function saveProfile() {
   try {
     await updateUserProfile({ name: profName.value.trim(), title: profTitle.value.trim(), company: profCompany.value.trim() })
     toast({ message: '档案已保存', type: 'success' })
+    profEditing.value = false
     await loadProfile()
   } catch (e: any) {
     toast({ message: '保存失败: ' + (e?.message || e), type: 'error' })
@@ -1438,44 +1457,6 @@ async function removeProfileFact(id: string) {
     profileFacts.value = profileFacts.value.filter(x => x.id !== id)
   } catch {
     toast({ message: '删除失败', type: 'error' })
-  }
-}
-
-const aiFilling = ref(false)
-const aiModalOpen = ref(false)
-const aiResult = ref<ProfileAiFillResult | null>(null)
-const aiAdopting = ref(false)
-
-async function runProfileAiFill() {
-  if (aiFilling.value) return
-  aiFilling.value = true
-  try {
-    const r = await profileAiFill()
-    aiResult.value = r
-    aiModalOpen.value = true
-  } catch (e: any) {
-    toast({ message: String(e?.message || e), type: 'error' })
-  } finally {
-    aiFilling.value = false
-  }
-}
-
-async function adoptAiFill() {
-  if (!aiResult.value || aiAdopting.value) return
-  aiAdopting.value = true
-  try {
-    const data: Record<string, unknown> = {}
-    if (aiResult.value.name) data.name = aiResult.value.name
-    if (aiResult.value.title) data.title = aiResult.value.title
-    if (aiResult.value.company) data.company = aiResult.value.company
-    await updateUserProfile(data)
-    toast({ message: '已按 AI 提取结果更新档案', type: 'success' })
-    aiModalOpen.value = false
-    await loadProfile()
-  } catch (e: any) {
-    toast({ message: '保存失败: ' + (e?.message || e), type: 'error' })
-  } finally {
-    aiAdopting.value = false
   }
 }
 </script>
@@ -1553,18 +1534,28 @@ async function adoptAiFill() {
               <p class="text-[10px] text-surface-400 mt-1">告诉 AI 你是谁——智能问答与智能通知会依据此档案认识你；填得越全，回答和洞察越贴近你</p>
             </div>
             <div class="p-5 pt-3 space-y-2.5">
-              <div class="grid grid-cols-3 gap-2">
-                <input v-model="profName" maxlength="30" placeholder="姓名" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
-                <input v-model="profTitle" maxlength="30" placeholder="职位" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
-                <input v-model="profCompany" maxlength="50" placeholder="公司" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
-              </div>
-              <div class="flex items-center justify-between gap-2">
-                <p class="text-[10px] text-surface-400 truncate">我的邮箱：<span v-if="!profEmails.length" class="text-surface-300">未配置，在「邮件账户」添加后自动识别</span><span v-else>{{ profEmails.join('、') }}</span></p>
-                <div class="flex items-center gap-2 shrink-0">
-                  <button @click="runProfileAiFill" :disabled="aiFilling || !profEmails.length" :title="profEmails.length ? '从你发出的邮件签名中提取姓名/职位/公司' : '需先配置邮件账户'" class="btn-secondary text-xs">{{ aiFilling ? '分析中...' : 'AI完善' }}</button>
-                  <button @click="saveProfile" :disabled="profileSaving" class="btn-primary text-xs">{{ profileSaving ? '保存中...' : '保存档案' }}</button>
+              <!-- 只读陈述 -->
+              <div v-if="!profEditing">
+                <p v-if="profSummary" class="text-[13px] font-medium text-surface-700">{{ profSummary }}</p>
+                <p v-else class="text-[12px] text-surface-400">暂未识别出你的身份信息</p>
+                <div class="flex items-center justify-between gap-2 mt-1">
+                  <p class="text-[10px] text-surface-400">{{ profSourceText }}</p>
+                  <button @click="startProfEdit" class="btn-secondary text-xs shrink-0">纠正</button>
                 </div>
               </div>
+              <!-- 纠正表单（逃生舱，默认收起） -->
+              <div v-else class="space-y-2">
+                <div class="grid grid-cols-3 gap-2">
+                  <input v-model="profName" maxlength="30" placeholder="姓名" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                  <input v-model="profTitle" maxlength="30" placeholder="职位" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                  <input v-model="profCompany" maxlength="50" placeholder="公司" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                </div>
+                <div class="flex items-center justify-end gap-2">
+                  <button @click="cancelProfEdit" class="btn-secondary text-xs">取消</button>
+                  <button @click="saveProfile" :disabled="profileSaving" class="btn-primary text-xs">{{ profileSaving ? '保存中...' : '保存' }}</button>
+                </div>
+              </div>
+              <p class="text-[10px] text-surface-400 truncate">我的邮箱：<span v-if="!profEmails.length" class="text-surface-300">未配置，在「邮件账户」添加后自动识别</span><span v-else>{{ profEmails.join('、') }}</span></p>
               <div class="pt-1 border-t border-surface-100">
                 <p class="text-[11px] font-medium text-surface-600 mt-2">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20，来自你在通知中的确认，自动注入 AI 上下文）</span></p>
                 <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">智能通知里点「记入画像」后沉淀在这里</p>
@@ -1577,42 +1568,6 @@ async function adoptAiFill() {
               </div>
             </div>
           </div>
-
-          <!-- AI 完善档案预览弹窗（用户确认才写入） -->
-          <Teleport to="body">
-            <Transition name="modal-fade">
-              <div v-if="aiModalOpen && aiResult" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="aiModalOpen = false">
-                <div class="bg-white rounded-2xl shadow-2xl w-[460px] max-w-[90vw] flex flex-col">
-                  <div class="px-5 pt-4 pb-2 border-b border-surface-100">
-                    <h3 class="text-[14px] font-semibold text-surface-800">AI 提取的档案</h3>
-                    <p class="text-[10px] text-surface-400 mt-0.5">来自你发出邮件的显示名与签名档，可修改后采纳；留空的字段不会被覆盖</p>
-                  </div>
-                  <div class="px-5 py-3 space-y-2">
-                    <div>
-                      <label class="text-[10px] text-surface-400">姓名</label>
-                      <input v-model="aiResult.name" maxlength="50" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" placeholder="（未识别出）" />
-                    </div>
-                    <div>
-                      <label class="text-[10px] text-surface-400">职位</label>
-                      <input v-model="aiResult.title" maxlength="50" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" placeholder="（未识别出）" />
-                    </div>
-                    <div>
-                      <label class="text-[10px] text-surface-400">公司</label>
-                      <input v-model="aiResult.company" maxlength="50" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" placeholder="（未识别出）" />
-                    </div>
-                    <details class="pt-1">
-                      <summary class="text-[10px] text-surface-400 cursor-pointer select-none">查看证据片段</summary>
-                      <pre class="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ aiResult.evidence_preview }}</pre>
-                    </details>
-                  </div>
-                  <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
-                    <button @click="aiModalOpen = false" class="btn-secondary text-xs">取消</button>
-                    <button @click="adoptAiFill" :disabled="aiAdopting || (!aiResult.name && !aiResult.title && !aiResult.company)" class="btn-primary text-xs">{{ aiAdopting ? '保存中...' : '采纳并保存' }}</button>
-                  </div>
-                </div>
-              </div>
-            </Transition>
-          </Teleport>
 
           <!-- AI 模型配置 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">

@@ -170,6 +170,7 @@ export interface UserProfile {
   title?: string
   company?: string
   email_addresses?: string[]
+  identity_meta?: { updated_at?: string; source?: string }
 }
 
 export interface KbConfig {
@@ -387,16 +388,11 @@ export async function updateUserProfile(data: Record<string, unknown>): Promise<
   await invoke('user_profile_update', { data })
 }
 
-export interface ProfileAiFillResult {
-  success: boolean
-  name: string
-  title: string
-  company: string
-  evidence_preview: string
-}
-
-export async function profileAiFill(): Promise<ProfileAiFillResult> {
-  return invoke('profile_ai_fill')
+export async function profileIdentityRevert(
+  before: Record<string, string>,
+  revertRejected: Record<string, string>,
+): Promise<void> {
+  await invoke('profile_identity_revert', { before, revertRejected })
 }
 
 // ─── License ────────────────────────────────────────────────────

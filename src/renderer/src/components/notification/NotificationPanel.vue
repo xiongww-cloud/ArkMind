@@ -3,6 +3,7 @@ import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
+import { profileIdentityRevert } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
 import { useTooltip } from '@/composables/useTooltip'
 import { dangerConfirm } from '@/composables/useConfirm'
@@ -174,6 +175,7 @@ const ACTION_ICONS: Record<string, string> = {
   create_all: 'check-circle',
   save_memory: 'save',
   save_profile: 'user',
+  revert_profile: 'undo',
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -275,6 +277,19 @@ async function handleAction(n: Notification, action: NotificationAction) {
           notifications.value = notifications.value.filter(x => x.id !== n.id)
         } else {
           toast({ message: '保存失败', type: 'error' })
+        }
+        break
+      }
+      case 'revert_profile': {
+        const before = (p.before as Record<string, string>) || {}
+        const rejected = (p.revert_rejected as Record<string, string>) || {}
+        try {
+          await profileIdentityRevert(before, rejected)
+          toast({ message: '档案已恢复，该值不会再被自动采用', type: 'success' })
+          await notificationMarkRead(n.id)
+          notifications.value = notifications.value.filter(x => x.id !== n.id)
+        } catch {
+          toast({ message: '撤销失败', type: 'error' })
         }
         break
       }
