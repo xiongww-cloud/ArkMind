@@ -1676,7 +1676,7 @@ async function savePolicyEditor() {
               <p class="text-[10px] text-surface-400">{{ profSourceText }}</p>
               <p class="text-[10px] text-surface-400 truncate">我的邮箱：<span v-if="!profEmails.length" class="text-surface-300">未配置，在「邮件账户」添加后自动识别</span><span v-else>{{ profEmails.join('、') }}</span></p>
               <div class="pt-1 border-t border-surface-100">
-                <p class="text-[11px] font-medium text-surface-600 mt-2">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20，自动注入 AI 上下文）</span></p>
+                <p class="text-[11px] font-medium text-surface-600 mt-2">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20）</span></p>
                 <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">可在智能通知里点「记入画像」沉淀，或在「编辑」中添加</p>
                 <div v-else class="mt-1.5 space-y-1">
                   <div v-for="f in profileFacts.slice(0, 3)" :key="f.id" class="px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
