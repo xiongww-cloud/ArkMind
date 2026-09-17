@@ -332,7 +332,7 @@ pub fn run() {
             // Settings
             commands::settings_get, commands::settings_update, commands::get_ai_config, commands::update_ai_config, commands::ai_test_provider, commands::ai_test_embedding,
             commands::get_system_setting, commands::set_system_setting,
-            commands::user_profile, commands::user_profile_update,
+            commands::user_profile, commands::user_profile_update, commands::profile_ai_fill,
             // Sprite Position
             commands::save_sprite_position, commands::get_sprite_position,
             commands::get_sprite_enabled, commands::set_sprite_enabled,

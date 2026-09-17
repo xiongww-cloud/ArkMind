@@ -387,6 +387,18 @@ export async function updateUserProfile(data: Record<string, unknown>): Promise<
   await invoke('user_profile_update', { data })
 }
 
+export interface ProfileAiFillResult {
+  success: boolean
+  name: string
+  title: string
+  company: string
+  evidence_preview: string
+}
+
+export async function profileAiFill(): Promise<ProfileAiFillResult> {
+  return invoke('profile_ai_fill')
+}
+
 // ─── License ────────────────────────────────────────────────────
 export async function fetchLicenseStatus(): Promise<LicenseStatus> {
   return invoke('license_status')
