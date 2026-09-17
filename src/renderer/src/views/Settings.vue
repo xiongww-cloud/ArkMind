@@ -7,7 +7,7 @@ import { toast } from '@/composables/useToast'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import {
   fetchSettings, updateSettings, browseFolder,
-  updateAiConfig, fetchAiConfig,
+  updateAiConfig, fetchAiConfig, webSearchTest,
   migrateFiles, pipelineClearVectors,
   pipelineClearKnowledge, pipelineClearAll,
   pipelineRevectorize, pipelineRetryFailed,
@@ -363,6 +363,7 @@ async function loadAiConfig() {
     }
     loadVecConfig(config)
     loadVisionConfig(config)
+    webSearchKey.value = config.webSearch?.apiKey || ''
     loadNotifyConfig()
     loadSpriteConfig()
   } catch (e) {
@@ -627,6 +628,53 @@ async function saveVisionDefault() {
     alert('保存失败: ' + (e.message || '网络异常'))
   } finally {
     visionSaving.value = false
+  }
+}
+
+// 联网搜索（博查）配置：保存/清除即时生效，测试按钮先落盘再探测
+const webSearchKey = ref('')
+const webSearchSaving = ref(false)
+const webSearching = ref(false)
+const webSearchMsg = ref('')
+const webSearchOk = ref(false)
+
+async function applyWebSearchConfig(): Promise<boolean> {
+  const key = webSearchKey.value.trim()
+  if (key) await updateAiConfig({ webSearch: { apiKey: key } })
+  else await updateAiConfig({ webSearch: null })
+  return true
+}
+
+async function saveWebSearch() {
+  if (webSearchSaving.value) return
+  webSearchSaving.value = true
+  webSearchMsg.value = ''
+  try {
+    await applyWebSearchConfig()
+    toast({ message: webSearchKey.value.trim() ? '联网搜索已启用' : '联网搜索已清除', type: 'success' })
+    await loadAiConfig()
+  } catch (e: any) {
+    toast({ message: '保存失败: ' + (e?.message || e), type: 'error' })
+  } finally {
+    webSearchSaving.value = false
+  }
+}
+
+async function testWebSearch() {
+  if (webSearching.value) return
+  webSearching.value = true
+  webSearchMsg.value = ''
+  try {
+    await applyWebSearchConfig()
+    const r = await webSearchTest()
+    webSearchOk.value = r.success
+    webSearchMsg.value = r.success ? '连接正常，联网能力已就绪' : r.message
+    if (r.success) await loadAiConfig()
+  } catch (e: any) {
+    webSearchOk.value = false
+    webSearchMsg.value = String(e?.message || e)
+  } finally {
+    webSearching.value = false
   }
 }
 
@@ -1631,11 +1679,11 @@ async function saveProfileEditor() {
               <h2 class="text-[13px] font-semibold text-surface-700">AI 模型配置</h2>
             </div>
             <div class="flex gap-0 border-b border-surface-100 px-5 mt-3">
-              <button v-for="tab in ['llm','vision','vector']" :key="tab"
+              <button v-for="tab in ['llm','vision','vector','web']" :key="tab"
                 @click="aiTab = tab"
                 class="px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px"
                 :class="aiTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-400 hover:text-surface-600'">
-                {{ {llm:'语言模型',vision:'视觉模型',vector:'向量模型'}[tab] }}
+                {{ {llm:'语言模型',vision:'视觉模型',vector:'向量模型',web:'联网搜索'}[tab] }}
               </button>
             </div>
 
@@ -1709,6 +1757,23 @@ async function saveProfileEditor() {
                 <button v-if="!vecSavedData" @click="openVecModal" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
               </div>
               <p v-if="vecTestResult" class="text-[10px]" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
+            </div>
+
+            <!-- 联网搜索 Tab -->
+            <div v-show="aiTab === 'web'" class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">接入博查搜索（bochaai.com 注册获取 Key，新用户有免费额度）后，AI 问答与智能通知可联网查证外部信息；未配置时 AI 不会感知该能力</p>
+              <div>
+                <label class="text-[11px] text-surface-500">博查 API Key</label>
+                <input v-model="webSearchKey" type="password" autocomplete="off" placeholder="sk-..." class="mt-1 w-full px-2.5 py-1.5 text-[12px] font-mono border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+              </div>
+              <div class="flex items-center justify-between">
+                <p v-if="webSearchMsg" class="text-[10px] truncate flex-1 mr-2" :class="webSearchOk ? 'text-emerald-600' : 'text-red-500'">{{ webSearchMsg }}</p>
+                <div v-else></div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button @click="testWebSearch" :disabled="!webSearchKey || webSearching" class="btn-secondary text-xs">{{ webSearching ? '测试中...' : '测试连接' }}</button>
+                  <button @click="saveWebSearch" :disabled="webSearchSaving" class="btn-primary text-xs">{{ webSearchSaving ? '保存中...' : (webSearchKey ? '保存' : '清除配置') }}</button>
+                </div>
+              </div>
             </div>
           </div>
 

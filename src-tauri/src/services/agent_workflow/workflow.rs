@@ -490,7 +490,13 @@ pub async fn agent_chat_workflow_internal(
     } else {
         String::new()
     };
-    messages[0].content = Some(format!("{}{}{}", effective_prompt, agent_section, whoami_section));
+    // 联网能力提示段：仅主Agent且已配置搜索服务时注入（未配置=模型无感知）
+    let web_section = if is_root && system_prompt.is_none() && crate::services::web_search::is_configured() {
+        crate::services::agent_workflow::prompt::WEB_PROMPT_SECTION.to_string()
+    } else {
+        String::new()
+    };
+    messages[0].content = Some(format!("{}{}{}{}", effective_prompt, agent_section, whoami_section, web_section));
     let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
     let mut retry_count = 0u32; // ToolCall 清理后重试计数器
 
@@ -762,8 +768,11 @@ pub async fn agent_chat_workflow_internal(
                                 continue;
                             }
                         }
-                        match tc.function.name.as_str() {
+                         match tc.function.name.as_str() {
                             "ext_tool_search" | "ext_tool_search_knowledge_base" | "ext_tool_batch_search" => {
+                                async_tasks.push((i, tc.function.name.clone(), tc.function.arguments.clone()));
+                            }
+                            "ext_tool_web_search" | "ext_tool_web_fetch" => {
                                 async_tasks.push((i, tc.function.name.clone(), tc.function.arguments.clone()));
                             }
                             _ => {
@@ -843,6 +852,15 @@ pub async fn agent_chat_workflow_internal(
                                     }
                                     let res = execute_batch_search(&sub_queries, scope, &vs).await;
                                     (res, vec![])
+                                }
+                                "ext_tool_web_search" => {
+                                    let q = a["query"].as_str().unwrap_or("").to_string();
+                                    let count = a["count"].as_i64().unwrap_or(5) as u32;
+                                    (crate::services::web_search::web_search_text(&q, count).await, vec![])
+                                }
+                                "ext_tool_web_fetch" => {
+                                    let u = a["url"].as_str().unwrap_or("").to_string();
+                                    (crate::services::web_search::web_fetch_text(&u).await, vec![])
                                 }
                                 _ => unreachable!(),
                             };

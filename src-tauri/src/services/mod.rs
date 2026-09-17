@@ -22,6 +22,7 @@ pub mod business_relations;
 pub mod log_collector;
 pub mod notification_loop;
 pub mod whoami;
+pub mod web_search;
 pub mod context_compressor;
 pub mod user_guides;
 pub mod vector_vacuum;

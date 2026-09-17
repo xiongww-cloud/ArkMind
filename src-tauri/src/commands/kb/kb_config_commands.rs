@@ -84,6 +84,12 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
         "ext_tool_manage_notification".to_string(),
         "ext_tool_delegate_agent".to_string(),
     ];
+    // 联网工具特性门控：仅在已配置搜索服务时提供（未配置时模型完全无感知）
+    let main_agent_tools: Vec<String> = if crate::services::web_search::is_configured() {
+        main_agent_tools.into_iter().chain(crate::services::web_search::WEB_TOOL_NAMES.iter().map(|s| s.to_string())).collect()
+    } else {
+        main_agent_tools
+    };
 
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(query, attachments, max_iter, Some(app_handle.clone()), false, session_id.clone(), Some(main_agent_tools)).await;

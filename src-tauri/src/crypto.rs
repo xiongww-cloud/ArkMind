@@ -113,6 +113,15 @@ pub fn encrypt_config_api_keys(config: &serde_json::Value, machine_hash: &str) -
                 }
             }
         }
+
+        if let Some(web) = obj.get_mut("webSearch") {
+            if let Some(api_key) = web.get("apiKey").and_then(|v| v.as_str()) {
+                if !api_key.is_empty() && !is_encrypted(api_key) {
+                    let encrypted = encrypt_api_key(api_key, machine_hash);
+                    web["apiKey"] = serde_json::json!(encrypted);
+                }
+            }
+        }
     }
 
     config

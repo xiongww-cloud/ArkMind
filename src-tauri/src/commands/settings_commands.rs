@@ -189,6 +189,15 @@ pub async fn profile_identity_revert(before: Value, revert_rejected: Value) -> R
     Ok(json!({ "success": true }))
 }
 
+/// 联网搜索连通性测试（设置页"联网搜索"tab）
+#[tauri::command]
+pub async fn web_search_test() -> Result<Value, String> {
+    match crate::services::web_search::probe().await {
+        Ok(n) => Ok(json!({ "success": true, "message": format!("连接正常（测试返回 {} 条结果）", n) })),
+        Err(e) => Ok(json!({ "success": false, "message": e })),
+    }
+}
+
 // Storage
 #[tauri::command] pub async fn storage_get_config() -> Result<Value, String> {
     let row = database::get("SELECT * FROM system_config WHERE tenant_id='local-user'",&[]).map_err(|e| e.to_string())?;

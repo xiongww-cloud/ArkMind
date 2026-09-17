@@ -16,14 +16,18 @@ const AVAILABLE_TOOLS: &[(&str, &str, &str)] = &[
     ("ext_tool_memory", "管理长期记忆。支持：create=记录新记忆、search=搜索记忆（不传 query 可列出所有）、update=更新记忆内容、delete=删除记忆。记忆是用户过去的对话、决策和经验记录，与策略（规则）不同。", "memory"),
     ("ext_tool_manage_policy", "管理行为规则（策略）。支持：create=新增规则、update=修改规则、delete=删除规则、list=查询规则列表。规则是用户设定的行为约束（如'报价前必须确认库存'），与记忆（过去的事）不同。规则会自动注入到对话上下文中。", "policy"),
     ("ext_tool_manage_notification", "管理通知。支持：create=创建通知（可附带操作按钮）、update=更新通知、delete=删除通知、list=查看通知列表、get=查看通知详情。只有在发现真正需要用户关注的事项时才创建通知，不要滥用。", "notification"),
+    ("ext_tool_web_search", "联网搜索公开互联网信息（需用户在设置中配置搜索服务后才会出现在此列表）。返回标题/链接/摘要列表。", "web"),
+    ("ext_tool_web_fetch", "抓取网页全文并转为 Markdown（需已配置联网搜索）。内容会作不可信外部数据处理。", "web"),
 ];
 
-/// 获取系统预设工具列表（过滤掉主 Agent 专属工具）
+/// 获取系统预设工具列表（过滤掉主 Agent 专属工具；联网工具仅在已配置搜索服务时列出）
 #[tauri::command]
 pub async fn agent_available_tools() -> Result<Vec<Value>, String> {
+    let web_ready = crate::services::web_search::is_configured();
     let tools: Vec<Value> = AVAILABLE_TOOLS
         .iter()
         .filter(|(name, _, _)| !MAIN_AGENT_ONLY.contains(name))
+        .filter(|(name, _, _)| web_ready || !name.starts_with("ext_tool_web_"))
         .map(|(name, desc, category)| {
             json!({
                 "name": name,

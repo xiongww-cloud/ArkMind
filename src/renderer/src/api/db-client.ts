@@ -137,6 +137,7 @@ export interface AiConfig {
   visionProviders?: AiProvider[]
   activeVisionId?: string
   embedding?: { baseUrl: string; apiKey: string; modelName: string }
+  webSearch?: { apiKey?: string; provider?: string }
   [key: string]: unknown
 }
 export interface AiProvider {
@@ -735,6 +736,9 @@ export async function fetchAiConfig(): Promise<AiConfig> {
 }
 export async function updateAiConfig(data: Record<string, unknown>): Promise<{ success: boolean }> {
   return invoke('update_ai_config', { data: { ai_config: JSON.stringify(data) } })
+}
+export async function webSearchTest(): Promise<{ success: boolean; message: string }> {
+  return invoke('web_search_test')
 }
 export async function getSystemSetting(
   key: string
