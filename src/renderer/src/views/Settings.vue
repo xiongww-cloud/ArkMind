@@ -674,9 +674,8 @@ import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession } from '@/api/db-cl
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
 const notifyIntervalOpen = ref(false)
-// ─── 分析师配置（附加要求=单主体弹窗编辑，行内逐条生效；核心规则与观察池=只读透明）───
-const notifyPromptOpen = ref(false)
-const focusText = ref('')                 // analysis_focus 正文（每行一条要求）
+// ─── 分析师配置（附加要求=单主体弹窗编辑；核心规则与观察池=只读透明）───
+const focusText = ref('')                 // analysis_focus 正文（整体一段提示词）
 const focusModalOpen = ref(false)         // 编辑弹窗
 const focusDraft = ref('')                // 弹窗草稿
 const focusSaving = ref(false)
@@ -685,7 +684,6 @@ const coreRulesText = ref('')             // 后端下发的内核提示词（�
 const coreRulesOpen = ref(false)
 const watchText = ref('')                 // 当前观察池（只读）
 const watchOpen = ref(false)
-const focusLines = computed(() => focusText.value.split('\n').map(s => s.trim()).filter(s => s.length > 0))
 const loopStatus = ref<LoopStatus>({ success: true, running: false, last_check_at: '', next_check_at: '' })
 let loopStatusTimer: ReturnType<typeof setInterval> | null = null
 
@@ -1592,56 +1590,43 @@ onBeforeUnmount(stopPollTimers)
                 </div>
               </div>
               </div>
-              <!-- 附加分析要求（单主体弹窗编辑）+ 核心规则/观察池（只读透明） -->
+              <!-- 附加分析要求：单主体弹窗编辑；核心规则/观察池为行内只读查看 -->
               <div class="border-t border-surface-100 pt-3">
-                <button @click="notifyPromptOpen = !notifyPromptOpen" class="w-full flex items-center justify-between group">
-                  <div class="text-left">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0">
                     <p class="text-[12px] font-medium text-surface-700">附加分析要求</p>
                     <p class="text-[10px] text-surface-400">
-                      <span v-if="focusText" class="text-brand-600">已附加 {{ focusLines.length }} 条 · 下次分析生效</span>
-                      <span v-else>可选：定制关注面与语气，分析师核心规则不变</span>
+                      <span v-if="focusText">已添加 · 下次分析生效</span>
+                      <span v-else>可选：给分析师添加定制要求，核心规则不变</span>
+                      <button v-if="coreRulesText" @click="coreRulesOpen = !coreRulesOpen" class="ml-2 text-brand-600 hover:underline">{{ coreRulesOpen ? '收起核心规则' : '查看核心规则' }}</button>
+                      <button v-if="watchText" @click="watchOpen = !watchOpen" class="ml-2 text-brand-600 hover:underline">{{ watchOpen ? '收起观察池' : '查看观察池' }}</button>
                     </p>
                   </div>
-                  <AppIcon name="chevron-down" class="w-3.5 h-3.5 text-surface-400 transition-transform flex-shrink-0" :class="notifyPromptOpen ? 'rotate-180' : ''" />
-                </button>
-                <div v-if="notifyPromptOpen" class="mt-2 space-y-2">
-                  <ul v-if="focusLines.length" class="w-full text-[11px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 space-y-1">
-                    <li v-for="(line, i) in focusLines" :key="i" class="text-surface-600">· {{ line }}</li>
-                  </ul>
-                  <p v-else class="text-[11px] text-surface-400 bg-surface-50/60 border border-dashed border-surface-200 rounded-lg px-2.5 py-2">暂无附加要求，分析师按核心规则运行</p>
-                  <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-3">
-                      <button v-if="coreRulesText" @click="coreRulesOpen = !coreRulesOpen" class="text-[10px] text-surface-400 hover:text-brand-600 transition-colors">{{ coreRulesOpen ? '收起核心规则' : '查看核心规则' }}</button>
-                      <button v-if="watchText" @click="watchOpen = !watchOpen" class="text-[10px] text-surface-400 hover:text-brand-600 transition-colors">{{ watchOpen ? '收起观察池' : `查看观察池（${watchText.split('\n').length} 条）` }}</button>
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <button v-if="focusText" @click="clearFocusRequirements" :disabled="focusSaving" class="h-6 px-2.5 text-[10px] rounded-md border border-amber-300 text-amber-600 hover:bg-amber-50 disabled:opacity-50">清空</button>
-                      <button @click="openFocusModal" class="h-6 px-2.5 text-[10px] rounded-md border border-surface-200 text-surface-600 hover:bg-surface-50">{{ focusText ? '编辑要求' : '添加要求' }}</button>
-                    </div>
+                  <div class="flex items-center gap-2 flex-shrink-0">
+                    <button v-if="focusText" @click="clearFocusRequirements" :disabled="focusSaving" class="h-6 px-2.5 text-[10px] rounded-md border border-amber-300 text-amber-600 hover:bg-amber-50 disabled:opacity-50">清空</button>
+                    <button @click="openFocusModal" class="h-6 px-2.5 text-[10px] rounded-md border border-surface-200 text-surface-600 hover:bg-surface-50">{{ focusText ? '编辑' : '添加要求' }}</button>
                   </div>
-                  <div v-if="coreRulesOpen" class="relative">
-                    <pre class="w-full max-h-56 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ coreRulesText }}
+                </div>
+                <pre v-if="coreRulesOpen" class="mt-2 w-full max-h-56 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ coreRulesText }}
 
 —— 以上仅为分析师核心规则；运行时系统还会叠加你的用户策略与动态业务上下文，此面板不展示那部分。</pre>
-                  </div>
-                  <pre v-if="watchOpen && watchText" class="w-full max-h-40 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed bg-amber-50/50 border border-amber-100 rounded-lg px-2.5 py-2 text-surface-600">{{ watchText }}</pre>
-                </div>
+                <pre v-if="watchOpen && watchText" class="mt-2 w-full max-h-40 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed bg-amber-50/50 border border-amber-100 rounded-lg px-2.5 py-2 text-surface-600">{{ watchText }}</pre>
               </div>
-              <!-- 附加要求编辑弹窗 -->
+              <!-- 附加要求编辑弹窗（整体一段提示词） -->
               <Teleport to="body">
                 <Transition name="modal-fade">
                   <div v-if="focusModalOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeFocusModal">
                     <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] flex flex-col">
                       <div class="px-5 pt-4 pb-2 border-b border-surface-100">
                         <h3 class="text-[14px] font-semibold text-surface-800">附加分析要求</h3>
-                        <p class="text-[10px] text-surface-400 mt-0.5">每行一条要求，整体注入分析师提示词；不能覆盖分析师的硬规则</p>
+                        <p class="text-[10px] text-surface-400 mt-0.5">一段完整的定制提示词，整体注入分析师提示词；不能覆盖分析师核心硬规则</p>
                       </div>
                       <div class="px-5 py-3">
                         <textarea v-model="focusDraft" rows="8" :maxlength="FOCUS_MAX"
                           class="w-full text-[12px] leading-relaxed bg-surface-50 border border-surface-200 rounded-lg px-3 py-2.5 outline-none focus:border-brand-400 resize-y"
-                          placeholder="例如：&#10;重点关注投标截止与大客户跟进&#10;通知简短一些，一事一通知&#10;普通文件上传不用提醒"></textarea>
-                        <div class="flex items-center justify-between mt-1">
-                          <span class="text-[10px] text-surface-400">{{ focusDraft.trim().split('\n').filter(l => l.trim()).length }} 条要求 · {{ focusDraft.length }}/{{ FOCUS_MAX }} 字</span>
+                          placeholder="例如：重点关注投标截止与大客户跟进；通知简短一些，一事一通知；普通文件上传不用提醒……"></textarea>
+                        <div class="flex items-center justify-end mt-1">
+                          <span class="text-[10px] text-surface-400">{{ focusDraft.length }}/{{ FOCUS_MAX }} 字</span>
                         </div>
                       </div>
                       <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
