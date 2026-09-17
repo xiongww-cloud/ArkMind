@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onActivated, onDeactivated, onBeforeUnmount, 
 import AppIcon from '@/components/common/AppIcon.vue'
 import GuideModal from '@/components/common/GuideModal.vue'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
+import { useTooltip } from '@/composables/useTooltip'
 import { toast } from '@/composables/useToast'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import {
@@ -1539,6 +1540,11 @@ async function saveProfileEditor() {
 }
 
 // ─── 行为准则（policy）管理 ───────────────────────────────
+const { tooltipText, tooltipX, tooltipY, tooltipVisible, show: showTip, hide: hideTip } = useTooltip()
+function onPolicyEnter(e: MouseEvent, text: string) {
+  const el = e.currentTarget as HTMLElement
+  if (el.scrollWidth > el.clientWidth) showTip(el, text)
+}
 const policyList = ref<PolicyRecord[]>([])
 const policyDraft = ref('')
 const policySaving = ref(false)
@@ -1742,6 +1748,15 @@ async function removePolicy(p: PolicyRecord) {
             </Transition>
           </Teleport>
 
+          <!-- 准则悬浮完整内容 tooltip -->
+          <Teleport to="body">
+            <div v-if="tooltipVisible"
+                 class="fixed pointer-events-none z-[9999] px-2 py-1 text-[11px] text-white bg-gray-800 rounded shadow-lg max-w-[320px] whitespace-pre-wrap break-words"
+                 :style="{ left: tooltipX + 'px', top: tooltipY + 'px', transform: 'translate(-50%, -100%)' }">
+              {{ tooltipText }}
+            </div>
+          </Teleport>
+
           <!-- 行为准则（policy） -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
@@ -1753,7 +1768,7 @@ async function removePolicy(p: PolicyRecord) {
               <div v-for="p in policyList" :key="p.id" class="rounded-lg border border-surface-100 bg-surface-50">
                 <!-- 展示态 -->
                 <div v-if="policyEditId !== p.id" class="group flex items-start gap-2 px-2.5 py-2">
-                  <span class="flex-1 text-[11px] text-surface-600 leading-snug whitespace-pre-wrap">{{ p.content }}</span>
+                  <span class="flex-1 min-w-0 truncate text-[11px] text-surface-600 leading-snug cursor-default" @mouseenter="onPolicyEnter($event, p.content)" @mouseleave="hideTip">{{ p.content }}</span>
                   <div class="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
                     <button @click="startPolicyEdit(p)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="11" /></button>
                     <button @click="removePolicy(p)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500" title="删除"><AppIcon name="x" size="11" /></button>
