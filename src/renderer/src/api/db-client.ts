@@ -170,6 +170,7 @@ export interface UserProfile {
   aiConfig: string
   title?: string
   company?: string
+  work_city?: string
   email_addresses?: string[]
   identity_meta?: { updated_at?: string; source?: string }
 }

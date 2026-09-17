@@ -6,7 +6,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             id TEXT PRIMARY KEY, name TEXT DEFAULT '本地管理员',
             username TEXT DEFAULT 'local-admin', role TEXT DEFAULT 'OWNER',
             phone TEXT DEFAULT '', email TEXT DEFAULT '', avatar TEXT DEFAULT '',
-            title TEXT DEFAULT '', company TEXT DEFAULT '',
+            title TEXT DEFAULT '', company TEXT DEFAULT '', work_city TEXT DEFAULT '',
             ai_config TEXT DEFAULT '{}',
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             updated_at TEXT DEFAULT (datetime('now', 'localtime'))

@@ -13,7 +13,7 @@ const DEFAULT_NAME: &str = "本地管理员";
 pub const FACT_LIMIT: usize = 20;
 pub const FACT_TRUNC: usize = 200;
 const META_KEY: &str = "profile_identity_meta";
-pub const IDENTITY_FIELDS: [&str; 3] = ["name", "title", "company"];
+pub const IDENTITY_FIELDS: [&str; 4] = ["name", "title", "company", "work_city"];
 
 fn norm(s: &str) -> String {
     s.trim().to_lowercase()
@@ -57,6 +57,7 @@ pub struct Whoami {
     pub name: String,
     pub title: String,
     pub company: String,
+    pub work_city: String,
     pub emails: Vec<String>,
     pub facts: Vec<String>,
 }
@@ -65,7 +66,7 @@ impl Whoami {
     pub fn load() -> Self {
         let mut w = Self::default();
         if let Some(r) = crate::database::get(
-            "SELECT name, title, company FROM users WHERE id='local-admin' LIMIT 1",
+            "SELECT name, title, company, work_city FROM users WHERE id='local-admin' LIMIT 1",
             &[],
         )
         .ok()
@@ -77,6 +78,7 @@ impl Whoami {
             }
             w.title = r["title"].as_str().unwrap_or("").trim().to_string();
             w.company = r["company"].as_str().unwrap_or("").trim().to_string();
+            w.work_city = r["work_city"].as_str().unwrap_or("").trim().to_string();
         }
         w.emails = crate::database::all("SELECT email_address FROM email_accounts", &[])
             .unwrap_or_default()
@@ -120,6 +122,9 @@ impl Whoami {
         if !self.company.is_empty() {
             lines.push(format!("公司: {}", self.company));
         }
+        if !self.work_city.is_empty() {
+            lines.push(format!("工作城市: {}", self.work_city));
+        }
         if !self.emails.is_empty() {
             lines.push(format!("我的邮箱: {}", self.emails.join(", ")));
         }
@@ -141,6 +146,7 @@ impl Whoami {
         self.name.is_empty()
             && self.title.is_empty()
             && self.company.is_empty()
+            && self.work_city.is_empty()
             && self.emails.is_empty()
             && self.facts.is_empty()
     }
@@ -272,7 +278,8 @@ pub async fn auto_update_identity(app: &tauri::AppHandle) {
     if evidence.is_empty() {
         return; // 尚无发件证据
     }
-    let fp = sha256_hex(&evidence);
+    // v2 指纹：新增 work_city 字段后 bump 一次，让存量档案下轮补提取城市（之后重新稳定）
+    let fp = sha256_hex(&format!("{}|v2", evidence));
     let mut meta = load_meta();
     if meta["extract_fp"].as_str() == Some(fp.as_str()) {
         return; // 证据未变，零成本跳过
@@ -280,7 +287,7 @@ pub async fn auto_update_identity(app: &tauri::AppHandle) {
     let msgs = vec![
         crate::services::agent_workflow::ChatMessage {
             role: crate::services::agent_workflow::MessageRole::System,
-            content: Some("你是用户档案提取器。根据用户自己发出邮件的证据（显示名统计、正文尾部签名档），提取用户的姓名、职位、公司。只输出一个JSON对象：{\"name\":\"\",\"title\":\"\",\"company\":\"\"}。提取不到的字段必须留空字符串，严禁猜测编造。注意：签名档证据可能混有正文尾巴或免责声明，从中辨别真正的姓名/职位/公司。".to_string()),
+            content: Some("你是用户档案提取器。根据用户自己发出邮件的证据（显示名统计、正文尾部签名档），提取用户的姓名、职位、公司、工作城市。只输出一个JSON对象：{\"name\":\"\",\"title\":\"\",\"company\":\"\",\"work_city\":\"\"}。工作城市仅到城市级（如\"上海\"），从签名档地址或办公地点判断；提取不到的字段必须留空字符串，严禁猜测编造。注意：签名档证据可能混有正文尾巴或免责声明，从中辨别真正的姓名/职位/公司/地址。".to_string()),
             tool_calls: None, tool_call_id: None, name: None, reasoning_content: None,
         },
         crate::services::agent_workflow::ChatMessage {
@@ -313,6 +320,7 @@ pub async fn auto_update_identity(app: &tauri::AppHandle) {
     cur.insert("name".into(), json!(w.name));
     cur.insert("title".into(), json!(w.title));
     cur.insert("company".into(), json!(w.company));
+    cur.insert("work_city".into(), json!(w.work_city));
     let ups = plan_identity_update(&cur, &parsed, &meta["rejected"]);
     if ups.is_empty() {
         save_meta(&meta);
@@ -325,7 +333,7 @@ pub async fn auto_update_identity(app: &tauri::AppHandle) {
     let mut values: Vec<Value> = Vec::new();
     let mut diff_lines: Vec<String> = Vec::new();
     let mut rejected_add = Map::new();
-    let labels = [("name", "姓名"), ("title", "职位"), ("company", "公司")];
+    let labels = [("name", "姓名"), ("title", "职位"), ("company", "公司"), ("work_city", "工作城市")];
     for (f, nv) in &ups {
         let old = cur.get(f).and_then(|v| v.as_str()).unwrap_or("").to_string();
         before.insert(f.clone(), json!(old));
@@ -486,8 +494,8 @@ mod tests {
 
     #[test]
     fn plan_skips_empty_identical_and_rejected() {
-        let cur = map(&[("name", "熊某"), ("title", ""), ("company", "旧公司")]);
-        let extracted = json!({"name": "熊某", "title": "项目经理", "company": "新公司"});
+        let cur = map(&[("name", "熊某"), ("title", ""), ("company", "旧公司"), ("work_city", "上海")]);
+        let extracted = json!({"name": "熊某", "title": "项目经理", "company": "新公司", "work_city": "上海"});
         let rejected = json!({"company": ["新公司"]});
         let ups = plan_identity_update(&cur, &extracted, &rejected);
         assert_eq!(ups, vec![("title".to_string(), "项目经理".to_string())]);

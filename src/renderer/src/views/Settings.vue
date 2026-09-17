@@ -1449,13 +1449,14 @@ onBeforeUnmount(stopPollTimers)
 const profName = ref('')
 const profTitle = ref('')
 const profCompany = ref('')
+const profCity = ref('')
 const profEmails = ref<string[]>([])
 const profileSaving = ref(false)
 const profileFacts = ref<ProfileFact[]>([])
 const identityMeta = ref<{ updated_at?: string; source?: string }>({})
 
 const profSummary = computed(() => {
-  const parts = [profName.value, profTitle.value, profCompany.value].filter(Boolean)
+  const parts = [profName.value, profTitle.value, profCompany.value, profCity.value].filter(Boolean)
   return parts.length ? parts.join(' · ') : ''
 })
 const profSourceText = computed(() => {
@@ -1472,6 +1473,7 @@ async function loadProfile() {
     profName.value = p?.name === '本地管理员' ? '' : (p?.name || '')
     profTitle.value = p?.title || ''
     profCompany.value = p?.company || ''
+    profCity.value = p?.work_city || ''
     profEmails.value = p?.email_addresses || []
     identityMeta.value = p?.identity_meta || {}
     const f = await profileFactsList()
@@ -1485,6 +1487,7 @@ const profileEditorOpen = ref(false)
 const editName = ref('')
 const editTitle = ref('')
 const editCompany = ref('')
+const editCity = ref('')
 interface DraftFact { id: string; content: string }
 const draftFacts = ref<DraftFact[]>([])
 
@@ -1492,6 +1495,7 @@ function openProfileEditor() {
   editName.value = profName.value
   editTitle.value = profTitle.value
   editCompany.value = profCompany.value
+  editCity.value = profCity.value
   draftFacts.value = profileFacts.value.map(f => ({ id: f.id, content: f.content }))
   profileEditorOpen.value = true
 }
@@ -1503,7 +1507,7 @@ async function saveProfileEditor() {
   if (profileSaving.value) return
   profileSaving.value = true
   try {
-    await updateUserProfile({ name: editName.value.trim(), title: editTitle.value.trim(), company: editCompany.value.trim() })
+    await updateUserProfile({ name: editName.value.trim(), title: editTitle.value.trim(), company: editCompany.value.trim(), work_city: editCity.value.trim() })
     const oldIds = new Set(profileFacts.value.map(f => f.id))
     const kept = new Set<string>()
     for (const d of draftFacts.value) {
@@ -1636,7 +1640,7 @@ async function saveProfileEditor() {
                     <p class="text-[10px] text-surface-400 mt-0.5">姓名/职位/公司平时由 AI 从你的发件邮件自动维护；手动编辑后该字段以你写的为准</p>
                   </div>
                   <div class="px-5 py-3 space-y-3 overflow-y-auto">
-                    <div class="grid grid-cols-3 gap-2">
+                    <div class="grid grid-cols-2 gap-2">
                       <div>
                         <label class="text-[10px] text-surface-400">姓名</label>
                         <input v-model="editName" maxlength="30" placeholder="姓名" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
@@ -1648,6 +1652,10 @@ async function saveProfileEditor() {
                       <div>
                         <label class="text-[10px] text-surface-400">公司</label>
                         <input v-model="editCompany" maxlength="50" placeholder="公司" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                      </div>
+                      <div>
+                        <label class="text-[10px] text-surface-400">工作城市</label>
+                        <input v-model="editCity" maxlength="20" placeholder="如：上海" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
                       </div>
                     </div>
                     <div class="border-t border-surface-100 pt-3">

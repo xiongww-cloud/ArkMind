@@ -269,6 +269,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         // 用户身份认知：档案字段 + users 单例行兜底（修复无行时保存静默丢失）
         "ALTER TABLE users ADD COLUMN title TEXT DEFAULT ''",
         "ALTER TABLE users ADD COLUMN company TEXT DEFAULT ''",
+        "ALTER TABLE users ADD COLUMN work_city TEXT DEFAULT ''",
         "INSERT OR IGNORE INTO users (id,name,username,role) VALUES ('local-admin','本地管理员','local-admin','OWNER')",
     ];
     for m in migrations {
@@ -1405,8 +1406,8 @@ mod tests {
             assert_eq!(n, 1, "索引 {} 必须存在", idx);
         }
         let users_cols: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name IN ('title','company')", [], |r| r.get(0)).unwrap();
-        assert_eq!(users_cols, 2, "users 档案列 title/company 必须存在");
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name IN ('title','company','work_city')", [], |r| r.get(0)).unwrap();
+        assert_eq!(users_cols, 3, "users 档案列 title/company/work_city 必须存在");
         let admin_rows: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE id='local-admin'", [], |r| r.get(0)).unwrap();
         assert_eq!(admin_rows, 1, "users 单例兜底行必须存在（否则档案保存静默丢失）");
 
