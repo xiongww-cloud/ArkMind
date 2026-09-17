@@ -1761,7 +1761,7 @@ async function removePolicy(p: PolicyRecord) {
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">行为准则 <span class="text-[10px] text-surface-400 font-normal">（{{ policyList.length }}）</span></h2>
-              <p class="text-[10px] text-surface-400 mt-1">你给 AI 定的规则（必须/不要），智能问答每次自动遵守；关于你自己的稳定事实请记入「我的档案」</p>
+              <p class="text-[10px] text-surface-400 mt-1">你给 AI 定的规则（必须/不要），智能问答每次自动遵守</p>
             </div>
             <div class="p-5 pt-3 space-y-1.5">
               <p v-if="!policyList.length" class="text-[10px] text-surface-400">还没有准则。可在下方添加，或直接在对话里说"以后必须……"</p>
