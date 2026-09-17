@@ -1630,8 +1630,8 @@ onBeforeUnmount(stopPollTimers)
                         </div>
                       </div>
                       <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
-                        <button @click="closeFocusModal" class="h-7 px-3 text-[11px] rounded-lg border border-surface-200 text-surface-500 hover:bg-surface-50">取消</button>
-                        <button @click="saveFocusModal" :disabled="focusSaving" class="h-7 px-3 text-[11px] font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">{{ focusSaving ? '保存中…' : '保存' }}</button>
+                        <button @click="closeFocusModal" class="btn-secondary text-xs">取消</button>
+                        <button @click="saveFocusModal" :disabled="focusSaving" class="btn-primary text-xs">{{ focusSaving ? '保存中...' : '保存' }}</button>
                       </div>
                     </div>
                   </div>
@@ -1808,8 +1808,8 @@ onBeforeUnmount(stopPollTimers)
                         </div>
                       </div>
                       <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2 flex-shrink-0">
-                        <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="h-7 px-3 text-[11px] font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重试失败任务</button>
-                        <button @click="showParseErrorsModal = false" class="h-7 px-3 text-[11px] font-medium rounded-lg bg-surface-100 text-surface-600 hover:bg-surface-200 transition">关闭</button>
+                        <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="h-7 px-3 text-xs font-medium rounded-lg border border-red-300 text-red-600 hover:bg-red-50 transition">重试失败任务</button>
+                        <button @click="showParseErrorsModal = false" class="btn-secondary text-xs">关闭</button>
                       </div>
                     </div>
                   </div>
