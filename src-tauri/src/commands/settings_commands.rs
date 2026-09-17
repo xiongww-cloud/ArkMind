@@ -198,6 +198,66 @@ pub async fn web_search_test() -> Result<Value, String> {
     }
 }
 
+// ─── 行为准则（policy）管理 UI 后端 ───────────────────────
+
+fn validate_policy_content(c: &str) -> Result<String, String> {
+    let t = c.trim();
+    if t.is_empty() { return Err("准则内容不能为空".into()); }
+    if t.chars().count() > 500 { return Err("准则内容不能超过 500 字符".into()); }
+    Ok(t.to_string())
+}
+
+#[tauri::command]
+pub async fn policies_list() -> Result<Value, String> {
+    let rows = database::all(
+        "SELECT id, content, updated_at FROM policies ORDER BY updated_at DESC",
+        &[],
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({ "success": true, "policies": rows }))
+}
+
+#[tauri::command]
+pub async fn policy_create(content: String) -> Result<Value, String> {
+    let c = validate_policy_content(&content)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    database::run(
+        "INSERT INTO policies(id, content, created_at, updated_at) VALUES(?1, ?2, datetime('now','localtime'), datetime('now','localtime'))",
+        &[json!(&id), json!(&c)],
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({ "success": true, "id": id }))
+}
+
+#[tauri::command]
+pub async fn policy_update(id: String, content: String) -> Result<Value, String> {
+    let c = validate_policy_content(&content)?;
+    database::run(
+        "UPDATE policies SET content=?1, updated_at=datetime('now','localtime') WHERE id=?2",
+        &[json!(&c), json!(&id)],
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({ "success": true }))
+}
+
+#[tauri::command]
+pub async fn policy_delete(id: String) -> Result<Value, String> {
+    database::run("DELETE FROM policies WHERE id=?1", &[json!(&id)]).map_err(|e| e.to_string())?;
+    Ok(json!({ "success": true }))
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn validate_policy_basics() {
+        assert!(validate_policy_content("   ").is_err());
+        assert_eq!(validate_policy_content("  必须先看成本  ").unwrap(), "必须先看成本");
+        let long = "字".repeat(501);
+        assert!(validate_policy_content(&long).is_err());
+        let ok = "字".repeat(500);
+        assert_eq!(validate_policy_content(&ok).unwrap().chars().count(), 500);
+    }
+}
+
 // Storage
 #[tauri::command] pub async fn storage_get_config() -> Result<Value, String> {
     let row = database::get("SELECT * FROM system_config WHERE tenant_id='local-user'",&[]).map_err(|e| e.to_string())?;

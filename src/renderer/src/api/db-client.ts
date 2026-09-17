@@ -741,6 +741,25 @@ export async function updateAiConfig(data: Record<string, unknown>): Promise<{ s
 export async function webSearchTest(): Promise<{ success: boolean; message: string }> {
   return invoke('web_search_test')
 }
+
+export interface PolicyRecord {
+  id: string
+  content: string
+  updated_at: string
+}
+
+export async function policiesList(): Promise<{ success: boolean; policies: PolicyRecord[] }> {
+  return invoke('policies_list')
+}
+export async function policyCreate(content: string): Promise<{ success: boolean; id: string }> {
+  return invoke('policy_create', { content })
+}
+export async function policyUpdate(id: string, content: string): Promise<{ success: boolean }> {
+  return invoke('policy_update', { id, content })
+}
+export async function policyDelete(id: string): Promise<{ success: boolean }> {
+  return invoke('policy_delete', { id })
+}
 export async function getSystemSetting(
   key: string
 ): Promise<{ key: string; value: string | null }> {

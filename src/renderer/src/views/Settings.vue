@@ -8,6 +8,7 @@ import { useUploadProgress } from '@/composables/useUploadProgress'
 import {
   fetchSettings, updateSettings, browseFolder,
   updateAiConfig, fetchAiConfig, webSearchTest,
+  policiesList, policyCreate, policyUpdate, policyDelete, type PolicyRecord,
   migrateFiles, pipelineClearVectors,
   pipelineClearKnowledge, pipelineClearAll,
   pipelineRevectorize, pipelineRetryFailed,
@@ -1536,6 +1537,66 @@ async function saveProfileEditor() {
     profileSaving.value = false
   }
 }
+
+// ─── 行为准则（policy）管理 ───────────────────────────────
+const policyList = ref<PolicyRecord[]>([])
+const policyDraft = ref('')
+const policySaving = ref(false)
+const policyEditId = ref<string | null>(null)
+const policyEditText = ref('')
+
+async function loadPolicies() {
+  try {
+    const r = await policiesList()
+    policyList.value = r.policies || []
+  } catch { /* 静默 */ }
+}
+loadPolicies()
+
+async function addPolicy() {
+  const c = policyDraft.value.trim()
+  if (!c || policySaving.value) return
+  policySaving.value = true
+  try {
+    await policyCreate(c)
+    policyDraft.value = ''
+    await loadPolicies()
+  } catch (e: any) {
+    toast({ message: String(e?.message || e), type: 'error' })
+  } finally {
+    policySaving.value = false
+  }
+}
+
+function startPolicyEdit(p: PolicyRecord) { policyEditId.value = p.id; policyEditText.value = p.content }
+function cancelPolicyEdit() { policyEditId.value = null }
+
+async function savePolicyEdit() {
+  if (!policyEditId.value || policySaving.value) return
+  const c = policyEditText.value.trim()
+  if (!c) { toast({ message: '准则内容不能为空', type: 'error' }); return }
+  policySaving.value = true
+  try {
+    await policyUpdate(policyEditId.value, c)
+    policyEditId.value = null
+    await loadPolicies()
+  } catch (e: any) {
+    toast({ message: String(e?.message || e), type: 'error' })
+  } finally {
+    policySaving.value = false
+  }
+}
+
+async function removePolicy(p: PolicyRecord) {
+  const ok = await dangerConfirm({ title: '删除准则', message: `确定删除准则「${p.content.slice(0, 30)}${p.content.length > 30 ? '…' : ''}」？`, confirmText: '删除' })
+  if (!ok) return
+  try {
+    await policyDelete(p.id)
+    await loadPolicies()
+  } catch {
+    toast({ message: '删除失败', type: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -1680,6 +1741,39 @@ async function saveProfileEditor() {
               </div>
             </Transition>
           </Teleport>
+
+          <!-- 行为准则（policy） -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">行为准则 <span class="text-[10px] text-surface-400 font-normal">（{{ policyList.length }}）</span></h2>
+              <p class="text-[10px] text-surface-400 mt-1">你给 AI 定的规则（必须/不要），智能问答每次自动遵守；关于你自己的稳定事实请记入「我的档案」</p>
+            </div>
+            <div class="p-5 pt-3 space-y-1.5">
+              <p v-if="!policyList.length" class="text-[10px] text-surface-400">还没有准则。可在下方添加，或直接在对话里说"以后必须……"</p>
+              <div v-for="p in policyList" :key="p.id" class="rounded-lg border border-surface-100 bg-surface-50">
+                <!-- 展示态 -->
+                <div v-if="policyEditId !== p.id" class="group flex items-start gap-2 px-2.5 py-2">
+                  <span class="flex-1 text-[11px] text-surface-600 leading-snug whitespace-pre-wrap">{{ p.content }}</span>
+                  <div class="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                    <button @click="startPolicyEdit(p)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="11" /></button>
+                    <button @click="removePolicy(p)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500" title="删除"><AppIcon name="x" size="11" /></button>
+                  </div>
+                </div>
+                <!-- 编辑态 -->
+                <div v-else class="p-2 space-y-1.5">
+                  <textarea v-model="policyEditText" rows="3" maxlength="500" class="w-full px-2.5 py-1.5 text-[11px] leading-relaxed bg-white border border-surface-200 rounded-lg outline-none focus:border-brand-400 resize-y"></textarea>
+                  <div class="flex items-center justify-end gap-2">
+                    <button @click="cancelPolicyEdit" class="btn-secondary text-xs">取消</button>
+                    <button @click="savePolicyEdit" :disabled="policySaving" class="btn-primary text-xs">保存</button>
+                  </div>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 pt-1">
+                <input v-model="policyDraft" maxlength="500" placeholder="新增准则，如：报价前必须先给我看成本构成" class="flex-1 px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" @keyup.enter="addPolicy" />
+                <button @click="addPolicy" :disabled="!policyDraft.trim() || policySaving" class="btn-secondary text-xs shrink-0">添加</button>
+              </div>
+            </div>
+          </div>
 
           <!-- AI 模型配置 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
