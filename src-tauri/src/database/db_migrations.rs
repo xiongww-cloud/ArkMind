@@ -266,6 +266,10 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE agent_profiles ADD COLUMN preset_tools TEXT DEFAULT '[]'",
         // 记忆来源标记（user=聊天/手动，notification_confirmed=用户确认的分析发现）
         "ALTER TABLE memories ADD COLUMN source TEXT DEFAULT 'user'",
+        // 用户身份认知：档案字段 + users 单例行兜底（修复无行时保存静默丢失）
+        "ALTER TABLE users ADD COLUMN title TEXT DEFAULT ''",
+        "ALTER TABLE users ADD COLUMN company TEXT DEFAULT ''",
+        "INSERT OR IGNORE INTO users (id,name,username,role) VALUES ('local-admin','本地管理员','local-admin','OWNER')",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
@@ -1400,6 +1404,11 @@ mod tests {
             let n: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1", [idx], |r| r.get(0)).unwrap();
             assert_eq!(n, 1, "索引 {} 必须存在", idx);
         }
+        let users_cols: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name IN ('title','company')", [], |r| r.get(0)).unwrap();
+        assert_eq!(users_cols, 2, "users 档案列 title/company 必须存在");
+        let admin_rows: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE id='local-admin'", [], |r| r.get(0)).unwrap();
+        assert_eq!(admin_rows, 1, "users 单例兜底行必须存在（否则档案保存静默丢失）");
 
         let schema1 = schema_dump(&conn);
         run_migrations(&conn).expect("second run_migrations on live copy");

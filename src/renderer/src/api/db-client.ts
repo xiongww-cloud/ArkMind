@@ -167,6 +167,9 @@ export interface UserProfile {
   email: string
   avatar: string
   aiConfig: string
+  title?: string
+  company?: string
+  email_addresses?: string[]
 }
 
 export interface KbConfig {

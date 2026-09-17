@@ -483,8 +483,14 @@ pub async fn agent_chat_workflow_internal(
         String::new()
     };
     
-    // System Prompt 注入可用 Agent 列表
-    messages[0].content = Some(format!("{}{}", effective_prompt, agent_section));
+    // System Prompt 注入可用 Agent 列表；【关于我】仅智能问答主Agent注入（与用户策略同口径）
+    let whoami_section = if is_root && system_prompt.is_none() {
+        let block = crate::services::whoami::Whoami::load().prompt_block();
+        if block.is_empty() { String::new() } else { format!("\n\n{}", block) }
+    } else {
+        String::new()
+    };
+    messages[0].content = Some(format!("{}{}{}", effective_prompt, agent_section, whoami_section));
     let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
     let mut retry_count = 0u32; // ToolCall 清理后重试计数器
 

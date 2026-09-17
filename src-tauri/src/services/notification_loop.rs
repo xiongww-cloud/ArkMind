@@ -45,9 +45,11 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 5. 每轮最多 3 条通知，宁缺毋滥。
 
 ## 现实感知（每轮强制例行，不是可选项）
+输入数据若含【关于我】/【用户画像】，其主体是本系统的用户，通知行文称"你"；其中列出的邮箱是用户自己的发件地址。
 系统里的数据是现实的影子，现实总在前面跑。邮件是最新的现实信号，逐封回查（量大时优先发件人含人名/有业务动作的，其余记 WATCH 下轮续查；noreply/system@/促销规律跳过）：
 1. 提取：发件人姓名/邮箱/单位、签名档里的姓名+电话+职位、正文提到的人名/客户名/项目名
 2. 对账：用 ext_tool_object 查 CONTACT/CUSTOMER/CHANNEL/VENDOR/PROJECT，逐个判断：
+   ⓪ 命中【关于我】的姓名或邮箱 = 用户本人 → 直接跳过，绝不是新客户/新联系人
    ① 不存在且疑似真实业务方 → 通知建议 create_contact/create_partner，params 预填全部已知字段，正文注明证据来源（"首次出现在X月X日『主题』邮件签名中"）
    ② 已存在但联系方式/单位/职位有变 → 通知提示更新（view_contact + 差异说明）
    ③ 已存在且一致 → 无事
@@ -74,7 +76,7 @@ WATCH: <一句话观察 + 需要下轮验证什么>
 
 ## 通知输出契约（硬性格式）
 - 发现必须调用 ext_tool_manage_notification 创建，不得直接在回复里输出通知内容
-- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述）；多对象可 create_all
+- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；多对象可 create_all
 - 标题与正文禁止出现对象ID/UUID，只用名称；正文用 Markdown（加粗重点、列表分条），一事一通知
 - 输入数据行尾的 (id:xxx) 仅供你调用工具查证使用，不得出现在通知内容里"#;
 
@@ -199,7 +201,8 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             .format("%Y-%m-%d %H:%M").to_string()
     });
 
-    let seeds = build_change_seeds(&since);
+    let w = crate::services::whoami::Whoami::load();
+    let seeds = build_change_seeds(&since, &w);
     let watch = get_config(WATCH_KEY).unwrap_or_default();
     let watch_effective = watch.trim().to_string();
 
@@ -226,8 +229,10 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     let watch_text = if watch_effective.is_empty() { "（无）".to_string() } else {
         watch_effective.lines().map(|l| format!("- {}", l.trim())).collect::<Vec<_>>().join("\n")
     };
+    let whoami_block = w.prompt_block();
     let query = format!(
-        "## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n\n## 上轮遗留观察（优先跟进验证）\n{}",
+        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n\n## 上轮遗留观察（优先跟进验证）\n{}",
+        if whoami_block.is_empty() { String::new() } else { format!("{}\n\n", whoami_block) },
         since, seeds_text, baseline, recent, watch_text
     );
 
@@ -334,7 +339,7 @@ fn short_dt(s: &str) -> String {
 }
 
 /// 变化种子：自上次分析以来的新增/更新条目，逐条一行——线索入口，不是通知本身
-fn build_change_seeds(since: &str) -> String {
+fn build_change_seeds(since: &str, w: &crate::services::whoami::Whoami) -> String {
     let mut out = String::new();
     let sj = json!(since);
 
@@ -381,7 +386,7 @@ fn build_change_seeds(since: &str) -> String {
             r["subject"].as_str().filter(|s| !s.is_empty()).unwrap_or("无主题"),
             r["from_name"].as_str().unwrap_or(""),
             r["from_addr"].as_str().unwrap_or(""),
-            if r["folder"].as_str() == Some("SENT") { "发件" } else { "收件" },
+            if w.is_my_email(r["from_addr"].as_str().unwrap_or("")) || r["folder"].as_str().map_or(false, |f| f.eq_ignore_ascii_case("sent")) { "你发出" } else { "收件" },
             short_dt(r["received_at"].as_str().unwrap_or("")),
         ));
         push_section(&mut out, "新邮件:", items, more);

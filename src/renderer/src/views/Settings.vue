@@ -668,8 +668,8 @@ const vecSavedData = ref<any>(null)
 const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
-import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, type LoopStatus } from '@/api/notification-client'
-import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession } from '@/api/db-client'
+import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, type LoopStatus, type ProfileFact } from '@/api/notification-client'
+import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
@@ -1396,6 +1396,50 @@ onActivated(() => {
 
 onDeactivated(stopPollTimers)
 onBeforeUnmount(stopPollTimers)
+
+// ─── 我的档案（用户身份）─────────────────────────────────
+const profName = ref('')
+const profTitle = ref('')
+const profCompany = ref('')
+const profEmails = ref<string[]>([])
+const profileSaving = ref(false)
+const profileFacts = ref<ProfileFact[]>([])
+
+async function loadProfile() {
+  try {
+    const p: any = await fetchUserProfile()
+    profName.value = p?.name === '本地管理员' ? '' : (p?.name || '')
+    profTitle.value = p?.title || ''
+    profCompany.value = p?.company || ''
+    profEmails.value = p?.email_addresses || []
+    const f = await profileFactsList()
+    profileFacts.value = f.facts || []
+  } catch { /* 档案加载失败静默，保存时再报错 */ }
+}
+loadProfile()
+
+async function saveProfile() {
+  if (profileSaving.value) return
+  profileSaving.value = true
+  try {
+    await updateUserProfile({ name: profName.value.trim(), title: profTitle.value.trim(), company: profCompany.value.trim() })
+    toast({ message: '档案已保存', type: 'success' })
+    await loadProfile()
+  } catch (e: any) {
+    toast({ message: '保存失败: ' + (e?.message || e), type: 'error' })
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+async function removeProfileFact(id: string) {
+  try {
+    await profileFactDelete(id)
+    profileFacts.value = profileFacts.value.filter(x => x.id !== id)
+  } catch {
+    toast({ message: '删除失败', type: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -1463,6 +1507,35 @@ onBeforeUnmount(stopPollTimers)
 
       <!-- ══════════ 卡片区（Columns 瀑布流自动排列） ══════════ -->
       <div class="columns-1 lg:columns-2 gap-4">
+
+          <!-- 我的档案 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
+              <p class="text-[10px] text-surface-400 mt-1">告诉 AI 你是谁——智能问答与智能通知会依据此档案认识你；填得越全，回答和洞察越贴近你</p>
+            </div>
+            <div class="p-5 pt-3 space-y-2.5">
+              <div class="grid grid-cols-3 gap-2">
+                <input v-model="profName" maxlength="30" placeholder="姓名" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                <input v-model="profTitle" maxlength="30" placeholder="职位" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+                <input v-model="profCompany" maxlength="50" placeholder="公司" class="w-full px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-[10px] text-surface-400 truncate">我的邮箱：<span v-if="!profEmails.length" class="text-surface-300">未配置，在「邮件账户」添加后自动识别</span><span v-else>{{ profEmails.join('、') }}</span></p>
+                <button @click="saveProfile" :disabled="profileSaving" class="btn-primary text-xs shrink-0">{{ profileSaving ? '保存中...' : '保存档案' }}</button>
+              </div>
+              <div class="pt-1 border-t border-surface-100">
+                <p class="text-[11px] font-medium text-surface-600 mt-2">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20，来自你在通知中的确认，自动注入 AI 上下文）</span></p>
+                <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">智能通知里点「记入画像」后沉淀在这里</p>
+                <div v-else class="mt-1.5 space-y-1 max-h-40 overflow-y-auto">
+                  <div v-for="f in profileFacts" :key="f.id" class="group flex items-start gap-2 px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
+                    <span class="flex-1 text-[11px] text-surface-600 leading-snug">{{ f.content }}</span>
+                    <button @click="removeProfileFact(f.id)" class="shrink-0 text-surface-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition" title="删除"><AppIcon name="x" size="11" /></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
 
           <!-- AI 模型配置 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
