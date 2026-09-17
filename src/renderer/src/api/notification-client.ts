@@ -49,6 +49,24 @@ export async function memoryCreateFromNotification(content: string, notification
   return invoke('memory_create_from_notification', { content, notificationId: notificationId ?? null })
 }
 
+export async function profileFactSave(content: string, notificationId?: string): Promise<{ success: boolean; id: string }> {
+  return invoke('profile_fact_save', { content, notificationId: notificationId ?? null })
+}
+
+export interface ProfileFact {
+  id: string
+  content: string
+  updated_at: string
+}
+
+export async function profileFactsList(): Promise<{ success: boolean; facts: ProfileFact[] }> {
+  return invoke('profile_facts_list')
+}
+
+export async function profileFactDelete(id: string): Promise<{ success: boolean }> {
+  return invoke('profile_fact_delete', { id })
+}
+
 export async function notificationList(unreadOnly?: boolean): Promise<{ success: boolean; notifications: Notification[] }> {
   return invoke('notification_list', { unreadOnly: unreadOnly ?? null })
 }

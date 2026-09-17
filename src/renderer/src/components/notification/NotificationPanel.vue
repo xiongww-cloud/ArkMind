@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { sanitizeHtml } from '@/utils/sanitize'
 import { useTooltip } from '@/composables/useTooltip'
@@ -173,6 +173,7 @@ const ACTION_ICONS: Record<string, string> = {
   create_partner: 'plus',
   create_all: 'check-circle',
   save_memory: 'save',
+  save_profile: 'user',
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -257,6 +258,19 @@ async function handleAction(n: Notification, action: NotificationAction) {
         const r = await memoryCreateFromNotification(content, n.id)
         if (r.success) {
           toast({ message: '已记住', type: 'success' })
+          await notificationMarkRead(n.id)
+          notifications.value = notifications.value.filter(x => x.id !== n.id)
+        } else {
+          toast({ message: '保存失败', type: 'error' })
+        }
+        break
+      }
+      case 'save_profile': {
+        const content = (p.content as string || '').trim()
+        if (!content) { toast({ message: '该通知未提供画像事实内容', type: 'info' }); break }
+        const r = await profileFactSave(content, n.id)
+        if (r.success) {
+          toast({ message: '已记入你的画像', type: 'success' })
           await notificationMarkRead(n.id)
           notifications.value = notifications.value.filter(x => x.id !== n.id)
         } else {

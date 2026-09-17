@@ -148,24 +148,23 @@ pub async fn notification_loop_status() -> Result<Value, String> {
     }))
 }
 
-/// 用户从通知的 save_memory 按钮确认沉淀记忆（受信任路径，分析师本体无写权限）
-#[tauri::command]
-pub async fn memory_create_from_notification(content: String, notification_id: Option<String>) -> Result<Value, String> {
+/// 用户点击确认按钮后的受信任落库路径（分析师本体无写权限）
+fn create_confirmed_fact(content: &str, notification_id: Option<&str>, source: &str) -> Result<Value, String> {
     let c = content.trim().to_string();
-    if c.is_empty() { return Err("记忆内容不能为空".into()); }
-    if c.chars().count() > 500 { return Err("记忆内容不能超过 500 字符".into()); }
-    // 去重：同内容已存在则直接复用（用户重复点击幂等）
+    if c.is_empty() { return Err("内容不能为空".into()); }
+    if c.chars().count() > 500 { return Err("内容不能超过 500 字符".into()); }
+    // 去重：同源同内容已存在则直接复用（用户重复点击幂等）
     let existing: Option<String> = database::get(
-        "SELECT id FROM memories WHERE content=?1 ORDER BY created_at DESC LIMIT 1",
-        &[json!(&c)],
+        "SELECT id FROM memories WHERE content=?1 AND source=?2 ORDER BY created_at DESC LIMIT 1",
+        &[json!(&c), json!(source)],
     ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from));
     let id = match existing {
         Some(id) => id,
         None => {
             let id = uuid::Uuid::new_v4().to_string();
             database::run(
-                "INSERT INTO memories(id, content, source, created_at, updated_at) VALUES(?1, ?2, 'notification_confirmed', datetime('now','localtime'), datetime('now','localtime'))",
-                &[json!(&id), json!(&c)],
+                "INSERT INTO memories(id, content, source, created_at, updated_at) VALUES(?1, ?2, ?3, datetime('now','localtime'), datetime('now','localtime'))",
+                &[json!(&id), json!(&c), json!(source)],
             ).map_err(|e| e.to_string())?;
             id
         }
@@ -175,4 +174,34 @@ pub async fn memory_create_from_notification(content: String, notification_id: O
         let _ = database::run("UPDATE notifications SET read=1 WHERE id=?1", &[json!(nid)]);
     }
     Ok(json!({ "success": true, "id": id }))
+}
+
+/// 用户从通知的 save_memory 按钮确认沉淀记忆（受信任路径，分析师本体无写权限）
+#[tauri::command]
+pub async fn memory_create_from_notification(content: String, notification_id: Option<String>) -> Result<Value, String> {
+    create_confirmed_fact(&content, notification_id.as_deref(), "notification_confirmed")
+}
+
+/// 用户从通知的 save_profile 按钮确认沉淀用户画像事实
+#[tauri::command]
+pub async fn profile_fact_save(content: String, notification_id: Option<String>) -> Result<Value, String> {
+    create_confirmed_fact(&content, notification_id.as_deref(), "profile")
+}
+
+/// 画像事实列表（设置页"我的档案"卡用）
+#[tauri::command]
+pub async fn profile_facts_list() -> Result<Value, String> {
+    let rows = database::all(
+        "SELECT id, content, updated_at FROM memories WHERE source='profile' ORDER BY updated_at DESC",
+        &[],
+    ).map_err(|e| e.to_string()).unwrap_or_default();
+    Ok(json!({ "success": true, "facts": rows }))
+}
+
+/// 删除一条画像事实（仅限 source='profile'，防误删普通记忆）
+#[tauri::command]
+pub async fn profile_fact_delete(id: String) -> Result<Value, String> {
+    database::run("DELETE FROM memories WHERE id=?1 AND source='profile'", &[json!(&id)])
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "success": true }))
 }
