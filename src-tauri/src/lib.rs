@@ -355,7 +355,7 @@ pub fn run() {
             // Notifications
             commands::notification_list, commands::notification_create, commands::notification_mark_read,
             commands::notification_mark_all_read, commands::notification_delete, commands::notification_batch_delete, commands::notification_stats,
-            commands::notification_config_get, commands::notification_config_update,
+            commands::notification_config_get, commands::notification_config_update, commands::memory_create_from_notification,
             commands::notification_loop_status,
             // 邮件
             commands::email_add_account, commands::email_list_accounts,

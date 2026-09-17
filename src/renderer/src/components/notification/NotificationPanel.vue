@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { sanitizeHtml } from '@/utils/sanitize'
 import { useTooltip } from '@/composables/useTooltip'
@@ -172,6 +172,7 @@ const ACTION_ICONS: Record<string, string> = {
   create_contact: 'plus',
   create_partner: 'plus',
   create_all: 'check-circle',
+  save_memory: 'save',
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -250,6 +251,19 @@ async function handleAction(n: Notification, action: NotificationAction) {
       case 'create_all':
         showCreateAllConfirm(n)
         break
+      case 'save_memory': {
+        const content = (p.content as string || '').trim()
+        if (!content) { toast({ message: '该通知未提供可记忆的事实内容', type: 'info' }); break }
+        const r = await memoryCreateFromNotification(content, n.id)
+        if (r.success) {
+          toast({ message: '已记住', type: 'success' })
+          await notificationMarkRead(n.id)
+          notifications.value = notifications.value.filter(x => x.id !== n.id)
+        } else {
+          toast({ message: '保存失败', type: 'error' })
+        }
+        break
+      }
     }
   } catch (e) {
     console.error('[NotificationPanel] action failed:', e)

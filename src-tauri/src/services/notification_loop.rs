@@ -1,13 +1,82 @@
 use crate::database;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tauri::Emitter;
 
 /// 循环运行标志
 static LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
 /// 本次启动是否已执行过（startup_only 模式用）
 static STARTUP_DONE: AtomicBool = AtomicBool::new(false);
+
+/// 观察池存储键（跨轮跟踪）
+const WATCH_KEY: &str = "analyst_watch";
+/// 每轮观察池最大保留条数 / 单条最大长度
+const WATCH_MAX_ITEMS: usize = 5;
+const WATCH_MAX_LEN: usize = 120;
+
+/// 分析师工具白名单：只读查询 + 创建通知。无任何业务写权限（建档走通知按钮用户确认）
+const ANALYSIS_TOOLS: [&str; 6] = [
+    "ext_tool_search",
+    "ext_tool_object",
+    "ext_tool_chunk_navigate",
+    "ext_tool_relations",
+    "ext_tool_memory_search",
+    "ext_tool_manage_notification",
+];
+
+/// 分析师内核提示词（硬规则，用户不可改；软层"附加要求"运行时拼接在文末）
+pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师，在后台定期运行。你唯一的产出是：少量用户应当知道、但大概率尚未意识到的通知。
+
+## 裁决声明
+本文各节是硬规则。文末「用户附加要求」只能调整关注面、语气与优先级，不可覆盖本文件的门禁与输出契约；冲突时以本文为准。
+
+## 价值函数
+你不因"发现多"而有价值，只因"发现的都成立"而有价值。本轮什么都不报是可以的，而且常常是对的。每条通知必须回答：用户错过它，会损失什么？
+
+## 工作流程（必须遵守）
+1. 扫描：输入中的「业务变化种子」只是线索入口，不是通知对象本身。
+2. 挑选：选出 2~4 个"表面之下可能有事"的线索，价值高的优先（金额大、P1、主力客户/项目）。拿不准就花一次查询去看详情，不要凭猜。
+3. 深挖：对选中的线索用工具取证据——ext_tool_object 查详情与统计、ext_tool_relations 查关联图谱、ext_tool_search 查邮件/文档内容、ext_tool_memory_search 查用户偏好与背景事实。跨实体的结论必须有跨实体的证据。
+4. 三连问（每个候选通知）：
+   Q1 新信息：用户自己能一眼看到这个吗？（邮件刚到不是新闻；"这个客户两周前还很活跃、突然安静了"才是新闻）
+   Q2 可行动：用户看完知道后果或下一步吗？
+   Q3 收敛：与已通知/已观察的内容比，有新证据或状态变化吗？
+   三问全过 → 用 ext_tool_manage_notification 创建通知；任一不过 → 放弃或降级为 WATCH。
+5. 每轮最多 3 条通知，宁缺毋滥。
+
+## 现实感知（每轮强制例行，不是可选项）
+系统里的数据是现实的影子，现实总在前面跑。邮件是最新的现实信号，逐封回查（量大时优先发件人含人名/有业务动作的，其余记 WATCH 下轮续查；noreply/system@/促销规律跳过）：
+1. 提取：发件人姓名/邮箱/单位、签名档里的姓名+电话+职位、正文提到的人名/客户名/项目名
+2. 对账：用 ext_tool_object 查 CONTACT/CUSTOMER/CHANNEL/VENDOR/PROJECT，逐个判断：
+   ① 不存在且疑似真实业务方 → 通知建议 create_contact/create_partner，params 预填全部已知字段，正文注明证据来源（"首次出现在X月X日『主题』邮件签名中"）
+   ② 已存在但联系方式/单位/职位有变 → 通知提示更新（view_contact + 差异说明）
+   ③ 已存在且一致 → 无事
+3. 未处理的历史建档建议不得重复播报——记入 WATCH 跟踪用户是否已创建。
+
+## 五副洞察透镜（深挖时逐副过一遍）
+- 时间：太快/太慢/停滞/该出现的节点没出现？
+- 关联：人·项目·产品·方案·邮件之间怎么串？同一实体在多线索里重复出现意味着什么？
+- 集中：单点与聚集？（大项目只挂一个联系人？三个投标截止挤在同一周？）
+- 对比：同类对象的进度差？（同为方案阶段，一个已三轮迭代、一个两周没动静？）
+- 缺失："本该存在却不在"？（中标没建跟进待办？新客户文件没关联项目？长期客户没有回访记录？）
+
+## 负面清单（以下不配成为通知，严格执行）
+- 单纯事件转述：邮件到了/文件传了/待办到期——除非叠加了其他信号
+- 无证据的猜测（判断链里出现"可能""也许"就是还没挖够）
+- 换措辞重复上轮内容；未处理的历史建议（用 WATCH 跟踪状态）
+- 用户自己刚做的动作本身
+- 指挥用户修改数据——你能建议创建/查看/记录，不能要求改动
+
+## 连续观察（WATCH）
+证据不足但值得盯的，不要放弃也不要报警——在最终回复的末尾逐行记录：
+WATCH: <一句话观察 + 需要下轮验证什么>
+系统会把它带回下一轮。WATCH 累计验证成立后，才升级为通知。
+
+## 通知输出契约（硬性格式）
+- 发现必须调用 ext_tool_manage_notification 创建，不得直接在回复里输出通知内容
+- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述）；多对象可 create_all
+- 标题与正文禁止出现对象ID/UUID，只用名称；正文用 Markdown（加粗重点、列表分条），一事一通知
+- 输入数据行尾的 (id:xxx) 仅供你调用工具查证使用，不得出现在通知内容里"#;
 
 /// 循环状态信息
 pub struct LoopStatus {
@@ -122,7 +191,7 @@ fn tick(app_handle: &tauri::AppHandle) -> Result<u64, String> {
     Ok(60)
 }
 
-/// 执行 LLM 分析
+/// 执行一轮分析：种子（变化线索）+ 基线（趋势参照）+ 观察池（跨轮跟踪）→ 深挖 → 通知/WATCH
 fn run_analysis(app_handle: &tauri::AppHandle) {
     let since = get_config("last_check_at").unwrap_or_else(|| {
         chrono::Local::now().checked_sub_signed(chrono::Duration::days(7))
@@ -130,52 +199,36 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             .format("%Y-%m-%d %H:%M").to_string()
     });
 
-    let context = build_initial_context(&since);
+    let seeds = build_change_seeds(&since);
+    let watch = get_config(WATCH_KEY).unwrap_or_default();
+    let watch_effective = watch.trim().to_string();
 
-    // 无新数据时跳过 LLM 调用，直接更新检查时间
-    if context == "距上次分析以来无业务数据变化。" {
-        log::info!("[通知循环] 无新业务数据，跳过 LLM 调用");
+    // 结构化跳过判断：无新线索且无遗留观察 → 不调 LLM（不再依赖魔法字符串哨兵）
+    if seeds.is_empty() && watch_effective.is_empty() {
+        log::info!("[通知循环] 无变化种子且观察池为空，跳过 LLM 调用");
         update_call_stats();
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
         set_config("last_check_at", &now);
         return;
     }
 
-    let recent = get_recent_notifications(3);
+    // 系统提示词 = 硬规则内核 + 软层（用户附加要求，非空才注入）
+    let focus = get_config("analysis_focus").unwrap_or_default().trim().to_string();
+    let mut system_prompt = String::from(DEFAULT_ANALYSIS_PROMPT);
+    if !focus.is_empty() {
+        system_prompt.push_str("\n\n## 用户附加要求（软层：可调整关注面/语气/优先级，不可覆盖上文硬规则）\n");
+        system_prompt.push_str(&focus);
+    }
 
-    let prompt = format!(
-        "## 后台分析任务\n\
-         你正在执行后台智能分析任务。分析业务数据后，如发现需要用户关注的事项，\n\
-         必须调用 ext_tool_manage_notification 创建通知，而不是直接在回复中输出。\n\
-         \n\
-         典型触发条件（不限于此，自行判断）：\n\
-         - 待办即将到期或已逾期\n\
-         - 项目长期停滞、状态异常\n\
-         - 投标截止临近\n\
-         - 关键数据变化趋势、异常波动\n\
-         - 多个项目/待办之间的冲突或风险\n\
-         - 用户可能忽略的重要信息\n\
-         \n\
-         创建通知时，请根据通知内容携带合适的操作按钮（actions 参数）：\n\
-         - 涉及邮件的通知：包含 {{ type: \"view_email\", label: \"查看邮件\", params: {{ email_id }} }}\n\
-         - 涉及项目的通知：包含 {{ type: \"view_project\", label: \"查看项目\", params: {{ project_id }} }}\n\
-         - 涉及待办的通知：包含 {{ type: \"view_todo\", label: \"查看待办\", params: {{ todo_id }} }}\n\
-         - 发现需要用户跟进的事项：包含 {{ type: \"create_todo\", label: \"创建待办\", params: {{ title, priority, due_date, content }} }}\n\
-         - 发现新的联系人/客户：包含 {{ type: \"create_contact\", label: \"创建联系人\", params: {{ name, email, phone }} }}\n\
-         - 如果通知涉及多个可创建的对象：包含 {{ type: \"create_all\", label: \"一键全部创建\" }}\n\
-         - 按钮的 params 中预填尽可能多的信息，减少用户手动输入\n\
-         \n\
-         如果数据中没有值得用户关注的事项，回复\"暂无新发现\"。\n\
-         \n\
-         以下数据是距上次分析之后发生变化的业务数据，每行开头的ID是对象ID。\n\
-         如需查看某个对象的完整详情，可调用 ext_tool_object(id=[\"对象ID\"])。\n\
-         例如：ext_tool_object(id=[\"abc123def456\"]) 查看项目详情。\n\
-         重要：通知的标题和内容中禁止出现对象ID/UUID，只使用对象名称描述，例如「项目'XX项目'已停滞」。\n\
-         如需其他业务数据（合作伙伴、联系人、文件、知识库等）辅助分析，可调用工具检索。\n\
-         {}\n\
-         \n\
-         最近通知：\n{}",
-        context, recent
+    let baseline = build_baseline();
+    let recent = get_recent_notifications(3);
+    let seeds_text = if seeds.is_empty() { "（本轮无新增变化，请重点跟进遗留观察）".to_string() } else { seeds };
+    let watch_text = if watch_effective.is_empty() { "（无）".to_string() } else {
+        watch_effective.lines().map(|l| format!("- {}", l.trim())).collect::<Vec<_>>().join("\n")
+    };
+    let query = format!(
+        "## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n\n## 上轮遗留观察（优先跟进验证）\n{}",
+        since, seeds_text, baseline, recent, watch_text
     );
 
     let handle = app_handle.clone();
@@ -184,22 +237,21 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     set_config("last_check_at", &now);
     let since_for_retry = since.clone();
     tauri::async_runtime::spawn(async move {
-        // ★ 周期分析只允许只读查询 + 创建通知，禁止直接改业务对象/记忆/策略
-        let allowed_tools: Vec<String> = vec![
-            "ext_tool_search".to_string(),
-            "ext_tool_object".to_string(),
-            "ext_tool_chunk_navigate".to_string(),
-            "ext_tool_relations".to_string(),
-            "ext_tool_manage_notification".to_string(),
-        ];
-        let result = crate::services::agent_workflow::agent_chat_workflow(
-            prompt,
+        // ★ 独立后台运行体：is_root=true 自持生命周期但 respond_cancel=false 与聊天取消完全隔离；
+        //   silent=true 不向聊天泄漏任何生命周期事件（notification:new 等业务事件由工具自身发送，不受影响）
+        let allowed_tools: Vec<String> = ANALYSIS_TOOLS.iter().map(|s| s.to_string()).collect();
+        let result = crate::services::agent_workflow::agent_chat_workflow_internal(
+            query,
             vec![],
-            Some(12),
+            Some(15),
             Some(handle.clone()),
             true,
             None,
             Some(allowed_tools),
+            Some(system_prompt.as_str()),
+            true,
+            0,
+            false,
         ).await;
 
         match result {
@@ -208,6 +260,14 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
                 let iters = v["iterations"].as_i64().unwrap_or(0);
                 let preview: String = answer.chars().take(100).collect();
                 log::info!("[通知循环] 分析完成，迭代{}次，回复: {}", iters, preview);
+                // WATCH 池更新：解析本轮回复；无 WATCH 则清空（收敛保证）
+                let watch_lines = parse_watch_lines(answer);
+                if watch_lines.is_empty() {
+                    clear_watch_pool();
+                } else {
+                    set_config(WATCH_KEY, &watch_lines.join("\n"));
+                    log::info!("[通知循环] 观察池已更新：{} 条", watch_lines.len());
+                }
             }
             Err(e) => {
                 log::error!("[通知循环] 分析失败: {}", e);
@@ -216,10 +276,33 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             }
         }
 
-        let _ = handle.emit("agent:done", serde_json::json!({}));
-
         update_call_stats();
     });
+}
+
+/// 观察池当前内容（供设置页只读展示）
+pub fn get_watch_pool() -> String {
+    get_config(WATCH_KEY).unwrap_or_default()
+}
+
+/// 从分析回复中解析 `WATCH:` 行（保序、单条截断、最多5条；空则返回空=下轮清空）
+pub(crate) fn parse_watch_lines(answer: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in answer.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("WATCH:") {
+            let w = rest.trim();
+            if w.is_empty() { continue; }
+            let capped: String = w.chars().take(WATCH_MAX_LEN).collect();
+            out.push(capped);
+            if out.len() >= WATCH_MAX_ITEMS { break; }
+        }
+    }
+    out
+}
+
+fn clear_watch_pool() {
+    let _ = database::run("DELETE FROM notification_config WHERE key=?1", &[json!(WATCH_KEY)]);
 }
 
 /// 根据上次检查时间和间隔计算下次检查时间
@@ -232,156 +315,165 @@ fn calc_next_check(last_check_at: &str, interval_minutes: i64) -> String {
     }
 }
 
-/// 构造初始上下文（增量数据：仅返回上次分析后有变化的对象）
-fn build_initial_context(since: &str) -> String {
-    let mut parts = Vec::new();
+/// 截断辅助：返回 (渲染后的前 cap 条, 超出数量)
+fn cap_items<F: Fn(&Value) -> String>(rows: &[Value], cap: usize, f: F) -> (Vec<String>, usize) {
+    let items: Vec<String> = rows.iter().take(cap).map(f).collect();
+    (items, rows.len().saturating_sub(cap))
+}
 
-    if let Ok(rows) = database::all(
-        "SELECT id, name, status, budget, bid_time, expected_order_date, updated_at FROM projects \
-         WHERE updated_at > ?1 AND status NOT IN ('Won','Ordered','Lost','Archived') \
-         ORDER BY updated_at DESC",
-        &[json!(since)],
-    ) {
+fn push_section(out: &mut String, title: &str, items: Vec<String>, more: usize) {
+    if items.is_empty() { return; }
+    out.push_str(&format!("{}\n{}\n", title, items.join("\n")));
+    if more > 0 { out.push_str(&format!("…（另有 {} 条未列出）\n", more)); }
+}
+
+/// 时间串缩略为 MM-DD HH:MM
+fn short_dt(s: &str) -> String {
+    s.chars().skip(5).take(11).collect()
+}
+
+/// 变化种子：自上次分析以来的新增/更新条目，逐条一行——线索入口，不是通知本身
+fn build_change_seeds(since: &str) -> String {
+    let mut out = String::new();
+    let sj = json!(since);
+
+    // 活跃项目更新（非终态）
+    {
+        let rows = database::all(
+            "SELECT id,name,status,bid_time,updated_at FROM projects \
+             WHERE updated_at > ?1 AND status NOT IN ('Won','Ordered','Lost','Archived') \
+             ORDER BY updated_at DESC LIMIT 31", &[sj.clone()]).unwrap_or_default();
+        let (items, more) = cap_items(&rows, 30, |r| format!(
+            "- [PROJECT] {} | 阶段:{} | 投标:{} | 更新:{} (id:{})",
+            r["name"].as_str().unwrap_or("?"),
+            r["status"].as_str().unwrap_or("?"),
+            r["bid_time"].as_str().filter(|s| !s.is_empty()).unwrap_or("-"),
+            short_dt(r["updated_at"].as_str().unwrap_or("")),
+            r["id"].as_str().unwrap_or(""),
+        ));
+        push_section(&mut out, "项目变化:", items, more);
+    }
+
+    // 未完成待办更新
+    {
+        let rows = database::all(
+            "SELECT id,title,priority,due_date,updated_at FROM todos \
+             WHERE done=0 AND updated_at > ?1 ORDER BY due_date ASC LIMIT 31", &[sj.clone()]).unwrap_or_default();
+        let (items, more) = cap_items(&rows, 30, |r| format!(
+            "- [TODO] {} | {} | 截止:{} | 更新:{} (id:{})",
+            r["title"].as_str().unwrap_or("?"),
+            r["priority"].as_str().unwrap_or("-"),
+            r["due_date"].as_str().filter(|s| !s.is_empty()).unwrap_or("无"),
+            short_dt(r["updated_at"].as_str().unwrap_or("")),
+            r["id"].as_str().unwrap_or(""),
+        ));
+        push_section(&mut out, "待办变化:", items, more);
+    }
+
+    // 新邮件（现实感知的主战场，全部流入；发件人信息随行给出）
+    {
+        let rows = database::all(
+            "SELECT id,subject,from_addr,from_name,folder,received_at FROM emails \
+             WHERE created_at > ?1 ORDER BY received_at DESC LIMIT 31", &[sj.clone()]).unwrap_or_default();
+        let (items, more) = cap_items(&rows, 30, |r| format!(
+            "- [EMAIL] 「{}」| 来自:{} <{}> | {} | {}",
+            r["subject"].as_str().filter(|s| !s.is_empty()).unwrap_or("无主题"),
+            r["from_name"].as_str().unwrap_or(""),
+            r["from_addr"].as_str().unwrap_or(""),
+            if r["folder"].as_str() == Some("SENT") { "发件" } else { "收件" },
+            short_dt(r["received_at"].as_str().unwrap_or("")),
+        ));
+        push_section(&mut out, "新邮件:", items, more);
+    }
+
+    // 新文件
+    {
+        let rows = database::all(
+            "SELECT id,original_name FROM file_assets WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 31", &[sj.clone()]).unwrap_or_default();
+        let (items, more) = cap_items(&rows, 30, |r| format!(
+            "- [FILE] {} (id:{})", r["original_name"].as_str().unwrap_or("?"), r["id"].as_str().unwrap_or("")));
+        push_section(&mut out, "新文件:", items, more);
+    }
+
+    // 新笔记（排除每日闪记噪音）
+    {
+        let rows = database::all(
+            "SELECT id,title FROM notes WHERE created_at > ?1 AND is_daily=0 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 31", &[sj.clone()]).unwrap_or_default();
+        let (items, more) = cap_items(&rows, 30, |r| format!(
+            "- [NOTE] {} (id:{})", r["title"].as_str().unwrap_or("?"), r["id"].as_str().unwrap_or("")));
+        push_section(&mut out, "新笔记:", items, more);
+    }
+
+    // 新产品 / 新合作伙伴
+    {
+        let rows = database::all(
+            "SELECT id,name FROM products WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 31", &[sj.clone()]).unwrap_or_default();
+        let (items, more) = cap_items(&rows, 30, |r| format!(
+            "- [PRODUCT] {} (id:{})", r["name"].as_str().unwrap_or("?"), r["id"].as_str().unwrap_or("")));
+        push_section(&mut out, "新产品:", items, more);
+    }
+    {
+        let rows = database::all(
+            "SELECT id,name,type FROM partners WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 31", &[sj]).unwrap_or_default();
+        let (items, more) = cap_items(&rows, 30, |r| format!(
+            "- [{}] {} (id:{})", r["type"].as_str().unwrap_or("PARTNER"), r["name"].as_str().unwrap_or("?"), r["id"].as_str().unwrap_or("")));
+        push_section(&mut out, "新合作伙伴:", items, more);
+    }
+
+    out
+}
+
+/// 当前基线：趋势/对比/停滞判断的参照系
+fn build_baseline() -> String {
+    let mut out = String::new();
+
+    // 活跃项目管线：近90天有动作的前20个，含闲置天数
+    {
+        let rows = database::all(
+            "SELECT name,status,budget,bid_time, \
+             CAST(julianday('now','localtime') - julianday(updated_at) AS INTEGER) AS idle_days \
+             FROM projects WHERE status NOT IN ('Won','Ordered','Lost','Archived') \
+             AND updated_at >= datetime('now','localtime','-90 days') \
+             ORDER BY updated_at DESC LIMIT 20", &[]).unwrap_or_default();
         if !rows.is_empty() {
-            let items: Vec<String> = rows.iter().map(|r| {
-                let id = r["id"].as_str().unwrap_or("");
-                let name = r["name"].as_str().unwrap_or("");
-                let status = r["status"].as_str().unwrap_or("");
-                let budget = r["budget"].as_f64().unwrap_or(0.0);
-                format!("  - {} {} (状态:{}, 预算:{:.0}万)", id, name, status, budget)
-            }).collect();
-            parts.push(format!("活跃项目 ({}个):\n{}", rows.len(), items.join("\n")));
+            let items: Vec<String> = rows.iter().map(|r| format!(
+                "- {} | {} | {:.0}万 | 投标:{} | {}天前有动作",
+                r["name"].as_str().unwrap_or("?"),
+                r["status"].as_str().unwrap_or("?"),
+                r["budget"].as_f64().unwrap_or(0.0),
+                r["bid_time"].as_str().filter(|s| !s.is_empty()).unwrap_or("-"),
+                r["idle_days"].as_i64().unwrap_or(0),
+            )).collect();
+            out.push_str(&format!("活跃项目管线（近90天）:\n{}\n", items.join("\n")));
         }
     }
 
-    if let Ok(rows) = database::all(
-        "SELECT id, title, priority, due_date, done, updated_at FROM todos \
-         WHERE done=0 AND updated_at > ?1 \
-         ORDER BY due_date ASC",
-        &[json!(since)],
-    ) {
+    // 高优待办全景（P1/高，按截止排序）
+    {
+        let rows = database::all(
+            "SELECT title,due_date,priority FROM todos WHERE done=0 AND (priority IN ('P1','高','high') OR due_date < datetime('now','localtime')) \
+             ORDER BY due_date ASC LIMIT 15", &[]).unwrap_or_default();
         if !rows.is_empty() {
-            let items: Vec<String> = rows.iter().map(|r| {
-                let id = r["id"].as_str().unwrap_or("");
-                let title = r["title"].as_str().unwrap_or("");
-                let priority = r["priority"].as_str().unwrap_or("");
-                let due = r["due_date"].as_str().unwrap_or("无");
-                format!("  - {} [{}] {} (截止:{})", id, priority, title, due)
-            }).collect();
-            parts.push(format!("未完成待办 ({}个):\n{}", rows.len(), items.join("\n")));
+            let items: Vec<String> = rows.iter().map(|r| format!(
+                "- {} | {} | 截止:{}",
+                r["title"].as_str().unwrap_or("?"),
+                r["priority"].as_str().unwrap_or("-"),
+                r["due_date"].as_str().filter(|s| !s.is_empty()).unwrap_or("无"),
+            )).collect();
+            out.push_str(&format!("高优/逾期待办:\n{}\n", items.join("\n")));
         }
     }
 
-    // ★ 近期中标：updated_at 已改为"最后活跃时间"语义，中标时间必须用 won_at
-    if let Ok(rows) = database::all(
-        "SELECT id, name, budget, won_at FROM projects \
-         WHERE status='Won' AND won_at != '' AND won_at > ?1 \
-         ORDER BY won_at DESC",
-        &[json!(since)],
-    ) {
-        if !rows.is_empty() {
-            let items: Vec<String> = rows.iter().map(|r| {
-                let id = r["id"].as_str().unwrap_or("");
-                let name = r["name"].as_str().unwrap_or("");
-                let budget = r["budget"].as_f64().unwrap_or(0.0);
-                let won = r["won_at"].as_str().unwrap_or("");
-                format!("  - {} {} ({:.0}万, {})", id, name, budget, &won[..10.min(won.len())])
-            }).collect();
-            parts.push(format!("近期中标:\n{}", items.join("\n")));
-        }
+    // 数据卫生：文件解析失败积压（现状类信号，适合放基线）
+    {
+        let n: i64 = database::get(
+            "SELECT COUNT(*) as cnt FROM knowledge_push_queue WHERE source_type='FILE' AND status='failed'", &[]
+        ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+        if n > 0 { out.push_str(&format!("文件解析积压: {} 个失败（可在 系统设置→知识管线 查看）\n", n)); }
     }
 
-    // ── 其余对象的计数摘要（只统计新建，不跟踪更新，规避高频噪音） ──
-
-    // 新增文件（≤5 个列名，超出只报数量）
-    if let Ok(rows) = database::all(
-        "SELECT original_name FROM file_assets WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 6",
-        &[json!(since)],
-    ) {
-        if !rows.is_empty() {
-            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM file_assets WHERE created_at > ?1", &[json!(since)])
-                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
-            let names: Vec<String> = rows.iter().take(5).filter_map(|r| r["original_name"].as_str().map(String::from)).collect();
-            parts.push(format!("新增文件 ({}个): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
-        }
-    }
-
-    // 新增笔记（排除每日闪记，避免每天自动噪音）
-    if let Ok(rows) = database::all(
-        "SELECT title FROM notes WHERE created_at > ?1 AND is_daily=0 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 6",
-        &[json!(since)],
-    ) {
-        if !rows.is_empty() {
-            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM notes WHERE created_at > ?1 AND is_daily=0 AND deleted_at IS NULL", &[json!(since)])
-                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
-            let names: Vec<String> = rows.iter().take(5).filter_map(|r| r["title"].as_str().map(String::from)).collect();
-            parts.push(format!("新增笔记 ({}条): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
-        }
-    }
-
-    // 新增产品
-    if let Ok(rows) = database::all(
-        "SELECT name FROM products WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 6",
-        &[json!(since)],
-    ) {
-        if !rows.is_empty() {
-            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM products WHERE created_at > ?1", &[json!(since)])
-                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
-            let names: Vec<String> = rows.iter().take(5).filter_map(|r| r["name"].as_str().map(String::from)).collect();
-            parts.push(format!("新增产品 ({}个): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
-        }
-    }
-
-    // 新增合作伙伴（渠道/厂商/客户）
-    if let Ok(rows) = database::all(
-        "SELECT name, type FROM partners WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 6",
-        &[json!(since)],
-    ) {
-        if !rows.is_empty() {
-            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM partners WHERE created_at > ?1", &[json!(since)])
-                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
-            let names: Vec<String> = rows.iter().take(5).map(|r| {
-                let n = r["name"].as_str().unwrap_or("");
-                let t = r["type"].as_str().unwrap_or("");
-                format!("{}({})", n, t)
-            }).collect();
-            parts.push(format!("新增合作伙伴 ({}个): {}{}", total, names.join("、"), if total > 5 { " 等" } else { "" }));
-        }
-    }
-
-    // 新增邮件（收件箱和发件箱）
-    if let Ok(rows) = database::all(
-        "SELECT id, subject, from_addr, from_name, to_addr, received_at, folder FROM emails \
-         WHERE created_at > ?1 \
-         ORDER BY received_at DESC LIMIT 6",
-        &[json!(since)],
-    ) {
-        if !rows.is_empty() {
-            let total: i64 = database::get("SELECT COUNT(*) as cnt FROM emails WHERE created_at > ?1", &[json!(since)])
-                .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(rows.len() as i64);
-            let items: Vec<String> = rows.iter().take(5).map(|r| {
-                let subject = r["subject"].as_str().unwrap_or("无主题");
-                let from = r["from_name"].as_str().unwrap_or(r["from_addr"].as_str().unwrap_or(""));
-                let folder = r["folder"].as_str().unwrap_or("INBOX");
-                format!("{} (来自:{}, 文件夹:{})", subject, from, folder)
-            }).collect();
-            parts.push(format!("新增邮件 ({}封): {}{}", total, items.join("、"), if total > 5 { " 等" } else { "" }));
-        }
-    }
-
-    // 文件解析失败积压（不按时间，报当前积压；只报数量不列名，避免重复打扰）
-    let parse_failed: i64 = database::get(
-        "SELECT COUNT(*) as cnt FROM knowledge_push_queue WHERE source_type='FILE' AND status='failed'", &[]
-    ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-    if parse_failed > 0 {
-        parts.push(format!("文件解析失败积压: {} 个文件解析失败（可在 系统设置→知识管线管理 查看并处理）", parse_failed));
-    }
-
-    if parts.is_empty() {
-        "距上次分析以来无业务数据变化。".to_string()
-    } else {
-        parts.join("\n\n")
-    }
+    if out.is_empty() { out.push_str("（无活跃管线与高优待办）"); }
+    out
 }
 
 /// 查询最近N条通知
@@ -433,5 +525,40 @@ fn update_call_stats() {
         let calls: i64 = get_config("today_calls")
             .and_then(|v| v.parse().ok()).unwrap_or(0);
         set_config("today_calls", &(calls + 1).to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_watch_lines;
+
+    #[test]
+    fn parses_watch_lines_in_order() {
+        let answer = "已创建通知。\nWATCH: 客户A安静两周，验证是否仍在\n中间正文\nWATCH: 李丽未建联系人";
+        let w = parse_watch_lines(answer);
+        assert_eq!(w.len(), 2);
+        assert!(w[0].starts_with("客户A"));
+        assert!(w[1].contains("李丽"));
+    }
+
+    #[test]
+    fn empty_when_no_watch() {
+        assert!(parse_watch_lines("暂无新发现").is_empty());
+        assert!(parse_watch_lines("WATCH: \nWATCH:").is_empty());
+    }
+
+    #[test]
+    fn caps_at_five_and_truncates_length() {
+        let mut s = String::new();
+        for i in 0..10 { s.push_str(&format!("WATCH: 观察{}\n", "长".repeat(200))); }
+        let w = parse_watch_lines(&s);
+        assert_eq!(w.len(), 5);
+        assert!(w.iter().all(|x| x.chars().count() <= 120));
+    }
+
+    #[test]
+    fn ignores_inline_watch_not_at_line_start() {
+        // "WATCH:" 必须在行首（strip 前导空白后），句中出现的不应计入
+        assert!(parse_watch_lines("我记录了 WATCH: 不该被算").is_empty());
     }
 }

@@ -327,6 +327,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS memories (
             id         TEXT PRIMARY KEY,
             content    TEXT NOT NULL DEFAULT '',
+            source     TEXT DEFAULT 'user',
             created_at TEXT DEFAULT (datetime('now','localtime')),
             updated_at TEXT DEFAULT (datetime('now','localtime'))
         );

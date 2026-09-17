@@ -108,7 +108,9 @@ pub async fn notification_config_get() -> Result<Value, String> {
             config.insert(k.to_string(), json!(v));
         }
     }
-    Ok(json!({ "success": true, "config": config }))
+    Ok(json!({ "success": true, "config": config,
+        "analysis_prompt_default": crate::services::notification_loop::DEFAULT_ANALYSIS_PROMPT,
+        "analyst_watch": crate::services::notification_loop::get_watch_pool() }))
 }
 
 #[tauri::command]
@@ -116,6 +118,16 @@ pub async fn notification_config_update(data: Value) -> Result<(), String> {
     if let Some(obj) = data.as_object() {
         for (k, v) in obj {
             let val = v.as_str().unwrap_or(&v.to_string()).to_string();
+            // 附加分析要求（软层）：限 2000 字符；空串=删除（恢复无附加状态）
+            if k == "analysis_focus" {
+                if val.trim().is_empty() {
+                    let _ = database::run("DELETE FROM notification_config WHERE key='analysis_focus'", &[]);
+                    continue;
+                }
+                if val.chars().count() > 2000 {
+                    return Err("附加分析要求不能超过 2000 字符".into());
+                }
+            }
             database::run(
                 "INSERT OR REPLACE INTO notification_config(key, value) VALUES(?1, ?2)",
                 &[json!(k), json!(val)],
@@ -134,4 +146,33 @@ pub async fn notification_loop_status() -> Result<Value, String> {
         "last_check_at": status.last_check_at,
         "next_check_at": status.next_check_at,
     }))
+}
+
+/// 用户从通知的 save_memory 按钮确认沉淀记忆（受信任路径，分析师本体无写权限）
+#[tauri::command]
+pub async fn memory_create_from_notification(content: String, notification_id: Option<String>) -> Result<Value, String> {
+    let c = content.trim().to_string();
+    if c.is_empty() { return Err("记忆内容不能为空".into()); }
+    if c.chars().count() > 500 { return Err("记忆内容不能超过 500 字符".into()); }
+    // 去重：同内容已存在则直接复用（用户重复点击幂等）
+    let existing: Option<String> = database::get(
+        "SELECT id FROM memories WHERE content=?1 ORDER BY created_at DESC LIMIT 1",
+        &[json!(&c)],
+    ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from));
+    let id = match existing {
+        Some(id) => id,
+        None => {
+            let id = uuid::Uuid::new_v4().to_string();
+            database::run(
+                "INSERT INTO memories(id, content, source, created_at, updated_at) VALUES(?1, ?2, 'notification_confirmed', datetime('now','localtime'), datetime('now','localtime'))",
+                &[json!(&id), json!(&c)],
+            ).map_err(|e| e.to_string())?;
+            id
+        }
+    };
+    // 标记来源通知已处理（若有 notification_id）
+    if let Some(nid) = notification_id.filter(|s| !s.is_empty()) {
+        let _ = database::run("UPDATE notifications SET read=1 WHERE id=?1", &[json!(nid)]);
+    }
+    Ok(json!({ "success": true, "id": id }))
 }

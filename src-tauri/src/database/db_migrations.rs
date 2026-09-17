@@ -264,6 +264,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE emails ADD COLUMN cc_addr TEXT DEFAULT ''",
         // Agent 预设工具字段
         "ALTER TABLE agent_profiles ADD COLUMN preset_tools TEXT DEFAULT '[]'",
+        // 记忆来源标记（user=聊天/手动，notification_confirmed=用户确认的分析发现）
+        "ALTER TABLE memories ADD COLUMN source TEXT DEFAULT 'user'",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);

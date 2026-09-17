@@ -41,6 +41,12 @@ export interface NotificationStats {
 export interface NotificationConfig {
   success: boolean
   config: Record<string, string>
+  analysis_prompt_default?: string
+  analyst_watch?: string
+}
+
+export async function memoryCreateFromNotification(content: string, notificationId?: string): Promise<{ success: boolean; id: string }> {
+  return invoke('memory_create_from_notification', { content, notificationId: notificationId ?? null })
 }
 
 export async function notificationList(unreadOnly?: boolean): Promise<{ success: boolean; notifications: Notification[] }> {

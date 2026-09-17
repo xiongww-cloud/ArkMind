@@ -26,11 +26,12 @@ pub(crate) fn extract_sse_data(buf: &mut String) -> Option<Option<String>> {
 /// 返回 (content, reasoning_content, tool_calls, usage)
 /// 公开接口：流式调用（silent=false）
 pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
-    call_llm_streaming_inner(messages, tools, app_handle, false).await
+    call_llm_streaming_inner(messages, tools, app_handle, false, true).await
 }
 
-/// 内部实现：silent=true 时不发 agent:token 事件（用于工具内部的 LLM 调用）
-pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>, silent: bool) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
+/// 内部实现：silent=true 时不发任何聊天生命周期事件（子Agent/后台运行体使用）
+/// cancel_aware=false 时完全不读取/响应全局 AGENT_CANCEL（独立后台运行体与聊天"停止"互不误伤）
+pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&Value>, app_handle: &Option<tauri::AppHandle>, silent: bool, cancel_aware: bool) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), String> {
     let (url, api_key, model) = get_api_endpoint();
     // ★ 清理消息内容中的非法字符，防止 LLM API 解析失败
     let msgs: Vec<Value> = messages.iter().enumerate().map(|(i, m)| {
@@ -129,13 +130,15 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
                                 }
                             }
                         }
-                        // reasoning_content → 累积并推送到前端显示思考过程
-                        if let Some(rtok) = delta["reasoning_content"].as_str() {
-                            st.reasoning.push_str(rtok);
-                            if let Some(ref h) = app {
-                                let _ = h.emit("agent:thought", json!({"text": rtok}));
-                            }
-                        }
+        // reasoning_content → 累积并推送到前端显示思考过程
+        if let Some(rtok) = delta["reasoning_content"].as_str() {
+            st.reasoning.push_str(rtok);
+            if !silent {
+                if let Some(ref h) = app {
+                    let _ = h.emit("agent:thought", json!({"text": rtok}));
+                }
+            }
+        }
                         // tool_calls delta → 按 index 累积
                         if let Some(tds) = delta["tool_calls"].as_array() {
                             for td in tds {
@@ -163,7 +166,7 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
         st.buf = st.buf.replace("\r\n", "\n");
         while try_process_one(&mut st, &app_handle) {}
         if st.done { break; }
-        if AGENT_CANCEL.load(Ordering::Acquire) {
+        if cancel_aware && AGENT_CANCEL.load(Ordering::Acquire) {
             log::info!("SSE stream cancelled +{}ms tokens={}", t0.elapsed().as_millis(), st.count);
             return Err("cancelled".into());
         }
@@ -197,14 +200,15 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
 
 /// 流式补生成（无工具）：用于强制总结等路径；答案逐 token 输出到前端
 /// 若 LLM 回复清理后为空（疑似工具调用残留），自动重试重新请求，避免检索/回答中断
-pub(crate) async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<tauri::AppHandle>) -> Result<String, String> {
+/// silent/cancel_aware 由调用方工作流透传：后台运行体不得向聊天泄漏 token 事件、不得响应聊天取消信号
+pub(crate) async fn call_llm_without_tools(messages: &[ChatMessage], app_handle: &Option<tauri::AppHandle>, silent: bool, cancel_aware: bool) -> Result<String, String> {
     const MAX_ATTEMPTS: u32 = 3;
     let mut attempt = 0u32;
     let mut retry_msgs: Vec<ChatMessage> = messages.to_vec();
     loop {
         attempt += 1;
         log::info!("[call_llm_without_tools] 被调用（第{}次），messages 长度: {}", attempt, retry_msgs.len());
-        let (content, _, _, _) = call_llm_streaming(&retry_msgs, None, app_handle).await?;
+        let (content, _, _, _) = call_llm_streaming_inner(&retry_msgs, None, app_handle, silent, cancel_aware).await?;
         log::info!("[call_llm_without_tools] 返回: content_len={}", content.len());
         // 过滤 DSML / 工具调用 XML 残留
         let cleaned = clean_tool_markers(&content, false);
