@@ -1607,9 +1607,7 @@ onBeforeUnmount(stopPollTimers)
                     <button @click="openFocusModal" class="h-6 px-2.5 text-[10px] rounded-md border border-surface-200 text-surface-600 hover:bg-surface-50">{{ focusText ? '编辑' : '添加要求' }}</button>
                   </div>
                 </div>
-                <pre v-if="coreRulesOpen" class="mt-2 w-full max-h-56 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ coreRulesText }}
-
-—— 以上为分析师完整核心规则；运行时仅额外注入当前时间与业务数据。你的用户策略只影响智能问答，不影响本分析师。</pre>
+                <pre v-if="coreRulesOpen" class="mt-2 w-full max-h-56 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ coreRulesText }}</pre>
                 <pre v-if="watchOpen && watchText" class="mt-2 w-full max-h-40 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed bg-amber-50/50 border border-amber-100 rounded-lg px-2.5 py-2 text-surface-600">{{ watchText }}</pre>
               </div>
               <!-- 附加要求编辑弹窗（整体一段提示词） -->
