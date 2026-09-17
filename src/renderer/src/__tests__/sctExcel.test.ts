@@ -198,7 +198,7 @@ describe('sctExcel.parseSCTSheet', () => {
     const { hardwareItems, serviceItems } = parseSCTSheet(sheet)
     expect(hardwareItems).toHaveLength(1)
     expect(serviceItems).toHaveLength(0)
-    expect(hardwareItems[0].cleanModel).toBe('OceanStor Dorado')
+    expect(hardwareItems[0].cleanModel).toBe('OceanStor Dorado 5000')
     expect(hardwareItems[0].customName).toBe('站点1')
     expect(hardwareItems[0].unitPrice).toBe(1326920.06)
     expect(hardwareItems[0].quantity).toBe(2) // 2653840.12 / 1326920.06 = 2
@@ -336,9 +336,9 @@ describe('sctExcel.parseSCTSheet', () => {
 })
 
 describe('parseHardwareName（恢复的清洗函数）', () => {
-  it('站点后缀拆为自定义名，型号保留前两词', () => {
+  it('站点后缀拆为自定义名，保留品牌+系列+型号数字', () => {
     const r = parseHardwareName('OceanStor Dorado 5000_1 V700R001_站点1')
-    expect(r.cleanModel).toBe('OceanStor Dorado')
+    expect(r.cleanModel).toBe('OceanStor Dorado 5000')
     expect(r.customName).toBe('站点1')
   })
 
@@ -352,5 +352,23 @@ describe('parseHardwareName（恢复的清洗函数）', () => {
     const r = parseHardwareName('OceanStor 5310')
     expect(r.cleanModel).toBe('OceanStor 5310')
     expect(r.customName).toBeNull()
+  })
+
+  it('回归：型号数字 2000 不被丢弃', () => {
+    const r = parseHardwareName('OceanStor Dorado 2000 V700R001_站点1')
+    expect(r.cleanModel).toBe('OceanStor Dorado 2000')
+    expect(r.customName).toBe('站点1')
+  })
+
+  it('CloudEngine 中间序列号与版本号均剥离', () => {
+    const r = parseHardwareName('CloudEngine S8700-6C-EI_1 V200R019_核心交换机')
+    expect(r.cleanModel).toBe('CloudEngine S8700-6C-EI')
+    expect(r.customName).toBe('核心交换机')
+  })
+
+  it('括号说明被剥离，仅留名称主体', () => {
+    const r = parseHardwareName('灾备服务(站点内报价)_站点1')
+    expect(r.cleanModel).toBe('灾备服务')
+    expect(r.customName).toBe('站点1')
   })
 })

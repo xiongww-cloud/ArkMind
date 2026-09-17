@@ -1,101 +1,96 @@
 ﻿/**
- * PMS 核心数据清洗函数
+ * 华为 SCT 报价单硬件/软件型号解析工具
  *
- * 策略：
- *   1. 自定义名称 = 最后一个 `_` 之后的文本
- *   2. 如果文本中存在 `(`，删除括号及其之后的所有文本
- *   3. 剩余文本按空格拆分，设备型号 = 前两个词（中间加空格）
+ * 硬件型号解析规则（parseHardwareName）：
+ *   1. 去掉中间序列号 `_<数字>_`（如 `_1_` → `_`）
+ *   2. 最后一个 `_` 之后为 customName（站点 / 角色 / 备注）
+ *   3. 型号主体剥离版本号 V\d+R\d+ 及其后内容
+ *   4. 剥离尾部残留序列号 `_数字`
+ *   5. 剥离括号说明（中英文括号及其中内容）
+ *   —— 保留型号数字（如 2000 / 5310 / 8），它是产品型号的一部分
  *
- * 输入示例：
- *   'CloudEngine S8700-6(China)_核心交换机'
- *     → { cleanModel: 'CloudEngine S8700-6', customName: '核心交换机' }
- *   '1 V600R025_办公核心交换机'
- *     → { cleanModel: '1 V600R025', customName: '办公核心交换机' }
+ * 示例 → 输出：
+ *   'OceanStor Dorado 2000 V700R001_站点1'
+ *     → { cleanModel: 'OceanStor Dorado 2000', customName: '站点1' }
+ *   'CloudEngine S8700-6C-EI_1 V200R019_核心交换机'
+ *     → { cleanModel: 'CloudEngine S8700-6C-EI', customName: '核心交换机' }
  *   'OceanStor 5310'
- *     → { cleanModel: '', customName: null }
+ *     → { cleanModel: 'OceanStor 5310', customName: null }
+ *   '灾备服务(站点内报价)_站点1'
+ *     → { cleanModel: '灾备服务', customName: '站点1' }
+ */
+
+/** 删除第一个中英文括号 '(' '（' 及其后全部内容 */
+function stripParentheses(s) {
+  const half = s.indexOf('(')
+  const full = s.indexOf('（')
+  let cut = s.length
+  if (half !== -1 && half < cut) cut = half
+  if (full !== -1 && full < cut) cut = full
+  return cut < s.length ? s.substring(0, cut) : s
+}
+
+/**
+ * 解析华为硬件型号字符串。
+ * @param {string} rawString
+ * @returns {{ cleanModel: string, customName: string|null }}
  */
 export function parseHardwareName(rawString) {
   if (!rawString || typeof rawString !== 'string') {
     return { cleanModel: '', customName: null }
   }
 
-  let cleaned = rawString
-
-  // 0. 删除 _数字_ 中的 _数字（华为 BOM 特有模式）
+  let cleaned = rawString.trim()
   cleaned = cleaned.replace(/_(\d+)_/g, '_')
 
-  // 1. 自定义名称 = 最后一个 `_` 之后的文本
+  const lastUnderscore = cleaned.lastIndexOf('_')
   let customName = null
   let working = cleaned
-  const lastUnderscore = cleaned.lastIndexOf('_')
   if (lastUnderscore !== -1) {
     customName = cleaned.substring(lastUnderscore + 1).trim() || null
     working = cleaned.substring(0, lastUnderscore)
   }
 
-  // 2. 删除 `(` 及其之后的所有文本
-  const parenIdx = working.indexOf('(')
-  if (parenIdx !== -1) {
-    working = working.substring(0, parenIdx)
-  }
-  const chParenIdx = working.indexOf('（')
-  if (chParenIdx !== -1) {
-    working = working.substring(0, chParenIdx)
-  }
+  working = working.replace(/\s*V\d+R\d+.*$/i, '')
+  working = working.replace(/_\d+$/g, '')
+  working = stripParentheses(working)
 
-  // 3. 按空格拆分，取前两个词作为型号
-  const words = working.trim().split(/\s+/).filter(Boolean)
-  const cleanModel =
-    words.length >= 2 ? `${words[0]} ${words[1]}` : words.length === 1 ? words[0] : ''
-
-  return { cleanModel, customName }
+  return { cleanModel: working.trim(), customName }
 }
 
 /**
- * 设备型号提取：删括号 → 删下划线后缀 → 按空格拆分 → 取前两个词拼接
- *
- * 示例：
- *   'CloudEngine S8700-6(China) 核心交换机' → 'CloudEngine S8700-6'
- *   'S12700E(交流)'                          → 'S12700E'
- *
- * @param {string} text - 含设备型号的原始文本
- * @returns {string} 提取的型号；无有效词时返回空串
+ * 解析软件许可行：与硬件一致地拆站点 / 剥版本号 / 去括号，
+ * 尾部数字属于型号（如 'DCS虚拟化套件 8'）自然保留。
+ * @param {string} rawString
+ * @returns {{ cleanModel: string, customName: string|null }}
  */
-export function extractModelByWords(text) {
-  if (!text || typeof text !== 'string') return ''
+export function parseLicenseName(rawString) {
+  if (!rawString || typeof rawString !== 'string') {
+    return { cleanModel: '', customName: null }
+  }
 
-  let cleaned = text
-
-  // 0. 删除 _数字_ 中的 _数字
+  let cleaned = rawString.trim()
   cleaned = cleaned.replace(/_(\d+)_/g, '_')
 
-  // 1. 若含下划线，取左侧部分
-  const underscoreIdx = cleaned.lastIndexOf('_')
-  if (underscoreIdx !== -1) {
-    cleaned = cleaned.substring(0, underscoreIdx)
+  const lastUnderscore = cleaned.lastIndexOf('_')
+  let customName = null
+  if (lastUnderscore !== -1) {
+    customName = cleaned.substring(lastUnderscore + 1).trim() || null
+    cleaned = cleaned.substring(0, lastUnderscore)
   }
 
-  // 2. 删除 `(` 及其之后的所有文本
-  const parenIdx = cleaned.indexOf('(')
-  if (parenIdx !== -1) {
-    cleaned = cleaned.substring(0, parenIdx)
-  }
-  const chParenIdx = cleaned.indexOf('（')
-  if (chParenIdx !== -1) {
-    cleaned = cleaned.substring(0, chParenIdx)
-  }
+  cleaned = cleaned.replace(/\s*V\d+R\d+.*$/i, '')
+  cleaned = stripParentheses(cleaned)
 
-  // 3. 按空格拆分，取前两个词
-  const words = cleaned.split(/\s+/).filter(Boolean)
-  if (words.length === 0) return ''
-  return words.length >= 2 ? `${words[0]} ${words[1]}` : words[0]
+  return { cleanModel: cleaned.trim(), customName }
 }
 
-/**
- * Batch parse an array of raw name strings.
- * @param {string[]} rawNames
- * @returns {Array<{ cleanModel: string, customName: string|null }>}
- */
 export function parseHardwareNames(rawNames) {
-  return rawNames.map(parseHardwareName)
+  return (rawNames || []).map(parseHardwareName)
 }
+
+export function parseLicenseNames(rawNames) {
+  return (rawNames || []).map(parseLicenseName)
+}
+
+export default parseHardwareName
