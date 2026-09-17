@@ -152,6 +152,15 @@ pub fn decrypt_config_api_keys(config: &serde_json::Value, machine_hash: &str) -
                 }
             }
         }
+
+        if let Some(web) = obj.get_mut("webSearch") {
+            if let Some(api_key) = web.get("apiKey").and_then(|v| v.as_str()) {
+                if is_encrypted(api_key) {
+                    let decrypted = decrypt_api_key(api_key, machine_hash);
+                    web["apiKey"] = serde_json::json!(decrypted);
+                }
+            }
+        }
     }
 
     config

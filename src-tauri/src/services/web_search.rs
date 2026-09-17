@@ -134,11 +134,13 @@ pub struct WebHit {
     pub snippet: String,
 }
 
-/// 解析博查响应（data._webPages.value[]）；纯函数便于测试
+/// 解析博查响应：官方为顶层 webPages.value[]，兼容部分变体的 data._webPages；纯函数便于测试
 pub fn parse_bocha_hits(resp: &Value) -> Vec<WebHit> {
-    let arr = resp["data"]["_webPages"]["value"]
+    let arr = resp["webPages"]["value"]
         .as_array()
         .cloned()
+        .or_else(|| resp["data"]["_webPages"]["value"].as_array().cloned())
+        .or_else(|| resp["data"]["webPages"]["value"].as_array().cloned())
         .unwrap_or_default();
     arr.iter()
         .filter_map(|h| {
@@ -184,7 +186,12 @@ pub async fn probe() -> Result<usize, String> {
     let status = resp.status();
     let v: Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
     if !status.is_success() {
-        return Err(format!("服务返回 {}（请检查 API Key 或额度）", status.as_u16()));
+        let detail = v["message"].as_str().map(String::from).unwrap_or_default();
+        return Err(if detail.is_empty() {
+            format!("服务返回 {}（请检查 API Key 或额度）", status.as_u16())
+        } else {
+            format!("服务返回 {}: {}", status.as_u16(), detail)
+        });
     }
     if v["code"].as_i64().map_or(false, |c| c != 200) {
         return Err(format!("服务错误: {}", truncate_chars(&v.to_string(), 150)));
@@ -343,15 +350,19 @@ mod tests {
 
     #[test]
     fn bocha_parser_maps_fields_and_prefers_summary() {
-        let resp = json!({"code":200,"data":{"_webPages":{"value":[
+        // 官方文档形态：顶层 webPages.value
+        let official = json!({"_type":"SearchResponse","webPages":{"value":[
             {"name":"标题A","url":"https://a.com","snippet":"snip","summary":"sum"},
             {"name":"标题B","url":"https://b.com","snippet":"only-snip","summary":""},
             {"name":"缺url","summary":"x"},
-        ]}}});
-        let hits = parse_bocha_hits(&resp);
+        ]}});
+        let hits = parse_bocha_hits(&official);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].snippet, "sum");
         assert_eq!(hits[1].snippet, "only-snip");
+        // data 包裹变体
+        let wrapped = json!({"code":200,"data":{"_webPages":{"value":[{"name":"x","url":"https://x.com"}]}}});
+        assert_eq!(parse_bocha_hits(&wrapped).len(), 1);
         assert!(parse_bocha_hits(&json!({})).is_empty());
     }
 
@@ -365,5 +376,32 @@ mod tests {
         let t = truncate_chars(&long, 100);
         assert!(t.starts_with(&"字".repeat(100)));
         assert!(t.ends_with("…(内容已截断)"));
+    }
+
+    /// 真实连通性诊断（需本机已配置博查 key）：cargo test real_bocha -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_bocha_probe() {
+        let db = std::path::Path::new(env!("APPDATA")).join("com.arkmind.app/arkmind.db");
+        let conn = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let cfg: String = conn.query_row("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", [], |r| r.get(0)).unwrap();
+        let parsed: Value = serde_json::from_str(&cfg).unwrap();
+        let machine = crate::license::get_machine_hash();
+        let dec = crate::crypto::decrypt_config_api_keys(&parsed, &machine);
+        let key = dec["webSearch"]["apiKey"].as_str().unwrap_or("").to_string();
+        assert!(!key.is_empty(), "未配置 key");
+        let k2 = key.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let resp = client().post("https://api.bochaai.com/v1/web-search")
+                .bearer_auth(&k2)
+                .json(&json!({"query": "博查 API", "count": 2, "summary": true}))
+                .send().await.unwrap();
+            let status = resp.status();
+            let body = resp.text().await.unwrap();
+            println!("HTTP {} | body[:800] = {}", status, &body[..body.len().min(800)]);
+            let v: Value = serde_json::from_str(&body).unwrap();
+            println!("parsed hits = {}", parse_bocha_hits(&v).len());
+        });
     }
 }
