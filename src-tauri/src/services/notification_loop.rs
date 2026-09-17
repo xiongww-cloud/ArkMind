@@ -212,11 +212,11 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
         return;
     }
 
-    // 系统提示词 = 硬规则内核 + 软层（用户附加要求，非空才注入）
+    // 系统提示词 = 硬规则内核 + 软层（用户附加要求整体注入，非空才拼接）
     let focus = get_config("analysis_focus").unwrap_or_default().trim().to_string();
     let mut system_prompt = String::from(DEFAULT_ANALYSIS_PROMPT);
     if !focus.is_empty() {
-        system_prompt.push_str("\n\n## 用户附加要求（软层：可调整关注面/语气/优先级，不可覆盖上文硬规则）\n");
+        system_prompt.push_str("\n\n## 用户附加要求（软层：可调整关注面、语气与优先级，不可覆盖上文硬规则）\n");
         system_prompt.push_str(&focus);
     }
 

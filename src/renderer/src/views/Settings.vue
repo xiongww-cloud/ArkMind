@@ -674,17 +674,18 @@ import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession } from '@/api/db-cl
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
 const notifyIntervalOpen = ref(false)
-// ─── 分析师配置（附加要求=软层可编辑；核心规则与观察池=只读透明）───
+// ─── 分析师配置（附加要求=单主体弹窗编辑，行内逐条生效；核心规则与观察池=只读透明）───
 const notifyPromptOpen = ref(false)
-const notifyPromptEditing = ref(false)
-const focusText = ref('')                 // analysis_focus：用户附加分析要求（软层）
-const focusCustom = ref(false)
+const focusText = ref('')                 // analysis_focus 正文（每行一条要求）
+const focusModalOpen = ref(false)         // 编辑弹窗
+const focusDraft = ref('')                // 弹窗草稿
+const focusSaving = ref(false)
+const FOCUS_MAX = 2000
 const coreRulesText = ref('')             // 后端下发的内核提示词（只读）
 const coreRulesOpen = ref(false)
 const watchText = ref('')                 // 当前观察池（只读）
 const watchOpen = ref(false)
-const notifyPromptSaving = ref(false)
-const FOCUS_MAX = 2000
+const focusLines = computed(() => focusText.value.split('\n').map(s => s.trim()).filter(s => s.length > 0))
 const loopStatus = ref<LoopStatus>({ success: true, running: false, last_check_at: '', next_check_at: '' })
 let loopStatusTimer: ReturnType<typeof setInterval> | null = null
 
@@ -736,50 +737,48 @@ async function loadNotifyConfig() {
     if (r.config) {
       notifyEnabled.value = r.config.enabled !== '0'
       notifyInterval.value = r.config.startup_only === '1' ? 0 : (parseInt(r.config.interval_minutes) || 60)
-      const focus = (r.config.analysis_focus || '').trim()
-      focusCustom.value = focus.length > 0
-      if (focusCustom.value && !notifyPromptEditing.value) focusText.value = focus
+      focusText.value = (r.config.analysis_focus || '').trim()
     }
     coreRulesText.value = (r as any).analysis_prompt_default || ''
     watchText.value = ((r as any).analyst_watch || '').trim()
   } catch {}
 }
 
-async function saveFocusRequirements() {
-  const val = focusText.value.trim()
-  if (val.length > FOCUS_MAX) { toast({ message: `附加要求不能超过 ${FOCUS_MAX} 字符`, type: 'error' }); return }
-  notifyPromptSaving.value = true
+function openFocusModal() {
+  focusDraft.value = focusText.value
+  focusModalOpen.value = true
+}
+function closeFocusModal() { focusModalOpen.value = false }
+
+async function saveFocusModal() {
+  const val = focusDraft.value.trim()
+  if (val.length > FOCUS_MAX) { toast({ message: `不能超过 ${FOCUS_MAX} 字符`, type: 'error' }); return }
+  focusSaving.value = true
   try {
     await notificationConfigUpdate({ analysis_focus: val })
-    focusCustom.value = val.length > 0
-    notifyPromptEditing.value = false
+    focusText.value = val
+    focusModalOpen.value = false
     toast({ message: val ? '附加要求已保存，下次分析生效' : '已清空附加要求', type: 'success' })
   } catch (e: any) {
     toast({ message: e?.message || '保存失败', type: 'error' })
   } finally {
-    notifyPromptSaving.value = false
+    focusSaving.value = false
   }
 }
 
 async function clearFocusRequirements() {
-  notifyPromptSaving.value = true
+  if (!(await dangerConfirm({ title: '清空附加要求', message: '确定清空全部附加分析要求？分析师将只按核心规则运行。', confirmText: '清空' }))) return
+  focusSaving.value = true
   try {
     await notificationConfigUpdate({ analysis_focus: '' })
-    focusCustom.value = false
     focusText.value = ''
-    notifyPromptEditing.value = false
+    focusDraft.value = ''
     toast({ message: '已清空附加要求', type: 'success' })
-  } catch (e: any) {
-    toast({ message: e?.message || '操作失败', type: 'error' })
+  } catch {
+    toast({ message: '操作失败', type: 'error' })
   } finally {
-    notifyPromptSaving.value = false
+    focusSaving.value = false
   }
-}
-
-function startFocusEdit() { notifyPromptEditing.value = true }
-function cancelFocusEdit() {
-  notifyPromptEditing.value = false
-  if (!focusCustom.value) focusText.value = ''
 }
 
 async function loadLoopStatus() {
@@ -1593,38 +1592,31 @@ onBeforeUnmount(stopPollTimers)
                 </div>
               </div>
               </div>
-              <!-- 附加分析要求（软层可编辑）+ 核心规则/观察池（只读透明） -->
+              <!-- 附加分析要求（单主体弹窗编辑）+ 核心规则/观察池（只读透明） -->
               <div class="border-t border-surface-100 pt-3">
                 <button @click="notifyPromptOpen = !notifyPromptOpen" class="w-full flex items-center justify-between group">
                   <div class="text-left">
                     <p class="text-[12px] font-medium text-surface-700">附加分析要求</p>
                     <p class="text-[10px] text-surface-400">
-                      <span v-if="focusCustom" class="text-brand-600">已附加 · 下次分析生效</span>
+                      <span v-if="focusText" class="text-brand-600">已附加 {{ focusLines.length }} 条 · 下次分析生效</span>
                       <span v-else>可选：定制关注面与语气，分析师核心规则不变</span>
                     </p>
                   </div>
                   <AppIcon name="chevron-down" class="w-3.5 h-3.5 text-surface-400 transition-transform flex-shrink-0" :class="notifyPromptOpen ? 'rotate-180' : ''" />
                 </button>
                 <div v-if="notifyPromptOpen" class="mt-2 space-y-2">
-                  <textarea v-if="notifyPromptEditing" v-model="focusText" rows="4" :maxlength="FOCUS_MAX"
-                    class="w-full text-[11px] leading-relaxed bg-surface-50 border border-surface-200 rounded-lg px-2.5 py-2 outline-none focus:border-brand-400 resize-y"
-                    placeholder="例如：通知简短一些，一事一通知；重点关注投标截止与大客户跟进；普通文件上传不用提醒"></textarea>
-                  <p v-else-if="focusCustom" class="whitespace-pre-wrap text-[11px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-600">{{ focusText }}</p>
+                  <ul v-if="focusLines.length" class="w-full text-[11px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 space-y-1">
+                    <li v-for="(line, i) in focusLines" :key="i" class="text-surface-600">· {{ line }}</li>
+                  </ul>
+                  <p v-else class="text-[11px] text-surface-400 bg-surface-50/60 border border-dashed border-surface-200 rounded-lg px-2.5 py-2">暂无附加要求，分析师按核心规则运行</p>
                   <div class="flex items-center justify-between">
                     <div class="flex items-center gap-3">
                       <button v-if="coreRulesText" @click="coreRulesOpen = !coreRulesOpen" class="text-[10px] text-surface-400 hover:text-brand-600 transition-colors">{{ coreRulesOpen ? '收起核心规则' : '查看核心规则' }}</button>
                       <button v-if="watchText" @click="watchOpen = !watchOpen" class="text-[10px] text-surface-400 hover:text-brand-600 transition-colors">{{ watchOpen ? '收起观察池' : `查看观察池（${watchText.split('\n').length} 条）` }}</button>
                     </div>
                     <div class="flex items-center gap-2">
-                      <template v-if="notifyPromptEditing">
-                        <span class="text-[10px] text-surface-400">{{ focusText.length }}/{{ FOCUS_MAX }}</span>
-                        <button @click="cancelFocusEdit" class="h-6 px-2.5 text-[10px] rounded-md border border-surface-200 text-surface-500 hover:bg-surface-50">取消</button>
-                        <button @click="saveFocusRequirements" :disabled="notifyPromptSaving" class="h-6 px-2.5 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">{{ notifyPromptSaving ? '保存中…' : '保存' }}</button>
-                      </template>
-                      <template v-else>
-                        <button v-if="focusCustom" @click="clearFocusRequirements" :disabled="notifyPromptSaving" class="h-6 px-2.5 text-[10px] rounded-md border border-amber-300 text-amber-600 hover:bg-amber-50 disabled:opacity-50">清空</button>
-                        <button @click="startFocusEdit" class="h-6 px-2.5 text-[10px] rounded-md border border-surface-200 text-surface-600 hover:bg-surface-50">{{ focusCustom ? '编辑' : '添加要求' }}</button>
-                      </template>
+                      <button v-if="focusText" @click="clearFocusRequirements" :disabled="focusSaving" class="h-6 px-2.5 text-[10px] rounded-md border border-amber-300 text-amber-600 hover:bg-amber-50 disabled:opacity-50">清空</button>
+                      <button @click="openFocusModal" class="h-6 px-2.5 text-[10px] rounded-md border border-surface-200 text-surface-600 hover:bg-surface-50">{{ focusText ? '编辑要求' : '添加要求' }}</button>
                     </div>
                   </div>
                   <div v-if="coreRulesOpen" class="relative">
@@ -1635,6 +1627,31 @@ onBeforeUnmount(stopPollTimers)
                   <pre v-if="watchOpen && watchText" class="w-full max-h-40 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed bg-amber-50/50 border border-amber-100 rounded-lg px-2.5 py-2 text-surface-600">{{ watchText }}</pre>
                 </div>
               </div>
+              <!-- 附加要求编辑弹窗 -->
+              <Teleport to="body">
+                <Transition name="modal-fade">
+                  <div v-if="focusModalOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="closeFocusModal">
+                    <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] flex flex-col">
+                      <div class="px-5 pt-4 pb-2 border-b border-surface-100">
+                        <h3 class="text-[14px] font-semibold text-surface-800">附加分析要求</h3>
+                        <p class="text-[10px] text-surface-400 mt-0.5">每行一条要求，整体注入分析师提示词；不能覆盖分析师的硬规则</p>
+                      </div>
+                      <div class="px-5 py-3">
+                        <textarea v-model="focusDraft" rows="8" :maxlength="FOCUS_MAX"
+                          class="w-full text-[12px] leading-relaxed bg-surface-50 border border-surface-200 rounded-lg px-3 py-2.5 outline-none focus:border-brand-400 resize-y"
+                          placeholder="例如：&#10;重点关注投标截止与大客户跟进&#10;通知简短一些，一事一通知&#10;普通文件上传不用提醒"></textarea>
+                        <div class="flex items-center justify-between mt-1">
+                          <span class="text-[10px] text-surface-400">{{ focusDraft.trim().split('\n').filter(l => l.trim()).length }} 条要求 · {{ focusDraft.length }}/{{ FOCUS_MAX }} 字</span>
+                        </div>
+                      </div>
+                      <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
+                        <button @click="closeFocusModal" class="h-7 px-3 text-[11px] rounded-lg border border-surface-200 text-surface-500 hover:bg-surface-50">取消</button>
+                        <button @click="saveFocusModal" :disabled="focusSaving" class="h-7 px-3 text-[11px] font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">{{ focusSaving ? '保存中…' : '保存' }}</button>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+              </Teleport>
             </div>
           </div>
 
