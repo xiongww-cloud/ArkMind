@@ -305,32 +305,32 @@ pub async fn backup_all(save_path: String, app_handle: tauri::AppHandle) -> Resu
             eprintln!("[备份] 未找到任何上传文件");
         }
 
-        // 3. 向量数据库
-        let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":3,"total":4,"name":"向量库"}));
-        eprintln!("[备份] 步骤 3/4: 复制向量数据库...");
-        let vectordb_path = crate::get_data_dir().join("lancedb");
-        let vectordb_dir = tmp.join("vectordb");
-        if vectordb_path.exists() {
-            let count = copy_dir_recursive(&vectordb_path, &vectordb_dir).unwrap_or(0);
-            eprintln!("[备份] 向量数据库已复制 ({} 个文件)", count);
-        } else {
-            eprintln!("[备份] 向量数据库不存在，跳过");
-        }
+        // 3. 向量数据库：不再纳入备份（lancedb 可由"重新向量化"从 source_data/knowledge_chunks 完整重建，
+        //    且实测占备份体积 60%+、9000+ 小文件拖垮打包速度；恢复侧检测到缺失会自动排程重建）
+        let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":3,"total":4,"name":"向量库(跳过，可重建)"}));
+        eprintln!("[备份] 步骤 3/4: 向量库已排除（恢复后自动重建）");
 
         // 4. manifest.json
         let manifest = json!({
-            "version": "1.0",
+            "version": "1.1",
             "app_version": env!("CARGO_PKG_VERSION"),
             "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-            "contents": ["database", "files", "vectordb"]
+            "contents": ["database", "files"],
+            "vectordb_excluded": true
         });
         std::fs::write(tmp.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap()).ok();
 
-        // 5. 打包为 ZIP
+        // 5. 打包为 ZIP（带进度反馈：原实现静默压缩数百 MB，UI 看似卡死）
         let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":4,"total":4,"name":"打包"}));
         eprintln!("[备份] 步骤 4/4: 打包 ZIP 文件...");
         let zip_path = std::path::PathBuf::from(&save_path);
-        create_zip_archive(&tmp, &zip_path).map_err(|e| e.to_string())?;
+        let (mut total_files, mut total_bytes) = (0usize, 0u64);
+        count_zip_items(&tmp, &mut total_files, &mut total_bytes);
+        let hprog = handle.clone();
+        create_zip_archive_with_progress(&tmp, &zip_path, move |done_files, done_bytes| {
+            let pct = if total_bytes > 0 { (((done_bytes as f64 / total_bytes as f64) * 100.0) as u32).min(99) } else { 0 };
+            let _ = hprog.emit("backup:progress", json!({"stage":"zipping","done":done_files,"total":total_files,"pct":pct}));
+        }).map_err(|e| e.to_string())?;
         let zip_size = std::fs::metadata(&zip_path).map(|m| m.len()).unwrap_or(0);
         eprintln!("[备份] 完成! 备份文件: {} ({} KB)", save_path, zip_size / 1024);
 
@@ -407,17 +407,28 @@ pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> R
             eprintln!("[恢复] 备份中无上传文件，跳过");
         }
 
-        // 5. 恢复向量数据库
+        // 5. 向量数据库：旧版备份含 vectordb 目录 → 整目录替换恢复；
+        //    v1.1 起备份不含向量库 → 清 vector_cache 台账 + 清残留 LanceDB，重启后 embed 循环全量重建
         let _ = handle.emit("restore:progress", json!({"stage":"exporting","step":4,"total":4,"name":"向量库"}));
-        eprintln!("[恢复] 步骤 4/4: 恢复向量数据库...");
+        eprintln!("[恢复] 步骤 4/4: 处理向量数据库...");
         let vectordb_dir = tmp.join("vectordb");
+        let vectordb_dest = crate::get_data_dir().join("lancedb");
         if vectordb_dir.exists() {
-            let vectordb_dest = crate::get_data_dir().join("lancedb");
+            let _ = std::fs::remove_dir_all(&vectordb_dest);
             if let Some(parent) = vectordb_dest.parent() { std::fs::create_dir_all(parent).ok(); }
             let count = copy_dir_recursive(&vectordb_dir, &vectordb_dest).unwrap_or(0);
+            crate::services::lancedb_client::invalidate_lancedb_cache();
             eprintln!("[恢复] 向量数据库已恢复 ({} 个文件)", count);
         } else {
-            eprintln!("[恢复] 备份中无向量数据库，跳过");
+            let _ = std::fs::remove_dir_all(&vectordb_dest);
+            crate::services::lancedb_client::invalidate_lancedb_cache();
+            let db_dest = crate::get_data_dir().join("arkmind.db");
+            match rusqlite::Connection::open(&db_dest)
+                .and_then(|c| c.execute("DELETE FROM vector_cache", []))
+            {
+                Ok(n) => eprintln!("[恢复] 备份无向量库：已清 vector_cache {} 行，重启后将自动重建向量", n),
+                Err(e) => eprintln!("[恢复] 清 vector_cache 失败（向量可能不会自动重建）: {}", e),
+            }
         }
 
         // 6. 清理临时目录
@@ -456,28 +467,62 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<us
     Ok(count)
 }
 
+/// 统计目录内文件数与总字节数（供打包进度反馈）
+fn count_zip_items(dir: &std::path::Path, files: &mut usize, bytes: &mut u64) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() { count_zip_items(&path, files, bytes); }
+            else if let Ok(m) = entry.metadata() { *files += 1; *bytes += m.len(); }
+        }
+    }
+}
+
 /// 创建 ZIP 归档
 pub(crate) fn create_zip_archive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    create_zip_archive_with_progress(src, dst, |_done_files, _done_bytes| {})
+}
+
+/// 带进度回调的 ZIP 打包（回调参数：已完成文件数、已完成字节数；内部节流，非逐文件触发）
+pub(crate) fn create_zip_archive_with_progress(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    mut on_progress: impl FnMut(usize, u64),
+) -> Result<(), Box<dyn std::error::Error>> {
     let file = std::fs::File::create(dst)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    add_directory_to_zip(&mut zip, src, src, options)?;
+    let mut state = ZipProgressState { done_files: 0, done_bytes: 0, last_emit_bytes: 0, on_progress: &mut on_progress };
+    add_directory_to_zip(&mut zip, src, src, options, &mut state)?;
     zip.finish()?;
     Ok(())
 }
 
-fn add_directory_to_zip(zip: &mut zip::ZipWriter<std::fs::File>, base: &std::path::Path, current: &std::path::Path, options: zip::write::FileOptions) -> Result<(), Box<dyn std::error::Error>> {
+struct ZipProgressState<'a, F: FnMut(usize, u64)> {
+    done_files: usize,
+    done_bytes: u64,
+    last_emit_bytes: u64,
+    on_progress: &'a mut F,
+}
+
+fn add_directory_to_zip<F: FnMut(usize, u64)>(zip: &mut zip::ZipWriter<std::fs::File>, base: &std::path::Path, current: &std::path::Path, options: zip::write::FileOptions, state: &mut ZipProgressState<F>) -> Result<(), Box<dyn std::error::Error>> {
     for entry in std::fs::read_dir(current)? {
         let entry = entry?;
         let path = entry.path();
         let name = path.strip_prefix(base).map_err(|e| e.to_string())?;
         if path.is_dir() {
             zip.add_directory(name.to_string_lossy(), options)?;
-            add_directory_to_zip(zip, base, &path, options)?;
+            add_directory_to_zip(zip, base, &path, options, state)?;
         } else {
             zip.start_file(name.to_string_lossy(), options)?;
             let mut f = std::fs::File::open(&path)?;
-            std::io::copy(&mut f, zip)?;
+            let copied = std::io::copy(&mut f, zip)?;
+            state.done_files += 1;
+            state.done_bytes += copied;
+            if state.done_files % 20 == 0 || state.done_bytes - state.last_emit_bytes >= 8 * 1024 * 1024 {
+                state.last_emit_bytes = state.done_bytes;
+                (state.on_progress)(state.done_files, state.done_bytes);
+            }
         }
     }
     Ok(())
