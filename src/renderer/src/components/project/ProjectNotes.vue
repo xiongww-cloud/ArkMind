@@ -153,7 +153,11 @@ async function saveNoteContent(html?: string) {
     if (idx !== -1) {
       Object.assign(projectNotes.value[idx], { excerpt: content.replace(/<[^>]*>/g,'').slice(0,300), updated_at: nowLocalDb() })
     }
-  } catch (e) { console.warn('保存笔记内容失败', e) }
+  } catch (e: any) {
+    // 自动保存失败需可见：lastSavedContent 未更新，下次编辑会再试；提示用户勿立即关页
+    console.warn('保存笔记内容失败', e)
+    toast({ message: `项目笔记保存失败：${e?.message || e}（请重试或手动复制备份）`, type: 'error' })
+  }
 }
 
 function handleFilePanelInsert(f: any) {

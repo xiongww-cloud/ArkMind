@@ -133,20 +133,30 @@ const editor = useEditor({
   editorProps: { attributes: { class: 'tiptap-editor text-left' } },
 })
 
-watch(() => props.todo?.id, () => { nextTick(() => editor.value?.commands.setContent(props.todo?.content || '')); dateInput.value = props.todo?.dueDate || '' })
+watch(() => props.todo?.id, () => { flushPending(); nextTick(() => editor.value?.commands.setContent(props.todo?.content || '')); dateInput.value = props.todo?.dueDate || '' })
 
 // 防抖保存：3秒内多次编辑只触发一次 update
+// ★ pending 记录捕获时的 todo id：切换/卸载先 flush，杜绝"A 的内容写进 B"
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let pending: { id: string; data: Record<string, any> } | null = null
 function debouncedEmit(data: Record<string, any>) {
+  const id = props.todo?.id || ''
+  if (!id) return
+  pending = { id, data }
   if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
-    emit('update', props.todo.id, data)
-  }, 3000)
+  saveTimer = setTimeout(flushPending, 3000)
+}
+function flushPending() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+  if (!pending) return
+  const { id, data } = pending
+  pending = null
+  emit('update', id, data)
 }
 
 function toggleDone() { emit('update', props.todo.id, { done: !props.todo.done }) }
 function closePopups() { datePickerOpen.value = false; priorityOpen.value = false; projectOpen.value = false }
-onUnmounted(() => editor.value?.destroy())
+onUnmounted(() => { flushPending(); editor.value?.destroy() })
 </script>
 
 <template>

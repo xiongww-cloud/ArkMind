@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, onUnmounted, onActivated, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useProductStore, UNCATEGORIZED_NAME } from '@/stores/product'
 import { useSelectionStore } from '@/stores/selection'
 import { confirm, dangerConfirm } from '@/composables/useConfirm'
@@ -21,6 +21,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 
 const store = useProductStore()
 const route = useRoute()
+const router = useRouter()
 const selectionStore = useSelectionStore()
 
 // ─── Layout ──────────────────────────────────────────────────────────
@@ -649,6 +650,8 @@ function handleRouteQuery() {
   const focus = route.query.focus as string
   if (action === 'create') {
     const name = route.query.name as string || ''
+    // ★ 先消费后清 query：首挂时 onMounted+onActivated 双触发，重复执行会建两个产品
+    router.replace({ path: route.path, query: { ...(focus ? { focus } : {}) } })
     createProductPrefilled(name)
   }
   if (focus) {

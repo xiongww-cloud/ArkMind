@@ -319,17 +319,24 @@ async function saveQuickNote() {
       })
       todayNoteId.value = r?.noteId || null
     }
-  } catch (e: any) { /* silent save */ }
+  } catch (e: any) {
+    console.error('[Header] saveQuickNote failed:', e)
+    toast({ message: `闪记保存失败：${e?.message || e}`, type: 'error' })
+    isSaving.value = false
+    return false
+  }
   isSaving.value = false
   return true
 }
 
 // ── Close with save ──
 async function closeWithSave() {
+  if (!quickNoteText.value.trim()) { quickNoteOpen.value = false; return }
   const saved = await saveQuickNote()
+  if (!saved) return // 保存失败：窗口与文本保留，不丢用户输入
   quickNoteOpen.value = false
   quickNoteText.value = ''
-  if (saved) toast({ message: '已保存至今日闪记', type: 'success' })
+  toast({ message: '已保存至今日闪记', type: 'success' })
 }
 
 // ── Discard: only discard current input, never delete today's note ──

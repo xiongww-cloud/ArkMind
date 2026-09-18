@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick, onBeforeUnmount, defineAsyncComponent } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useSelectionStore } from '@/stores/selection'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
@@ -33,6 +33,7 @@ interface Notebook { id:string; name:string; color:string; parentId?:string|null
 interface Project { id:string; name:string }
 
 const route = useRoute()
+const router = useRouter()
 const selectionStore = useSelectionStore()
 const currentView = ref<ViewType>('all')
 const selectedProjectId = ref<string|null>(null)
@@ -301,7 +302,14 @@ async function doSave() {
   if (!selectedNoteId.value) return
   const snapshot = JSON.stringify({ title: editTitle.value, content: editContent.value })
   if (snapshot === lastSavedSnapshot.value) return  // 内容未变，跳过
-  await notesV2Update({ noteId: selectedNoteId.value, title: editTitle.value, content: editContent.value })
+  try {
+    await notesV2Update({ noteId: selectedNoteId.value, title: editTitle.value, content: editContent.value })
+  } catch (e: any) {
+    // ★ 保存失败必须让用户知道：保留 isDirty，提示重试，绝不静默丢编辑
+    console.error('[Notes] doSave failed:', e)
+    toast({ message: `笔记保存失败：${e?.message || e}（内容仍在编辑器中，请重试）`, type: 'error' })
+    return
+  }
   lastSavedSnapshot.value = snapshot
   // ★ Update local note card immediately (excerpt = truncated content)
   // Object.assign 原地修改，避免 spread 创建新对象触发 selectedNote computed 引用变化
@@ -419,6 +427,8 @@ function handleRouteQuery() {
   if (action === 'create') {
     const title = route.query.title as string || ''
     const content = route.query.content as string || ''
+    // ★ 先消费后清 query：首挂时 onMounted+onActivated 双触发，重复执行会建两条笔记
+    router.replace({ path: route.path, query: { ...(focus ? { focus } : {}) } })
     createNotePrefilled(title, content)
   }
   if (focus) {

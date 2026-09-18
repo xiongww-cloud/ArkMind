@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, onActivated } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
@@ -260,6 +260,7 @@ const tabColors: Record<string, string> = {
 }
 
 const route = useRoute()
+const router = useRouter()
 
 function handleRouteQuery() {
   const tab = route.query.tab as string
@@ -295,6 +296,15 @@ function handleRouteQuery() {
   }
 
   // Support action=create to open create dialog
+  if (action === 'create_contact' || action === 'create') {
+    // ★ 消费 action 参数：KeepAlive 首挂 onMounted+onActivated 双触发，避免重复弹窗
+    const rest: Record<string, string> = {}
+    for (const k of ['tab', 'id', 'focus', 'contactId']) {
+      const v = route.query[k]
+      if (typeof v === 'string') rest[k] = v
+    }
+    router.replace({ path: route.path, query: rest })
+  }
   if (action === 'create_contact') {
     openStandaloneContact({
       name: (route.query.name as string) || '',

@@ -345,10 +345,10 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
         // Import partners (new or legacy format)
         if let Some(arr) = manifest["partners"].as_array() {
             for p in arr {
-                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",&[
+                database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",&[
                     p["id"].clone(),p["type"].clone(),p["name"].clone(),
                     p["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    p["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                    p["address"].as_str().or(p["company"].as_str()).map(|s| json!(s)).unwrap_or(json!("")),
                     p["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
                     p["created_at"].clone(),p["updated_at"].as_str().map(|s| json!(s)).unwrap_or(p["created_at"].clone())
                 ]).ok();
@@ -357,10 +357,10 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
             // Legacy format: convert channel_partners → partners
             if let Some(arr) = manifest["channel_partners"].as_array() {
                 for ch in arr {
-                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)",&[
+                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)",&[
                         ch["id"].clone(),ch["name"].clone(),
                         ch["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                        ch["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        ch["address"].as_str().or(ch["company"].as_str()).map(|s| json!(s)).unwrap_or(json!("")),
                         ch["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
                         ch["created_at"].clone()
                     ]).ok();
@@ -385,10 +385,10 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
             // Legacy format: convert vendor_partners → partners
             if let Some(arr) = manifest["vendor_partners"].as_array() {
                 for vp in arr {
-                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)",&[
+                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)",&[
                         vp["id"].clone(),vp["name"].clone(),
                         vp["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                        vp["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                            vp["address"].as_str().or(vp["company"].as_str()).map(|s| json!(s)).unwrap_or(json!("")),
                         vp["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
                         vp["created_at"].clone()
                     ]).ok();
@@ -592,10 +592,10 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
                     eprintln!("[导入] 合作伙伴 '{}' 已存在，复用 ID: {}", name, existing_id);
                     existing_id
                 } else {
-                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",&[
+                    database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",&[
                         p["id"].clone(),p["type"].clone(),p["name"].clone(),
                         p["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                        p["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        p["address"].as_str().or(p["company"].as_str()).map(|s| json!(s)).unwrap_or(json!("")),
                         p["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
                         p["created_at"].clone(),p["updated_at"].as_str().map(|s| json!(s)).unwrap_or(p["created_at"].clone())
                     ]).ok();
@@ -616,10 +616,10 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
                     ) {
                         row["id"].as_str().unwrap_or(source_id).to_string()
                     } else {
-                        database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)",&[
+                        database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,'CHANNEL',?2,?3,?4,?5,?6,?6)",&[
                             ch["id"].clone(),ch["name"].clone(),
                             ch["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                            ch["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                            ch["address"].as_str().or(ch["company"].as_str()).map(|s| json!(s)).unwrap_or(json!("")),
                             ch["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
                             ch["created_at"].clone()
                         ]).ok();
@@ -667,10 +667,10 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
                     ) {
                         row["id"].as_str().unwrap_or(source_id).to_string()
                     } else {
-                        database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,company,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)",&[
+                        database::run("INSERT OR IGNORE INTO partners(id,type,name,phone,address,remark,created_at,updated_at) VALUES(?1,'VENDOR',?2,?3,?4,?5,?6,?6)",&[
                             vp["id"].clone(),vp["name"].clone(),
                             vp["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                            vp["company"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        vp["address"].as_str().or(vp["company"].as_str()).map(|s| json!(s)).unwrap_or(json!("")),
                             vp["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
                             vp["created_at"].clone()
                         ]).ok();

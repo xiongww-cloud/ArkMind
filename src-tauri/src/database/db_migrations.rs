@@ -461,9 +461,17 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         // 更新现有业务助手的 preset_tools 和 system_prompt（移除工具使用部分）
         let business_prompt = "你是 ArkMind 的业务管理助手。你的职责是执行业务对象的创建、编辑、删除操作。\n\n## 业务对象模型\nPROJECT → SOLUTION → SOLUTION_VERSION → SOLUTION_ITEM → PRODUCT\nPARTNER（CHANNEL/VENDOR/CUSTOMER）→ CONTACT\nTODO\nNOTE（笔记，可归属笔记本并关联项目）\n\n## 原则\n- 通过工具操作数据，不直接猜测\n- 重要修改前确认用户意图\n- 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id\n- 联系人关联项目时，所属合作伙伴必须同时关联到同一项目\n- 设备完整参数快照：ext_tool_object(type=\"SOLUTION_ITEM\") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）";
         let preset_tools = "[\"ext_tool_object\",\"ext_tool_relations\",\"ext_tool_manage_project\",\"ext_tool_manage_todo\",\"ext_tool_manage_partner\",\"ext_tool_manage_contact\",\"ext_tool_manage_product\",\"ext_tool_manage_note\"]";
+        // ★ 守卫覆写：仅当仍为"历史默认值/当前默认值"时才刷新，用户在 UI 自定义过的提示词与工具表永不覆盖
+        // （历史默认 = 加入笔记能力之前的版本）
+        let prompt_legacy = "你是 ArkMind 的业务管理助手。你的职责是执行业务对象的增删改查操作。\n\n## 业务对象模型\nPROJECT → SOLUTION → SOLUTION_VERSION → SOLUTION_ITEM → PRODUCT\nPARTNER（CHANNEL/VENDOR/CUSTOMER）→ CONTACT\nTODO\n\n## 原则\n- 通过工具操作数据，不直接猜测\n- 重要修改前确认用户意图\n- 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id\n- 联系人关联项目时，所属合作伙伴必须同时关联到同一项目\n- 设备完整参数快照：ext_tool_object(type=\"SOLUTION_ITEM\") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）";
+        let preset_legacy = "[\"ext_tool_object\",\"ext_tool_relations\",\"ext_tool_manage_project\",\"ext_tool_manage_todo\",\"ext_tool_manage_partner\",\"ext_tool_manage_contact\",\"ext_tool_manage_product\"]";
         conn.execute(
-            "UPDATE agent_profiles SET system_prompt=?1, preset_tools=?2 WHERE id='business'",
-            rusqlite::params![business_prompt, preset_tools],
+            "UPDATE agent_profiles SET system_prompt=?1 WHERE id='business' AND system_prompt IN (?1, ?2)",
+            rusqlite::params![business_prompt, prompt_legacy],
+        ).ok();
+        conn.execute(
+            "UPDATE agent_profiles SET preset_tools=?1 WHERE id='business' AND preset_tools IN (?1, ?2)",
+            rusqlite::params![preset_tools, preset_legacy],
         ).ok();
         // ★ 确保已有业务助手也有工具分配（补插）
         for tool_name in &["ext_tool_object", "ext_tool_relations", "ext_tool_manage_project", "ext_tool_manage_todo", "ext_tool_manage_partner", "ext_tool_manage_contact", "ext_tool_manage_product", "ext_tool_manage_note"] {
@@ -1060,16 +1068,32 @@ pub fn purge_stale_queue_entries() {
             }
         }
         // ★ 清理超过 7 天的已完成待办及其管线数据
+        // 启动态 sd_fts_delete 触发器未部署，FTS/向量/关联表必须手工同步清理，否则全局搜索出幽灵结果
         let cutoff = "datetime('now', '-7 days', 'localtime')";
-        if let Ok(n) = conn.execute(
-            &format!("DELETE FROM ai_sync_queue WHERE source_table='todos' AND source_id IN (SELECT id FROM todos WHERE done=1 AND updated_at < {cutoff})"), []
-        ) { if n > 0 { log::info!("[数据库] 清理已完成待办队列: {} 条", n); } }
-        if let Ok(n) = conn.execute(
-            &format!("DELETE FROM source_data WHERE source_type='TODO' AND source_id IN (SELECT id FROM todos WHERE done=1 AND updated_at < {cutoff})"), []
-        ) { if n > 0 { log::info!("[数据库] 清理已完成待办 source_data: {} 条", n); } }
+        let stale_todos = &format!("(SELECT id FROM todos WHERE done=1 AND updated_at < {cutoff})");
+        let _ = conn.execute(
+            &format!("DELETE FROM ai_sync_queue WHERE source_table='todos' AND source_id IN {stale_todos}"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM global_search_fts WHERE source_type='TODO' AND source_id IN {stale_todos}"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM vector_cache WHERE chunk_id IN (SELECT chunk_id FROM knowledge_chunks WHERE source_type='TODO' AND source_id IN {stale_todos})"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM kk_chunks_fts WHERE rowid IN (SELECT rowid FROM knowledge_chunks WHERE chunk_type='child' AND source_type='TODO' AND source_id IN {stale_todos})"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM knowledge_chunks WHERE source_type='TODO' AND source_id IN {stale_todos}"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM todo_project_mapping WHERE todo_id IN {stale_todos}"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM file_relations WHERE entity_type='todo' AND entity_id IN {stale_todos}"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM business_relations WHERE (source_type='TODO' AND source_id IN {stale_todos}) OR (target_type='TODO' AND target_id IN {stale_todos})"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM notifications WHERE entity_type='todo' AND entity_id IN {stale_todos}"), []);
+        let _ = conn.execute(
+            &format!("DELETE FROM source_data WHERE source_type='TODO' AND source_id IN {stale_todos}"), []);
         if let Ok(n) = conn.execute(
             &format!("DELETE FROM todos WHERE done=1 AND updated_at < {cutoff}"), []
-        ) { if n > 0 { log::info!("[数据库] 清理超过 7 天的已完成待办: {} 条", n); } }
+        ) { if n > 0 { log::info!("[数据库] 清理超过 7 天的已完成待办: {} 条（含 FTS/向量/关联同步清理）", n); } }
 
         // ★ 清理已废弃的 ai_tag_queue 及其触发器
         for t in &["ai_tag_notes_insert", "ai_tag_notes_update", "ai_tag_products_insert", "ai_tag_products_update", "ai_tag_projects_insert", "ai_tag_projects_update", "ai_tag_todos_insert", "ai_tag_todos_update"] {
