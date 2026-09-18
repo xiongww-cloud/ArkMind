@@ -96,7 +96,7 @@ export function useTiptapToolbar(editor: Ref<any>) {
 
   function insertTime() {
     if (!editor.value) return
-    const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    const now = new Date().toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
     editor.value.chain().focus().insertContent({
       type: 'timeTag',
       content: [{ type: 'text', text: now }],

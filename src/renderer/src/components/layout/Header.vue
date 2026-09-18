@@ -300,7 +300,7 @@ async function saveQuickNote() {
     const m = String(now.getMonth() + 1).padStart(2, '0')
     const d = String(now.getDate()).padStart(2, '0')
     const today = `${y}-${m}-${d}`
-    const nowTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    const nowTime = now.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 
     const block = `<p><br></p>\n<blockquote class="is-flash"><p style="color:#94a3b8;font-size:11px;margin-bottom:4px"><span class="time-tag">${nowTime}</span></p><p>${text.replace(/\n/g, '<br>')}</p></blockquote>`
 
