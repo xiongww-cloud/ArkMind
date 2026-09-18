@@ -277,8 +277,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "UPDATE todos SET priority = CASE LOWER(TRIM(priority)) WHEN '最高' THEN 'P1' WHEN '高' THEN 'P1' WHEN 'high' THEN 'P1' WHEN 'urgent' THEN 'P1' WHEN '紧急' THEN 'P1' WHEN 'p1' THEN 'P1' WHEN '中' THEN 'P2' WHEN 'medium' THEN 'P2' WHEN 'normal' THEN 'P2' WHEN '一般' THEN 'P2' WHEN 'p2' THEN 'P2' WHEN '低' THEN 'P3' WHEN 'low' THEN 'P3' WHEN 'p3' THEN 'P3' ELSE priority END WHERE priority IS NOT NULL AND priority != ''",
         // 笔记管理工具上线：给已持有业务 CRUD 集（manage_todo）的 Agent 补分配，主 Agent 无 todo 工具不受波及
         "INSERT OR IGNORE INTO agent_tool_assignments(agent_id,tool_name) SELECT DISTINCT agent_id,'ext_tool_manage_note' FROM agent_tool_assignments WHERE tool_name='ext_tool_manage_todo'",
-        // 内置业务助手描述补笔记能力（prompt/preset 由预置区 else 分支每次同步，不在此列）：仅当仍为旧默认值时执行
-        "UPDATE agent_profiles SET description='项目、待办、合作伙伴、联系人、产品、笔记的增删改查操作' WHERE id='business' AND description='项目、待办、合作伙伴、联系人、产品的增删改查操作'",
+        // 内置业务助手描述刷新（去"查"字，防主 Agent 把查询也外包；prompt/preset 由预置区 else 分支每次同步，不在此列）：
+        // 守卫=两版默认值之一（旧版/笔记版），不覆盖用户自定义，幂等
+        "UPDATE agent_profiles SET description='项目、待办、合作伙伴、联系人、产品、笔记的创建、编辑、删除操作' WHERE id='business' AND description IN ('项目、待办、合作伙伴、联系人、产品的增删改查操作','项目、待办、合作伙伴、联系人、产品、笔记的增删改查操作')",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
@@ -442,10 +443,10 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         [], |_| Ok(true),
     ).unwrap_or(false);
     if !has_business_agent {
-        let business_prompt = "你是 ArkMind 的业务管理助手。你的职责是执行业务对象的增删改查操作。\n\n## 业务对象模型\nPROJECT → SOLUTION → SOLUTION_VERSION → SOLUTION_ITEM → PRODUCT\nPARTNER（CHANNEL/VENDOR/CUSTOMER）→ CONTACT\nTODO\nNOTE（笔记，可归属笔记本并关联项目）\n\n## 原则\n- 通过工具操作数据，不直接猜测\n- 重要修改前确认用户意图\n- 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id\n- 联系人关联项目时，所属合作伙伴必须同时关联到同一项目\n- 设备完整参数快照：ext_tool_object(type=\"SOLUTION_ITEM\") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）";
+        let business_prompt = "你是 ArkMind 的业务管理助手。你的职责是执行业务对象的创建、编辑、删除操作。\n\n## 业务对象模型\nPROJECT → SOLUTION → SOLUTION_VERSION → SOLUTION_ITEM → PRODUCT\nPARTNER（CHANNEL/VENDOR/CUSTOMER）→ CONTACT\nTODO\nNOTE（笔记，可归属笔记本并关联项目）\n\n## 原则\n- 通过工具操作数据，不直接猜测\n- 重要修改前确认用户意图\n- 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id\n- 联系人关联项目时，所属合作伙伴必须同时关联到同一项目\n- 设备完整参数快照：ext_tool_object(type=\"SOLUTION_ITEM\") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）";
         let preset_tools = "[\"ext_tool_object\",\"ext_tool_relations\",\"ext_tool_manage_project\",\"ext_tool_manage_todo\",\"ext_tool_manage_partner\",\"ext_tool_manage_contact\",\"ext_tool_manage_product\",\"ext_tool_manage_note\"]";
         conn.execute(
-            "INSERT INTO agent_profiles(id, name, description, system_prompt, max_iterations, can_delegate, output_format, status, is_builtin, preset_tools, created_at, updated_at) VALUES('business', '业务助手', '项目、待办、合作伙伴、联系人、产品、笔记的增删改查操作', ?1, 20, 0, 'natural', 'active', 1, ?2, datetime('now','localtime'), datetime('now','localtime'))",
+            "INSERT INTO agent_profiles(id, name, description, system_prompt, max_iterations, can_delegate, output_format, status, is_builtin, preset_tools, created_at, updated_at) VALUES('business', '业务助手', '项目、待办、合作伙伴、联系人、产品、笔记的创建、编辑、删除操作', ?1, 20, 0, 'natural', 'active', 1, ?2, datetime('now','localtime'), datetime('now','localtime'))",
             rusqlite::params![business_prompt, preset_tools],
         ).ok();
         // 分配工具
@@ -458,7 +459,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         log::info!("[数据库] 预置业务助手 Agent");
     } else {
         // 更新现有业务助手的 preset_tools 和 system_prompt（移除工具使用部分）
-        let business_prompt = "你是 ArkMind 的业务管理助手。你的职责是执行业务对象的增删改查操作。\n\n## 业务对象模型\nPROJECT → SOLUTION → SOLUTION_VERSION → SOLUTION_ITEM → PRODUCT\nPARTNER（CHANNEL/VENDOR/CUSTOMER）→ CONTACT\nTODO\nNOTE（笔记，可归属笔记本并关联项目）\n\n## 原则\n- 通过工具操作数据，不直接猜测\n- 重要修改前确认用户意图\n- 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id\n- 联系人关联项目时，所属合作伙伴必须同时关联到同一项目\n- 设备完整参数快照：ext_tool_object(type=\"SOLUTION_ITEM\") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）";
+        let business_prompt = "你是 ArkMind 的业务管理助手。你的职责是执行业务对象的创建、编辑、删除操作。\n\n## 业务对象模型\nPROJECT → SOLUTION → SOLUTION_VERSION → SOLUTION_ITEM → PRODUCT\nPARTNER（CHANNEL/VENDOR/CUSTOMER）→ CONTACT\nTODO\nNOTE（笔记，可归属笔记本并关联项目）\n\n## 原则\n- 通过工具操作数据，不直接猜测\n- 重要修改前确认用户意图\n- 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id\n- 联系人关联项目时，所属合作伙伴必须同时关联到同一项目\n- 设备完整参数快照：ext_tool_object(type=\"SOLUTION_ITEM\") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）";
         let preset_tools = "[\"ext_tool_object\",\"ext_tool_relations\",\"ext_tool_manage_project\",\"ext_tool_manage_todo\",\"ext_tool_manage_partner\",\"ext_tool_manage_contact\",\"ext_tool_manage_product\",\"ext_tool_manage_note\"]";
         conn.execute(
             "UPDATE agent_profiles SET system_prompt=?1, preset_tools=?2 WHERE id='business'",
