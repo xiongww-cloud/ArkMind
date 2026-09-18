@@ -5,15 +5,7 @@ use serde_json::json;
 use crate::services::agent_workflow::*;
 
 pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str, due_date: &str, repeat: &str, project_id: &str, done: bool, todo_id: &str) -> String {
-    let normalize_pri = |p: &str| -> Option<String> {
-        if p.trim().is_empty() { return None; }
-        Some(match p.trim() {
-            "最高"|"高"|"high"|"urgent"|"紧急"|"P1"|"p1" => "P1".to_string(),
-            "中"|"medium"|"normal"|"一般"|"P2"|"p2" => "P2".to_string(),
-            "低"|"low"|"P3"|"p3" => "P3".to_string(),
-            other => other.to_string(),
-        })
-    };
+    let normalize_pri = crate::commands::todo_commands::normalize_todo_priority;
     // 通过 todo_id 或 title 模糊匹配查找待办
     let find_todo = |tid: &str, t: &str| -> Option<(String, String)> {
         if !tid.trim().is_empty() {

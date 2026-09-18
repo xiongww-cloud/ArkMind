@@ -49,11 +49,32 @@ pub async fn todos_list() -> Result<Value, String> {
     Ok(json!({ "success": true, "todos": todos }))
 }
 
+/// 待办优先级统一归一：中/英/大小写/P1-P3 诸写法 → 规范值域 P1/P2/P3；空视为未设置；无法识别的原样保留
+pub(crate) fn normalize_todo_priority(p: &str) -> Option<String> {
+    let t = p.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let lower = t.to_lowercase();
+    Some(match t {
+        "最高" | "高" | "紧急" => "P1",
+        "中" | "一般" => "P2",
+        "低" => "P3",
+        _ => match lower.as_str() {
+            "high" | "urgent" | "p1" => "P1",
+            "medium" | "normal" => "P2",
+            "low" | "p3" => "P3",
+            "p2" => "P2",
+            other => other,
+        },
+    }.to_string())
+}
+
 #[tauri::command]
 pub async fn todos_create(data: Value) -> Result<Value, String> {
     let title = data["title"].as_str().unwrap_or("新待办").to_string();
     let content = data["content"].as_str().unwrap_or("").to_string();
-    let priority = data["priority"].as_str().map(|s| s.to_string());
+    let priority = data["priority"].as_str().and_then(normalize_todo_priority);
     let due_date = data["dueDate"].as_str().map(|s| s.to_string());
     let project_id = data["projectId"].as_str().map(|s| s.to_string());
     let repeat = data["repeat"].as_str().map(|s| s.to_string());
@@ -129,7 +150,9 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
         if p.is_null() || p.as_str().map(|s| s.is_empty()).unwrap_or(true) {
             fields.push("priority=NULL".into());
         } else if let Some(v) = p.as_str() {
-            fields.push("priority=?".into()); values.push(json!(v));
+            if let Some(n) = normalize_todo_priority(v) {
+                fields.push("priority=?".into()); values.push(json!(n));
+            }
         }
     }
     if let Some(dd) = data.get("dueDate") {
@@ -301,4 +324,30 @@ pub async fn todos_get(id: String) -> Result<Value, String> {
     .map_err(|e| e.to_string())?
     .unwrap_or(json!({}));
     Ok(json!({ "success": true, "todo": todo }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_todo_priority;
+
+    #[test]
+    fn priority_variants_all_map_to_canonical_range() {
+        for v in ["high", "HIGH", "High", "urgent", "P1", "p1", "高", "最高", "紧急"] {
+            assert_eq!(normalize_todo_priority(v).as_deref(), Some("P1"), "{}", v);
+        }
+        for v in ["medium", "Medium", "normal", "P2", "p2", "中", "一般"] {
+            assert_eq!(normalize_todo_priority(v).as_deref(), Some("P2"), "{}", v);
+        }
+        for v in ["low", "LOW", "P3", "p3", "低"] {
+            assert_eq!(normalize_todo_priority(v).as_deref(), Some("P3"), "{}", v);
+        }
+    }
+
+    #[test]
+    fn priority_empty_is_none_and_unknown_preserved() {
+        assert_eq!(normalize_todo_priority("   "), None);
+        assert_eq!(normalize_todo_priority("").as_deref(), None);
+        assert_eq!(normalize_todo_priority("自定义级别").as_deref(), Some("自定义级别"));
+        assert_eq!(normalize_todo_priority(" P1 ").as_deref(), Some("P1"));
+    }
 }

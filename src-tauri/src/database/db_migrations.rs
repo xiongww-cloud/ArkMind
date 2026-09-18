@@ -273,6 +273,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "INSERT OR IGNORE INTO users (id,name,username,role) VALUES ('local-admin','本地管理员','local-admin','OWNER')",
         // policy 机制退役：持久要求以用户画像（memories source='profile'）承载，policies 表删除
         "DROP TABLE IF EXISTS policies",
+        // 待办优先级值域统一：历史旁路（通知面板/前端直通）写入过 high 等原语，前端排序渲染只认 P1/P2/P3
+        "UPDATE todos SET priority = CASE LOWER(TRIM(priority)) WHEN '最高' THEN 'P1' WHEN '高' THEN 'P1' WHEN 'high' THEN 'P1' WHEN 'urgent' THEN 'P1' WHEN '紧急' THEN 'P1' WHEN 'p1' THEN 'P1' WHEN '中' THEN 'P2' WHEN 'medium' THEN 'P2' WHEN 'normal' THEN 'P2' WHEN '一般' THEN 'P2' WHEN 'p2' THEN 'P2' WHEN '低' THEN 'P3' WHEN 'low' THEN 'P3' WHEN 'p3' THEN 'P3' ELSE priority END WHERE priority IS NOT NULL AND priority != ''",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
