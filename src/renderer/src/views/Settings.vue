@@ -1045,6 +1045,10 @@ async function saveAgent() {
     agentFormError.value = '请输入 Agent 名称'
     return
   }
+  if (!f.description.trim()) {
+    agentFormError.value = '请输入委托说明——主 Agent 靠它决定何时派活'
+    return
+  }
   if (!f.system_prompt.trim()) {
     agentFormError.value = '请输入系统提示词'
     return
@@ -2140,7 +2144,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                     </div>
                     <!-- 委托说明（原"描述"：主 Agent 派活的路由依据） -->
                     <div>
-                      <label class="block text-[10px] font-medium text-surface-400 mb-1">委托说明（主 Agent 靠它派活）</label>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">委托说明（主 Agent 靠它派活）*</label>
                       <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">主 Agent 决定是否委托时，只能看到「名称 + 这段文字」，看不到它的提示词和工具列表——这是路由依据，不是简介</p>
                       <input v-model="agentForm.description" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="写清负责什么、不负责什么，如：会议纪要与知识卡片的创建整理；不处理项目/待办类任务" />
                     </div>
