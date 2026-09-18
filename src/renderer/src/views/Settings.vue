@@ -2101,7 +2101,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                     <span v-if="agent.can_delegate" class="text-[9px] px-1 py-0.5 rounded bg-blue-50 text-blue-600 flex-shrink-0">可委托</span>
                     <span v-if="agent.is_builtin" class="text-[9px] px-1 py-0.5 rounded bg-emerald-50 text-emerald-600 flex-shrink-0">系统预设</span>
                   </div>
-                  <p class="text-[10px] text-surface-400 truncate mt-0.5">{{ agent.description || '暂无描述' }}</p>
+                  <p class="text-[10px] text-surface-400 truncate mt-0.5">{{ agent.description || '未填委托说明，主 Agent 不知何时该派活给它' }}</p>
                 </div>
                 <label class="relative inline-flex items-center cursor-pointer flex-shrink-0" :title="agent.status === 'active' ? '已启用' : '已禁用'">
                   <input type="checkbox" :checked="agent.status === 'active'" @change="toggleAgentStatus(agent)" class="sr-only peer">
@@ -2138,10 +2138,11 @@ function onTruncEnter(e: MouseEvent, text: string) {
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">名称 *</label>
                       <input v-model="agentForm.name" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="例如：方案专家" />
                     </div>
-                    <!-- 描述 -->
+                    <!-- 委托说明（原"描述"：主 Agent 派活的路由依据） -->
                     <div>
-                      <label class="block text-[10px] font-medium text-surface-400 mb-1">描述</label>
-                      <input v-model="agentForm.description" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="简要描述此 Agent 的职责" />
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">委托说明（主 Agent 靠它派活）</label>
+                      <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">主 Agent 决定是否委托时，只能看到「名称 + 这段文字」，看不到它的提示词和工具列表——这是路由依据，不是简介</p>
+                      <input v-model="agentForm.description" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="写清负责什么、不负责什么，如：会议纪要与知识卡片的创建整理；不处理项目/待办类任务" />
                     </div>
                     <!-- System Prompt -->
                     <div>
