@@ -398,7 +398,10 @@ pub async fn parse_chat_attachment(path: &str, ext: &str) -> Result<(String, Str
     } else {
         // 文档：用 spawn_blocking 包装同步解析，完整返回不截断
         let path_owned = path.to_string();
-        let result = tokio::task::spawn_blocking(move || parse_file_smart(&path_owned, &ext_lower))
+        let result = tokio::task::spawn_blocking(move || {
+            let _guard = BlockingThreadEnter::new();
+            parse_file_smart(&path_owned, &ext_lower)
+        })
             .await
             .map_err(|e| format!("解析任务失败: {}", e))?;
         if !result.success && result.error.is_empty() {
@@ -701,16 +704,20 @@ fn classify_ocr_error(err: &str) -> (bool, bool) {
     (true, false)
 }
 
+use super::tokio_ctx::{in_blocking_thread, BlockingThreadEnter};
+
 /// 同步调用视觉模型 API，最多重试 3 次（仅重试可恢复错误；空白页直接返回 Blank）
 pub fn ocr_image_sync_result(base64_uri: &str) -> OcrOutcome {
     const MAX_ATTEMPTS: u32 = 3;
     let mut last_err = String::from("未知错误");
     for attempt in 0..MAX_ATTEMPTS {
         let t0 = std::time::Instant::now();
-        // 检查是否已在 tokio runtime 中，避免 "Cannot start a runtime from within a runtime" panic
-        let result = if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+        // 区分调用场景：worker 线程可用 block_in_place；spawn_blocking 线程 block_in_place 必 panic，
+        // 须改跑独立 current-thread runtime（见 BlockingThreadEnter 标记）
+        let result = if tokio::runtime::Handle::try_current().is_ok() && !in_blocking_thread() {
+            let handle = tokio::runtime::Handle::current();
             // 在 async 上下文中：使用 block_in_place 安全地执行阻塞调用
-            tokio::task::block_in_place(|| _handle.block_on(ocr_with_vision_api(base64_uri)))
+            tokio::task::block_in_place(|| handle.block_on(ocr_with_vision_api(base64_uri)))
         } else {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()

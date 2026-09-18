@@ -47,22 +47,43 @@ pub struct EmailAttachment {
     pub is_inline: bool,
 }
 
+/// 带超时的 IMAP 连接（imap::connect 内部用无超时 TcpStream::connect，
+/// 服务器黑洞时可无限挂起 tokio worker，拖垮整个 async 运行时）
+fn imap_connect(host: &str, port: u16) -> Result<imap::Client<native_tls::TlsStream<std::net::TcpStream>>, String> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    let addrs: Vec<_> = (host, port).to_socket_addrs()
+        .map_err(|e| format!("解析 IMAP 主机 {} 失败: {}", host, e))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("IMAP 主机无法解析: {}", host));
+    }
+    let mut tcp = None;
+    let mut last_err = String::new();
+    for a in &addrs {
+        match TcpStream::connect_timeout(a, Duration::from_secs(15)) {
+            Ok(s) => { tcp = Some(s); break; }
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    let tcp = tcp.ok_or_else(|| format!("IMAP 连接超时({}): {}", host, last_err))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(120))).ok();
+    tcp.set_write_timeout(Some(Duration::from_secs(30))).ok();
+    let tls = native_tls::TlsConnector::builder()
+        .build()
+        .map_err(|e| format!("TLS 创建失败: {}", e))?;
+    let tls_stream = tls.connect(host, tcp).map_err(|e| format!("TLS 握手失败: {}", e))?;
+    let mut client = imap::Client::new(tls_stream);
+    client.read_greeting().map_err(|e| format!("IMAP 握手失败: {}", e))?;
+    Ok(client)}
+
 /// 连接 IMAP 服务器并获取新邮件
 pub fn fetch_new_emails(
     account: &EmailAccount,
     folder: &str,
     last_uid: u32,
 ) -> Result<Vec<ParsedEmail>, String> {
-    let tls = native_tls::TlsConnector::builder()
-        .build()
-        .map_err(|e| format!("TLS 创建失败: {}", e))?;
-
-    let client = imap::connect(
-        (account.imap_host.as_str(), account.imap_port),
-        &account.imap_host,
-        &tls,
-    )
-    .map_err(|e| format!("IMAP 连接失败: {}", e))?;
+    let client = imap_connect(&account.imap_host, account.imap_port)?;
 
     // 解密密码
     let machine = crate::license::get_machine_hash();
@@ -129,16 +150,7 @@ pub fn fetch_new_emails(
 
 /// 获取指定文件夹当前最大 UID（用于新账户跳过历史邮件）
 pub fn get_current_max_uid(account: &EmailAccount, folder: &str) -> Result<u32, String> {
-    let tls = native_tls::TlsConnector::builder()
-        .build()
-        .map_err(|e| format!("TLS 创建失败: {}", e))?;
-
-    let client = imap::connect(
-        (account.imap_host.as_str(), account.imap_port),
-        &account.imap_host,
-        &tls,
-    )
-    .map_err(|e| format!("IMAP 连接失败: {}", e))?;
+    let client = imap_connect(&account.imap_host, account.imap_port)?;
 
     let machine = crate::license::get_machine_hash();
     let password = crate::crypto::decrypt_api_key(&account.password_encrypted, &machine);
@@ -163,16 +175,7 @@ pub fn get_current_max_uid(account: &EmailAccount, folder: &str) -> Result<u32, 
 
 /// 探测 Sent 文件夹名称
 pub fn detect_sent_folder(account: &EmailAccount) -> String {
-    let tls = match native_tls::TlsConnector::builder().build() {
-        Ok(t) => t,
-        Err(_) => return "Sent".to_string(),
-    };
-
-    let client = match imap::connect(
-        (account.imap_host.as_str(), account.imap_port),
-        &account.imap_host,
-        &tls,
-    ) {
+    let client = match imap_connect(&account.imap_host, account.imap_port) {
         Ok(c) => c,
         Err(_) => return "Sent".to_string(),
     };

@@ -236,23 +236,30 @@ pub async fn backup_all(save_path: String, app_handle: tauri::AppHandle) -> Resu
 
         // 1. SQLite 数据库
         let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":1,"total":4,"name":"数据库"}));
-        eprintln!("[备份] 步骤 1/4: 复制数据库...");
-        // ★ 先强制 WAL checkpoint，确保所有事务落盘，避免备份不一致
-        let _ = crate::database::with_db(|conn| conn.pragma_update(None, "wal_checkpoint", "TRUNCATE"));
+        eprintln!("[备份] 步骤 1/4: 导出数据库快照...");
         let db_dir = tmp.join("database");
         std::fs::create_dir_all(&db_dir).map_err(|e| e.to_string())?;
         let db_path = crate::get_data_dir().join("arkmind.db");
-        if db_path.exists() {
-            let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-            std::fs::copy(&db_path, db_dir.join("arkmind.db")).map_err(|e| e.to_string())?;
-            eprintln!("[备份] 数据库已复制 ({} KB)", db_size / 1024);
-        } else {
-            eprintln!("[备份] 数据库不存在，跳过");
+        // ★ VACUUM INTO 单连接一致快照：替代 checkpoint+三段 fs::copy（copy 间隙后台写入推进 WAL 会撕裂快照）
+        let snapshot = db_dir.join("arkmind.db");
+        let snap = snapshot.to_string_lossy().to_string();
+        match crate::database::with_db(|conn| conn.execute("VACUUM INTO ?1", rusqlite::params![snap])) {
+            Ok(_) => {
+                let db_size = std::fs::metadata(&snapshot).map(|m| m.len()).unwrap_or(0);
+                eprintln!("[备份] 数据库快照完成 ({} KB)", db_size / 1024);
+            }
+            Err(e) if db_path.exists() => {
+                // 兜底：连接不可用（未初始化/恢复窗口）时退回旧式文件复制
+                eprintln!("[备份] VACUUM INTO 失败({})，退回文件复制", e);
+                let _ = crate::database::with_db(|conn| conn.pragma_update(None, "wal_checkpoint", "TRUNCATE"));
+                std::fs::copy(&db_path, &snapshot).map_err(|e| format!("复制数据库失败: {}", e))?;
+                let wal_path = db_path.with_extension("db-wal");
+                let shm_path = db_path.with_extension("db-shm");
+                if wal_path.exists() { std::fs::copy(&wal_path, db_dir.join("arkmind.db-wal")).ok(); }
+                if shm_path.exists() { std::fs::copy(&shm_path, db_dir.join("arkmind.db-shm")).ok(); }
+            }
+            Err(_) => { eprintln!("[备份] 数据库不存在，跳过"); }
         }
-        let wal_path = db_path.with_extension("db-wal");
-        let shm_path = db_path.with_extension("db-shm");
-        if wal_path.exists() { std::fs::copy(&wal_path, db_dir.join("arkmind.db-wal")).ok(); }
-        if shm_path.exists() { std::fs::copy(&shm_path, db_dir.join("arkmind.db-shm")).ok(); }
 
         // 2. 上传文件
         let _ = handle.emit("backup:progress", json!({"stage":"exporting","step":2,"total":4,"name":"文件"}));
@@ -383,11 +390,30 @@ pub async fn restore_all(backup_path: String, app_handle: tauri::AppHandle) -> R
             if wal_dest.exists() { std::fs::remove_file(&wal_dest).ok(); }
             if shm_dest.exists() { std::fs::remove_file(&shm_dest).ok(); }
             if let Some(parent) = db_dest.parent() { std::fs::create_dir_all(parent).ok(); }
-            std::fs::copy(db_dir.join("arkmind.db"), &db_dest).map_err(|e| e.to_string())?;
-            let wal_src = db_dir.join("arkmind.db-wal");
-            let shm_src = db_dir.join("arkmind.db-shm");
-            if wal_src.exists() { std::fs::copy(&wal_src, &wal_dest).ok(); }
-            if shm_src.exists() { std::fs::copy(&shm_src, &shm_dest).ok(); }
+            let copy_res = (|| -> Result<(), String> {
+                std::fs::copy(db_dir.join("arkmind.db"), &db_dest).map_err(|e| e.to_string())?;
+                let wal_src = db_dir.join("arkmind.db-wal");
+                let shm_src = db_dir.join("arkmind.db-shm");
+                if wal_src.exists() { std::fs::copy(&wal_src, &wal_dest).map_err(|e| e.to_string())?; }
+                if shm_src.exists() { std::fs::copy(&shm_src, &shm_dest).map_err(|e| e.to_string())?; }
+                Ok(())
+            })();
+            if let Err(e) = copy_res {
+                // ★ close_db 之后失败必须重开连接：否则进程存活但全局连接为空，
+                //   此后所有 DB 命令永报 "Database not initialized" 直到重启
+                let reopen = crate::database::init_database(&db_dest);
+                if let Err(re) = reopen { eprintln!("[恢复] 重开数据库连接失败: {}", re); }
+                return Err(format!("恢复数据库文件失败: {}", e));
+            }
+            // ★ 恢复后完整性校验（损坏的备份 zip 覆盖后立即失败，而非带病运行）
+            if let Ok(conn) = rusqlite::Connection::open(&db_dest) {
+                let ok: bool = conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                    .map(|v| v == "ok").unwrap_or(false);
+                if !ok {
+                    let _ = crate::database::init_database(&db_dest);
+                    return Err("恢复的数据库完整性校验失败（integrity_check），请换用更早备份或重新恢复".to_string());
+                }
+            }
             eprintln!("[恢复] 数据库已恢复到: {}", db_dest.display());
         } else {
             eprintln!("[恢复] 备份中无数据库，跳过");
@@ -548,32 +574,40 @@ pub async fn import_data(file_path: String) -> Result<Value, String> {
     let domains = manifest["domains"].as_array().ok_or("manifest 缺少 domains 字段")?;
 
     let mut imported: Vec<String> = Vec::new();
-    
-    // ★ 开启事务保护
-    database::run("BEGIN TRANSACTION", &[]).map_err(|e| format!("开启事务失败: {}", e))?;
-    
-    let mut has_error = false;
+
+    // ★ 事务外先读入并解析全部域文件：事务内的任何 '?' 早退都会留下无 ROLLBACK 的僵尸事务，
+    //   令后续所有写命令报 "cannot start a transaction within a transaction" 直至重启
+    let mut payloads: Vec<(String, Value)> = Vec::new();
     for domain in domains {
         let domain_name = domain.as_str().unwrap_or("");
         let domain_file = tmp.join(format!("{}.json", domain_name));
         if !domain_file.exists() { continue; }
-        let data_str = std::fs::read_to_string(&domain_file).map_err(|e| e.to_string())?;
-        let data: Value = serde_json::from_str(&data_str).map_err(|e| e.to_string())?;
+        let data_str = std::fs::read_to_string(&domain_file)
+            .map_err(|e| format!("读取 {} 失败: {}", domain_name, e))?;
+        let data: Value = serde_json::from_str(&data_str)
+            .map_err(|e| format!("解析 {} 失败: {}", domain_name, e))?;
+        payloads.push((domain_name.to_string(), data));
+    }
 
-        let result = match domain_name {
-            "projects" => import_projects(&data, &tmp),
-            "products" => import_products(&data, &tmp),
-            "notes" => import_notes(&data, &tmp),
-            "todos" => import_todos(&data, &tmp),
-            "files" => import_files(&data, &tmp),
-            "contacts" => import_contacts(&data),
+    // ★ 开启事务保护
+    database::run("BEGIN TRANSACTION", &[]).map_err(|e| format!("开启事务失败: {}", e))?;
+    
+    let mut has_error = false;
+    for (domain_name, data) in &payloads {
+        let result = match domain_name.as_str() {
+            "projects" => import_projects(data, &tmp),
+            "products" => import_products(data, &tmp),
+            "notes" => import_notes(data, &tmp),
+            "todos" => import_todos(data, &tmp),
+            "files" => import_files(data, &tmp),
+            "contacts" => import_contacts(data),
             _ => Ok(()),
         };
         if let Err(e) = result {
             eprintln!("[导入] {} 导入失败: {}", domain_name, e);
             has_error = true;
         } else {
-            imported.push(domain_name.to_string());
+            imported.push(domain_name.clone());
         }
     }
 

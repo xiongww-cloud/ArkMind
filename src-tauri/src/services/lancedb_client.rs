@@ -9,15 +9,17 @@ use std::sync::Arc;
 use futures::StreamExt;
 
 fn sync_run<T,E:std::fmt::Display>(f: impl std::future::Future<Output=Result<T,E>>, ctx: &str) -> Result<T,String> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(h) => tokio::task::block_in_place(|| h.block_on(f)),
-        Err(_) => { let rt = tokio::runtime::Runtime::new().map_err(|e| format!("{ctx}: {e}"))?; rt.block_on(f) }
-    }.map_err(|e| format!("{ctx}: {e}"))
+    // worker/blocking/无 runtime 线程自动适配（block_in_place 在 spawn_blocking 线程会 panic）
+    match super::tokio_ctx::block_on_sync(f) {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(format!("{ctx}: {e}")),
+        Err(e) => Err(format!("{ctx}: {e}")),
+    }
 }
 
 fn collect(stream: lancedb::arrow::SendableRecordBatchStream) -> Result<Vec<RecordBatch>, String> {
     let f = async { stream.collect::<Vec<_>>().await.into_iter().collect::<Result<Vec<_>,_>>().map_err(|e| format!("collect: {e}")) };
-    match tokio::runtime::Handle::try_current() { Ok(h) => tokio::task::block_in_place(|| h.block_on(f)), Err(_) => tokio::runtime::Runtime::new().map_err(|e| format!("rt: {e}"))?.block_on(f) }
+    super::tokio_ctx::block_on_sync(f).map_err(|e| format!("rt: {e}"))?
 }
 
 #[derive(Clone)]
