@@ -1664,6 +1664,110 @@ async function savePolicyEditor() {
       <!-- ══════════ 卡片区（Columns 瀑布流自动排列） ══════════ -->
       <div class="columns-1 lg:columns-2 gap-4">
 
+          <!-- AI 模型配置 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">AI 模型配置</h2>
+            </div>
+            <div class="flex gap-0 border-b border-surface-100 px-5 mt-3">
+              <button v-for="tab in ['llm','vision','vector','web']" :key="tab"
+                @click="aiTab = tab"
+                class="px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px"
+                :class="aiTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-400 hover:text-surface-600'">
+                {{ {llm:'语言模型',vision:'视觉模型',vector:'向量模型',web:'联网搜索'}[tab] }}
+              </button>
+            </div>
+
+            <!-- LLM Tab -->
+            <div v-show="aiTab === 'llm'" class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">选择默认的大语言模型，用于 AI 问答、知识库检索等任务</p>
+              <div v-for="p in aiProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="activeProviderId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
+                <input type="radio" :value="p.id" :checked="pendingDefaultId === p.id" @change="setPendingDefault(p.id)" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
+                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
+                </div>
+                <button @click="testProviderConnection(p)" :disabled="testingProviderId" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </button>
+                <button @click="openEditProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
+                <button @click="removeProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-3">
+                  <button v-if="pendingDefaultId !== activeProviderId" @click="saveDefaultConfig" :disabled="aiSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ aiSaving ? '保存中...' : '保存默认' }}</button>
+                  <p v-if="aiTestResult" class="text-[10px]" :class="aiTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ aiTestResult }}</p>
+                  <p v-if="aiSaved" class="text-[10px] text-emerald-600">已保存</p>
+                </div>
+                <button @click="openAddProvider" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
+              </div>
+            </div>
+
+            <!-- Vision Tab -->
+            <div v-show="aiTab === 'vision'" class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">用于图片/PDF 视觉解析的模型</p>
+              <div v-for="p in visionProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="visionActiveId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
+                <input type="radio" :value="p.id" :checked="visionPendingId === p.id" @change="visionPendingId = p.id" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
+                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
+                </div>
+                <button @click="testVisionConnection(p)" :disabled="visionTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </button>
+                <button @click="openEditVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
+                <button @click="removeVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-3">
+                  <button v-if="visionPendingId !== visionActiveId" @click="saveVisionDefault" :disabled="visionSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ visionSaving ? '保存中...' : '保存默认' }}</button>
+                  <p v-if="visionTestResult" class="text-[10px]" :class="visionTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ visionTestResult }}</p>
+                  <p v-if="visionSaved" class="text-[10px] text-emerald-600">已保存</p>
+                </div>
+                <button @click="openAddVision" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
+              </div>
+            </div>
+
+            <!-- Vector Tab -->
+            <div v-show="aiTab === 'vector'" class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">用于文本向量化的 Embedding 模型</p>
+              <div v-if="vecConfigured" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-brand-300 bg-brand-50">
+                <div class="w-7 h-7 rounded-full bg-brand-100 flex items-center justify-center shrink-0"><AppIcon name="sparkles" size="14" /></div>
+                <div class="flex-1 min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ vecSavedData.modelName }}</p>
+                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ vecSavedData.baseUrl }}</p>
+                </div>
+                <button @click="testVecConnection" :disabled="vecTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </button>
+                <button @click="openVecModal" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
+                <button @click="deleteVecConfig" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+              </div>
+              <div class="flex items-center justify-between">
+                <div></div>
+                <button v-if="!vecSavedData" @click="openVecModal" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
+              </div>
+              <p v-if="vecTestResult" class="text-[10px]" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
+            </div>
+
+            <!-- 联网搜索 Tab -->
+            <div v-show="aiTab === 'web'" class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">接入博查搜索（<a href="https://bochaai.com" @click.prevent="openUrl('https://bochaai.com').catch(() => toast({ message: '打开网页失败', type: 'error' }))" class="text-blue-500 hover:underline cursor-pointer">bochaai.com</a> 注册获取 Key，新用户有免费额度）后，AI 问答与AI洞察可联网查证外部信息；未配置时 AI 不会感知该能力</p>
+              <div>
+                <label class="text-[11px] text-surface-500">博查 API Key</label>
+                <input v-model="webSearchKey" type="password" autocomplete="off" placeholder="sk-..." class="mt-1 w-full px-2.5 py-1.5 text-[12px] font-mono border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
+              </div>
+              <div class="flex items-center justify-between">
+                <p v-if="webSearchMsg" class="text-[10px] truncate flex-1 mr-2" :class="webSearchOk ? 'text-emerald-600' : 'text-red-500'">{{ webSearchMsg }}</p>
+                <div v-else></div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button @click="testWebSearch" :disabled="!webSearchKey || webSearching" class="btn-secondary text-xs">{{ webSearching ? '测试中...' : '测试连接' }}</button>
+                  <button @click="saveWebSearch" :disabled="webSearchSaving" class="btn-primary text-xs">{{ webSearchSaving ? '保存中...' : (webSearchKey ? '保存' : '清除配置') }}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- 我的档案 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
@@ -1794,110 +1898,6 @@ async function savePolicyEditor() {
               </div>
             </Transition>
           </Teleport>
-
-          <!-- AI 模型配置 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
-            <div class="px-5 pt-5 pb-0">
-              <h2 class="text-[13px] font-semibold text-surface-700">AI 模型配置</h2>
-            </div>
-            <div class="flex gap-0 border-b border-surface-100 px-5 mt-3">
-              <button v-for="tab in ['llm','vision','vector','web']" :key="tab"
-                @click="aiTab = tab"
-                class="px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px"
-                :class="aiTab === tab ? 'border-brand-600 text-brand-700' : 'border-transparent text-surface-400 hover:text-surface-600'">
-                {{ {llm:'语言模型',vision:'视觉模型',vector:'向量模型',web:'联网搜索'}[tab] }}
-              </button>
-            </div>
-
-            <!-- LLM Tab -->
-            <div v-show="aiTab === 'llm'" class="p-5 space-y-3">
-              <p class="text-[10px] text-surface-400">选择默认的大语言模型，用于 AI 问答、知识库检索等任务</p>
-              <div v-for="p in aiProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="activeProviderId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
-                <input type="radio" :value="p.id" :checked="pendingDefaultId === p.id" @change="setPendingDefault(p.id)" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
-                <div class="flex-1 min-w-0">
-                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
-                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
-                </div>
-                <button @click="testProviderConnection(p)" :disabled="testingProviderId" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
-                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                </button>
-                <button @click="openEditProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-                <button @click="removeProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
-              </div>
-              <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center gap-3">
-                  <button v-if="pendingDefaultId !== activeProviderId" @click="saveDefaultConfig" :disabled="aiSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ aiSaving ? '保存中...' : '保存默认' }}</button>
-                  <p v-if="aiTestResult" class="text-[10px]" :class="aiTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ aiTestResult }}</p>
-                  <p v-if="aiSaved" class="text-[10px] text-emerald-600">已保存</p>
-                </div>
-                <button @click="openAddProvider" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
-              </div>
-            </div>
-
-            <!-- Vision Tab -->
-            <div v-show="aiTab === 'vision'" class="p-5 space-y-3">
-              <p class="text-[10px] text-surface-400">用于图片/PDF 视觉解析的模型</p>
-              <div v-for="p in visionProviders" :key="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors" :class="visionActiveId === p.id ? 'border-brand-300 bg-brand-50' : 'border-surface-200 hover:border-surface-300'">
-                <input type="radio" :value="p.id" :checked="visionPendingId === p.id" @change="visionPendingId = p.id" class="accent-brand-600 w-3.5 h-3.5 shrink-0" />
-                <div class="flex-1 min-w-0">
-                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
-                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
-                </div>
-                <button @click="testVisionConnection(p)" :disabled="visionTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
-                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                </button>
-                <button @click="openEditVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-                <button @click="removeVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
-              </div>
-              <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center gap-3">
-                  <button v-if="visionPendingId !== visionActiveId" @click="saveVisionDefault" :disabled="visionSaving" class="inline-flex items-center gap-1 h-6 rounded-md px-2.5 text-[11px] font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 transition-colors">{{ visionSaving ? '保存中...' : '保存默认' }}</button>
-                  <p v-if="visionTestResult" class="text-[10px]" :class="visionTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ visionTestResult }}</p>
-                  <p v-if="visionSaved" class="text-[10px] text-emerald-600">已保存</p>
-                </div>
-                <button @click="openAddVision" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
-              </div>
-            </div>
-
-            <!-- Vector Tab -->
-            <div v-show="aiTab === 'vector'" class="p-5 space-y-3">
-              <p class="text-[10px] text-surface-400">用于文本向量化的 Embedding 模型</p>
-              <div v-if="vecConfigured" class="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-brand-300 bg-brand-50">
-                <div class="w-7 h-7 rounded-full bg-brand-100 flex items-center justify-center shrink-0"><AppIcon name="sparkles" size="14" /></div>
-                <div class="flex-1 min-w-0">
-                  <p class="text-[12px] font-medium text-surface-700 truncate">{{ vecSavedData.modelName }}</p>
-                  <p class="text-[10px] text-surface-400 truncate font-mono">{{ vecSavedData.baseUrl }}</p>
-                </div>
-                <button @click="testVecConnection" :disabled="vecTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
-                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                </button>
-                <button @click="openVecModal" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-                <button @click="deleteVecConfig" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
-              </div>
-              <div class="flex items-center justify-between">
-                <div></div>
-                <button v-if="!vecSavedData" @click="openVecModal" class="btn-primary text-[11px]"><AppIcon name="plus" size="12" /> 添加模型</button>
-              </div>
-              <p v-if="vecTestResult" class="text-[10px]" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
-            </div>
-
-            <!-- 联网搜索 Tab -->
-            <div v-show="aiTab === 'web'" class="p-5 space-y-3">
-              <p class="text-[10px] text-surface-400">接入博查搜索（<a href="https://bochaai.com" @click.prevent="openUrl('https://bochaai.com').catch(() => toast({ message: '打开网页失败', type: 'error' }))" class="text-blue-500 hover:underline cursor-pointer">bochaai.com</a> 注册获取 Key，新用户有免费额度）后，AI 问答与AI洞察可联网查证外部信息；未配置时 AI 不会感知该能力</p>
-              <div>
-                <label class="text-[11px] text-surface-500">博查 API Key</label>
-                <input v-model="webSearchKey" type="password" autocomplete="off" placeholder="sk-..." class="mt-1 w-full px-2.5 py-1.5 text-[12px] font-mono border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
-              </div>
-              <div class="flex items-center justify-between">
-                <p v-if="webSearchMsg" class="text-[10px] truncate flex-1 mr-2" :class="webSearchOk ? 'text-emerald-600' : 'text-red-500'">{{ webSearchMsg }}</p>
-                <div v-else></div>
-                <div class="flex items-center gap-2 shrink-0">
-                  <button @click="testWebSearch" :disabled="!webSearchKey || webSearching" class="btn-secondary text-xs">{{ webSearching ? '测试中...' : '测试连接' }}</button>
-                  <button @click="saveWebSearch" :disabled="webSearchSaving" class="btn-primary text-xs">{{ webSearchSaving ? '保存中...' : (webSearchKey ? '保存' : '清除配置') }}</button>
-                </div>
-              </div>
-            </div>
-          </div>
 
           <!-- AI洞察 -->
           <div class="relative z-20 bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-visible break-inside-avoid mb-4">
