@@ -140,15 +140,6 @@ impl Whoami {
         }
         s
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.name.is_empty()
-            && self.title.is_empty()
-            && self.company.is_empty()
-            && self.work_city.is_empty()
-            && self.emails.is_empty()
-            && self.facts.is_empty()
-    }
 }
 
 // ─── 证据收集与解析（纯逻辑，可测）─────────────────────────

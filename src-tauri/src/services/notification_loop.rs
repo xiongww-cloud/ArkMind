@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn caps_at_five_and_truncates_length() {
         let mut s = String::new();
-        for i in 0..10 { s.push_str(&format!("WATCH: 观察{}\n", "长".repeat(200))); }
+        for i in 0..10 { s.push_str(&format!("WATCH: 观察{}{}\n", i, "长".repeat(200))); }
         let w = parse_watch_lines(&s);
         assert_eq!(w.len(), 5);
         assert!(w.iter().all(|x| x.chars().count() <= 120));
