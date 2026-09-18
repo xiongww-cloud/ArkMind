@@ -1023,25 +1023,6 @@ function toggleAgentTool(toolName: string) {
   }
 }
 
-// 按分类分组工具
-const toolsByCategory = computed(() => {
-  const groups: Record<string, AgentToolInfo[]> = {}
-  for (const tool of availableTools.value) {
-    if (!groups[tool.category]) groups[tool.category] = []
-    groups[tool.category].push(tool)
-  }
-  return groups
-})
-
-const categoryLabels: Record<string, string> = {
-  knowledge: '知识检索',
-  data: '数据查询',
-  project: '项目管理',
-  partner: '合作伙伴',
-  product: '产品管理',
-  notification: '通知管理',
-}
-
 const toolLabels: Record<string, { name: string; brief: string }> = {
   ext_tool_search: { name: '知识搜索', brief: '全文+语义检索文档、笔记、技术资料' },
   ext_tool_object: { name: '数据查询', brief: '查看/筛选/统计业务对象' },
@@ -1052,7 +1033,10 @@ const toolLabels: Record<string, { name: string; brief: string }> = {
   ext_tool_manage_partner: { name: '合作伙伴', brief: '管理渠道/厂商/客户' },
   ext_tool_manage_contact: { name: '联系人', brief: '管理合作伙伴下的联系人' },
   ext_tool_manage_product: { name: '产品管理', brief: '管理产品及产品目录' },
+  ext_tool_manage_note: { name: '笔记管理', brief: '创建/编辑/删除笔记' },
   ext_tool_manage_notification: { name: '通知管理', brief: '创建/查看系统通知' },
+  ext_tool_web_search: { name: '联网搜索', brief: '搜索公开互联网信息' },
+  ext_tool_web_fetch: { name: '网页抓取', brief: '抓取网页全文转为 Markdown' },
 }
 
 async function saveAgent() {
@@ -2181,27 +2165,24 @@ function onTruncEnter(e: MouseEvent, text: string) {
                     <!-- 工具分配 -->
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-2">工具分配</label>
-                      <div class="border border-surface-200 rounded-lg p-3 space-y-3 max-h-[240px] overflow-y-auto">
-                        <div v-for="(tools, category) in toolsByCategory" :key="category">
-                          <p class="text-[10px] font-medium text-surface-500 mb-1.5">{{ categoryLabels[category] || category }}</p>
-                          <div class="grid grid-cols-3 gap-1.5">
-                            <div v-for="tool in tools" :key="tool.name"
-                              class="flex flex-col p-2 rounded-lg border transition-colors relative select-none"
-                              :class="[
-                                (agentForm.presetTools || []).includes(tool.name) ? 'border-surface-200 bg-surface-50 opacity-60' :
-                                (agentForm.tools || []).includes(tool.name) ? 'border-brand-400 bg-brand-50 cursor-pointer ring-1 ring-brand-200' : 'border-surface-200 bg-white cursor-pointer hover:border-brand-200'
-                              ]"
-                              @click="!(agentForm.presetTools || []).includes(tool.name) && toggleAgentTool(tool.name)">
-                              <div class="flex items-start justify-between">
-                                <span class="text-[11px] font-medium leading-tight" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-700' : 'text-surface-700'">{{ toolLabels[tool.name]?.name || tool.name }}</span>
-                                <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0 ml-1" :title="tool.description">?</span>
-                              </div>
-                              <span v-if="(agentForm.presetTools || []).includes(tool.name)" class="text-[8px] px-1 py-0.5 rounded bg-surface-100 text-surface-400 w-fit mt-0.5">预设</span>
-                              <p class="text-[9px] mt-0.5 leading-relaxed line-clamp-2" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-500' : 'text-surface-400'">{{ toolLabels[tool.name]?.brief || '' }}</p>
-                              <span v-if="(agentForm.tools || []).includes(tool.name)" class="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-brand-600 flex items-center justify-center">
-                                <AppIcon name="check" size="10" class="text-white" />
-                              </span>
+                      <div class="border border-surface-200 rounded-lg p-3 max-h-[240px] overflow-y-auto">
+                        <div class="grid grid-cols-3 gap-1.5">
+                          <div v-for="tool in availableTools" :key="tool.name"
+                            class="flex flex-col p-2 rounded-lg border transition-colors relative select-none"
+                            :class="[
+                              (agentForm.presetTools || []).includes(tool.name) ? 'border-surface-200 bg-surface-50 opacity-60' :
+                              (agentForm.tools || []).includes(tool.name) ? 'border-brand-400 bg-brand-50 cursor-pointer ring-1 ring-brand-200' : 'border-surface-200 bg-white cursor-pointer hover:border-brand-200'
+                            ]"
+                            @click="!(agentForm.presetTools || []).includes(tool.name) && toggleAgentTool(tool.name)">
+                            <div class="flex items-start justify-between">
+                              <span class="text-[11px] font-medium leading-tight" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-700' : 'text-surface-700'">{{ toolLabels[tool.name]?.name || tool.name }}</span>
+                              <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0 ml-1" :title="tool.description">?</span>
                             </div>
+                            <span v-if="(agentForm.presetTools || []).includes(tool.name)" class="text-[8px] px-1 py-0.5 rounded bg-surface-100 text-surface-400 w-fit mt-0.5">预设</span>
+                            <p class="text-[9px] mt-0.5 leading-relaxed line-clamp-2" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-500' : 'text-surface-400'">{{ toolLabels[tool.name]?.brief || '' }}</p>
+                            <span v-if="(agentForm.tools || []).includes(tool.name)" class="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-brand-600 flex items-center justify-center">
+                              <AppIcon name="check" size="10" class="text-white" />
+                            </span>
                           </div>
                         </div>
                       </div>
