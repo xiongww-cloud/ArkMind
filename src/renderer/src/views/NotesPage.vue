@@ -15,7 +15,7 @@ import { getTiptapExtensions } from '@/composables/useTiptapConfig'
 import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 import {
-  notesV2ListAll, notesV2ListDaily, notesV2ListOrphan, notesV2ListTrash, notesV2ListArchive,
+  notesV2ListAll, notesV2ListDaily, notesV2ListTrash,
   notesV2ListByNotebook, notesV2Get, notesV2GetForTrash,
   notesV2Create, notesV2Update, notesV2Delete, notesV2Restore, notesV2PermanentDelete,
   fetchNotebooks, createNotebook, updateNotebook, deleteNotebook,
@@ -27,14 +27,14 @@ import { useLinkModals } from '@/composables/useLinkModals'
 import { nowLocalDb, tsMillis } from '@/utils/time'
 import { sanitizeHtmlSync } from '@/utils/sanitize'
 
-type ViewType = 'daily'|'orphan'|'notebook'|'trash'
-interface Note { note_id:string; id:string; title:string; excerpt:string; content?:string; is_daily:number; notebook_id?:string; deleted_at?:string; updated_at:string; created_at:string; tags?:any[] }
+type ViewType = 'all'|'daily'|'notebook'|'trash'
+interface Note { note_id:string; id:string; title:string; excerpt:string; content?:string; is_daily:number; notebook_id?:string; notebook_name?:string; project_ids?:string; deleted_at?:string; updated_at:string; created_at:string; tags?:any[] }
 interface Notebook { id:string; name:string; color:string; parentId?:string|null }
 interface Project { id:string; name:string }
 
 const route = useRoute()
 const selectionStore = useSelectionStore()
-const currentView = ref<ViewType>('daily')
+const currentView = ref<ViewType>('all')
 const selectedProjectId = ref<string|null>(null)
 const selectedNotebookId = ref<string|null>(null)
 const selectedNoteId = ref<string|null>(null)
@@ -119,11 +119,11 @@ async function loadNotes() {
   try {
     let r:any
     switch (currentView.value) {
+      case 'all': r = await notesV2ListAll(); break
       case 'daily': r = await notesV2ListDaily(); break
       case 'notebook': if (selectedNotebookId.value) { r = await notesV2ListByNotebook(selectedNotebookId.value); } else { notes.value=[]; return }; break
-      case 'orphan': r = await notesV2ListOrphan(); break
       case 'trash': r = await notesV2ListTrash(); trashNotes.value = (r?.notes||[]).map((n:any)=>({...n,id:n.note_id,note_id:n.note_id})); return
-      default: r = await notesV2ListAll()
+      default: notes.value = []; return
     }
     notes.value = (r?.notes||[]).map((n:any)=>({...n,id:n.note_id,note_id:n.note_id}))
   } catch { notes.value = [] }
@@ -166,7 +166,7 @@ watch(() => selectionStore.current.seq, async () => {
   } else if (note.is_daily) {
     currentView.value = 'daily'
   } else {
-    currentView.value = 'notes'
+    currentView.value = 'all'
   }
   await loadNotes()
   if (mySeq !== processingSeq) return
@@ -687,7 +687,7 @@ async function removeNotebook(nid: string) {
   const count = countData?.count || 0
   const ok = await dangerConfirm({ title: '删除笔记本', message: `确定删除「${nb?.name || '未命名'}」？其中 ${count} 篇笔记将移入回收站。`, confirmText: '删除' })
   if (!ok) return
-  try { await deleteNotebook(nid); notebooks.value = notebooks.value.filter(n => n.id !== nid); if (selectedNotebookId.value === nid) { selectedNotebookId.value = null; currentView.value = 'daily' } } catch (e) { console.error('[Notes] deleteNotebook failed:', e) }
+  try { await deleteNotebook(nid); notebooks.value = notebooks.value.filter(n => n.id !== nid); if (selectedNotebookId.value === nid) { selectedNotebookId.value = null; currentView.value = 'all' } } catch (e) { console.error('[Notes] deleteNotebook failed:', e) }
 }
 
 // ─── Trash / Archive ─────────────────────────────────────────────────
@@ -721,8 +721,14 @@ const restoreNotebookList = computed(() => {
       </div>
     </div>
 
-    <!-- Scrollable list: 闪记 → 用户笔记本 → 项目笔记本 → 归档 → 回收站 -->
+    <!-- Scrollable list: 全部 → 闪记 → 用户笔记本 → 项目笔记本 → 回收站 -->
     <div class="flex-1 px-2 py-1" style="overflow-y:auto;overflow-x:clip">
+      <!-- 全部笔记 -->
+      <button @click="switchView('all')" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden" :class="currentView==='all'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+        <div v-if="currentView==='all'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
+        <AppIcon name="list" size="14" class="text-surface-400" :class="currentView==='all'?'text-blue-500':''"/>全部
+      </button>
+
       <!-- 闪记 -->
       <button @click="switchView('daily')" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden" :class="currentView==='daily'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
         <div v-if="currentView==='daily'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
@@ -772,7 +778,7 @@ const restoreNotebookList = computed(() => {
   <div class="flex-shrink-0 flex flex-col overflow-hidden border-r border-surface-200 relative" :style="{width:listWidth+'px'}" v-if="currentView!=='trash'">
     <div class="absolute right-[-3px] top-0 bottom-0 w-[6px] cursor-col-resize z-10 select-none" @mousedown="onResizeStart('list', $event)"></div>
     <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0">
-      <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">{{ currentView==='daily' ? '闪记' : '笔记' }}</span>
+      <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">{{ currentView==='daily' ? '闪记' : currentView==='all' ? '全部' : '笔记' }}</span>
       <button v-if="currentView!=='daily'" @click="createNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建"><AppIcon name="plus" size="12" stroke="2.5"/></button>
     </div>
     <div class="flex-1 overflow-y-auto p-2 space-y-1.5">
@@ -781,7 +787,7 @@ const restoreNotebookList = computed(() => {
         <div class="flex-1 min-w-0">
           <p class="text-[12px] font-medium text-surface-800 truncate">{{ currentView==='daily' ? (note.title||(note.created_at||'').slice(0,10)) : (note.title||'未命名笔记') }}</p>
           <p class="text-[10px] text-surface-400 line-clamp-1 mt-0.5">{{ (note.excerpt||'').replace(/<[^>]*>/g,'').slice(0,40) || '暂无内容' }}</p>
-          <p class="text-[9px] text-surface-300 mt-0.5">{{ formatNoteTime(note.updated_at || note.created_at || '') }}</p>
+          <p class="text-[9px] text-surface-300 mt-0.5"><span v-if="currentView==='all'" class="text-surface-400">{{ note.notebook_name || (note.is_daily ? '闪记' : (note.project_ids ? '项目笔记' : '未归类')) }} · </span>{{ formatNoteTime(note.updated_at || note.created_at || '') }}</p>
         </div>
         <button @click.stop="deleteNote(note.note_id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"><AppIcon name="trash" size="13"/></button>
       </div>

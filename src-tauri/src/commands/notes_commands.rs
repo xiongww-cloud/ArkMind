@@ -7,7 +7,7 @@ const NOTE_META_COLS: &str = "n.note_id, n.title, substr(n.content,1,300) AS exc
 #[tauri::command]
 pub async fn notes_list_all() -> Result<Value, String> {
     let notes = database::all(&format!(
-        "SELECT {}, GROUP_CONCAT(npm.project_id) as project_ids FROM notes n LEFT JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE n.deleted_at IS NULL GROUP BY n.note_id ORDER BY n.updated_at DESC",
+        "SELECT {}, COALESCE(nb.name,'') AS notebook_name, GROUP_CONCAT(npm.project_id) as project_ids FROM notes n LEFT JOIN notebooks nb ON n.notebook_id=nb.id LEFT JOIN note_project_mapping npm ON n.note_id=npm.note_id WHERE n.deleted_at IS NULL GROUP BY n.note_id ORDER BY n.updated_at DESC",
         NOTE_META_COLS
     ),&[]).map_err(|e|e.to_string())?;
     Ok(json!({"success":true,"notes":notes}))

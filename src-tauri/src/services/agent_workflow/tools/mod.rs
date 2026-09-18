@@ -21,6 +21,7 @@ pub(crate) mod manage_project;
 pub(crate) mod manage_partner;
 pub(crate) mod manage_contact;
 pub(crate) mod manage_product;
+pub(crate) mod manage_note;
 pub(crate) mod memory;
 pub(crate) mod notification;
 
@@ -31,6 +32,7 @@ pub(crate) use object::*;
 pub(crate) use relations::*;
 pub(crate) use manage_todo::*;
 pub(crate) use manage_product::*;
+pub(crate) use manage_note::*;
 pub(crate) use memory::*;
 // manage_project / manage_partner / manage_contact / notification
 // 入口统一为 execute()，仅经限定路径 tools::xxx::execute(...) 调用，不做 glob 重导出

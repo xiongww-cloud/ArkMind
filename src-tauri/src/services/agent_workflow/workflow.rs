@@ -1014,6 +1014,17 @@ pub async fn agent_chat_workflow_internal(
                             );
                             (res, vec![])
                         }
+                        "ext_tool_manage_note" => {
+                            let res = ext_tool_manage_note(
+                                a["action"].as_str().unwrap_or(""),
+                                a["title"].as_str().unwrap_or(""),
+                                a["content"].as_str().unwrap_or(""),
+                                a["note_id"].as_str().unwrap_or(""),
+                                a["notebook"].as_str().unwrap_or(""),
+                                a["project_id"].as_str().unwrap_or(""),
+                            );
+                            (res, vec![])
+                        }
                         "ext_tool_memory" => {
                             let items_str = if let Some(arr) = a["items"].as_array() {
                                 serde_json::to_string(arr).unwrap_or_default()
