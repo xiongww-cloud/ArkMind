@@ -333,13 +333,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             updated_at TEXT DEFAULT (datetime('now','localtime'))
         );
 
-        -- ★ POLICY 独立表（原 source_data.source_type='POLICY'）
-        CREATE TABLE IF NOT EXISTS policies (
-            id         TEXT PRIMARY KEY,
-            content    TEXT NOT NULL DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now','localtime')),
-            updated_at TEXT DEFAULT (datetime('now','localtime'))
-        );
+        -- policies 表已退役（持久要求以 memories source='profile' 承载），存量由迁移 DROP
 
         -- ★ NOTIFICATIONS 通知表
         CREATE TABLE IF NOT EXISTS notifications (

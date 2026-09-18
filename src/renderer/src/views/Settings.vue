@@ -9,7 +9,6 @@ import { useUploadProgress } from '@/composables/useUploadProgress'
 import {
   fetchSettings, updateSettings, browseFolder,
   updateAiConfig, fetchAiConfig, webSearchTest,
-  policiesList, policyCreate, policyUpdate, policyDelete, type PolicyRecord,
   migrateFiles, pipelineClearVectors,
   pipelineClearKnowledge, pipelineClearAll,
   pipelineRevectorize, pipelineRetryFailed,
@@ -1539,62 +1538,11 @@ async function saveProfileEditor() {
   }
 }
 
-// ─── 行为准则（policy）管理 ───────────────────────────────
+// ─── 截断文本悬浮提示 ─────────────────────────────────────
 const { tooltipText, tooltipX, tooltipY, tooltipVisible, show: showTip, hide: hideTip } = useTooltip()
-function onPolicyEnter(e: MouseEvent, text: string) {
+function onTruncEnter(e: MouseEvent, text: string) {
   const el = e.currentTarget as HTMLElement
   if (el.scrollWidth > el.clientWidth) showTip(el, text)
-}
-const policyList = ref<PolicyRecord[]>([])
-const policySaving = ref(false)
-
-async function loadPolicies() {
-  try {
-    const r = await policiesList()
-    policyList.value = r.policies || []
-  } catch { /* 静默 */ }
-}
-loadPolicies()
-
-// 准则编辑弹窗：草稿式增删改（与画像事实同交互）
-const policyModalOpen = ref(false)
-interface DraftPolicy { id: string; content: string }
-const draftPolicies = ref<DraftPolicy[]>([])
-
-function openPolicyEditor() {
-  draftPolicies.value = policyList.value.map(p => ({ id: p.id, content: p.content }))
-  policyModalOpen.value = true
-}
-function addDraftPolicy() { draftPolicies.value.push({ id: '', content: '' }) }
-function removeDraftPolicy(i: number) { draftPolicies.value.splice(i, 1) }
-
-async function savePolicyEditor() {
-  if (policySaving.value) return
-  policySaving.value = true
-  try {
-    const oldMap = new Map(policyList.value.map(p => [p.id, p.content]))
-    const kept = new Set<string>()
-    for (const d of draftPolicies.value) {
-      const c = d.content.trim()
-      if (!c) continue
-      if (d.id && oldMap.has(d.id)) {
-        kept.add(d.id)
-        if (oldMap.get(d.id) !== c) await policyUpdate(d.id, c)
-      } else {
-        await policyCreate(c)
-      }
-    }
-    for (const [id] of oldMap) {
-      if (!kept.has(id)) await policyDelete(id)
-    }
-    toast({ message: '准则已保存', type: 'success' })
-    policyModalOpen.value = false
-    await loadPolicies()
-  } catch (e: any) {
-    toast({ message: '保存失败: ' + (e?.message || e), type: 'error' })
-  } finally {
-    policySaving.value = false
-  }
 }
 </script>
 
@@ -1784,7 +1732,7 @@ async function savePolicyEditor() {
                 <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">可在AI洞察里点「记入画像」沉淀，或在「编辑」中添加</p>
                 <div v-else class="mt-1.5 space-y-1">
                   <div v-for="f in profileFacts.slice(0, 3)" :key="f.id" class="px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
-                    <span class="block truncate text-[11px] text-surface-600 leading-snug cursor-default" @mouseenter="onPolicyEnter($event, f.content)" @mouseleave="hideTip">{{ f.content }}</span>
+                    <span class="block truncate text-[11px] text-surface-600 leading-snug cursor-default" @mouseenter="onTruncEnter($event, f.content)" @mouseleave="hideTip">{{ f.content }}</span>
                   </div>
                   <p v-if="profileFacts.length > 3" class="text-[10px] text-surface-400 pl-1">…共 {{ profileFacts.length }} 条，在「编辑」中查看全部</p>
                 </div>
@@ -1853,50 +1801,6 @@ async function savePolicyEditor() {
                  :style="{ left: tooltipX + 'px', top: tooltipY + 'px', transform: 'translate(-50%, -100%)' }">
               {{ tooltipText }}
             </div>
-          </Teleport>
-
-          <!-- 行为准则（policy） -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
-            <div class="px-5 pt-5 pb-0">
-              <h2 class="text-[13px] font-semibold text-surface-700">行为准则</h2>
-              <p class="text-[10px] text-surface-400 mt-1">你给 AI 定的规则（必须/不要），智能问答每次自动遵守</p>
-            </div>
-            <div class="p-5 pt-3 space-y-1.5">
-              <p v-if="!policyList.length" class="text-[10px] text-surface-400">还没有准则。点「编辑」添加，或直接在对话里说"以后必须……"</p>
-              <div v-for="p in policyList.slice(0, 3)" :key="p.id" class="px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
-                <span class="block truncate text-[11px] text-surface-600 leading-snug cursor-default" @mouseenter="onPolicyEnter($event, p.content)" @mouseleave="hideTip">{{ p.content }}</span>
-              </div>
-              <p v-if="policyList.length > 3" class="text-[10px] text-surface-400 pl-1">…共 {{ policyList.length }} 条，在「编辑」中查看全部</p>
-              <div class="flex justify-end pt-1">
-                <button @click="openPolicyEditor" class="btn-primary text-xs">编辑</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- 准则编辑弹窗 -->
-          <Teleport to="body">
-            <Transition name="modal-fade">
-              <div v-if="policyModalOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="policyModalOpen = false">
-                <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] max-h-[85vh] flex flex-col">
-                  <div class="px-5 pt-4 pb-2 border-b border-surface-100">
-                    <h3 class="text-[14px] font-semibold text-surface-800">编辑行为准则</h3>
-                    <p class="text-[10px] text-surface-400 mt-0.5">每条是给 AI 的一条指令（必须/不要），保存后立即生效于智能问答</p>
-                  </div>
-                  <div class="px-5 py-3 space-y-2 overflow-y-auto flex-1">
-                    <div v-for="(d, i) in draftPolicies" :key="i" class="flex items-start gap-1.5">
-                      <textarea v-model="d.content" rows="2" maxlength="500" placeholder="例：报价前必须先给我看成本构成" class="flex-1 px-2.5 py-1.5 text-[12px] leading-relaxed border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400 resize-y"></textarea>
-                      <button @click="removeDraftPolicy(i)" class="shrink-0 w-6 h-6 mt-1 flex items-center justify-center rounded text-surface-300 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
-                    </div>
-                    <p v-if="!draftPolicies.length" class="text-[10px] text-surface-400">还没有准则，点下方「+ 添加」</p>
-                    <button @click="addDraftPolicy" class="text-[11px] text-brand-600 hover:text-brand-700">+ 添加</button>
-                  </div>
-                  <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
-                    <button @click="policyModalOpen = false" class="btn-secondary text-xs">取消</button>
-                    <button @click="savePolicyEditor" :disabled="policySaving" class="btn-primary text-xs">{{ policySaving ? '保存中...' : '保存' }}</button>
-                  </div>
-                </div>
-              </div>
-            </Transition>
           </Teleport>
 
           <!-- AI洞察 -->

@@ -271,6 +271,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE users ADD COLUMN company TEXT DEFAULT ''",
         "ALTER TABLE users ADD COLUMN work_city TEXT DEFAULT ''",
         "INSERT OR IGNORE INTO users (id,name,username,role) VALUES ('local-admin','本地管理员','local-admin','OWNER')",
+        // policy 机制退役：持久要求以用户画像（memories source='profile'）承载，policies 表删除
+        "DROP TABLE IF EXISTS policies",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
@@ -1252,15 +1254,15 @@ pub(crate) fn migrate_memory_policy_to_own_tables(conn: &Connection) {
         let _ = conn.execute("DELETE FROM source_data WHERE source_type='MEMORY'", []);
     }
 
-    // 2. 迁移 POLICY
+    // 2. 迁移 POLICY → 用户画像（policies 表已退役，历史遗留条目沉淀为画像事实，避免静默丢失）
     if has_policy {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM source_data WHERE source_type='POLICY'", [], |r| r.get(0))
             .unwrap_or(0);
-        log::info!("[迁移] 迁移 {} 条 POLICY → policies", count);
+        log::info!("[迁移] 迁移 {} 条 POLICY → memories(profile)", count);
         let _ = conn.execute_batch(
-            "INSERT OR IGNORE INTO policies(id, content, created_at, updated_at)
-             SELECT source_id, content, created_at, updated_at
+            "INSERT OR IGNORE INTO memories(id, content, source, created_at, updated_at)
+             SELECT source_id, content, 'profile', created_at, updated_at
              FROM source_data WHERE source_type='POLICY'"
         );
         let _ = conn.execute("DELETE FROM source_data WHERE source_type='POLICY'", []);

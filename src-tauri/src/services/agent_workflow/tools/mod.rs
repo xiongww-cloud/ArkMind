@@ -5,7 +5,6 @@
 /// 前端工具分配列表也不展示。消费方：delegate_agent（运行时过滤）、
 /// agent_commands（UI 列表过滤 + 分配写入过滤）。
 pub(crate) const MAIN_AGENT_ONLY: &[&str] = &[
-    "ext_tool_manage_policy",
     "ext_tool_delegate_agent",
     "ext_tool_memory",
     "ext_tool_search",
@@ -23,7 +22,6 @@ pub(crate) mod manage_partner;
 pub(crate) mod manage_contact;
 pub(crate) mod manage_product;
 pub(crate) mod memory;
-pub(crate) mod policy;
 pub(crate) mod notification;
 
 pub(crate) use common::*;
@@ -34,5 +32,5 @@ pub(crate) use relations::*;
 pub(crate) use manage_todo::*;
 pub(crate) use manage_product::*;
 pub(crate) use memory::*;
-// manage_project / manage_partner / manage_contact / policy / notification
+// manage_project / manage_partner / manage_contact / notification
 // 入口统一为 execute()，仅经限定路径 tools::xxx::execute(...) 调用，不做 glob 重导出

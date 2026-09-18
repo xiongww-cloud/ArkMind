@@ -131,7 +131,7 @@ impl SessionMemory {
             "ext_tool_relations" => 0.6,
             "ext_tool_chunk_navigate" => 0.6,
             "ext_tool_manage_todo" | "ext_tool_manage_project" | "ext_tool_manage_partner" |
-            "ext_tool_manage_contact" | "ext_tool_manage_notification" | "ext_tool_manage_policy" | "ext_tool_manage_product" => 0.5,
+            "ext_tool_manage_contact" | "ext_tool_manage_notification" | "ext_tool_manage_product" => 0.5,
             "ext_tool_memory" => 0.0,
             _ => 0.3,
         }

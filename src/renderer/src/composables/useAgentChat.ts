@@ -32,7 +32,6 @@ const toolStatusTexts: Record<string, string[]> = {
   'ext_tool_manage_project': ['查查项目情况...', '看看项目进展...', '我来查查项目...'],
   'ext_tool_manage_partner': ['看看合作伙伴...', '查查合作方信息...'],
   'ext_tool_manage_contact': ['查查联系人...', '看看联系人信息...'],
-  'ext_tool_manage_policy': ['看看有什么规则...', '查查策略...'],
 }
 const defaultStatusTexts = ['处理中...', '请稍等...', '正在处理...']
 export function pickToolStatus(toolName: string): string {
