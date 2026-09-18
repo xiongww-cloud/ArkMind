@@ -459,7 +459,7 @@ defineExpose({ open })
           <div class="flex items-center justify-between px-6 py-3 border-t border-surface-100 shrink-0">
             <span class="text-[11px] text-surface-300">{{ current + 1 }} / {{ chapters.length }}</span>
             <button @click="finish"
-              class="px-4 py-1.5 rounded-lg text-[12px] font-medium bg-brand-600 text-white hover:bg-brand-700 transition-colors">
+              class="btn-primary text-xs">
               完成
             </button>
           </div>

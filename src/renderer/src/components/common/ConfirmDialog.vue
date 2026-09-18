@@ -20,14 +20,13 @@ const { state, handleConfirm, handleCancel } = useConfirmDialog()
             <button
               v-if="state.type === 'confirm'"
               @click="handleCancel"
-              class="flex items-center gap-1.5 py-1 px-2 rounded text-[12px] text-slate-400 bg-transparent border-none hover:text-slate-600 hover:bg-slate-50 transition-colors"
+              class="btn-secondary text-xs"
             >
               <span>{{ state.cancelText }}</span>
             </button>
             <button
               @click="handleConfirm"
-              class="flex items-center gap-1.5 py-1 px-3 rounded text-[12px] text-white transition-colors"
-              :class="state.danger ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'"
+              :class="state.danger ? 'btn-danger text-xs' : 'btn-primary text-xs'"
             >
               <span>{{ state.confirmText }}</span>
             </button>

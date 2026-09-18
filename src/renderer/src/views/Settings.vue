@@ -938,7 +938,9 @@ async function addEmailAccount() {
   } finally { emailSaving.value = false }
 }
 async function removeEmailAccount(id: string) {
-  if (!confirm('确定删除此账户？')) return
+  const acc = emailAccounts.value.find(a => a.id === id)
+  const ok = await dangerConfirm({ title: '删除邮箱账户', message: `确定删除账户「${acc?.email_address || acc?.name || id}」？该账户的已同步邮件将一并删除，此操作不可撤销。`, confirmText: '删除' })
+  if (!ok) return
   try {
     await emailDeleteAccount(id)
     emailAccounts.value = emailAccounts.value.filter(a => a.id !== id)
@@ -1089,7 +1091,9 @@ async function saveAgent() {
 }
 
 async function removeAgent(id: string) {
-  if (!confirm('确定删除此 Agent？关联的工具分配将同时删除。')) return
+  const agent = agentProfiles.value.find(a => a.id === id)
+  const ok = await dangerConfirm({ title: '删除 Agent', message: `确定删除「${agent?.name || id}」？关联的工具分配将同时删除，此操作不可撤销。`, confirmText: '删除' })
+  if (!ok) return
   try {
     await deleteAgentProfile(id)
     agentProfiles.value = agentProfiles.value.filter(a => a.id !== id)
@@ -1100,7 +1104,9 @@ async function removeAgent(id: string) {
 }
 
 async function resetAgent(id: string) {
-  if (!confirm('确定还原此 Agent 到默认配置？当前配置将被覆盖。')) return
+  const agent = agentProfiles.value.find(a => a.id === id)
+  const ok = await dangerConfirm({ title: '还原 Agent', message: `确定将「${agent?.name || id}」还原到默认配置？当前配置将被覆盖且无法恢复。`, confirmText: '还原' })
+  if (!ok) return
   try {
     await resetAgentProfile(id)
     await loadAgentProfiles()
@@ -1772,7 +1778,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                   </div>
                   <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
                     <button @click="profileEditorOpen = false" class="btn-secondary text-xs">取消</button>
-                    <button @click="saveProfileEditor" :disabled="profileSaving" class="btn-primary text-xs"><AppIcon name="save" size="12"/>{{ profileSaving ? '保存中...' : '保存' }}</button>
+                    <button @click="saveProfileEditor" :disabled="profileSaving" class="btn-primary text-xs">>{{ profileSaving ? '保存中...' : '保存' }}</button>
                   </div>
                 </div>
               </div>
@@ -1866,7 +1872,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                       </div>
                       <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
                         <button @click="closeFocusModal" class="btn-secondary text-xs">取消</button>
-                        <button @click="saveFocusModal" :disabled="focusSaving" class="btn-primary text-xs"><AppIcon name="save" size="12"/>{{ focusSaving ? '保存中...' : '保存' }}</button>
+                        <button @click="saveFocusModal" :disabled="focusSaving" class="btn-primary text-xs">>{{ focusSaving ? '保存中...' : '保存' }}</button>
                       </div>
                     </div>
                   </div>
@@ -2043,7 +2049,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                         </div>
                       </div>
                       <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2 flex-shrink-0">
-                        <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50"><AppIcon name="refresh" size="12"/>重试失败任务</button>
+                        <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50">>重试失败任务</button>
                         <button @click="showParseErrorsModal = false" class="btn-secondary text-xs">关闭</button>
                       </div>
                     </div>
@@ -2249,7 +2255,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                   </div>
                   <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-surface-100">
                     <button @click="showDomainSelector=false" class="btn-secondary text-xs">取消</button>
-                    <button @click="handleExportData" class="btn-primary text-xs" :disabled="isExporting"><AppIcon name="download" size="12"/>{{ isExporting ? '导出中...' : '确定导出' }}</button>
+                    <button @click="handleExportData" class="btn-primary text-xs" :disabled="isExporting">>{{ isExporting ? '导出中...' : '确定导出' }}</button>
                   </div>
                 </div>
               </div></Transition></Teleport>
@@ -2352,10 +2358,10 @@ function onTruncEnter(e: MouseEvent, text: string) {
             <p v-if="providerFormError" class="text-[10px] text-red-500">{{ providerFormError }}</p>
           </div>
           <div class="flex items-center justify-between mt-4">
-            <button @click="testProviderConnection()" :disabled="testingProviderId" class="btn-secondary text-xs"><AppIcon name="play" size="12"/>{{ testingProviderId ? '测试中...' : '测试连接' }}</button>
+            <button @click="testProviderConnection()" :disabled="testingProviderId" class="btn-secondary text-xs">>{{ testingProviderId ? '测试中...' : '测试连接' }}</button>
             <div class="flex items-center gap-2">
               <button @click="closeProviderModal" class="btn-secondary text-xs">取消</button>
-              <button @click="confirmProviderForm" :disabled="providerFormSaving" class="btn-primary text-xs"><AppIcon name="save" size="12"/>{{ providerFormSaving ? '保存中...' : (editingProvider ? '保存' : '添加') }}</button>
+              <button @click="confirmProviderForm" :disabled="providerFormSaving" class="btn-primary text-xs">>{{ providerFormSaving ? '保存中...' : (editingProvider ? '保存' : '添加') }}</button>
             </div>
           </div>
           <p v-if="aiTestResult" class="text-[10px] mt-3" :class="aiTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ aiTestResult }}</p>
@@ -2405,10 +2411,10 @@ function onTruncEnter(e: MouseEvent, text: string) {
             <p v-if="visionFormError" class="text-[10px] text-red-500">{{ visionFormError }}</p>
           </div>
           <div class="flex items-center justify-between mt-4">
-            <button @click="testVisionConnection()" :disabled="visionTestingId" class="btn-secondary text-xs"><AppIcon name="play" size="12"/>{{ visionTestingId ? '测试中...' : '测试连接' }}</button>
+            <button @click="testVisionConnection()" :disabled="visionTestingId" class="btn-secondary text-xs">>{{ visionTestingId ? '测试中...' : '测试连接' }}</button>
             <div class="flex items-center gap-2">
               <button @click="closeVisionModal" class="btn-secondary text-xs">取消</button>
-              <button @click="confirmVisionForm" :disabled="visionFormSaving" class="btn-primary text-xs"><AppIcon name="save" size="12"/>{{ visionFormSaving ? '保存中...' : (editingVision ? '保存' : '添加') }}</button>
+              <button @click="confirmVisionForm" :disabled="visionFormSaving" class="btn-primary text-xs">>{{ visionFormSaving ? '保存中...' : (editingVision ? '保存' : '添加') }}</button>
             </div>
           </div>
           <p v-if="visionTestResult" class="text-[10px] mt-3" :class="visionTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ visionTestResult }}</p>
@@ -2458,10 +2464,10 @@ function onTruncEnter(e: MouseEvent, text: string) {
             <p v-if="vecFormError" class="text-[10px] text-red-500">{{ vecFormError }}</p>
           </div>
           <div class="flex items-center justify-between mt-4">
-            <button @click="testVecConnection()" :disabled="vecTesting" class="btn-secondary text-xs"><AppIcon name="play" size="12"/>{{ vecTesting ? '测试中...' : '测试连接' }}</button>
+            <button @click="testVecConnection()" :disabled="vecTesting" class="btn-secondary text-xs">>{{ vecTesting ? '测试中...' : '测试连接' }}</button>
             <div class="flex items-center gap-2">
               <button @click="closeVecModal" class="btn-secondary text-xs">取消</button>
-              <button @click="saveVecConfig" :disabled="vecSaving" class="btn-primary text-xs"><AppIcon name="save" size="12"/>{{ vecSaving ? '保存中...' : '保存' }}</button>
+              <button @click="saveVecConfig" :disabled="vecSaving" class="btn-primary text-xs">>{{ vecSaving ? '保存中...' : '保存' }}</button>
             </div>
           </div>
           <p v-if="vecTestResult" class="text-[10px] mt-3" :class="vecTestResult.includes('成功')?'text-emerald-600':'text-red-500'">{{ vecTestResult }}</p>
@@ -2498,8 +2504,8 @@ function onTruncEnter(e: MouseEvent, text: string) {
           <div class="flex items-center justify-between px-5 py-2 border-t border-surface-200">
             <p class="text-[10px] text-surface-400">每 3 秒自动刷新 · 重启后清空</p>
             <div class="flex gap-2">
-              <button @click="clearAllLogs" class="btn-secondary text-xs !text-red-500 !border-red-300 hover:!bg-red-50"><AppIcon name="trash" size="12"/>清空</button>
-              <button @click="refreshLogs" class="btn-secondary text-xs"><AppIcon name="refresh" size="12"/>刷新</button>
+              <button @click="clearAllLogs" class="btn-secondary text-xs !text-red-500 !border-red-300 hover:!bg-red-50">>清空</button>
+              <button @click="refreshLogs" class="btn-secondary text-xs">>刷新</button>
             </div>
           </div>
         </div>
@@ -2542,7 +2548,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
           </div>
           <div class="flex items-center justify-end gap-2 mt-5">
             <button @click="showEmailForm = false; editingEmailId = null" class="btn-secondary text-xs">取消</button>
-            <button @click="addEmailAccount" :disabled="emailSaving" class="btn-primary text-xs"><AppIcon name="save" size="12"/>{{ emailSaving ? '保存中...' : (editingEmailId ? '保存' : '添加') }}</button>
+            <button @click="addEmailAccount" :disabled="emailSaving" class="btn-primary text-xs">>{{ emailSaving ? '保存中...' : (editingEmailId ? '保存' : '添加') }}</button>
           </div>
         </div>
       </div>
