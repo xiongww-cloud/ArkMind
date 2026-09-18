@@ -1046,7 +1046,7 @@ async function saveAgent() {
     return
   }
   if (!f.system_prompt.trim()) {
-    agentFormError.value = '请输入 System Prompt'
+    agentFormError.value = '请输入系统提示词'
     return
   }
   agentSaving.value = true
@@ -2144,9 +2144,9 @@ function onTruncEnter(e: MouseEvent, text: string) {
                       <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">主 Agent 决定是否委托时，只能看到「名称 + 这段文字」，看不到它的提示词和工具列表——这是路由依据，不是简介</p>
                       <input v-model="agentForm.description" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="写清负责什么、不负责什么，如：会议纪要与知识卡片的创建整理；不处理项目/待办类任务" />
                     </div>
-                    <!-- System Prompt -->
+                    <!-- 系统提示词 -->
                     <div>
-                      <label class="block text-[10px] font-medium text-surface-400 mb-1">System Prompt *</label>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">系统提示词 *</label>
                       <textarea v-model="agentForm.system_prompt" rows="8" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400 resize-y" placeholder="定义 Agent 的身份、目标和行为规则..."></textarea>
                     </div>
                     <!-- 最大迭代次数 + 允许委托 -->
