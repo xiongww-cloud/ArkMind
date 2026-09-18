@@ -946,10 +946,12 @@ pub async fn agent_chat_workflow_internal(
                                     execute_object_catalog(entity, ff, a.get("sort"), &a)
                                 },
                                 "count" => {
-                                    // ★ 统计数量
+                                    // ★ 统计数量（count_only 由 dispatch 注入：schema 以 mode 表达，实现层读 count_only）
                                     let entity = a["type"].as_str().unwrap_or("");
                                     let ff = a["field_filters"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-                                    execute_object_catalog(entity, ff, a.get("sort"), &a)
+                                    let mut ca = a.clone();
+                                    ca["count_only"] = json!(true);
+                                    execute_object_catalog(entity, ff, a.get("sort"), &ca)
                                 },
                                 "group" => {
                                     // ★ 分组统计
@@ -1009,7 +1011,7 @@ pub async fn agent_chat_workflow_internal(
                                 a["due_date"].as_str().unwrap_or(""),
                                 a["repeat"].as_str().unwrap_or(""),
                                 a["project_id"].as_str().unwrap_or(""),
-                                a["done"].as_bool().unwrap_or(false),
+                                a["done"].as_bool(),
                                 a["todo_id"].as_str().unwrap_or(""),
                             );
                             (res, vec![])

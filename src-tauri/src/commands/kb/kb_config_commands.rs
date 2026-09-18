@@ -68,15 +68,11 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
     (all_tool_calls, all_tool_results)
 }
 
-#[tauri::command] pub async fn kb_agent_chat(app_handle: tauri::AppHandle, data: Value) -> Result<(), String> {
-    let query = data["query"].as_str().unwrap_or("").to_string();
-    let max_iter = data["maxIterations"].as_i64().map(|n| n as i32);
-    let session_id = data["sessionId"].as_str().map(String::from);
-    let attachments: Vec<Value> = data["attachments"].as_array().cloned().unwrap_or_default();
-
-    // 主 Agent 认知协调工具（不含 CRUD 与通知管理——通知产出归分析师与用户主动指令场景，
-    // 主 Agent 对话在场即通知，其 schema 最重，移除以省每轮上下文）
-    let main_agent_tools: Vec<String> = vec![
+/// 主 Agent 认知协调工具集（不含 CRUD 与通知管理——通知产出归分析师与用户主动指令场景，
+/// 主 Agent 对话在场即通知，其 schema 最重，移除以省每轮上下文）。
+/// 联网工具特性门控：仅在已配置搜索服务时提供（未配置时模型完全无感知）。
+pub(crate) fn main_agent_tool_list() -> Vec<String> {
+    let base: Vec<String> = vec![
         "ext_tool_search".to_string(),
         "ext_tool_object".to_string(),
         "ext_tool_chunk_navigate".to_string(),
@@ -84,12 +80,20 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
         "ext_tool_memory".to_string(),
         "ext_tool_delegate_agent".to_string(),
     ];
-    // 联网工具特性门控：仅在已配置搜索服务时提供（未配置时模型完全无感知）
-    let main_agent_tools: Vec<String> = if crate::services::web_search::is_configured() {
-        main_agent_tools.into_iter().chain(crate::services::web_search::WEB_TOOL_NAMES.iter().map(|s| s.to_string())).collect()
+    if crate::services::web_search::is_configured() {
+        base.into_iter().chain(crate::services::web_search::WEB_TOOL_NAMES.iter().map(|s| s.to_string())).collect()
     } else {
-        main_agent_tools
-    };
+        base
+    }
+}
+
+#[tauri::command] pub async fn kb_agent_chat(app_handle: tauri::AppHandle, data: Value) -> Result<(), String> {
+    let query = data["query"].as_str().unwrap_or("").to_string();
+    let max_iter = data["maxIterations"].as_i64().map(|n| n as i32);
+    let session_id = data["sessionId"].as_str().map(String::from);
+    let attachments: Vec<Value> = data["attachments"].as_array().cloned().unwrap_or_default();
+
+    let main_agent_tools = main_agent_tool_list();
 
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(query, attachments, max_iter, Some(app_handle.clone()), false, session_id.clone(), Some(main_agent_tools)).await;
@@ -140,8 +144,10 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
 #[tauri::command] pub async fn kb_chat(app_handle: tauri::AppHandle, data: Value) -> Result<(), String> {
     let query = data["query"].as_str().unwrap_or("").to_string();
     if query.is_empty() { return Err("请输入问题".to_string()); }
+    // ★ 与主聊天同一份工具名单（此前传 None=全量工具集，绕过主 Agent 收敛，且 web 教学与 schema 错位）
+    let tools = main_agent_tool_list();
     tauri::async_runtime::spawn(async move {
-        let result = crate::services::agent_workflow::agent_chat_workflow(query, vec![], None, Some(app_handle.clone()), false, None, None).await;
+        let result = crate::services::agent_workflow::agent_chat_workflow(query, vec![], None, Some(app_handle.clone()), false, None, Some(tools)).await;
         match result {
             Ok(v) => { let _ = app_handle.emit("agent:done", &v); }
             Err(e) => {

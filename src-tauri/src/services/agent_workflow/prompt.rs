@@ -49,7 +49,7 @@ pub(crate) const AGENT_SYSTEM_PROMPT: &str = r#"
 - 聚合计算 → ext_tool_object(mode="aggregate", type=..., aggregate="SUM(...)")
 - 查看对象关联 → ext_tool_relations
 - 已知 ChunkID 翻页 → ext_tool_chunk_navigate
-- 沉淀信息 → 三分法严格区分：
+- 沉淀信息 → 两类严格区分：
   用户关于自己的稳定事实/偏好/习惯，以及用户对助手的持久要求（"记住我负责华东""以后报价先给成本清单"）→ ext_tool_memory(action="create", profile=true)，要求类写成"用户要求……"句式（进入【用户画像】，默认注入每次对话；用户可在 设置-我的档案-编辑 中随时修改或删除）
   业务事实/经验/结论（关于工作与外部世界）→ ext_tool_memory(action="create")
 

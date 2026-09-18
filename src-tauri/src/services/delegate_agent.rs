@@ -261,7 +261,11 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
         let Some(tools) = round["tools"].as_array() else { continue };
         for tool in tools {
             if let Ok(envelope) = serde_json::from_str::<Value>(tool["result"].as_str().unwrap_or("")) {
-                if envelope["data"]["success"].as_bool() == Some(false) {
+                // 失败判定双保险：显式 success:false，或带 error 字段但未声明 success:true（旧式信封）
+                let d = &envelope["data"];
+                let failed = d["success"].as_bool() == Some(false)
+                    || (!d["error"].is_null() && d["success"].as_bool() != Some(true));
+                if failed {
                     any_failed = true;
                     warnings.push(json!({
                         "tool": tool["tool"].as_str().unwrap_or(""),
@@ -272,15 +276,22 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
         }
     }
 
-    // ★ MISSING 解析：子Agent声明的信息缺口，从正文剥离
+    // ★ MISSING 解析：子Agent声明的信息缺口，从正文剥离（容忍列表符/加粗/全角冒号等常见变体）
     let mut missing: Vec<String> = Vec::new();
     let result_text = {
         let kept: Vec<&str> = answer.lines().filter(|line| {
-            if let Some(rest) = line.trim().strip_prefix("MISSING:") {
-                let m = rest.trim();
-                if !m.is_empty() { missing.push(m.to_string()); }
-                false
-            } else { true }
+            let t = line.trim()
+                .trim_start_matches(['-', '*', '#', '>', ' '])
+                .trim_start_matches('*')
+                .trim_start();
+            match t.strip_prefix("MISSING") {
+                Some(rest) => {
+                    let m = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
+                    if !m.is_empty() { missing.push(m); }
+                    false
+                }
+                None => true,
+            }
         }).collect();
         kept.join("\n").trim().to_string()
     };

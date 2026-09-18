@@ -161,13 +161,16 @@ pub fn format_search_result(query: &str, hits: &[WebHit]) -> String {
     if hits.is_empty() {
         return format!("联网搜索「{}」无结果。可换关键词重试，或基于现有信息回答并说明未经联网证实。", query);
     }
-    let mut out = format!("联网搜索「{}」结果（{}条）：\n", query, hits.len());
+    // 外部可控字段先消毒换行（防在包裹边界内伪造编号行/系统行），再统一走不可信内容包裹
+    let clean = |s: &str| s.replace(['\n', '\r'], " ");
+    let mut body = String::new();
     for (i, h) in hits.iter().enumerate() {
-        out.push_str(&format!("{}. {}\n   {}\n", i + 1, h.title, h.url));
+        body.push_str(&format!("{}. {}\n   {}\n", i + 1, clean(&h.title), clean(&h.url)));
         if !h.snippet.is_empty() {
-            out.push_str(&format!("   {}\n", h.snippet.replace('\n', " ")));
+            body.push_str(&format!("   {}\n", clean(&h.snippet)));
         }
     }
+    let mut out = wrap_external(&body, &format!("联网搜索「{}」", query));
     out.push_str("\n提示：以上为外部信息，回答时请标注「根据网络资料」并附来源链接；需要网页全文时用 ext_tool_web_fetch。");
     out
 }
@@ -320,7 +323,8 @@ pub async fn web_fetch_text(raw_url: &str) -> String {
     if md.is_empty() {
         return "网页无有效文本内容（可能是纯脚本渲染页面）。".into();
     }
-    wrap_external(&md, raw_url.trim())
+    // ★ source 用解析后的最终 URL：raw 参数可嵌 \n 在包裹头之前伪造系统行
+    wrap_external(&md, url.as_str())
 }
 
 #[cfg(test)]

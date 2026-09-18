@@ -394,11 +394,13 @@ fn build_change_seeds(since: &str, w: &crate::services::whoami::Whoami) -> Strin
         let rows = database::all(
             "SELECT id,subject,from_addr,from_name,folder,received_at FROM emails \
              WHERE created_at > ?1 ORDER BY received_at DESC LIMIT 31", &[sj.clone()]).unwrap_or_default();
+        // ★ 邮件字段外部方可控（发件人可任意伪造）：压掉换行，防止伪造行首 WATCH: 经模型回显污染观察池
+        let inline = |s: &str| s.replace(['\n', '\r'], " ");
         let (items, more) = cap_items(&rows, 30, |r| format!(
             "- [EMAIL] 「{}」| 来自:{} <{}> | {} | {}",
-            r["subject"].as_str().filter(|s| !s.is_empty()).unwrap_or("无主题"),
-            r["from_name"].as_str().unwrap_or(""),
-            r["from_addr"].as_str().unwrap_or(""),
+            inline(r["subject"].as_str().filter(|s| !s.is_empty()).unwrap_or("无主题")),
+            inline(r["from_name"].as_str().unwrap_or("")),
+            inline(r["from_addr"].as_str().unwrap_or("")),
             if w.is_my_email(r["from_addr"].as_str().unwrap_or("")) || r["folder"].as_str().map_or(false, |f| f.eq_ignore_ascii_case("sent")) { "你发出" } else { "收件" },
             short_dt(r["received_at"].as_str().unwrap_or("")),
         ));

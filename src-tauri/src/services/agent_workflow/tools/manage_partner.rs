@@ -14,7 +14,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                     if ptype.is_empty() || name.is_empty() {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "object_create_result".to_string(),
-                                            data: json!({"error": "创建合作伙伴需要提供 type 和 name"}),
+                                            data: json!({"success": false, "error": "创建合作伙伴需要提供 type 和 name"}),
                                             summary: Some("创建合作伙伴需要提供 type 和 name。".to_string()),
                                         };
                                         envelope.to_json()
@@ -33,7 +33,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let id = result["id"].as_str().unwrap_or("");
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"id": id, "type": ptype.to_uppercase(), "name": name}),
+                                                    data: json!({"success": true, "id": id, "type": ptype.to_uppercase(), "name": name}),
                                                     summary: Some(format!("已创建{}「{}」", ptype.to_uppercase(), name)),
                                                 };
                                                 envelope.to_json()
@@ -41,7 +41,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Err(e) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"error": e.to_string()}),
+                                                    data: json!({"success": false, "error": e.to_string()}),
                                                     summary: Some(format!("创建失败: {}", e)),
                                                 };
                                                 envelope.to_json()
@@ -55,7 +55,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                     if partner_id.is_empty() {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "object_update_result".to_string(),
-                                            data: json!({"error": "更新需要提供 partner_id"}),
+                                            data: json!({"success": false, "error": "更新需要提供 partner_id"}),
                                             summary: Some("更新需要提供 partner_id。".to_string()),
                                         };
                                         envelope.to_json()
@@ -69,7 +69,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                         if data.as_object().map_or(true, |m| m.len() <= 1) {
                                             let envelope = ToolResultEnvelope {
                                                 result_type: "object_update_result".to_string(),
-                                                data: json!({"id": partner_id, "error": "未提供任何更新字段"}),
+                                                data: json!({"success": false, "id": partner_id, "error": "未提供任何更新字段"}),
                                                 summary: Some("未提供任何更新字段。".to_string()),
                                             };
                                             envelope.to_json()
@@ -84,7 +84,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let display_name = if partner_name.is_empty() { partner_id.to_string() } else { partner_name };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_update_result".to_string(),
-                                                    data: json!({"id": partner_id}),
+                                                    data: json!({"success": true, "id": partner_id}),
                                                     summary: Some(format!("已更新合作伙伴「{}」", display_name)),
                                                 };
                                                 envelope.to_json()
@@ -92,7 +92,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Err(e) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_update_result".to_string(),
-                                                    data: json!({"id": partner_id, "error": e.to_string()}),
+                                                    data: json!({"success": false, "id": partner_id, "error": e.to_string()}),
                                                     summary: Some(format!("更新失败: {}", e)),
                                                 };
                                                 envelope.to_json()
@@ -106,7 +106,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                     if partner_id.is_empty() {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "object_delete_result".to_string(),
-                                            data: json!({"error": "删除需要提供 partner_id"}),
+                                            data: json!({"success": false, "error": "删除需要提供 partner_id"}),
                                             summary: Some("删除需要提供 partner_id。".to_string()),
                                         };
                                         envelope.to_json()
@@ -122,7 +122,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let display_name = if partner_name.is_empty() { partner_id.to_string() } else { partner_name };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_delete_result".to_string(),
-                                                    data: json!({"id": partner_id}),
+                                                    data: json!({"success": true, "id": partner_id}),
                                                     summary: Some(format!("已删除合作伙伴「{}」", display_name)),
                                                 };
                                                 envelope.to_json()
@@ -130,7 +130,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Err(e) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_delete_result".to_string(),
-                                                    data: json!({"id": partner_id, "error": e.to_string()}),
+                                                    data: json!({"success": false, "id": partner_id, "error": e.to_string()}),
                                                     summary: Some(format!("删除失败: {}", e)),
                                                 };
                                                 envelope.to_json()
@@ -217,7 +217,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                 _ => {
                                     let envelope = ToolResultEnvelope {
                                         result_type: "object_error".to_string(),
-                                        data: json!({"error": format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project。", action)}),
+                                        data: json!({"success": false, "error": format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project。", action)}),
                                         summary: Some(format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project。", action)),
                                     };
                                     envelope.to_json()

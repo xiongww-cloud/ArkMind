@@ -13,7 +13,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                     if name.is_empty() {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "object_create_result".to_string(),
-                                            data: json!({"error": "创建联系人需要提供 name"}),
+                                            data: json!({"success": false, "error": "创建联系人需要提供 name"}),
                                             summary: Some("创建联系人需要提供 name。".to_string()),
                                         };
                                         envelope.to_json()
@@ -44,7 +44,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                         if is_dup {
                                             let envelope = ToolResultEnvelope {
                                                 result_type: "object_create_result".to_string(),
-                                                data: json!({"error": dup_msg.clone()}),
+                                                data: json!({"success": false, "error": dup_msg.clone()}),
                                                 summary: Some(dup_msg),
                                             };
                                             envelope.to_json()
@@ -70,7 +70,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 }
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"id": id, "type": "CONTACT", "name": name}),
+                                                    data: json!({"success": true, "id": id, "type": "CONTACT", "name": name}),
                                                     summary: Some(format!("已创建联系人「{}」", name)),
                                                 };
                                                 envelope.to_json()
@@ -78,7 +78,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Err(e) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"error": e.to_string()}),
+                                                    data: json!({"success": false, "error": e.to_string()}),
                                                     summary: Some(format!("创建失败: {}", e)),
                                                 };
                                                 envelope.to_json()
@@ -93,7 +93,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                     if contact_id.is_empty() {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "object_update_result".to_string(),
-                                            data: json!({"error": "更新需要提供 contact_id"}),
+                                            data: json!({"success": false, "error": "更新需要提供 contact_id"}),
                                             summary: Some("更新需要提供 contact_id。".to_string()),
                                         };
                                         envelope.to_json()
@@ -108,7 +108,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                         if data.as_object().map_or(true, |m| m.len() <= 1) {
                                             let envelope = ToolResultEnvelope {
                                                 result_type: "object_update_result".to_string(),
-                                                data: json!({"id": contact_id, "error": "未提供任何更新字段"}),
+                                                data: json!({"success": false, "id": contact_id, "error": "未提供任何更新字段"}),
                                                 summary: Some("未提供任何更新字段。".to_string()),
                                             };
                                             envelope.to_json()
@@ -123,7 +123,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                     let display_name = if contact_name.is_empty() { contact_id.to_string() } else { contact_name };
                                                     let envelope = ToolResultEnvelope {
                                                         result_type: "object_update_result".to_string(),
-                                                        data: json!({"id": contact_id}),
+                                                        data: json!({"success": true, "id": contact_id}),
                                                         summary: Some(format!("已更新联系人「{}」", display_name)),
                                                     };
                                                     envelope.to_json()
@@ -131,7 +131,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 Err(e) => {
                                                     let envelope = ToolResultEnvelope {
                                                         result_type: "object_update_result".to_string(),
-                                                        data: json!({"id": contact_id, "error": e.to_string()}),
+                                                        data: json!({"success": false, "id": contact_id, "error": e.to_string()}),
                                                         summary: Some(format!("更新失败: {}", e)),
                                                     };
                                                     envelope.to_json()
@@ -145,7 +145,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                     if contact_id.is_empty() {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "object_delete_result".to_string(),
-                                            data: json!({"error": "删除需要提供 contact_id"}),
+                                            data: json!({"success": false, "error": "删除需要提供 contact_id"}),
                                             summary: Some("删除需要提供 contact_id。".to_string()),
                                         };
                                         envelope.to_json()
@@ -161,7 +161,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let display_name = if contact_name.is_empty() { contact_id.to_string() } else { contact_name };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_delete_result".to_string(),
-                                                    data: json!({"id": contact_id}),
+                                                    data: json!({"success": true, "id": contact_id}),
                                                     summary: Some(format!("已删除联系人「{}」", display_name)),
                                                 };
                                                 envelope.to_json()
@@ -169,7 +169,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Err(e) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_delete_result".to_string(),
-                                                    data: json!({"id": contact_id, "error": e.to_string()}),
+                                                    data: json!({"success": false, "id": contact_id, "error": e.to_string()}),
                                                     summary: Some(format!("删除失败: {}", e)),
                                                 };
                                                 envelope.to_json()
@@ -252,7 +252,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                 _ => {
                                     let envelope = ToolResultEnvelope {
                                         result_type: "object_error".to_string(),
-                                        data: json!({"error": format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project。", action)}),
+                                        data: json!({"success": false, "error": format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project。", action)}),
                                         summary: Some(format!("未知操作「{}」。支持：create, update, delete, link_project, unlink_project。", action)),
                                     };
                                     envelope.to_json()

@@ -317,28 +317,26 @@ fn get_agent_tools(agent_id: &str) -> Result<Vec<String>, String> {
     )
     .map_err(|e| e.to_string())?;
 
-    let mut tools: Vec<String> = rows
+    let tools: Vec<String> = rows
         .iter()
         .filter_map(|r| r["tool_name"].as_str().map(|s| s.to_string()))
         .collect();
-
-    // 如果 Agent 的 can_delegate=1，自动添加委托工具
-    if let Ok(Some(agent)) = database::get("SELECT can_delegate FROM agent_profiles WHERE id=?1", &[json!(agent_id)]) {
-        if agent["can_delegate"].as_i64().unwrap_or(0) != 0 {
-            if !tools.contains(&"ext_tool_delegate_agent".to_string()) {
-                tools.push("ext_tool_delegate_agent".to_string());
-            }
-        }
-    }
+    // 注：can_delegate 不再幻补 ext_tool_delegate_agent——委托能力以运行时为准
+    // （delegate_agent.rs 对子 Agent 无条件剥除该工具，展示"已分配"是欺骗）
 
     Ok(tools)
 }
 
-/// 保存 Agent 工具分配（批量插入）
+/// 保存 Agent 工具分配（批量插入）。主 Agent 专属工具在写入处统一拦截：
+/// 存了运行时也会被剥除，静默存储只会造成"已分配但永不生效"的假象
 fn save_agent_tools(agent_id: &str, tools: &[Value]) -> Result<(), String> {
     for tool in tools {
         let tool_name = tool.as_str().unwrap_or("");
         if !tool_name.is_empty() {
+            if crate::services::agent_workflow::tools::MAIN_AGENT_ONLY.contains(&tool_name) {
+                log::info!("[Agent] 忽略主 Agent 专属工具的分配请求: {} -> {}", tool_name, agent_id);
+                continue;
+            }
             database::run(
                 "INSERT OR IGNORE INTO agent_tool_assignments(agent_id, tool_name) VALUES(?1, ?2)",
                 &[json!(agent_id), json!(tool_name)],
