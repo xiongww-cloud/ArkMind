@@ -529,10 +529,10 @@ onUnmounted(() => {
 
     <!-- Notification button -->
     <div class="relative" ref="notifWrapRef">
-      <button class="titlebar-btn titlebar-btn--notif" title="通知中心"
+      <button class="titlebar-btn titlebar-btn--notif" title="AI洞察"
               @mousedown.stop @click="showNotifications = !showNotifications">
         <AppIcon name="bell" size="14" />
-        <span>通知</span>
+        <span>AI洞察</span>
         <span v-if="unreadCount > 0" class="ml-1 px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[9px] font-medium leading-none">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
       </button>
     </div>
@@ -541,7 +541,7 @@ onUnmounted(() => {
       <div :style="notifDropdownStyle" class="fixed w-[440px] max-h-[480px] bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden flex flex-col">
         <div class="flex items-center justify-between px-3 py-2 border-b border-slate-100">
           <div class="flex items-center gap-2 min-w-0">
-            <span class="text-[12px] font-semibold text-slate-700 flex-shrink-0">通知中心</span>
+            <span class="text-[12px] font-semibold text-slate-700 flex-shrink-0">AI洞察</span>
             <template v-if="notifPanelRef?.multiSelectMode">
               <button @click="notifPanelRef?.toggleSelectAll()" class="text-[10px] text-blue-600 hover:underline flex-shrink-0">
                 {{ notifPanelRef?.allSelected ? '取消全选' : '全选' }}

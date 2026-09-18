@@ -1626,13 +1626,13 @@ async function savePolicyEditor() {
           </div>
           <div class="text-[18px] font-bold text-surface-900">{{ aiProviders.length + visionProviders.length + (vecConfigured ? 1 : 0) }}<span class="text-[10px] font-normal text-surface-400 ml-1">个已配置</span></div>
         </div>
-        <!-- 智能通知 -->
+        <!-- AI洞察 -->
         <div class="bg-white rounded-2xl border border-surface-200 p-3 shadow-sm hover:shadow-md transition-shadow">
           <div class="flex items-center gap-1.5 mb-1.5">
             <div class="w-6 h-6 rounded-lg bg-emerald-50 flex items-center justify-center">
               <AppIcon name="bell" size="14" class="text-emerald-600" />
             </div>
-            <span class="text-[11px] text-surface-400">智能通知</span>
+            <span class="text-[11px] text-surface-400">AI洞察</span>
           </div>
           <div class="flex items-baseline justify-between">
             <div class="text-[18px] font-bold" :class="notifyEnabled ? 'text-emerald-600' : 'text-surface-300'">{{ notifyEnabled ? '已启用' : '已关闭' }}<span class="text-[10px] font-normal text-surface-400 ml-1">{{ notifyInterval === 0 ? '仅启动时' : notifyIntervalOptions.find(o => o.value === notifyInterval)?.label || '' }}</span></div>
@@ -1668,7 +1668,7 @@ async function savePolicyEditor() {
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
-              <p class="text-[10px] text-surface-400 mt-1">智能问答与智能通知依据此档案认识你</p>
+              <p class="text-[10px] text-surface-400 mt-1">智能问答与AI洞察依据此档案认识你</p>
             </div>
             <div class="p-5 pt-3 space-y-2.5">
               <p v-if="profSummary" class="text-[13px] font-medium text-surface-700">{{ profSummary }}</p>
@@ -1677,7 +1677,7 @@ async function savePolicyEditor() {
               <p class="text-[10px] text-surface-400 truncate">我的邮箱：<span v-if="!profEmails.length" class="text-surface-300">未配置，在「邮件账户」添加后自动识别</span><span v-else>{{ profEmails.join('、') }}</span></p>
               <div class="pt-1 border-t border-surface-100">
                 <p class="text-[11px] font-medium text-surface-600 mt-2">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20）</span></p>
-                <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">可在智能通知里点「记入画像」沉淀，或在「编辑」中添加</p>
+                <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">可在AI洞察里点「记入画像」沉淀，或在「编辑」中添加</p>
                 <div v-else class="mt-1.5 space-y-1">
                   <div v-for="f in profileFacts.slice(0, 3)" :key="f.id" class="px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
                     <span class="block truncate text-[11px] text-surface-600 leading-snug cursor-default" @mouseenter="onPolicyEnter($event, f.content)" @mouseleave="hideTip">{{ f.content }}</span>
@@ -1729,7 +1729,7 @@ async function savePolicyEditor() {
                           <input v-model="f.content" maxlength="500" placeholder="例：用户习惯每周三前交付方案" class="flex-1 px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
                           <button @click="removeDraftFact(i)" class="shrink-0 w-6 h-6 flex items-center justify-center rounded text-surface-300 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
                         </div>
-                        <p v-if="!draftFacts.length" class="text-[10px] text-surface-400">还没有画像事实。智能通知里的「记入画像」会自动沉淀到这里，也可以直接添加。</p>
+                        <p v-if="!draftFacts.length" class="text-[10px] text-surface-400">还没有画像事实。AI洞察里的「记入画像」会自动沉淀到这里，也可以直接添加。</p>
                       </div>
                     </div>
                   </div>
@@ -1883,7 +1883,7 @@ async function savePolicyEditor() {
 
             <!-- 联网搜索 Tab -->
             <div v-show="aiTab === 'web'" class="p-5 space-y-3">
-              <p class="text-[10px] text-surface-400">接入博查搜索（<a href="https://bochaai.com" @click.prevent="openUrl('https://bochaai.com').catch(() => toast({ message: '打开网页失败', type: 'error' }))" class="text-blue-500 hover:underline cursor-pointer">bochaai.com</a> 注册获取 Key，新用户有免费额度）后，AI 问答与智能通知可联网查证外部信息；未配置时 AI 不会感知该能力</p>
+              <p class="text-[10px] text-surface-400">接入博查搜索（<a href="https://bochaai.com" @click.prevent="openUrl('https://bochaai.com').catch(() => toast({ message: '打开网页失败', type: 'error' }))" class="text-blue-500 hover:underline cursor-pointer">bochaai.com</a> 注册获取 Key，新用户有免费额度）后，AI 问答与AI洞察可联网查证外部信息；未配置时 AI 不会感知该能力</p>
               <div>
                 <label class="text-[11px] text-surface-500">博查 API Key</label>
                 <input v-model="webSearchKey" type="password" autocomplete="off" placeholder="sk-..." class="mt-1 w-full px-2.5 py-1.5 text-[12px] font-mono border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
@@ -1899,10 +1899,10 @@ async function savePolicyEditor() {
             </div>
           </div>
 
-          <!-- 智能通知 -->
+          <!-- AI洞察 -->
           <div class="relative z-20 bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-visible break-inside-avoid mb-4">
             <div class="flex items-center justify-between px-5 pt-5 pb-0">
-              <h2 class="text-[13px] font-semibold text-surface-700">智能通知</h2>
+              <h2 class="text-[13px] font-semibold text-surface-700">AI洞察</h2>
               <div v-if="notifyEnabled && notifyInterval !== 0" class="flex items-center gap-1.5">
                 <span class="w-1.5 h-1.5 rounded-full" :class="loopStatus.running ? 'bg-emerald-500' : 'bg-surface-300'"></span>
                 <span class="text-[10px]" :class="loopStatus.running ? 'text-emerald-600' : 'text-surface-400'">
