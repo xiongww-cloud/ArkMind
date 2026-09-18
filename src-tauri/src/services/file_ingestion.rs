@@ -373,7 +373,7 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
     }
 
     // 日志标识：{source_type}/{source_id前8位}
-    let log_tag = format!("{}/{}", source_type, &source_id[..source_id.len().min(8)]);
+    let log_tag = format!("{}/{}", source_type, crate::preview(source_id, 8));
 
     let hash = row["content_hash"].as_str().unwrap_or("");
     let path = if hash.is_empty() {
@@ -519,7 +519,7 @@ fn process_pdf_text_only(file_id: &str, path: &str, _total_pages: u16, source_ty
     use crate::services::file_parser::try_pdfium_text_per_page;
 
     // 日志标识：{source_type}/{source_id前8位}
-    let log_tag = format!("{}/{}", source_type, &source_id[..source_id.len().min(8)]);
+    let log_tag = format!("{}/{}", source_type, crate::preview(source_id, 8));
 
     let pdfium_pages = try_pdfium_text_per_page(path)
         .ok_or("pdfium 文本提取失败")?;
@@ -634,7 +634,7 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     }
 
     // 日志标识：{source_type}/{source_id前8位}
-    let log_tag = format!("{}/{}", source_type, &source_id[..source_id.len().min(8)]);
+    let log_tag = format!("{}/{}", source_type, crate::preview(source_id, 8));
 
     let file_size = row["file_size"].as_i64().unwrap_or(0);
     let hash = row["content_hash"].as_str().unwrap_or("");
@@ -855,7 +855,7 @@ fn ingest_pending_notes() {
         );
         log::info!(
             "[数据中台] 📝 笔记 {} 已摄入 ({} 字符)",
-            &note_id[..note_id.len().min(8)],
+            crate::preview(note_id, 8),
             md_content.len()
         );
     }
@@ -920,7 +920,7 @@ fn ingest_pending_products() {
         );
         log::info!(
             "[数据中台] 📦 产品 {} 已摄入 ({} 字符)",
-            &prod_id[..prod_id.len().min(8)],
+            crate::preview(prod_id, 8),
             clean.len()
         );
     }
@@ -996,7 +996,7 @@ fn ingest_pending_projects() {
         );
         log::info!(
             "[数据中台] 📁 项目 {} 已摄入 ({} 字符)",
-            &proj_id[..proj_id.len().min(8)],
+            crate::preview(proj_id, 8),
             clean.len()
         );
     }
@@ -1043,7 +1043,7 @@ fn ingest_pending_todos() {
         );
         log::info!(
             "[数据中台] 📋 待办 {} 已摄入 ({} 字符)",
-            &id[..id.len().min(8)],
+            crate::preview(id, 8),
             md_content.len()
         );
     }
@@ -1094,7 +1094,7 @@ fn ingest_pending_emails() {
         ).ok();
         log::info!(
             "[数据中台] 📧 邮件 {} 已摄入 ({} 字符)",
-            &id[..id.len().min(8)],
+            crate::preview(id, 8),
             content.len()
         );
     }

@@ -43,14 +43,17 @@ pub fn decrypt_api_key(encrypted: &str, machine_hash: &str) -> String {
         return encrypted.to_string();
     }
 
+    // ★ 解密失败（换机器/BIOS 更新导致派生密钥变化等）返回空串=视为未配置。
+    //   此前回吐密文会让调用方把 "enc:..." 当明文密钥发给第三方 API（必败且外泄密文形态）
     let b64 = &encrypted[4..];
     let combined = match base64::engine::general_purpose::STANDARD.decode(b64) {
         Ok(data) => data,
-        Err(_) => return encrypted.to_string(),
+        Err(_) => { log::warn!("[加密配置] 解码失败，视为未配置"); return String::new(); }
     };
 
     if combined.len() < 12 {
-        return encrypted.to_string();
+        log::warn!("[加密配置] 密文长度异常，视为未配置");
+        return String::new();
     }
 
     let nonce_bytes = &combined[..12];
@@ -59,13 +62,19 @@ pub fn decrypt_api_key(encrypted: &str, machine_hash: &str) -> String {
     let key_bytes = derive_key(machine_hash);
     let cipher = match Aes256Gcm::new_from_slice(&key_bytes) {
         Ok(c) => c,
-        Err(_) => return encrypted.to_string(),
+        Err(_) => return String::new(),
     };
 
     let nonce = Nonce::from_slice(nonce_bytes);
     match cipher.decrypt(nonce, ciphertext) {
-        Ok(plaintext) => String::from_utf8(plaintext).unwrap_or_else(|_| encrypted.to_string()),
-        Err(_) => encrypted.to_string(),
+        Ok(plaintext) => String::from_utf8(plaintext).unwrap_or_else(|_| {
+            log::warn!("[加密配置] 明文非 UTF-8，视为未配置");
+            String::new()
+        }),
+        Err(_) => {
+            log::warn!("[加密配置] 解密失败（机器码变更？），视为未配置，请在设置中重新填写密钥");
+            String::new()
+        }
     }
 }
 
@@ -83,9 +92,10 @@ pub fn mask_secret(value: &str) -> String {
     format!("{}****{}", head, tail)
 }
 
-/// 检测前端回传的脱敏占位值（原样提交打码串会覆盖真实密钥，需跳过）
+/// 检测前端回传的脱敏占位值（原样提交打码串会覆盖真实密钥，需跳过）。
+/// 后端 mask_secret 用 ****，前端历史 UI 用 ●●●● —— 两种都认
 pub fn is_masked_placeholder(value: &str) -> bool {
-    value.contains("****")
+    value.contains("****") || value.contains("●●")
 }
 
 pub fn encrypt_config_api_keys(config: &serde_json::Value, machine_hash: &str) -> serde_json::Value {

@@ -42,7 +42,10 @@ async function openAttachmentDialog() {
   }
 }
 
-function removeAttachment(idx: number) { pendingAttachments.value.splice(idx, 1) }
+function removeAttachment(idx: number) {
+  const removed = pendingAttachments.value.splice(idx, 1)[0]
+  if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+}
 
 async function onPaste(e: ClipboardEvent) {
   // 优先从 clipboardData.files 获取（WebView2 中比 items 更可靠）

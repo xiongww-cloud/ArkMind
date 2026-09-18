@@ -168,7 +168,7 @@ async fn import_sync_document(
                     let child_id = uuid::Uuid::new_v4().to_string();
                     let child_text = if prefix.is_empty() { parent_text.clone() } else { format!("{prefix}\n{parent_text}") };
                     let hash = compute_content_hash(&child_text);
-                    log::info!("[物化] 插入子块: parent_id={}", &parent_id[..parent_id.len().min(8)]);
+                    log::info!("[物化] 插入子块: parent_id={}", crate::preview(&parent_id, 8));
                     if exec(tx,
                         "INSERT INTO knowledge_chunks(chunk_id,chunk_type,parent_id,source_data_id,source_type,source_id,content,doc_title,chunk_index,content_hash,base_weight,created_at) VALUES(?1,'child',?2,?3,?4,?5,?6,?7,0,?8,5.0,datetime('now','localtime'))",
                         &[json!(&child_id), json!(&parent_id), json!(source_data_id), json!(source_type), json!(source_id), json!(&child_text), json!(doc_title), json!(&hash)]).is_ok() { total += 1; } else { log::info!("[物化] 子块插入失败"); }

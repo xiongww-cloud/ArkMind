@@ -74,12 +74,17 @@ function cancelEdit() { editingField.value = ''; editValue.value = '' }
 function isEditing(entityId: string, field: string) { return editingField.value === entityId + ':' + field }
 
 async function saveEntityField(entity: any, field: string) {
+  const old = entity[field]
   entity[field] = editValue.value
   try {
     if (activeTab.value === 'channels') await channelUpdate({ id: entity.id, [field]: editValue.value })
     else if (activeTab.value === 'vendors') await vendorUpdate({ id: entity.id, [field]: editValue.value })
     else if (activeTab.value === 'customers') await customerUpdate({ id: entity.id, [field]: editValue.value })
-  } catch (e) { console.error(e) }
+  } catch (e: any) {
+    console.error(e)
+    entity[field] = old // 后端未生效，回滚乐观更新
+    toast({ message: `保存失败：${e?.message || e}`, type: 'error' })
+  }
   cancelEdit()
 }
 

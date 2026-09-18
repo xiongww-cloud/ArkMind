@@ -65,7 +65,7 @@ pub fn start_email_loop() {
 /// 单次轮询
 async fn tick() -> Result<u64, String> {
     let enabled = get_config("enabled").unwrap_or_else(|| "1".to_string());
-    if enabled != "1" {
+    if !crate::database::is_truthy_flag(&enabled) {
         return Ok(60);
     }
 

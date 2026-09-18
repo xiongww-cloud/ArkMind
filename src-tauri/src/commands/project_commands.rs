@@ -66,6 +66,9 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM project_dynamics WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM partner_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM contact_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
+    database::run("DELETE FROM todo_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
+    database::run("DELETE FROM project_product_mapping WHERE project_id=?", &[json!(&id)]).ok();
+    database::run("DELETE FROM notifications WHERE entity_type='project' AND entity_id=?", &[json!(&id)]).ok();
     // M1: 清理项目附件 file_relations（项目文件成为孤儿）
     database::run("DELETE FROM file_relations WHERE entity_type='project' AND entity_id=?", &[json!(&id)]).ok();
     // M1: 清理项目目录（library_folders 成为孤儿）

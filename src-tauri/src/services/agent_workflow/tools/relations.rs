@@ -29,24 +29,31 @@ pub(crate) fn execute_relations(entity_type: &str, entity_id: &str, target_type:
 
     let params = vec![json!(upper), json!(bare_id)];
     let mut all_rels: Vec<(String, String, String, String)> = Vec::new();
+    let mut query_errors: Vec<String> = Vec::new();
 
-    if let Ok(rows) = crate::database::all(forward_sql, &params) {
-        for r in &rows {
-            if let (Some(tt), Some(tid)) = (r["target_type"].as_str(), r["target_id"].as_str()) {
-                if !tt.is_empty() && !tid.is_empty() {
-                    all_rels.push((tt.to_uppercase(), tid.to_string(), r["title"].as_str().unwrap_or("").to_string(), r["metadata"].as_str().unwrap_or("").to_string()));
+    match crate::database::all(forward_sql, &params) {
+        Ok(rows) => {
+            for r in &rows {
+                if let (Some(tt), Some(tid)) = (r["target_type"].as_str(), r["target_id"].as_str()) {
+                    if !tt.is_empty() && !tid.is_empty() {
+                        all_rels.push((tt.to_uppercase(), tid.to_string(), r["title"].as_str().unwrap_or("").to_string(), r["metadata"].as_str().unwrap_or("").to_string()));
+                    }
                 }
             }
         }
+        Err(e) => query_errors.push(format!("正向: {}", e)),
     }
-    if let Ok(rows) = crate::database::all(reverse_sql, &params) {
-        for r in &rows {
-            if let (Some(tt), Some(tid)) = (r["target_type"].as_str(), r["target_id"].as_str()) {
-                if !tt.is_empty() && !tid.is_empty() {
-                    all_rels.push((tt.to_uppercase(), tid.to_string(), r["title"].as_str().unwrap_or("").to_string(), r["metadata"].as_str().unwrap_or("").to_string()));
+    match crate::database::all(reverse_sql, &params) {
+        Ok(rows) => {
+            for r in &rows {
+                if let (Some(tt), Some(tid)) = (r["target_type"].as_str(), r["target_id"].as_str()) {
+                    if !tt.is_empty() && !tid.is_empty() {
+                        all_rels.push((tt.to_uppercase(), tid.to_string(), r["title"].as_str().unwrap_or("").to_string(), r["metadata"].as_str().unwrap_or("").to_string()));
+                    }
                 }
             }
         }
+        Err(e) => query_errors.push(format!("反向: {}", e)),
     }
 
     // 去重 + 过滤自身 + 按 target_type 过滤
@@ -107,7 +114,11 @@ pub(crate) fn execute_relations(entity_type: &str, entity_id: &str, target_type:
     }).collect();
 
     let summary = if total == 0 {
-        format!("{} 没有关联对象。", source_name)
+        if !query_errors.is_empty() {
+            format!("{} 关联查询失败：{}（结果不可信，非'无关联'）", source_name, query_errors.join("；"))
+        } else {
+            format!("{} 没有关联对象。", source_name)
+        }
     } else {
         format!("{}关联 {} 个对象。", source_name, relations.len())
     };

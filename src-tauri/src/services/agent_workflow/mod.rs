@@ -110,7 +110,7 @@ pub(crate) fn relative_time(created_at: &str) -> String {
     let ts = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S").map(|dt| dt.and_utc().timestamp()).unwrap_or(0);
     let delta = (now - ts).max(0);
     let rel = if delta < 60 { "刚刚".to_string() } else if delta < 3600 { format!("{}分钟前", delta / 60) } else if delta < 86400 { format!("{}小时前", delta / 3600) } else if delta < 2592000 { format!("{}天前", delta / 86400) } else if delta < 77760000 { format!("{}个月前", delta / 2592000) } else { format!("{}年前", delta / 31104000) };
-    format!("{} ({})", rel, &created_at[..created_at.len().min(16)])
+    format!("{} ({})", rel, crate::preview(created_at, 16))
 }
 
 // ═══════════════════════════════════════════════════════════════════

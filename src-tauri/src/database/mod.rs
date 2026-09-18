@@ -40,7 +40,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         for row in rows.flatten() {
             let (name, sql) = row;
             if sql.contains("source_data_old") {
-                log::info!("[数据库] 残留触发器: {} => {}", name, &sql[..sql.len().min(300)]);
+                log::info!("[数据库] 残留触发器: {} => {}", name, crate::preview(sql, 300));
             }
         }
     }
@@ -91,7 +91,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         for row in rows.flatten() {
             let (name, sql) = row;
             if sql.contains("source_data_old") {
-                log::info!("[数据库] ⚠️ 仍引用 source_data_old: {} => {}", name, &sql[..sql.len().min(300)]);
+                log::info!("[数据库] ⚠️ 仍引用 source_data_old: {} => {}", name, crate::preview(sql, 300));
             }
         }
     }
@@ -180,7 +180,7 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
         for row in rows.flatten() {
             let (name, sql) = row;
             if sql.contains("source_data_old") {
-                log::info!("[数据库] ⚠️ 最终检查 - 仍引用 source_data_old: {} => {}", name, &sql[..sql.len().min(300)]);
+                log::info!("[数据库] ⚠️ 最终检查 - 仍引用 source_data_old: {} => {}", name, crate::preview(sql, 300));
             }
         }
     }

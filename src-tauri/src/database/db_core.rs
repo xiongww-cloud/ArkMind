@@ -40,6 +40,12 @@ pub fn escape_like(input: &str) -> String {
          .replace('_', "\\_")
 }
 
+/// 布尔配置位统一判定：不同写侧混用 "1"/"0" 与 JSON bool 的 "true"/"false" 字符串，
+/// 读取端一律容错，避免开关静默失效
+pub fn is_truthy_flag(v: &str) -> bool {
+    matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
 // Type conversion
 pub(crate) fn json_to_sqlite(val: &serde_json::Value) -> rusqlite::types::Value {
     match val { serde_json::Value::Null => rusqlite::types::Value::Null, serde_json::Value::Bool(b) => rusqlite::types::Value::Integer(if *b{1}else{0}), serde_json::Value::Number(n) => { if let Some(i)=n.as_i64(){rusqlite::types::Value::Integer(i)}else if let Some(f)=n.as_f64(){rusqlite::types::Value::Real(f)}else{rusqlite::types::Value::Text(n.to_string())} }, serde_json::Value::String(s) => rusqlite::types::Value::Text(s.clone()), _ => rusqlite::types::Value::Text(val.to_string()) }

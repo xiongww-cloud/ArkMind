@@ -110,7 +110,7 @@ pub async fn search_business(query: String) -> Result<Value, String> {
         }
     }
     // products
-    if let Ok(rows) = database::all("SELECT id, name FROM products WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+    if let Ok(rows) = database::all("SELECT id, name FROM products WHERE name LIKE ?1 ESCAPE '\\' LIMIT 10", &[json!(&like)]) {
         for r in &rows {
             let id = r["id"].as_str().unwrap_or("").to_string();
             let name = r["name"].as_str().unwrap_or("").to_string();
@@ -120,7 +120,7 @@ pub async fn search_business(query: String) -> Result<Value, String> {
         }
     }
     // notes
-    if let Ok(rows) = database::all("SELECT note_id, title FROM notes WHERE title LIKE ?1 AND deleted_at IS NULL LIMIT 10", &[json!(&like)]) {
+    if let Ok(rows) = database::all("SELECT note_id, title FROM notes WHERE title LIKE ?1 ESCAPE '\\' AND deleted_at IS NULL LIMIT 10", &[json!(&like)]) {
         for r in &rows {
             let id = r["note_id"].as_str().unwrap_or("").to_string();
             let name = r["title"].as_str().unwrap_or("").to_string();
@@ -130,7 +130,7 @@ pub async fn search_business(query: String) -> Result<Value, String> {
         }
     }
     // file_relations
-    if let Ok(rows) = database::all("SELECT file_id, custom_name FROM file_relations WHERE custom_name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+    if let Ok(rows) = database::all("SELECT file_id, custom_name FROM file_relations WHERE custom_name LIKE ?1 ESCAPE '\\' LIMIT 10", &[json!(&like)]) {
         for r in &rows {
             let id = r["file_id"].as_str().unwrap_or("").to_string();
             let name = r["custom_name"].as_str().unwrap_or("").to_string();
@@ -140,7 +140,7 @@ pub async fn search_business(query: String) -> Result<Value, String> {
         }
     }
     // todos (未完成)
-    if let Ok(rows) = database::all("SELECT id, title FROM todos WHERE title LIKE ?1 AND done=0 LIMIT 10", &[json!(&like)]) {
+    if let Ok(rows) = database::all("SELECT id, title FROM todos WHERE title LIKE ?1 ESCAPE '\\' AND done=0 LIMIT 10", &[json!(&like)]) {
         for r in &rows {
             let id = r["id"].as_str().unwrap_or("").to_string();
             let name = r["title"].as_str().unwrap_or("").to_string();
@@ -150,7 +150,7 @@ pub async fn search_business(query: String) -> Result<Value, String> {
         }
     }
     // partners (渠道商/供应商/客户)
-    if let Ok(rows) = database::all("SELECT id, name, type FROM partners WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+    if let Ok(rows) = database::all("SELECT id, name, type FROM partners WHERE name LIKE ?1 ESCAPE '\\' LIMIT 10", &[json!(&like)]) {
         for r in &rows {
             let id = r["id"].as_str().unwrap_or("").to_string();
             let name = r["name"].as_str().unwrap_or("").to_string();
@@ -167,7 +167,7 @@ pub async fn search_business(query: String) -> Result<Value, String> {
         }
     }
     // partner_contacts (联系人)
-    if let Ok(rows) = database::all("SELECT id, name FROM partner_contacts WHERE name LIKE ?1 LIMIT 10", &[json!(&like)]) {
+    if let Ok(rows) = database::all("SELECT id, name FROM partner_contacts WHERE name LIKE ?1 ESCAPE '\\' LIMIT 10", &[json!(&like)]) {
         for r in &rows {
             let id = r["id"].as_str().unwrap_or("").to_string();
             let name = r["name"].as_str().unwrap_or("").to_string();
@@ -177,7 +177,7 @@ pub async fn search_business(query: String) -> Result<Value, String> {
         }
     }
     // emails (邮件，搜索主题和正文)
-    if let Ok(rows) = database::all("SELECT id, subject FROM emails WHERE (subject LIKE ?1 OR body_text LIKE ?1) LIMIT 10", &[json!(&like)]) {
+    if let Ok(rows) = database::all("SELECT id, subject FROM emails WHERE (subject LIKE ?1 ESCAPE '\\' OR body_text LIKE ?1 ESCAPE '\\') LIMIT 10", &[json!(&like)]) {
         for r in &rows {
             let id = r["id"].as_str().unwrap_or("").to_string();
             let name = r["subject"].as_str().unwrap_or("").to_string();

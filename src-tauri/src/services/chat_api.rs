@@ -124,7 +124,7 @@ pub async fn chat_completion_inner(system: &str, user: &str, cfg: Option<ChatCon
             log::info!("[chat_completion] 从 reasoning_content 提取 JSON ({} chars), finish_reason={}", extracted.len(), finish_reason);
             return Ok(extracted);
         }
-        log::warn!("[chat_completion] reasoning_content 非空但无法提取 JSON, finish_reason={}, reasoning_preview={}", finish_reason, &reasoning[..reasoning.len().min(200)]);
+        log::warn!("[chat_completion] reasoning_content 非空但无法提取 JSON, finish_reason={}, reasoning_preview={}", finish_reason, crate::preview(reasoning, 200));
     }
 
     Ok(content.to_string())

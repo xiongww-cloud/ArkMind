@@ -60,7 +60,8 @@ use tauri::Manager;
     if let Some(v) = data["ossSk"].as_str() { if !crypto::is_masked_placeholder(v) { fields.push("oss_sk=?".into()); values.push(json!(v)); } }
     if let Some(v) = data["ossEncryptKey"].as_str() { if !crypto::is_masked_placeholder(v) { fields.push("oss_encrypt_key=?".into()); values.push(json!(v)); } }
     if let Some(v) = data["encryptPasswordSalt"].as_str() { if !crypto::is_masked_placeholder(v) { fields.push("encrypt_password_salt=?".into()); values.push(json!(v)); } }
-    if let Some(v)=data["aiConfig"].as_str(){fields.push("ai_config=?".into());values.push(json!(v));}
+    // 注：aiConfig 只能经 update_ai_config 写入（加密+缓存失效在该命令内完成）。
+    // 旧的 ai_config 直写分支已移除——它会绕过密钥加密把明文 API Key 落库。
     if fields.is_empty(){return Ok(json!({"success":true}));}
     fields.push("updated_at=datetime('now', 'localtime')".into());
     let sql = format!("UPDATE system_config SET {} WHERE tenant_id='local-user'", fields.join(","));

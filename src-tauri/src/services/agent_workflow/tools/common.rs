@@ -93,7 +93,7 @@ pub(crate) fn resolve_time(s: &str) -> String {
     if head.chars().count() == 10 && head.bytes().all(|b| b.is_ascii_digit() || b == b'-') && head.contains('-') { return head; }
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     // Handle relative expressions via simple matching
-    if s.contains("昨天") || s.contains("昨天") { let d = chrono::Local::now() - chrono::Duration::days(1); return d.format("%Y-%m-%d").to_string(); }
+    if s.contains("昨天") || s.to_lowercase().contains("yesterday") { let d = chrono::Local::now() - chrono::Duration::days(1); return d.format("%Y-%m-%d").to_string(); }
     if s.contains("前天") { let d = chrono::Local::now() - chrono::Duration::days(2); return d.format("%Y-%m-%d").to_string(); }
     if s.contains("今天") || s.is_empty() { return today; }
     // fallback: return as-is

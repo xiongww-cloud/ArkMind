@@ -237,6 +237,8 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
 #[tauri::command]
 pub async fn todos_delete(id: String) -> Result<Value, String> {
     database::run("DELETE FROM todo_project_mapping WHERE todo_id=?", &[json!(&id)]).ok();
+    database::run("DELETE FROM file_relations WHERE entity_type='todo' AND entity_id=?", &[json!(&id)]).ok();
+    database::run("DELETE FROM notifications WHERE entity_type='todo' AND entity_id=?", &[json!(&id)]).ok();
     crate::services::knowledge_lifecycle::notify_deleted("TODO", &id);
     crate::services::business_relations::delete_by_source("TODO", &id);
     let result = database::run("DELETE FROM todos WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;

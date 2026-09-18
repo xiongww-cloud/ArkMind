@@ -128,6 +128,8 @@ const selectedDomains = ref([
 
 async function handleExportData() {
   isExporting.value = true
+  let task: any = null
+  let unlistenProgress: (() => void) | null = null
   try {
     const { pickSavePath } = await import('@/api/db-client')
     const savePath = await pickSavePath('arkmind_export.ark', ['ark'])
@@ -139,11 +141,11 @@ async function handleExportData() {
     showDomainSelector.value = false
     
     // ★ 复用上传进度弹窗显示导出进度
-    const task = uploadProgress.start('导出数据中...')
+    task = uploadProgress.start('导出数据中...')
     
-    // ★ 监听进度事件
+    // ★ 监听进度事件（unlisten 在 finally 兜底，失败路径不再泄漏监听器）
     const { listen } = await import('@tauri-apps/api/event')
-    const unlisten = await listen('export:progress', (event: any) => {
+    unlistenProgress = await listen('export:progress', (event: any) => {
       const { current, total, domain, stage } = event.payload
       if (domain) {
         task.name = `导出中... ${domain} (${current}/${total})`
@@ -151,15 +153,17 @@ async function handleExportData() {
       if (stage === 'done') {
         uploadProgress.done(task)
         toast.success(`数据已导出至：${savePath}`)
-        unlisten()
+        unlistenProgress?.(); unlistenProgress = null
       }
     })
     
     const { exportAllData } = await import('@/api/db-client')
     await exportAllData(domains, savePath)
-  } catch (e) {
+  } catch (e: any) {
+    if (task) uploadProgress.fail(task, e?.message || '导出失败')
     alert({ title: '导出失败', message: (e && e.message) || '未知错误' })
   } finally {
+    if (unlistenProgress) { unlistenProgress(); unlistenProgress = null }
     isExporting.value = false
   }
 }
@@ -192,16 +196,18 @@ async function handleImportData() {
 // ─── 一键备份/恢复 ──────────────────────────────────────────────────
 async function handleBackupAll() {
   isBackingUp.value = true
+  let task: any = null
+  let unlistenProgress: (() => void) | null = null
   try {
     const { pickSavePath } = await import('@/api/db-client')
     const savePath = await pickSavePath(`arkmind-backup-${new Date().toISOString().slice(0,10)}.zip`, ['zip'])
     if (!savePath) { isBackingUp.value = false; return }
 
     // 复用上传进度弹窗显示备份进度
-    const task = uploadProgress.start('备份中...')
+    task = uploadProgress.start('备份中...')
 
     const { listen } = await import('@tauri-apps/api/event')
-    const unlisten = await listen('backup:progress', (event: any) => {
+    unlistenProgress = await listen('backup:progress', (event: any) => {
       const { stage, step, total, name, done, pct } = event.payload
       if (stage === 'exporting') {
         task.name = `备份中... ${name} (${step}/${total})`
@@ -212,7 +218,7 @@ async function handleBackupAll() {
       if (stage === 'done') {
         uploadProgress.done(task)
         toast.success(`备份已保存到：${savePath}`)
-        unlisten()
+        unlistenProgress?.(); unlistenProgress = null
       }
     })
 
@@ -221,9 +227,11 @@ async function handleBackupAll() {
     if (!result.success) {
       uploadProgress.fail(task, result.error || '未知错误')
     }
-  } catch (e) {
+  } catch (e: any) {
+    if (task) uploadProgress.fail(task, e?.message || '备份失败')
     alert({ title: '备份失败', message: (e && e.message) || '未知错误' })
   } finally {
+    if (unlistenProgress) { unlistenProgress(); unlistenProgress = null }
     isBackingUp.value = false
   }
 }
@@ -236,6 +244,8 @@ async function handleRestoreAll() {
   })
   if (!ok) return
   isRestoring.value = true
+  let task: any = null
+  let unlistenProgress: (() => void) | null = null
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
     const filePath = await open({
@@ -245,17 +255,17 @@ async function handleRestoreAll() {
     if (!filePath) { isRestoring.value = false; return }
 
     // 复用上传进度弹窗显示恢复进度
-    const task = uploadProgress.start('恢复中...')
+    task = uploadProgress.start('恢复中...')
 
     const { listen } = await import('@tauri-apps/api/event')
-    const unlisten = await listen('restore:progress', (event: any) => {
+    unlistenProgress = await listen('restore:progress', (event: any) => {
       const { stage, step, total, name } = event.payload
       if (stage === 'exporting') {
         task.name = `恢复中... ${name} (${step}/${total})`
       }
       if (stage === 'done') {
         uploadProgress.done(task)
-        unlisten()
+        unlistenProgress?.(); unlistenProgress = null
       }
     })
 
@@ -264,9 +274,11 @@ async function handleRestoreAll() {
     if (!result.success) {
       uploadProgress.fail(task, result.error || '未知错误')
     }
-  } catch (e) {
+  } catch (e: any) {
+    if (task) uploadProgress.fail(task, e?.message || '恢复失败')
     alert({ title: '恢复失败', message: (e && e.message) || '未知错误' })
   } finally {
+    if (unlistenProgress) { unlistenProgress(); unlistenProgress = null }
     isRestoring.value = false
   }
 }

@@ -224,7 +224,9 @@ async function loadAccountStats() {
   }
 }
 
+let emailsLoadSeq = 0
 async function loadEmails(append = false) {
+  const mySeq = ++emailsLoadSeq
   if (append) {
     loadingMore.value = true
   } else {
@@ -238,6 +240,7 @@ async function loadEmails(append = false) {
       limit: 20,
       offset,
     })
+    if (mySeq !== emailsLoadSeq) return // 账户/文件夹已切换，丢弃过期响应
     const newEmails = res.emails || []
     if (append) {
       emails.value = [...emails.value, ...newEmails]
@@ -249,8 +252,10 @@ async function loadEmails(append = false) {
   } catch (e) {
     console.error('加载邮件失败:', e)
   } finally {
-    loading.value = false
-    loadingMore.value = false
+    if (mySeq === emailsLoadSeq) {
+      loading.value = false
+      loadingMore.value = false
+    }
   }
 }
 
@@ -296,11 +301,13 @@ async function loadDetail(id: string) {
 async function handleSync() {
   syncing.value = true
   try {
-    await emailSync()
+    const r: any = await emailSync()
     await loadAccounts()
     await loadEmails()
-  } catch (e) {
+    toast({ message: `同步完成，新增 ${r?.synced ?? 0} 封`, type: 'success' })
+  } catch (e: any) {
     console.error('同步失败:', e)
+    toast({ message: `邮箱同步失败：${e?.message || e}`, type: 'error' })
   } finally {
     syncing.value = false
   }

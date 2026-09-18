@@ -109,8 +109,10 @@ impl Whoami {
         !a.is_empty() && self.emails.iter().any(|e| e == &a)
     }
 
-    /// 【关于我】+【用户画像】注入块；主 Agent 与分析师共用同一口径。无任何信息时返回空串。
-    pub fn prompt_block(&self) -> String {
+    /// 【关于我】+【用户画像】注入块。无任何信息时返回空串。
+    /// with_id_hint：是否附带"id 可用于 ext_tool_memory 修改"提示——仅对有写权限的主 Agent 开启，
+    /// 分析师只读（memory_search），提示会指向其不存在的工具权限
+    pub fn prompt_block(&self, with_id_hint: bool) -> String {
         let mut lines: Vec<String> = Vec::new();
         if !self.name.is_empty() {
             lines.push(format!("姓名: {}", self.name));
@@ -134,7 +136,8 @@ impl Whoami {
         if !self.facts.is_empty() {
             let facts: Vec<String> = self.facts.iter().map(|(id, f)| format!("- {} (id:{})", f, id)).collect();
             s.push_str(&format!(
-                "\n【用户画像】（用户确认的个人事实；括号内 id 可用于 ext_tool_memory 的 update/delete 定位）\n{}\n",
+                "\n【用户画像】（用户确认的个人事实{}）\n{}\n",
+                if with_id_hint { "；括号内 id 可用于 ext_tool_memory 的 update/delete 定位" } else { "" },
                 facts.join("\n")
             ));
         }
@@ -460,17 +463,22 @@ mod tests {
     #[test]
     fn prompt_block_renders_all_sections_and_empty_is_blank() {
         let mut w = Whoami::default();
-        assert_eq!(w.prompt_block(), "");
+        assert_eq!(w.prompt_block(true), "");
         w.name = "熊某某".into();
         w.title = "项目经理".into();
         w.emails = vec!["a@x.com".into()];
         w.facts = vec![("m1".into(), "用户习惯周三前交付方案".into())];
-        let b = w.prompt_block();
+        let b = w.prompt_block(true);
         assert!(b.contains("【关于我】"));
         assert!(b.contains("姓名: 熊某某"));
         assert!(b.contains("我的邮箱: a@x.com"));
         assert!(b.contains("【用户画像】"));
         assert!(b.contains("- 用户习惯周三前交付方案 (id:m1)"));
+        assert!(b.contains("ext_tool_memory"));
+        // 分析师视角：id 仍在（供引用），但不得出现写工具提示
+        let r = w.prompt_block(false);
+        assert!(r.contains("(id:m1)"));
+        assert!(!r.contains("ext_tool_memory"));
     }
 
     #[test]

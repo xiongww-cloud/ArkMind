@@ -41,7 +41,11 @@ async function openAttachmentDialog() {
   // 收起态添加附件后自动展开，以便显示附件行
   if (added > 0 && !expanded.value) expandChat()
 }
-function removeAttachment(idx: number) { pendingAttachments.value.splice(idx, 1) }
+function removeAttachment(idx: number) {
+  // 仅手动移除时回收 blob（发送后消息气泡仍引用同一 URL，不可提前 revoke）
+  const removed = pendingAttachments.value.splice(idx, 1)[0]
+  if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+}
 async function onPaste(e: ClipboardEvent) {
   let added = 0
   const files = e.clipboardData?.files

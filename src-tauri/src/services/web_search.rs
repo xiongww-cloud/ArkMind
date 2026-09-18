@@ -403,7 +403,7 @@ mod tests {
                 .send().await.unwrap();
             let status = resp.status();
             let body = resp.text().await.unwrap();
-            println!("HTTP {} | body[:800] = {}", status, &body[..body.len().min(800)]);
+            println!("HTTP {} | body[:800] = {}", status, crate::preview(&body, 800));
             let v: Value = serde_json::from_str(&body).unwrap();
             println!("parsed hits = {}", parse_bocha_hits(&v).len());
         });

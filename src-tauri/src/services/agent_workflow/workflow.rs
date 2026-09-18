@@ -464,7 +464,7 @@ pub async fn agent_chat_workflow_internal(
     
     // System Prompt 注入可用 Agent 列表；【关于我】仅智能问答主Agent注入（分析师/子Agent不注入）
     let whoami_section = if is_root && system_prompt.is_none() {
-        let block = crate::services::whoami::Whoami::load().prompt_block();
+        let block = crate::services::whoami::Whoami::load().prompt_block(true);
         if block.is_empty() { String::new() } else { format!("\n\n{}", block) }
     } else {
         String::new()
@@ -698,7 +698,7 @@ pub async fn agent_chat_workflow_internal(
                                     args.get("query").and_then(|q| q.as_str()).map(String::from)
                                 }
                             },
-                            "ext_tool_chunk_navigate" => args.get("chunk_id").and_then(|c| c.as_str()).map(|c| format!("chunk {}", &c[..c.len().min(8)])),
+                            "ext_tool_chunk_navigate" => args.get("chunk_id").and_then(|c| c.as_str()).map(|c| format!("chunk {}", crate::preview(c, 8))),
                             _ => None,
                         };
                         let _ = h.emit("agent:status", json!({"stage":"tool_start","tool":tc.function.name,"target":target.unwrap_or_default()}));
@@ -764,7 +764,7 @@ pub async fn agent_chat_workflow_internal(
                 // 并行执行 async 工具
                 let results_mutex: Mutex<Vec<(usize, String, Vec<SessionEffect>)>> = Mutex::new(Vec::new());
                 if !async_tasks.is_empty() {
-                    let mut handles = Vec::new();
+                    let mut handles: Vec<(usize, tokio::task::JoinHandle<(usize, String, Vec<SessionEffect>)>)> = Vec::new();
                     for (orig_idx, name, args_str) in &async_tasks {
                         let name = name.clone();
                         let args_str = args_str.clone();
@@ -773,7 +773,7 @@ pub async fn agent_chat_workflow_internal(
                         let vs = visited_sources_snapshot.clone();
                         let vc = visited_chunks_snapshot.clone();
                         let shown_mem = session.shown_memory_ids.clone();
-                        handles.push(tokio::spawn(async move {
+                        handles.push((orig_idx, tokio::spawn(async move {
                             let a: Value = serde_json::from_str(&args_str).unwrap_or(json!({}));
                             let (res, effects) = match name.as_str() {
                                 "ext_tool_search" | "ext_tool_search_knowledge_base" => {
@@ -844,15 +844,23 @@ pub async fn agent_chat_workflow_internal(
                                 _ => unreachable!(),
                             };
                             (orig_idx, res, effects)
-                        }));
+                        })));
                     }
-                    for handle in handles {
+                    for (idx, handle) in handles {
                         match handle.await {
                             Ok(result) => {
                                 results_mutex.lock().unwrap_or_else(|e| e.into_inner()).push(result);
                             }
                             Err(e) => {
                                 log::error!("[Agent] 异步工具任务 JoinHandle 失败: {}", e);
+                                // ★ 必须补占位结果：assistant 消息带此 tool_call，缺对应 tool 回复会让
+                                //   后续请求消息序列残缺，严格校验的 OpenAI 兼容端直接 400
+                                let placeholder = ToolResultEnvelope {
+                                    result_type: "tool_error".to_string(),
+                                    data: json!({"success": false}),
+                                    summary: Some(format!("工具执行异常（任务崩溃），请换方式完成该步骤: {}", e)),
+                                };
+                                results_mutex.lock().unwrap_or_else(|e| e.into_inner()).push((idx, placeholder.to_json(), vec![]));
                             }
                         }
                     }
@@ -1087,18 +1095,18 @@ pub async fn agent_chat_workflow_internal(
                             let res = crate::services::delegate_agent::execute_delegate_agent(
                                 agent_id, task, context, expected_output, app_handle.clone(), delegate_depth,
                             ).await;
-                            // ★ 取消透传：子Agent返回cancelled时，传播取消信号
-                            if let Ok(v) = serde_json::from_str::<Value>(&res) {
-                                if v["data"]["cancelled"].as_bool() == Some(true) {
-                                    AGENT_CANCEL.store(true, Ordering::Release);
+                            // ★ 取消透传 + 委托扣费（合并解析；解析失败也扣基础额度，防绕过）
+                            match serde_json::from_str::<Value>(&res) {
+                                Ok(v) => {
+                                    if v["data"]["cancelled"].as_bool() == Some(true) {
+                                        AGENT_CANCEL.store(true, Ordering::Release);
+                                    }
+                                    let iters = v["data"]["iterations"].as_i64().unwrap_or(1) as i32;
+                                    budget -= 40 + iters * 2;
                                 }
+                                Err(_) => { budget -= 60; }
                             }
-                            // ★ 委托扣费：主Agent感知委托成本
-                            if let Ok(v) = serde_json::from_str::<Value>(&res) {
-                                let iters = v["data"]["iterations"].as_i64().unwrap_or(0) as i32;
-                                budget -= 40 + iters * 2;
-                                search_cost += 30;
-                            }
+                            search_cost += 30;
                             (res, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
@@ -1151,7 +1159,7 @@ pub async fn agent_chat_workflow_internal(
                             }
                         } else if step_desc == "ext_tool_chunk_navigate" {
                             if let Some(cid) = args.get("chunk_id").and_then(|v| v.as_str()) {
-                                step_desc = format!("traverse({}…)", &cid[..cid.len().min(8)]);
+                                step_desc = format!("traverse({}…)", crate::preview(cid, 8));
                             }
                         }
                     }

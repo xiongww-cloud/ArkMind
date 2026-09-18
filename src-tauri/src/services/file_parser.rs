@@ -294,7 +294,7 @@ async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     let body_ms = t_body.elapsed().as_millis();
     let t_parse = std::time::Instant::now();
     let resp_body: Value = serde_json::from_str(&resp_text).map_err(|_| {
-        format!("响应不是JSON: {} (HTTP {})", &resp_text[..resp_text.len().min(500)], status)
+        format!("响应不是JSON: {} (HTTP {})", crate::preview(&resp_text, 500), status)
     })?;
 
     if !status.is_success() {
@@ -358,7 +358,7 @@ pub async fn describe_image_for_chat(base64_data_uri: &str) -> Result<String, St
     let status = resp.status();
     let resp_text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
     let resp_body: Value = serde_json::from_str(&resp_text).map_err(|_| {
-        format!("响应不是JSON: {} (HTTP {})", &resp_text[..resp_text.len().min(500)], status)
+        format!("响应不是JSON: {} (HTTP {})", crate::preview(&resp_text, 500), status)
     })?;
     if !status.is_success() {
         let err_detail = resp_body["error"]["message"].as_str().map(|s| s.to_string())

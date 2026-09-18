@@ -89,7 +89,7 @@ pub async fn compress_with_context(
     // 5. 解析 JSON
     let json_str = extract_json_from_response(&ac);
     let parsed: serde_json::Value = serde_json::from_str(json_str)
-        .map_err(|e| format!("JSON 解析失败: {}，原始响应: {}", e, &ac[..ac.len().min(200)]))?;
+        .map_err(|e| format!("JSON 解析失败: {}，原始响应: {}", e, crate::preview(ac, 200)))?;
 
     let result = CompressResult {
         summary: parsed["summary"].as_str().unwrap_or("").to_string(),

@@ -5,6 +5,13 @@ use std::time::Duration;
 
 /// 循环运行标志
 static LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
+/// 在途分析守卫：上一轮未结束时跳过本轮，防统计读改写竞争/通知去重窗口失效/双份 LLM 成本
+static ANALYSIS_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+struct AnalysisGuard;
+impl Drop for AnalysisGuard {
+    fn drop(&mut self) { ANALYSIS_IN_FLIGHT.store(false, Ordering::SeqCst); }
+}
 /// 本次启动是否已执行过（startup_only 模式用）
 static STARTUP_DONE: AtomicBool = AtomicBool::new(false);
 
@@ -146,14 +153,14 @@ pub fn get_loop_status() -> LoopStatus {
 fn tick(app_handle: &tauri::AppHandle) -> Result<u64, String> {
     // 1. 检查是否启用
     let enabled = get_config("enabled").unwrap_or_else(|| "1".to_string());
-    if enabled != "1" {
+    if !crate::database::is_truthy_flag(&enabled) {
         log::debug!("[通知循环] 后台分析已禁用，60秒后重试");
         return Ok(60);
     }
 
     // 2. 检查 startup_only
     let startup_only = get_config("startup_only").unwrap_or_else(|| "0".to_string());
-    if startup_only == "1" {
+    if crate::database::is_truthy_flag(&startup_only) {
         if STARTUP_DONE.load(Ordering::SeqCst) {
             log::debug!("[通知循环] startup_only 模式，本次已执行，60秒后重试");
             return Ok(60);
@@ -186,6 +193,10 @@ fn tick(app_handle: &tauri::AppHandle) -> Result<u64, String> {
     }
 
     // 4. 执行分析
+    if ANALYSIS_IN_FLIGHT.load(Ordering::SeqCst) {
+        log::info!("[通知循环] 上一轮分析仍在进行（长任务跨周期），跳过本轮");
+        return Ok(60);
+    }
     log::info!("[通知循环] 开始周期分析...");
     run_analysis(app_handle);
 
@@ -198,7 +209,10 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     // ★ 身份层自动维护（host 直调，不经分析师的手；证据=用户自己发出的邮件，注入面小）
     {
         let h = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn(async move {
+        // 在途登记：竞争下只允许一条分析任务存活；RAII 保证 panic/早退均释放
+        if ANALYSIS_IN_FLIGHT.swap(true, Ordering::SeqCst) { return; }
+        let _analysis_guard = AnalysisGuard;
             crate::services::whoami::auto_update_identity(&h).await;
         });
     }
@@ -239,7 +253,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     let watch_text = if watch_effective.is_empty() { "（无）".to_string() } else {
         watch_effective.lines().map(|l| format!("- {}", l.trim())).collect::<Vec<_>>().join("\n")
     };
-    let whoami_block = w.prompt_block();
+    let whoami_block = w.prompt_block(false); // 分析师只读：不给指向无写权限工具的 id 提示
     let query = format!(
         "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n\n## 上轮遗留观察（优先跟进验证）\n{}",
         if whoami_block.is_empty() { String::new() } else { format!("{}\n\n", whoami_block) },

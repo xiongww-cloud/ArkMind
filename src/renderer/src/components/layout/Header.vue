@@ -65,6 +65,7 @@ const searchOpen = ref(false)
 const searchLoading = ref(false)
 const searchFilter = ref<string | null>(null)  // null=全部, 或 type 值
 let searchTimer: ReturnType<typeof setTimeout> | null = null
+let globalSearchSeq = 0
 
 const filteredResults = computed(() => {
   if (!searchFilter.value) return searchResults.value
@@ -86,6 +87,7 @@ function onSearchInput() {
   searchLoading.value = true
   searchOpen.value = true
   searchTimer = setTimeout(async () => {
+    const mySeq = ++globalSearchSeq
     try {
       const [business, sourceData] = await Promise.all([
         searchBusiness(q),
@@ -121,9 +123,10 @@ function onSearchInput() {
           }
         } catch {}
       }
+      if (mySeq !== globalSearchSeq) return // 新查询已发起，丢弃过期结果
       searchResults.value = merged.slice(0, 30)
-    } catch { searchResults.value = [] }
-    finally { searchLoading.value = false }
+    } catch { if (mySeq === globalSearchSeq) searchResults.value = [] }
+    finally { if (mySeq === globalSearchSeq) searchLoading.value = false }
   }, 300)
 }
 
@@ -379,6 +382,7 @@ function onDocumentMouseDown(e: MouseEvent) {
     quickTodoOpen.value = false
   }
 }
+function onWindowResize() { if (quickNoteOpen.value) updateQuickNotePos() }
 onMounted(async () => {
   loadQuickTodos()
   await loadNotificationStats()
@@ -388,14 +392,16 @@ onMounted(async () => {
   notifPollTimer = setInterval(loadNotificationStats, 60 * 1000)
   todoPollTimer = setInterval(loadQuickTodos, 30 * 1000)
   document.addEventListener('mousedown', onDocumentMouseDown, true)
-  window.addEventListener('resize', () => { if (quickNoteOpen.value) updateQuickNotePos() })
+  window.addEventListener('resize', onWindowResize)
 })
 // 路由变化时刷新待办计数
 watch(() => route.path, () => loadQuickTodos())
 onUnmounted(() => {
   if (todoPollTimer) clearInterval(todoPollTimer)
   if (notifPollTimer) clearInterval(notifPollTimer)
+  if (searchTimer) clearTimeout(searchTimer)
   document.removeEventListener('mousedown', onDocumentMouseDown, true)
+  window.removeEventListener('resize', onWindowResize)
   unlistenNotify.value?.()
 })
 </script>

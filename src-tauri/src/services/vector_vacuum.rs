@@ -57,7 +57,7 @@ fn now_epoch() -> i64 {
 /// dry-run 开关：默认 false（实际删除生效——孤儿判定已被集成测试验证）；
 /// 保留作保险丝：system_settings.vector_vacuum_dry_run='1' 时只扫描不删除。
 pub fn dry_run_enabled() -> bool {
-    get_setting(DRY_RUN_KEY).map(|v| v == "1").unwrap_or(false)
+    get_setting(DRY_RUN_KEY).map(|v| crate::database::is_truthy_flag(&v)).unwrap_or(false)
 }
 
 #[allow(dead_code)] // 保险丝开关的设置入口（预留给调试/未来设置项）

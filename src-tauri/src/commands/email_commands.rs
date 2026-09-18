@@ -676,11 +676,11 @@ pub async fn email_reprocess_knowledge() -> Result<Value, String> {
         match result {
             Ok(_) => {
                 processed += 1;
-                log::info!("[邮件迁移] 已重新处理邮件 {}", &id[..id.len().min(8)]);
+                log::info!("[邮件迁移] 已重新处理邮件 {}", crate::preview(id, 8));
             }
             Err(e) => {
                 errors += 1;
-                log::warn!("[邮件迁移] 处理邮件 {} 失败: {}", &id[..id.len().min(8)], e);
+                log::warn!("[邮件迁移] 处理邮件 {} 失败: {}", crate::preview(id, 8), e);
             }
         }
     }
@@ -760,11 +760,11 @@ pub async fn email_reprocess_attachments() -> Result<Value, String> {
             ) {
                 Ok(_) => {
                     processed += 1;
-                    log::info!("[邮件迁移] 已重新处理邮件 {}", &email_id[..email_id.len().min(8)]);
+                    log::info!("[邮件迁移] 已重新处理邮件 {}", crate::preview(email_id, 8));
                 }
                 Err(e) => {
                     errors += 1;
-                    log::warn!("[邮件迁移] 处理邮件 {} 失败: {}", &email_id[..email_id.len().min(8)], e);
+                    log::warn!("[邮件迁移] 处理邮件 {} 失败: {}", crate::preview(email_id, 8), e);
                 }
             }
         }
