@@ -3,7 +3,7 @@ import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
-import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact } from '@/api/db-client'
+import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
 import { useTooltip } from '@/composables/useTooltip'
 import { dangerConfirm } from '@/composables/useConfirm'
@@ -390,11 +390,12 @@ async function executeCreate(type: string, params: Record<string, unknown>, ctx:
       return r.id
     }
     case 'create_note': {
-      const res = await invoke<{ success: boolean; note_id: string }>('note_create', {
-        title: p.title || '新建笔记', content: p.content || '', notebookId: p.notebook_id || ''
+      const r: any = await notesV2Create({
+        title: p.title || '新建笔记', content: p.content || '', notebookId: p.notebook_id || undefined
       })
-      if (!res.success) throw new Error('create note failed')
-      return res.note_id
+      const nid = r?.noteId
+      if (!nid) throw new Error('create note failed')
+      return nid
     }
     case 'create_product': {
       const r: any = await createProduct({ name: p.name || '新建产品', description: p.description || '' })

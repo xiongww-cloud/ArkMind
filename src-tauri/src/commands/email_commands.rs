@@ -102,12 +102,26 @@ pub async fn email_update_account(id: String, data: Value) -> Result<Value, Stri
     Ok(json!({"success": true}))
 }
 
-/// 删除账户
+/// 删除账户（含逐封回传知识库删除，防止已删邮件内容残留可检索）
 #[tauri::command]
 pub async fn email_delete_account(id: String) -> Result<Value, String> {
+    let ids: Vec<String> = database::all("SELECT id FROM emails WHERE account_id=?", &[json!(&id)])
+        .unwrap_or_default().iter().filter_map(|r| r["id"].as_str().map(String::from)).collect();
+    for eid in &ids { crate::services::knowledge_lifecycle::notify_deleted("EMAIL", eid); }
     database::run("DELETE FROM email_attachments WHERE email_id IN (SELECT id FROM emails WHERE account_id=?)", &[json!(&id)]).ok();
     database::run("DELETE FROM emails WHERE account_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM email_accounts WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
+    Ok(json!({"success": true}))
+}
+
+/// 软删除单封邮件（保留行防同 UID 重新拉取；同步游标不受影响）
+#[tauri::command]
+pub async fn email_delete(id: String) -> Result<Value, String> {
+    let rows = database::run("UPDATE emails SET is_deleted=1 WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
+    if rows.changes == 0 {
+        return Err(format!("邮件不存在: {}", id));
+    }
+    database::save().map_err(|e| e.to_string())?;
     Ok(json!({"success": true}))
 }
 
@@ -137,9 +151,9 @@ pub async fn email_list(
     }
 
     let where_clause = if conditions.is_empty() {
-        String::new()
+        "WHERE is_deleted=0".to_string()
     } else {
-        format!("WHERE {}", conditions.join(" AND "))
+        format!("WHERE is_deleted=0 AND {}", conditions.join(" AND "))
     };
     let limit = limit.unwrap_or(50).min(100);
     let offset = offset.unwrap_or(0);
@@ -166,7 +180,7 @@ pub async fn email_list(
 #[tauri::command]
 pub async fn email_get_detail(id: String) -> Result<Value, String> {
     let email = database::get(
-        "SELECT * FROM emails WHERE id=?",
+        "SELECT * FROM emails WHERE id=? AND is_deleted=0",
         &[json!(id)],
     )
     .map_err(|e| e.to_string())?
@@ -277,9 +291,9 @@ pub async fn email_config_get() -> Result<Value, String> {
 /// 获取邮件统计
 #[tauri::command]
 pub async fn email_stats() -> Result<Value, String> {
-    let total = database::get("SELECT COUNT(*) as cnt FROM emails", &[])
+    let total = database::get("SELECT COUNT(*) as cnt FROM emails WHERE is_deleted=0", &[])
         .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-    let knowledge = database::get("SELECT COUNT(*) as cnt FROM emails WHERE ai_category='knowledge'", &[])
+    let knowledge = database::get("SELECT COUNT(*) as cnt FROM emails WHERE is_deleted=0 AND ai_category='knowledge'", &[])
         .ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
 
     Ok(json!({

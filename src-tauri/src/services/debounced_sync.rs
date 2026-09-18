@@ -303,21 +303,22 @@ impl DebouncedMaterializer {
                         clear_materialize_debt(&st, &sid);
                     } else {
                         // 物化失败 → 记录重试次数，按退避间隔重新排队
-                        let mut n = retries_ref.entry(key_clone.clone()).or_insert(0);
+                        // ★ 防自死锁：不得跨 len()/remove()/insert() 持有 entry 的 RefMut（DashMap 分片锁非重入）
+                        let prev = retries_ref.get(&key_clone).map(|x| *x);
                         // O9: 重试队列达到上限时放弃新失败实体（已跟踪的继续重试）
-                        if *n == 0 && retries_ref.len() >= MAX_RETRY_TRACKED {
+                        if prev.is_none() && retries_ref.len() >= MAX_RETRY_TRACKED {
                             state_ref.remove(&key_clone);
                             record_materialize_debt(&st, &sid);
                             log::warn!("[防抖调度器] 重试队列已满，落债务表: {st}:{sid}");
                         } else {
-                            *n += 1;
-                            let count = *n;
+                            let count = prev.unwrap_or(0) + 1;
                             if count >= MAX_MATERIALIZE_RETRIES {
                                 retries_ref.remove(&key_clone);
                                 state_ref.remove(&key_clone);
                                 record_materialize_debt(&st, &sid);
                                 log::error!("[防抖调度器] 物化失败 {count} 次，落债务表持续补偿: {st}:{sid}");
                             } else {
+                                retries_ref.insert(key_clone.clone(), count);
                                 state_ref.insert(
                                     key_clone.clone(),
                                     DebounceState::Pending(

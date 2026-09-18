@@ -119,19 +119,33 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                         };
                                         envelope.to_json()
                                     } else {
-                                        let notification_title = database::get(
-                                            "SELECT title FROM notifications WHERE id=?1",
-                                            &[json!(nid)],
-                                        ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
-                                        let _ = database::run("DELETE FROM notifications WHERE id=?1", &[json!(nid)]);
-                                        if let Some(ref h) = app_handle { let _ = h.emit("notification:deleted", &nid); }
-                                        let display_name = if notification_title.is_empty() { nid.to_string() } else { notification_title };
-                                        let envelope = ToolResultEnvelope {
-                                            result_type: "notification_delete_result".to_string(),
-                                            data: json!({"id": nid, "success": true}),
-                                            summary: Some(format!("已删除通知「{}」", display_name)),
+                                        let display_name = {
+                                            let t = database::get(
+                                                "SELECT title FROM notifications WHERE id=?1",
+                                                &[json!(nid)],
+                                            ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                            if t.is_empty() { nid.to_string() } else { t }
                                         };
-                                        envelope.to_json()
+                                        match database::run("DELETE FROM notifications WHERE id=?1", &[json!(nid)]) {
+                                            Ok(r) if r.changes == 0 => ToolResultEnvelope {
+                                                result_type: "notification_delete_result".to_string(),
+                                                data: json!({"id": nid, "success": false}),
+                                                summary: Some(format!("通知不存在，未删除：{}", nid)),
+                                            }.to_json(),
+                                            Err(e) => ToolResultEnvelope {
+                                                result_type: "notification_delete_result".to_string(),
+                                                data: json!({"id": nid, "success": false}),
+                                                summary: Some(format!("删除通知失败: {}", e)),
+                                            }.to_json(),
+                                            Ok(_) => {
+                                                if let Some(ref h) = app_handle { let _ = h.emit("notification:deleted", &nid); }
+                                                ToolResultEnvelope {
+                                                    result_type: "notification_delete_result".to_string(),
+                                                    data: json!({"id": nid, "success": true}),
+                                                    summary: Some(format!("已删除通知「{}」", display_name)),
+                                                }.to_json()
+                                            }
+                                        }
                                     }
                                 }
                                 "update" => {
@@ -178,22 +192,34 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                         } else {
                                             let sql = format!("UPDATE notifications SET {} WHERE id=?", sets.join(", "));
                                             params.push(json!(nid));
-                                            let _ = database::run(&sql, &params);
-                                            let notification_title = database::get(
-                                                "SELECT title FROM notifications WHERE id=?1",
-                                                &[json!(nid)],
-                                            ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
-                                            let display_name = if notification_title.is_empty() { nid.to_string() } else { notification_title };
-                                            let envelope = ToolResultEnvelope {
-                                                result_type: "notification_update_result".to_string(),
-                                                data: json!({"id": nid, "success": true}),
-                                                summary: Some(format!("已更新通知「{}」", display_name)),
-                                            };
-                                            envelope.to_json()
+                                            match database::run(&sql, &params) {
+                                                Ok(r) if r.changes == 0 => ToolResultEnvelope {
+                                                    result_type: "notification_update_result".to_string(),
+                                                    data: json!({"id": nid, "success": false}),
+                                                    summary: Some(format!("通知不存在，未更新：{}", nid)),
+                                                }.to_json(),
+                                                Err(e) => ToolResultEnvelope {
+                                                    result_type: "notification_update_result".to_string(),
+                                                    data: json!({"id": nid, "success": false}),
+                                                    summary: Some(format!("更新通知失败: {}", e)),
+                                                }.to_json(),
+                                                Ok(_) => {
+                                                    let notification_title = database::get(
+                                                        "SELECT title FROM notifications WHERE id=?1",
+                                                        &[json!(nid)],
+                                                    ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                                    let display_name = if notification_title.is_empty() { nid.to_string() } else { notification_title };
+                                                    ToolResultEnvelope {
+                                                        result_type: "notification_update_result".to_string(),
+                                                        data: json!({"id": nid, "success": true}),
+                                                        summary: Some(format!("已更新通知「{}」", display_name)),
+                                                    }.to_json()
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                                _ => { // create
+                                "create" => {
                                     let ntype = a["type"].as_str().unwrap_or("llm_insight");
                                     let title = crate::commands::notification_commands::sanitize_notification_text(a["title"].as_str().unwrap_or(""));
                                     let content = crate::commands::notification_commands::sanitize_notification_text(a["content"].as_str().unwrap_or(""));
@@ -223,18 +249,32 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                         envelope.to_json()
                                     } else {
                                         let id = uuid::Uuid::new_v4().to_string();
-                                        let _ = database::run(
+                                        match database::run(
                                             "INSERT INTO notifications(id,type,title,content,entity_type,entity_id,priority,source,follow_up_of,actions) VALUES(?1,?2,?3,?4,?5,?6,?7,'llm',?8,?9)",
                                             &[json!(&id), json!(ntype), json!(title), json!(content), json!(entity_type), json!(entity_id), json!(priority), json!(follow_up_of), json!(actions_str)],
-                                        );
-                                        if let Some(ref h) = app_handle { let _ = h.emit("notification:new", &id); }
-                                        let envelope = ToolResultEnvelope {
-                                            result_type: "notification_create_result".to_string(),
-                                            data: json!({"id": id, "title": title, "success": true}),
-                                            summary: Some(format!("已创建通知「{}」", title)),
-                                        };
-                                        envelope.to_json()
+                                        ) {
+                                            Err(e) => ToolResultEnvelope {
+                                                result_type: "notification_create_result".to_string(),
+                                                data: json!({"success": false}),
+                                                summary: Some(format!("创建通知失败: {}", e)),
+                                            }.to_json(),
+                                            Ok(_) => {
+                                                if let Some(ref h) = app_handle { let _ = h.emit("notification:new", &id); }
+                                                ToolResultEnvelope {
+                                                    result_type: "notification_create_result".to_string(),
+                                                    data: json!({"id": id, "title": title, "success": true}),
+                                                    summary: Some(format!("已创建通知「{}」", title)),
+                                                }.to_json()
+                                            }
+                                        }
                                     }
+                                }
+                                _ => {
+                                    ToolResultEnvelope {
+                                        result_type: "notification_create_result".to_string(),
+                                        data: json!({"success": false}),
+                                        summary: Some(format!("未知操作类型: {}。支持 create/update/delete/list/get。", a["action"].as_str().unwrap_or(""))),
+                                    }.to_json()
                                 }
                             };
     res

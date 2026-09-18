@@ -360,7 +360,7 @@ pub fn run() {
             commands::notification_loop_status,
             // 邮件
             commands::email_add_account, commands::email_list_accounts,
-            commands::email_update_account, commands::email_delete_account,
+            commands::email_update_account, commands::email_delete_account, commands::email_delete,
             commands::email_list, commands::email_get_detail,
             commands::email_render_html, commands::email_inline_asset,
             commands::email_sync, commands::email_loop_status,

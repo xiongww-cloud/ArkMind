@@ -3,6 +3,8 @@ import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { emailGetDetail, emailRenderHtml, emailDelete, type EmailDetail, type EmailAttachment } from '@/api/email-client'
 import { openFile } from '@/api/db-client'
+import { dangerConfirm } from '@/composables/useConfirm'
+import { toast } from '@/composables/useToast'
 import { lazyLoadEmailImages } from '@/utils/emailLazyImages'
 import { renderedCacheGet, renderedCacheSet } from '@/utils/emailImageCache'
 import DOMPurify from 'dompurify'
@@ -78,12 +80,13 @@ async function loadDetail() {
 }
 
 async function handleDelete() {
-  if (!confirm('确定删除此邮件？')) return
+  const ok = await dangerConfirm({ title: '删除邮件', message: '确定删除此邮件？删除后不再显示在列表中。', confirmText: '删除' })
+  if (!ok) return
   try {
     await emailDelete(emailId.value)
     router.push('/email')
-  } catch (e) {
-    console.error('删除失败:', e)
+  } catch (e: any) {
+    toast({ message: `删除失败: ${e?.message || e}`, type: 'error' })
   }
 }
 
