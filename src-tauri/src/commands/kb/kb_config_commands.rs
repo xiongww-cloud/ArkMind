@@ -74,14 +74,14 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
     let session_id = data["sessionId"].as_str().map(String::from);
     let attachments: Vec<Value> = data["attachments"].as_array().cloned().unwrap_or_default();
 
-    // 主 Agent 认知协调工具（不含 CRUD，这些委托给专业 Agent）
+    // 主 Agent 认知协调工具（不含 CRUD 与通知管理——通知产出归分析师与用户主动指令场景，
+    // 主 Agent 对话在场即通知，其 schema 最重，移除以省每轮上下文）
     let main_agent_tools: Vec<String> = vec![
         "ext_tool_search".to_string(),
         "ext_tool_object".to_string(),
         "ext_tool_chunk_navigate".to_string(),
         "ext_tool_relations".to_string(),
         "ext_tool_memory".to_string(),
-        "ext_tool_manage_notification".to_string(),
         "ext_tool_delegate_agent".to_string(),
     ];
     // 联网工具特性门控：仅在已配置搜索服务时提供（未配置时模型完全无感知）
