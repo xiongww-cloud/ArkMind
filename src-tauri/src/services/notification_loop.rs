@@ -50,7 +50,7 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 1. 提取：发件人姓名/邮箱/单位、签名档里的姓名+电话+职位、正文提到的人名/客户名/项目名
 2. 对账：用 ext_tool_object 查 CONTACT/CUSTOMER/CHANNEL/VENDOR/PROJECT，逐个判断：
    ⓪ 命中【关于我】的姓名或邮箱 = 用户本人 → 直接跳过，绝不是新客户/新联系人
-   ① 不存在且疑似真实业务方 → 通知建议 create_contact/create_partner，params 预填全部已知字段，正文注明证据来源（"首次出现在X月X日『主题』邮件签名中"）
+   ① 不存在且疑似真实业务方 → 通知建议建档，params 预填全部已知字段，正文注明证据来源（"首次出现在X月X日『主题』邮件签名中"）。区分人与公司：人已存在仅信息更新→提示更新；人是新的、公司已建档→create_contact（params 带 name/position/email/phone + 已有公司的 partner_id）；人和公司都是新的→同一条通知并列 create_partner（params: name/type:CHANNEL|VENDOR|CUSTOMER）与 create_contact（params 带 partner_name=公司名，系统会引导一次建齐）——联系人绝不能没有归属公司
    ② 已存在但联系方式/单位/职位有变 → 通知提示更新（view_contact + 差异说明）
    ③ 已存在且一致 → 无事
 3. 未处理的历史建档建议不得重复播报——记入 WATCH 跟踪用户是否已创建。
@@ -76,7 +76,7 @@ WATCH: <一句话观察 + 需要下轮验证什么>
 
 ## 通知输出契约（硬性格式）
 - 发现必须调用 ext_tool_manage_notification 创建，不得直接在回复里输出通知内容
-- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；多对象可 create_all
+- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据（create_contact 必须带 partner_id 或 partner_name）；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；多对象可 create_all
 - 标题与正文禁止出现对象ID/UUID，只用名称；正文用 Markdown（加粗重点、列表分条），一事一通知
 - 输入数据行尾的 (id:xxx) 仅供你调用工具查证使用，不得出现在通知内容里"#;
 

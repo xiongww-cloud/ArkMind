@@ -12,6 +12,7 @@ import {
   vendorContactCreate, vendorContactUpdate, vendorContactDelete,
   customerList, customerCreate, customerUpdate, customerDelete,
   customerContactCreate, customerContactUpdate, customerContactDelete,
+  createPartner, createPartnerContact,
 } from '@/api/db-client'
 
 type TabType = 'channels' | 'vendors' | 'customers'
@@ -94,10 +95,83 @@ function startAddContact() {
   showContactModal.value = true
   newContact.value = { name: '', phone: '', email: '', position: '', remark: '' }
 }
-function cancelAddContact() { showContactModal.value = false; newContact.value = { name: '', phone: '', email: '', position: '', remark: '' } }
+function cancelAddContact() { showContactModal.value = false; newContact.value = { name: '', phone: '', email: '', position: '', remark: '' }; resetStandalone() }
+
+// ─── 独立建联系人（通知跳转：带归属选择，公司不存在时弹窗内一次建齐）───
+const contactModalStandalone = ref(false)
+const standalonePartner = ref('') // "tab:id" 或 "__new__"
+const standaloneNewCompany = ref<{ name: string; type: TabType }>({ name: '', type: 'customers' })
+
+const partnerOptions = computed(() => {
+  const groups: { group: string; items: { value: string; label: string }[] }[] = []
+  const map: [TabType, any[], string][] = [['channels', channels.value, '渠道伙伴'], ['vendors', vendors.value, '供应商'], ['customers', customers.value, '客户']]
+  for (const [tab, list, label] of map) {
+    const items = (list as any[]).map((e: any) => ({ value: `${tab}:${e.id}`, label: e.name }))
+    if (items.length) groups.push({ group: label, items })
+  }
+  return groups
+})
+
+function resetStandalone() {
+  contactModalStandalone.value = false
+  standalonePartner.value = ''
+  standaloneNewCompany.value = { name: '', type: 'customers' }
+}
+
+function openStandaloneContact(prefill: { name: string; position?: string; email?: string; phone?: string; partnerId?: string; partnerName?: string }) {
+  newContact.value = { name: prefill.name || '', phone: prefill.phone || '', email: prefill.email || '', position: prefill.position || '', remark: '' }
+  let hit = ''
+  const all: [TabType, any[]][] = [['channels', channels.value], ['vendors', vendors.value], ['customers', customers.value]]
+  if (prefill.partnerId) {
+    for (const [tab, list] of all) {
+      if ((list as any[]).some((e: any) => e.id === prefill.partnerId)) { hit = `${tab}:${prefill.partnerId}`; break }
+    }
+  }
+  if (!hit && prefill.partnerName) {
+    const pn = prefill.partnerName.toLowerCase().trim()
+    for (const [tab, list] of all) {
+      const found = (list as any[]).find((e: any) => {
+        const en = (e.name || '').toLowerCase().trim()
+        return !!en && (en === pn || (en.length >= 3 && pn.includes(en)) || (pn.length >= 3 && en.includes(pn)))
+      })
+      if (found) { hit = `${tab}:${found.id}`; break }
+    }
+  }
+  standalonePartner.value = hit || '__new__'
+  if (!hit && prefill.partnerName) standaloneNewCompany.value = { name: prefill.partnerName, type: 'customers' }
+  contactModalStandalone.value = true
+  showContactModal.value = true
+}
 
 async function saveNewContact() {
   if (!newContact.value.name.trim()) { toast.error('请输入联系人姓名'); return }
+  if (contactModalStandalone.value) {
+    try {
+      let partnerId = ''
+      let tab: TabType
+      if (standalonePartner.value === '__new__') {
+        const cn = standaloneNewCompany.value.name.trim()
+        if (!cn) { toast.error('请输入公司名称，或选择已有公司'); return }
+        const typeEnum: Record<TabType, string> = { channels: 'CHANNEL', vendors: 'VENDOR', customers: 'CUSTOMER' }
+        const r: any = await createPartner({ name: cn, type: typeEnum[standaloneNewCompany.value.type] })
+        partnerId = r?.id || ''
+        tab = standaloneNewCompany.value.type
+        if (!partnerId) throw new Error('公司创建失败')
+      } else {
+        const [t, pid] = standalonePartner.value.split(':')
+        if (!pid) { toast.error('请选择归属公司'); return }
+        partnerId = pid
+        tab = t as TabType
+      }
+      await createPartnerContact({ partnerId, ...newContact.value })
+      await loadAll()
+      activeTab.value = tab
+      selectedId.value = partnerId
+      toast.success('联系人已创建')
+      cancelAddContact()
+    } catch (e: any) { toast.error('创建失败: ' + (e?.message || e)) }
+    return
+  }
   if (!selectedEntity.value) return
   try {
     if (activeTab.value === 'channels') await channelContactCreate({ channelId: selectedEntity.value.id, ...newContact.value })
@@ -221,8 +295,21 @@ function handleRouteQuery() {
   }
 
   // Support action=create to open create dialog
+  if (action === 'create_contact') {
+    openStandaloneContact({
+      name: (route.query.name as string) || '',
+      position: (route.query.position as string) || '',
+      email: (route.query.email as string) || '',
+      phone: (route.query.phone as string) || '',
+      partnerId: (route.query.partner_id as string) || '',
+      partnerName: (route.query.partner_name as string) || '',
+    })
+    return
+  }
   if (action === 'create') {
-    const type = route.query.type as string
+    const rawType = route.query.type as string
+    const typeAlias: Record<string, string> = { CHANNEL: 'channels', VENDOR: 'vendors', CUSTOMER: 'customers' }
+    const type = typeAlias[(rawType || '').toUpperCase()] || rawType
     if (type && ['channels', 'vendors', 'customers'].includes(type)) {
       activeTab.value = type as TabType
     }
@@ -447,8 +534,25 @@ onMounted(async () => {
         <div v-if="showContactModal" class="fixed inset-0 z-[80] flex items-center justify-center">
           <div class="absolute inset-0 bg-black/20" />
           <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-sm mx-4 p-5 z-10">
-            <h3 class="text-sm font-semibold text-surface-800 mb-4">添加联系人</h3>
+            <h3 class="text-sm font-semibold text-surface-800 mb-4">{{ contactModalStandalone ? '新建联系人' : '添加联系人' }}</h3>
             <div class="space-y-2.5">
+              <div v-if="contactModalStandalone">
+                <label class="text-[11px] text-surface-500 mb-1 block">归属公司 *</label>
+                <select v-model="standalonePartner" class="input-field !h-7 !text-[12px] w-full">
+                  <optgroup v-for="g in partnerOptions" :key="g.group" :label="g.group">
+                    <option v-for="o in g.items" :key="o.value" :value="o.value">{{ o.label }}</option>
+                  </optgroup>
+                  <option value="__new__">+ 新建公司</option>
+                </select>
+                <div v-if="standalonePartner === '__new__'" class="mt-2 flex gap-1.5">
+                  <input v-model="standaloneNewCompany.name" class="input-field !h-7 !text-[12px] flex-1" placeholder="公司名称" />
+                  <select v-model="standaloneNewCompany.type" class="input-field !h-7 !text-[12px] w-24 shrink-0">
+                    <option value="customers">客户</option>
+                    <option value="channels">渠道</option>
+                    <option value="vendors">供应商</option>
+                  </select>
+                </div>
+              </div>
               <div>
                 <label class="text-[11px] text-surface-500 mb-1 block">姓名 *</label>
                 <input v-model="newContact.name" class="input-field !h-7 !text-[12px]" placeholder="联系人姓名" />

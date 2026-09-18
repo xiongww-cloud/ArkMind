@@ -3,7 +3,7 @@ import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
-import { profileIdentityRevert } from '@/api/db-client'
+import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
 import { useTooltip } from '@/composables/useTooltip'
 import { dangerConfirm } from '@/composables/useConfirm'
@@ -245,7 +245,7 @@ async function handleAction(n: Notification, action: NotificationAction) {
         emit('close')
         break
       case 'create_contact':
-        await router.push({ path: '/contacts', query: { action: 'create', name: p.name as string || '', email: p.email as string || '', phone: p.phone as string || '', partner_id: p.partner_id as string || '', type: p.type as string || 'customers' } })
+        await router.push({ path: '/contacts', query: { action: 'create_contact', name: p.name as string || '', position: p.position as string || '', email: p.email as string || '', phone: p.phone as string || '', partner_id: p.partner_id as string || '', partner_name: p.partner_name as string || '' } })
         emit('close')
         break
       case 'create_partner':
@@ -350,9 +350,12 @@ async function executeCreateAll() {
   createAllDialogVisible.value = false
   let successCount = 0
   let failCount = 0
-  for (const item of createAllItems.value) {
+  // 两遍顺序：公司先建、联系人后建，新公司 id 按名称传给联系人做归属关联
+  const ctx: Record<string, string> = {}
+  const ordered = [...createAllItems.value].sort((a, b) => (a.type === 'create_contact' ? 1 : 0) - (b.type === 'create_contact' ? 1 : 0))
+  for (const item of ordered) {
     try {
-      await executeCreate(item.type, item.params)
+      await executeCreate(item.type, item.params, ctx)
       successCount++
     } catch (e) {
       console.error(`[createAll] failed for ${item.type}:`, e)
@@ -368,7 +371,7 @@ async function executeCreateAll() {
   createAllTarget.value = null
 }
 
-async function executeCreate(type: string, params: Record<string, unknown>) {
+async function executeCreate(type: string, params: Record<string, unknown>, ctx: Record<string, string> = {}) {
   const p = { ...params }
   // Remove empty string values
   for (const k of Object.keys(p)) {
@@ -376,46 +379,41 @@ async function executeCreate(type: string, params: Record<string, unknown>) {
   }
   switch (type) {
     case 'create_todo': {
-      const res = await invoke<{ success: boolean; id: string }>('ext_tool_manage_todo', {
-        action: 'create', title: p.title || '新建待办', content: p.content || '', priority: p.priority || 'P2', due_date: p.due_date || ''
-      })
-      if (!res.success) throw new Error('create todo failed')
-      return res
+      const r: any = await createTodo({ title: p.title || '新建待办', content: p.content || '', priority: p.priority || 'P2', dueDate: p.due_date || '', projectId: p.project_id || '' })
+      const id = r?.todo?.id
+      if (!id) throw new Error('create todo failed')
+      return id
     }
     case 'create_project': {
-      const res = await invoke<{ success: boolean; id: string }>('ext_tool_manage_project', {
-        action: 'create', name: p.name || '新建项目', description: p.description || ''
-      })
-      if (!res.success) throw new Error('create project failed')
-      return res
+      const r: any = await createProject({ name: p.name || '新建项目', description: p.description || '' })
+      if (!r?.id) throw new Error('create project failed')
+      return r.id
     }
     case 'create_note': {
       const res = await invoke<{ success: boolean; note_id: string }>('note_create', {
         title: p.title || '新建笔记', content: p.content || '', notebookId: p.notebook_id || ''
       })
       if (!res.success) throw new Error('create note failed')
-      return res
+      return res.note_id
     }
     case 'create_product': {
-      const res = await invoke<{ success: boolean; id: string }>('ext_tool_manage_product', {
-        action: 'create', name: p.name || '新建产品', description: p.description || ''
-      })
-      if (!res.success) throw new Error('create product failed')
-      return res
-    }
-    case 'create_contact': {
-      const res = await invoke<{ success: boolean; id: string }>('ext_tool_manage_contact', {
-        action: 'create', name: p.name || '新建联系人', email: p.email || '', phone: p.phone || '', partner_id: p.partner_id || ''
-      })
-      if (!res.success) throw new Error('create contact failed')
-      return res
+      const r: any = await createProduct({ name: p.name || '新建产品', description: p.description || '' })
+      if (!r?.id) throw new Error('create product failed')
+      return r.id
     }
     case 'create_partner': {
-      const res = await invoke<{ success: boolean; id: string }>('ext_tool_manage_partner', {
-        action: 'create', name: p.name || '新建合作伙伴', type: p.type || 'CUSTOMER'
-      })
-      if (!res.success) throw new Error('create partner failed')
-      return res
+      const r: any = await createPartner({ name: p.name || '新建合作伙伴', type: p.type || 'CUSTOMER', phone: p.phone || '', address: p.address || '', remark: p.remark || '' })
+      if (!r?.id) throw new Error('create partner failed')
+      if (p.name) ctx[String(p.name).trim().toLowerCase()] = r.id
+      return r.id
+    }
+    case 'create_contact': {
+      let pid = (p.partner_id as string) || ''
+      if (!pid && p.partner_name) pid = ctx[String(p.partner_name).trim().toLowerCase()] || ''
+      if (!pid) throw new Error('缺少归属公司，请单独点击该按钮在弹窗中处理')
+      const r: any = await createPartnerContact({ partnerId: pid, name: p.name || '新建联系人', email: p.email || '', phone: p.phone || '', position: p.position || '', remark: p.remark || '' })
+      if (!r?.id && !r?.success) throw new Error('create contact failed')
+      return r?.id
     }
     default:
       throw new Error(`Unknown create type: ${type}`)
