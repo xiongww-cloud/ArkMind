@@ -7,8 +7,6 @@
 pub(crate) const MAIN_AGENT_ONLY: &[&str] = &[
     "ext_tool_delegate_agent",
     "ext_tool_memory",
-    "ext_tool_search",
-    "ext_tool_chunk_navigate",
 ];
 
 pub(crate) mod common;
