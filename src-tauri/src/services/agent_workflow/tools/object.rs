@@ -9,7 +9,7 @@ pub(crate) fn execute_object_catalog(entity: &str, field_filters: &[Value], sort
         "PROJECT" => ("projects", &["id","name","description","status","owner","budget","bid_time","created_at","updated_at"]),
         "PRODUCT" => ("(SELECT p.id, p.name, COALESCE(ps.name, '') AS series_name, p.description, p.price, p.full_specs AS params, p.sort_order, p.created_at, p.updated_at FROM products p LEFT JOIN product_series ps ON p.series_id = ps.id)", &["id","name","series_name","description","price","params","sort_order","created_at","updated_at"]),
         "CHANNEL" | "VENDOR" | "CUSTOMER" => ("partners", &["id","type","name","phone","address","remark","contact_person","contact_phone","created_at","updated_at"]),
-        "CONTACT" => ("partner_contacts", &["id","name","phone","email","position","remark","created_at"]),
+        "CONTACT" => ("(SELECT pc.id, pc.name, pc.phone, pc.email, pc.position, pc.remark, pc.created_at, COALESCE(GROUP_CONCAT(DISTINCT p.name),'') AS partner_names FROM partner_contacts pc LEFT JOIN partner_contact_mapping pcm ON pcm.contact_id=pc.id LEFT JOIN partners p ON p.id=pcm.partner_id GROUP BY pc.id)", &["id","name","phone","email","position","remark","partner_names","created_at"]),
         "TODO" => ("todos", &["id","title","content","done","priority","due_date","repeat","created_at","updated_at"]),
         "NOTE" => ("(SELECT n.note_id, n.title, n.content, n.is_daily, n.notebook_id, nb.name AS notebook_name, n.deleted_at, n.created_at, n.updated_at FROM notes n LEFT JOIN notebooks nb ON n.notebook_id = nb.id)", &["note_id","title","content","is_daily","notebook_id","notebook_name","deleted_at","created_at","updated_at"]),
         "SOLUTION" => ("solutions", &["id","project_id","name","created_at","updated_at"]),
@@ -465,6 +465,14 @@ pub(crate) fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize
                 extra = Some(extra_obj);
             }
         }
+        // CONTACT 类型：额外显示所属公司（空串=确认未关联，与"无数据"区分）
+        if st == "CONTACT" {
+            if let Ok(Some(c)) = database::get(
+                "SELECT COALESCE(GROUP_CONCAT(DISTINCT p.name),'') AS partner_names FROM partner_contact_mapping pcm LEFT JOIN partners p ON p.id=pcm.partner_id WHERE pcm.contact_id=?1",
+                &[json!(sid)]) {
+                extra = Some(json!({"partner_names": c["partner_names"].as_str().unwrap_or("")}));
+            }
+        }
         
         let mut item = json!({
             "source_type": st,
@@ -600,6 +608,14 @@ pub(crate) fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end:
                 if !repeat.is_empty() { extra_obj["repeat"] = json!(repeat); }
                 if !proj.is_empty() { extra_obj["project_name"] = json!(proj); }
                 extra = Some(extra_obj);
+            }
+        }
+        // CONTACT 类型：额外显示所属公司（空串=确认未关联，与"无数据"区分）
+        if st == "CONTACT" {
+            if let Ok(Some(c)) = database::get(
+                "SELECT COALESCE(GROUP_CONCAT(DISTINCT p.name),'') AS partner_names FROM partner_contact_mapping pcm LEFT JOIN partners p ON p.id=pcm.partner_id WHERE pcm.contact_id=?1",
+                &[json!(sid)]) {
+                extra = Some(json!({"partner_names": c["partner_names"].as_str().unwrap_or("")}));
             }
         }
         

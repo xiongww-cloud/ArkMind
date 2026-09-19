@@ -888,10 +888,20 @@ pub async fn agent_chat_workflow_internal(
                                                 "SOLUTION" => database::get("SELECT id, project_id, name, created_at FROM solutions WHERE id=?1", &[json!(raw_id)]),
                                                 _ => Ok(None),
                                             };
-                                            match row {
-                                                Ok(Some(r)) => results.push(json!({"id": bid, "type": tp, "found": true, "data": r})),
-                                                _ => results.push(json!({"id": bid, "type": tp, "found": false})),
-                                            }
+                                             match row {
+                                                 Ok(Some(mut r)) => {
+                                                     // CONTACT 详情补结构化归属公司（含 id，供后续 link/unlink 直接引用）
+                                                     if tp == "CONTACT" {
+                                                         if let Ok(ps) = database::all(
+                                                             "SELECT pcm.partner_id as id, p.name, p.type FROM partner_contact_mapping pcm JOIN partners p ON p.id=pcm.partner_id WHERE pcm.contact_id=?1",
+                                                             &[json!(raw_id)]) {
+                                                             r["partners"] = json!(ps);
+                                                         }
+                                                     }
+                                                     results.push(json!({"id": bid, "type": tp, "found": true, "data": r}))
+                                                 }
+                                                 _ => results.push(json!({"id": bid, "type": tp, "found": false})),
+                                             }
                                         }
                                         // 文档对象：走chunk回忆
                                         if !doc_ids.is_empty() {
