@@ -28,27 +28,6 @@ pub(crate) fn execute(a: &Value) -> String {
                                             .unwrap_or("");
                                         let raw_proj_id = a["project_id"].as_str().unwrap_or("");
                                         let project_id = raw_proj_id.strip_prefix("PROJECT-").unwrap_or(raw_proj_id);
-                                        // ★ 去重检查：同名联系人（同一合作伙伴下）
-                                        let mut is_dup = false;
-                                        let mut dup_msg = String::new();
-                                        if !parent_id.is_empty() {
-                                            if let Ok(Some(existing)) = database::get(
-                                                "SELECT pc.id, pc.name FROM partner_contacts pc JOIN partner_contact_mapping pcm ON pcm.contact_id=pc.id WHERE pc.name=?1 AND pcm.partner_id=?2 LIMIT 1",
-                                                &[json!(name), json!(parent_id)],
-                                            ) {
-                                                let eid = existing["id"].as_str().unwrap_or("");
-                                                is_dup = true;
-                                                dup_msg = format!("已存在同名联系人「{}」(ID: {})，未重复创建。如需新建同名联系人请先修改名称。", name, eid);
-                                            }
-                                        }
-                                        if is_dup {
-                                            let envelope = ToolResultEnvelope {
-                                                result_type: "object_create_result".to_string(),
-                                                data: json!({"success": false, "error": dup_msg.clone()}),
-                                                summary: Some(dup_msg),
-                                            };
-                                            envelope.to_json()
-                                        } else {
                                         let data = json!({
                                             "name": name,
                                             "phone": phone,
@@ -57,21 +36,27 @@ pub(crate) fn execute(a: &Value) -> String {
                                             "remark": remark,
                                             "partnerId": parent_id
                                         });
-                                        // 使用 block_on 调用异步函数
+                                        // 使用 block_on 调用异步函数（瓶颈函数已内置同 partner 去重）
                                         match block_on_async(crate::commands::partner_commands::partner_contact_create(data)) {
                                             Ok(result) => {
                                                 let id = result["id"].as_str().unwrap_or("");
-                                                // 如果有项目ID，手动关联到项目
-                                                if !project_id.is_empty() && !id.is_empty() {
+                                                let is_dup = result["duplicate"].as_bool().unwrap_or(false);
+                                                // 如果有项目ID且非重复，手动关联到项目
+                                                if !project_id.is_empty() && !id.is_empty() && !is_dup {
                                                     let _ = block_on_async(crate::commands::partner_commands::contact_link_project(
                                                         id.to_string(),
                                                         project_id.to_string()
                                                     ));
                                                 }
+                                                let summary = if is_dup {
+                                                    format!("已存在同名联系人「{}」(ID: {})，已复用，未重复创建。", name, id)
+                                                } else {
+                                                    format!("已创建联系人「{}」", name)
+                                                };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"success": true, "id": id, "type": "CONTACT", "name": name}),
-                                                    summary: Some(format!("已创建联系人「{}」", name)),
+                                                    data: json!({"success": true, "id": id, "type": "CONTACT", "name": name, "duplicate": is_dup}),
+                                                    summary: Some(summary),
                                                 };
                                                 envelope.to_json()
                                             },
@@ -84,7 +69,6 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 envelope.to_json()
                                             },
                                         }
-                                        } // close if is_dup else
                                     }
                                 }
                                 "update" => {

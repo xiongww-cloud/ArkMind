@@ -235,12 +235,26 @@ pub async fn partner_update_remark(partner_id: String, project_id: String, remar
 // 联系人 CRUD（独立对象，通过 partner_contact_mapping 关联到 Partner）
 // ═══════════════════════════════════════════════════════════════════
 
-/// 创建联系人
+/// 创建联系人（同 partner 下同名自动复用，不重复创建）
 #[tauri::command]
 pub async fn partner_contact_create(data: Value) -> Result<Value, String> {
-    let id = uuid::Uuid::new_v4().to_string();
     let partner_id = data["partnerId"].as_str().or(data["channelId"].as_str()).or(data["vendorId"].as_str()).or(data["customerId"].as_str()).unwrap_or("").to_string();
     let name = data["name"].as_str().unwrap_or("").to_string();
+
+    // ★ 去重：同 partner 下同名联系人直接复用
+    if !partner_id.is_empty() && !name.is_empty() {
+        if let Ok(Some(existing)) = database::get(
+            "SELECT pc.id, pc.name, pc.phone, pc.email, pc.position, pc.remark FROM partner_contacts pc \
+             JOIN partner_contact_mapping pcm ON pcm.contact_id=pc.id \
+             WHERE pc.name=?1 AND pcm.partner_id=?2 LIMIT 1",
+            &[json!(&name), json!(&partner_id)],
+        ) {
+            let eid = existing["id"].as_str().unwrap_or("").to_string();
+            return Ok(json!({"success":true,"id":eid,"name":name,"duplicate":true,"message":"同合作伙伴下已存在同名联系人，已复用"}));
+        }
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
     let phone = data["phone"].as_str().unwrap_or("").to_string();
     let email = data["email"].as_str().unwrap_or("").to_string();
     let position = data["position"].as_str().unwrap_or("").to_string();

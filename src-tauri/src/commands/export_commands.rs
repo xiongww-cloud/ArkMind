@@ -694,28 +694,44 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
     // 联系人（新格式或旧格式兼容）
     if let Some(arr) = data["partner_contacts"].as_array() {
         for pc in arr {
-            database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
-                json!(pc["id"]),json!(pc["name"]),json!(pc["phone"]),json!(pc["email"]),
-                json!(pc["position"]),json!(pc["remark"]),json!(pc["created_at"])
-            ]).ok();
+            let pc_name = pc["name"].as_str().unwrap_or("");
+            // ★ 去重：按 name 查找已有联系人
+            if !pc_name.is_empty() && database::get(
+                "SELECT id FROM partner_contacts WHERE name=?1", &[json!(pc_name)]
+            ).ok().flatten().is_none() {
+                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
+                    json!(pc["id"]),json!(pc["name"]),json!(pc["phone"]),json!(pc["email"]),
+                    json!(pc["position"]),json!(pc["remark"]),json!(pc["created_at"])
+                ]).ok();
+            }
         }
     } else {
         // 旧格式：转换 channel_contacts → partner_contacts
         if let Some(ccs) = data["channel_contacts"].as_array() {
             for c in ccs {
-                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)", &[
-                    json!(c["id"]),json!(c["name"]),json!(c["phone"]),json!(c["email"]),
-                    json!(c["remark"]),json!(c["created_at"])
-                ]).ok();
+                let c_name = c["name"].as_str().unwrap_or("");
+                if !c_name.is_empty() && database::get(
+                    "SELECT id FROM partner_contacts WHERE name=?1", &[json!(c_name)]
+                ).ok().flatten().is_none() {
+                    database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)", &[
+                        json!(c["id"]),json!(c["name"]),json!(c["phone"]),json!(c["email"]),
+                        json!(c["remark"]),json!(c["created_at"])
+                    ]).ok();
+                }
             }
         }
         // 旧格式：转换 vendor_contacts → partner_contacts
         if let Some(vcs) = data["vendor_contacts"].as_array() {
             for v in vcs {
-                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)", &[
-                    json!(v["id"]),json!(v["name"]),json!(v["phone"]),json!(v["email"]),
-                    json!(v["remark"]),json!(v["created_at"])
-                ]).ok();
+                let v_name = v["name"].as_str().unwrap_or("");
+                if !v_name.is_empty() && database::get(
+                    "SELECT id FROM partner_contacts WHERE name=?1", &[json!(v_name)]
+                ).ok().flatten().is_none() {
+                    database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)", &[
+                        json!(v["id"]),json!(v["name"]),json!(v["phone"]),json!(v["email"]),
+                        json!(v["remark"]),json!(v["created_at"])
+                    ]).ok();
+                }
             }
         }
     }
@@ -957,17 +973,23 @@ fn import_contacts(data: &Value) -> Result<(), String> {
     // Import partner_contacts
     if let Some(arr) = data["partner_contacts"].as_array() {
         for pc in arr {
-            database::run(
-                "INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                &[
-                    pc["id"].clone(), pc["name"].clone(),
-                    pc["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    pc["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    pc["position"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    pc["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    pc["created_at"].clone(),
-                ],
-            ).ok();
+            let pc_name = pc["name"].as_str().unwrap_or("");
+            // ★ 去重：按 name 查找已有联系人
+            if !pc_name.is_empty() && database::get(
+                "SELECT id FROM partner_contacts WHERE name=?1", &[json!(pc_name)]
+            ).ok().flatten().is_none() {
+                database::run(
+                    "INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    &[
+                        pc["id"].clone(), pc["name"].clone(),
+                        pc["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        pc["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        pc["position"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        pc["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        pc["created_at"].clone(),
+                    ],
+                ).ok();
+            }
         }
     }
     // Import partner_contact_mapping

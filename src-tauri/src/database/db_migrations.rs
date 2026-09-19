@@ -960,6 +960,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     }
     let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_cpm_project ON contact_project_mapping(project_id);");
     let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_cpm_contact ON contact_project_mapping(contact_id);");
+    // ★ 联系人去重索引（加速同名查询）
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_contacts_name ON partner_contacts(name);");
 
     // ★ 迁移 MEMORY / POLICY 到独立表
     migrate_memory_policy_to_own_tables(conn);

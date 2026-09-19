@@ -373,14 +373,23 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
                     crate::services::business_relations::upsert("CHANNEL", ch["id"].as_str().unwrap_or(""), "PROJECT", &pid, "belongs_to", "{}");
                     if let Some(contacts) = ch["contacts"].as_array() {
                         for ct in contacts {
-                            let ct_id = ct["id"].as_str().unwrap_or("");
-                            database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)",&[
-                                ct["id"].clone(),ct["name"].clone(),
-                                ct["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                                ct["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                                ct["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                                ct["created_at"].clone()
-                            ]).ok();
+                            let ct_name = ct["name"].as_str().unwrap_or("");
+                            // ★ 去重：按 name 查找已有联系人
+                            let ct_id = if let Ok(Some(row)) = database::get(
+                                "SELECT id FROM partner_contacts WHERE name=?1", &[json!(ct_name)]
+                            ) {
+                                row["id"].as_str().unwrap_or(ct["id"].as_str().unwrap_or("")).to_string()
+                            } else {
+                                let new_id = ct["id"].as_str().unwrap_or("").to_string();
+                                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)",&[
+                                    ct["id"].clone(),ct["name"].clone(),
+                                    ct["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                    ct["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                    ct["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                    ct["created_at"].clone()
+                                ]).ok();
+                                new_id
+                            };
                             database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)",&[
                                 ch["id"].clone(),json!(ct_id)
                             ]).ok();
@@ -401,14 +410,23 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
                     crate::services::business_relations::upsert("VENDOR", vp["id"].as_str().unwrap_or(""), "PROJECT", &pid, "belongs_to", "{}");
                     if let Some(contacts) = vp["contacts"].as_array() {
                         for ct in contacts {
-                            let ct_id = ct["id"].as_str().unwrap_or("");
-                            database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)",&[
-                                ct["id"].clone(),ct["name"].clone(),
-                                ct["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                                ct["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                                ct["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                                ct["created_at"].clone()
-                            ]).ok();
+                            let ct_name = ct["name"].as_str().unwrap_or("");
+                            // ★ 去重：按 name 查找已有联系人
+                            let ct_id = if let Ok(Some(row)) = database::get(
+                                "SELECT id FROM partner_contacts WHERE name=?1", &[json!(ct_name)]
+                            ) {
+                                row["id"].as_str().unwrap_or(ct["id"].as_str().unwrap_or("")).to_string()
+                            } else {
+                                let new_id = ct["id"].as_str().unwrap_or("").to_string();
+                                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,'',?5,?6)",&[
+                                    ct["id"].clone(),ct["name"].clone(),
+                                    ct["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                    ct["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                    ct["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                                    ct["created_at"].clone()
+                                ]).ok();
+                                new_id
+                            };
                             database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)",&[
                                 vp["id"].clone(),json!(ct_id)
                             ]).ok();
@@ -420,14 +438,20 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
         // Import partner contacts (new format)
         if let Some(arr) = manifest["partner_contacts"].as_array() {
             for pc in arr {
-                database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
-                    pc["id"].clone(),pc["name"].clone(),
-                    pc["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    pc["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    pc["position"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    pc["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
-                    pc["created_at"].clone()
-                ]).ok();
+                let pc_name = pc["name"].as_str().unwrap_or("");
+                // ★ 去重：按 name 查找已有联系人
+                if !pc_name.is_empty() && database::get(
+                    "SELECT id FROM partner_contacts WHERE name=?1", &[json!(pc_name)]
+                ).ok().flatten().is_none() {
+                    database::run("INSERT OR IGNORE INTO partner_contacts(id,name,phone,email,position,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",&[
+                        pc["id"].clone(),pc["name"].clone(),
+                        pc["phone"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        pc["email"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        pc["position"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        pc["remark"].as_str().map(|s| json!(s)).unwrap_or(json!("")),
+                        pc["created_at"].clone()
+                    ]).ok();
+                }
             }
         }
         if let Some(arr) = manifest["partner_contact_mapping"].as_array() {
