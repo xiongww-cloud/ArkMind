@@ -348,6 +348,111 @@ fn asset_still_referenced(asset_id: &str) -> bool {
     emails > 0
 }
 
+/// 零引用释放：资产不再被任何 file_relations / email_attachments 引用时，
+/// 回收知识库、FILE 关联边、物理文件、目录位置行与资产行。空 id / 仍被引用时为 no-op。
+pub(crate) fn release_asset_if_orphan(asset_id: &str) {
+    if asset_id.is_empty() { return; }
+    if asset_still_referenced(asset_id) { return; }
+    crate::services::knowledge_lifecycle::notify_deleted("FILE", asset_id);
+    if let Some(p) = get_physical_path(asset_id) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
+    database::run("DELETE FROM library_file_locations WHERE file_id=?", &[json!(asset_id)]).ok();
+    database::run("DELETE FROM business_relations WHERE (source_type='FILE' AND source_id=?) OR (target_type='FILE' AND target_id=?)", &[json!(asset_id), json!(asset_id)]).ok();
+    database::run("DELETE FROM file_assets WHERE id=?", &[json!(asset_id)]).ok();
+    log::info!("[资产回收] 零引用资产已清理: {}", asset_id);
+}
+
+/// 在删除引用行**之前**收集某组实体关联的资产 id（file_relations + 邮件域的 email_attachments）
+pub(crate) fn collect_entity_asset_ids(entity_type: &str, entity_ids: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if entity_ids.is_empty() { return out; }
+    let ph = entity_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut vals: Vec<Value> = vec![json!(entity_type)];
+    vals.extend(entity_ids.iter().map(|s| json!(s)));
+    if let Ok(rows) = database::all(
+        &format!("SELECT DISTINCT file_id FROM file_relations WHERE entity_type=? AND entity_id IN ({})", ph), &vals) {
+        out.extend(rows.iter().filter_map(|r| r["file_id"].as_str().map(String::from)));
+    }
+    if entity_type == "email" {
+        if let Ok(rows) = database::all(
+            &format!("SELECT DISTINCT file_asset_id FROM email_attachments WHERE email_id IN ({})", ph), &vals[1..]) {
+            out.extend(rows.iter().filter_map(|r| r["file_asset_id"].as_str().filter(|s| !s.is_empty()).map(String::from)));
+        }
+    }
+    out.sort(); out.dedup();
+    out
+}
+
+/// 全局资产回收（幂等，三段）：
+/// ① 悬垂关系行（实体已不存在的 file_relations；entity_type='library' 为资料库根/目录文件，恒合法）
+/// ② 零引用资产（无关系行、无邮件附件引用 → release：物理文件+知识库+边+资产行）
+/// ③ 磁盘游离文件（files/ 下 64 位 hex 命名但无任何 file_assets 记录）
+#[tauri::command]
+pub async fn assets_cleanup_orphans() -> Result<Value, String> {
+    // ① 悬垂关系行
+    let dangling: Vec<(String, String)> = database::all(
+        "SELECT fr.id, fr.file_id FROM file_relations fr \
+         WHERE fr.entity_type != 'library' AND CASE fr.entity_type \
+             WHEN 'project' THEN EXISTS(SELECT 1 FROM projects p WHERE p.id=fr.entity_id) \
+             WHEN 'note'    THEN EXISTS(SELECT 1 FROM notes n WHERE n.note_id=fr.entity_id) \
+             WHEN 'todo'    THEN EXISTS(SELECT 1 FROM todos t WHERE t.id=fr.entity_id) \
+             WHEN 'email'   THEN EXISTS(SELECT 1 FROM emails e WHERE e.id=fr.entity_id) \
+             WHEN 'product' THEN EXISTS(SELECT 1 FROM products p WHERE p.id=fr.entity_id) \
+             WHEN 'contact' THEN EXISTS(SELECT 1 FROM partner_contacts c WHERE c.id=fr.entity_id) \
+             WHEN 'partner' THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
+             WHEN 'channel' THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
+             WHEN 'vendor'  THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
+             WHEN 'customer' THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
+             ELSE 1 END = 0", &[])
+        .unwrap_or_default().iter()
+        .filter_map(|r| Some((r["id"].as_str()?.to_string(), r["file_id"].as_str()?.to_string())))
+        .collect();
+    let affected_assets: Vec<String> = {
+        let mut v: Vec<String> = dangling.iter().map(|(_, f)| f.clone()).collect();
+        v.sort(); v.dedup();
+        v
+    };
+    for (rel_id, _) in &dangling {
+        database::run("DELETE FROM file_relations WHERE id=?", &[json!(rel_id)]).ok();
+    }
+
+    // ② 零引用资产（悬垂关系涉及资产 + 天然孤儿）
+    let mut candidates = affected_assets;
+    candidates.extend(database::all(
+        "SELECT fa.id FROM file_assets fa \
+         WHERE NOT EXISTS(SELECT 1 FROM file_relations fr WHERE fr.file_id=fa.id) \
+           AND NOT EXISTS(SELECT 1 FROM email_attachments ea WHERE ea.file_asset_id=fa.id)", &[])
+        .unwrap_or_default().iter().filter_map(|r| r["id"].as_str().map(String::from)));
+    candidates.sort(); candidates.dedup();
+    let mut assets_removed = 0usize;
+    for aid in &candidates {
+        let before: i64 = database::get("SELECT COUNT(*) c FROM file_assets WHERE id=?", &[json!(aid)])
+            .ok().flatten().and_then(|r| r["c"].as_i64()).unwrap_or(0);
+        release_asset_if_orphan(aid);
+        let after: i64 = database::get("SELECT COUNT(*) c FROM file_assets WHERE id=?", &[json!(aid)])
+            .ok().flatten().and_then(|r| r["c"].as_i64()).unwrap_or(0);
+        if before > 0 && after == 0 { assets_removed += 1; }
+    }
+
+    // ③ 磁盘游离的 hash 文件（我们只写过 64-hex 命名；其余文件一律不碰）
+    let known: std::collections::HashSet<String> = database::all("SELECT content_hash FROM file_assets", &[])
+        .unwrap_or_default().iter()
+        .filter_map(|r| r["content_hash"].as_str().map(|s| s.to_lowercase()))
+        .collect();
+    let mut disk_removed = 0usize;
+    if let Ok(rd) = std::fs::read_dir(storage_base()) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name.len() != 64 || !name.bytes().all(|b| b.is_ascii_hexdigit()) { continue; }
+            if known.contains(&name) { continue; }
+            if entry.path().is_file() && std::fs::remove_file(entry.path()).is_ok() { disk_removed += 1; }
+        }
+    }
+
+    database::save().ok();
+    log::info!("[资产回收] 悬垂关系 {} 行 | 回收资产 {} 个 | 磁盘游离文件 {} 个", dangling.len(), assets_removed, disk_removed);
+    Ok(json!({ "success": true, "danglingRelations": dangling.len(), "assetsRemoved": assets_removed, "diskFilesRemoved": disk_removed }))
+}
+
 /// 简化删除：按 file_relations.id 删除关联，无剩余引用时清理 file_assets
 #[tauri::command] pub async fn file_delete(file_id: String) -> Result<Value, String> {
     // file_id is file_relations.id
@@ -368,12 +473,7 @@ fn asset_still_referenced(asset_id: &str) -> bool {
 
     // 3. If no remaining references, clean up asset + KB + physical file
     if let Some(ref aid) = asset_id {
-        if !asset_still_referenced(aid) {
-            crate::services::knowledge_lifecycle::notify_deleted("FILE", aid);
-            if let Some(p) = get_physical_path(aid) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
-            database::run("DELETE FROM library_file_locations WHERE file_id=?", &[json!(aid)]).ok();
-            database::run("DELETE FROM file_assets WHERE id=?", &[json!(aid)]).ok();
-        }
+        release_asset_if_orphan(aid);
     }
 
     // 4. Sync business_relations
@@ -403,12 +503,7 @@ fn asset_still_referenced(asset_id: &str) -> bool {
 
     // 4. If file_assets has no remaining relations, clean up everything
     if let Some(ref aid) = asset_id {
-        if !asset_still_referenced(aid) {
-            crate::services::knowledge_lifecycle::notify_deleted("FILE", aid);
-            if let Some(p) = get_physical_path(aid) { if std::path::Path::new(&p).exists() { std::fs::remove_file(&p).ok(); } }
-            database::run("DELETE FROM library_file_locations WHERE file_id=?", &[json!(aid)]).ok();
-            database::run("DELETE FROM file_assets WHERE id=?", &[json!(aid)]).ok();
-        }
+        release_asset_if_orphan(aid);
     }
 
     // 5. Clean up business_relations

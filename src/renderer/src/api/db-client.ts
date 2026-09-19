@@ -1241,6 +1241,9 @@ export async function pipelineClearAll(): Promise<SuccessResponse> {
 export async function pipelineResync(): Promise<SuccessResponse> {
   return invoke('pipeline_resync')
 }
+export async function assetsCleanupOrphans(): Promise<SuccessResponse & { danglingRelations?: number; assetsRemoved?: number; diskFilesRemoved?: number }> {
+  return invoke('assets_cleanup_orphans')
+}
 export async function pipelineBrowseSource(
   sourceType?: string,
   limit?: number

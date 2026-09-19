@@ -279,7 +279,7 @@ pub fn run() {
             commands::file_folder_create, commands::file_folder_rename, commands::file_folder_delete, commands::file_folder_move, commands::file_folder_reorder,
             commands::file_remove_note_mapping, commands::file_list_by_note,
             commands::file_add_todo_mapping, commands::file_remove_todo_mapping, commands::file_list_by_todo,
-            commands::file_delete_from_domain,
+            commands::file_delete_from_domain, commands::assets_cleanup_orphans,
             commands::file_list_all, commands::file_move_to_folder,
             commands::file_unlink_from_product, commands::file_get_product_associations, commands::file_update_product_associations,
             // Notes

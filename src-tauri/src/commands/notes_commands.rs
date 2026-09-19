@@ -149,13 +149,15 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn notes_permanent_delete(note_id: String) -> Result<Value, String> {
     crate::services::knowledge_lifecycle::notify_deleted("NOTE", &note_id);
+    let note_assets = crate::commands::file_commands::collect_entity_asset_ids("note", std::slice::from_ref(&note_id));
     database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM file_relations WHERE entity_type='note' AND entity_id=?",&[json!(&note_id)]).ok();
     crate::services::business_relations::delete_by_source("NOTE", &note_id);
     // 清理以该笔记为目标的边（真实附件的 FILE→NOTE has_file 边，由 add_relation 写入）
     database::run("DELETE FROM business_relations WHERE target_type='NOTE' AND target_id=?", &[json!(&note_id)]).ok();
     database::run("DELETE FROM notes WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
-    database::save().map_err(|e|e.to_string())?;
+    for aid in &note_assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
+    database::save().map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn notes_count_by_notebook(notebook_id: String) -> Result<Value, String> { let count: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM notes WHERE notebook_id=? AND deleted_at IS NULL", rusqlite::params![&notebook_id],|r|r.get(0))).unwrap_or(0); Ok(json!({"success":true,"count":count})) }

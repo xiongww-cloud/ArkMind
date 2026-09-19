@@ -102,15 +102,20 @@ pub async fn email_update_account(id: String, data: Value) -> Result<Value, Stri
     Ok(json!({"success": true}))
 }
 
-/// 删除账户（含逐封回传知识库删除，防止已删邮件内容残留可检索）
+/// 删除账户（含逐封回传知识库删除 + 附件资产零引用回收，防正文残留可检索/磁盘孤儿）
 #[tauri::command]
 pub async fn email_delete_account(id: String) -> Result<Value, String> {
     let ids: Vec<String> = database::all("SELECT id FROM emails WHERE account_id=?", &[json!(&id)])
         .unwrap_or_default().iter().filter_map(|r| r["id"].as_str().map(String::from)).collect();
+    let assets = crate::commands::file_commands::collect_entity_asset_ids("email", &ids);
     for eid in &ids { crate::services::knowledge_lifecycle::notify_deleted("EMAIL", eid); }
+    // file_relations 的邮件域引用须在 emails 行删除前清（子查询依赖邮件行存在）
+    database::run("DELETE FROM file_relations WHERE entity_type='email' AND entity_id IN (SELECT id FROM emails WHERE account_id=?)", &[json!(&id)]).ok();
     database::run("DELETE FROM email_attachments WHERE email_id IN (SELECT id FROM emails WHERE account_id=?)", &[json!(&id)]).ok();
     database::run("DELETE FROM emails WHERE account_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM email_accounts WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
+    for aid in &assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
+    database::save().ok();
     Ok(json!({"success": true}))
 }
 

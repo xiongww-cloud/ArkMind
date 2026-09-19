@@ -60,6 +60,8 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn project_delete(id: String) -> Result<Value, String> {
     crate::services::knowledge_lifecycle::notify_deleted("PROJECT", &id);
+    // 项目附件资产：删关系行前收集，末尾按零引用回收（防磁盘孤儿累积）
+    let project_assets = crate::commands::file_commands::collect_entity_asset_ids("project", std::slice::from_ref(&id));
     let result = database::run("DELETE FROM projects WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
     if result.changes == 0 { return Err(format!("未找到项目: {}", id)); }
     database::run("DELETE FROM note_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
@@ -80,6 +82,7 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM solutions WHERE project_id=?", &[json!(&id)]).ok();
     // 清理 business_relations 表中与该项目相关的关联
     database::run("DELETE FROM business_relations WHERE (source_type='PROJECT' AND source_id=?) OR (target_type='PROJECT' AND target_id=?)", &[json!(&id), json!(&id)]).ok();
+    for aid in &project_assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))
 }

@@ -1168,6 +1168,14 @@ async function handleClearAll() {
   try { await pipelineClearAll(); toast({ message: '已重置全部数据，正在重新物化打标', type: 'success' }) }
   catch { toast({ message: '重置失败', type: 'error' }) }
 }
+async function handleAssetsCleanup() {
+  if (!(await dangerConfirm({ title: '回收孤儿文件资产', message: '将清理已删除实体遗留的悬垂附件关系、零引用的文件记录与其磁盘文件。仍被引用的共享文件不受影响，操作幂等。', confirmText: '回收' }))) return
+  try {
+    const { assetsCleanupOrphans } = await import('@/api/db-client')
+    const r = await assetsCleanupOrphans()
+    toast({ message: `回收完成：悬垂关系 ${r.danglingRelations ?? 0}、资产 ${r.assetsRemoved ?? 0}、磁盘文件 ${r.diskFilesRemoved ?? 0}`, type: 'success' })
+  } catch (e: any) { toast({ message: `回收失败: ${e?.message || e}`, type: 'error' }) }
+}
 // ─── 解析失败明细弹窗 / 重试 / 高级操作折叠 ───
 const showParseErrorsModal = ref(false)
 const showAdvancedOps = ref(false)
@@ -2023,6 +2031,13 @@ function onTruncEnter(e: MouseEvent, text: string) {
                     <div class="text-[9px] text-surface-400">重新从业务数据抓取并物化，管线严重异常时的最后手段</div>
                   </div>
                   <button @click="handleClearAll" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50 flex-shrink-0"><AppIcon name="undo" size="12"/>重置</button>
+                </div>
+                <div class="flex items-center justify-between gap-3 border-t border-surface-100 pt-2">
+                  <div class="min-w-0">
+                    <div class="text-[11px] text-surface-600">回收孤儿文件资产</div>
+                    <div class="text-[9px] text-surface-400">清掉删除实体后无引用的附件记录与磁盘文件（悬垂关系/零引用资产/游离文件），幂等可常点</div>
+                  </div>
+                  <button @click="handleAssetsCleanup" class="btn-secondary text-xs !text-amber-600 !border-amber-300 hover:!bg-amber-50 flex-shrink-0"><AppIcon name="trash" size="12"/>回收</button>
                 </div>
               </div>
               <!-- 解析问题明细弹窗 -->
