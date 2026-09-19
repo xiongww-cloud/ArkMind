@@ -1088,11 +1088,10 @@ pub async fn agent_chat_workflow_internal(
                                         AGENT_CANCEL.store(true, Ordering::Release);
                                     }
                                     let iters = v["data"]["iterations"].as_i64().unwrap_or(1) as i32;
-                                    budget -= 40 + iters * 2;
+                                    budget -= 30 + iters * 2;
                                 }
-                                Err(_) => { budget -= 60; }
+                                Err(_) => { budget -= 45; }
                             }
-                            search_cost += 30;
                             (res, vec![])
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
