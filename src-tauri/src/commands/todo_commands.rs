@@ -236,6 +236,7 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn todos_delete(id: String) -> Result<Value, String> {
+    let todo_assets = crate::commands::file_commands::collect_entity_asset_ids("todo", std::slice::from_ref(&id));
     database::run("DELETE FROM todo_project_mapping WHERE todo_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM file_relations WHERE entity_type='todo' AND entity_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM notifications WHERE entity_type='todo' AND entity_id=?", &[json!(&id)]).ok();
@@ -243,6 +244,7 @@ pub async fn todos_delete(id: String) -> Result<Value, String> {
     crate::services::business_relations::delete_by_source("TODO", &id);
     let result = database::run("DELETE FROM todos WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
     if result.changes == 0 { return Err(format!("未找到待办: {}", id)); }
+    for aid in &todo_assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({ "success": true }))
 }

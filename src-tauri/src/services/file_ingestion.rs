@@ -84,6 +84,8 @@ fn ingestion_loop() {
 
     let mut idle_rounds: u32 = 0;
     let mut last_backfill = std::time::Instant::now();
+    // 孤儿资产兜底：初始值回拨一个周期 → 启动后首轮空闲即清历史欠账，之后每 24h 一次
+    let mut last_orphan_sweep = std::time::Instant::now() - Duration::from_secs(24 * 3600);
 
     loop {
         if !INGESTION_RUNNING.load(Ordering::Acquire) {
@@ -105,6 +107,15 @@ fn ingestion_loop() {
         if last_backfill.elapsed() >= Duration::from_secs(30) {
             last_backfill = std::time::Instant::now();
             backfill_missing_file_sources();
+        }
+
+        // 4. 孤儿资产兜底回收（每 24h）：任何同步删除路径的漏网在宽限期后被此处收敛
+        if last_orphan_sweep.elapsed() >= Duration::from_secs(24 * 3600) {
+            last_orphan_sweep = std::time::Instant::now();
+            let (d, a, f) = crate::commands::file_commands::sweep_orphans();
+            if d + a + f > 0 {
+                log::info!("[数据中台] 周期资产回收：悬垂关系 {} | 孤儿资产 {} | 磁盘游离 {}", d, a, f);
+            }
         }
 
         // 空闲指数退避：无任务时 100ms→200→400→…封顶3s，消除常驻忙轮询（有任务/在途立即恢复 100ms）

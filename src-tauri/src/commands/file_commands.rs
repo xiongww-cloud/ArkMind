@@ -271,6 +271,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 
 #[tauri::command] pub async fn file_remove_note_mapping(file_id: String, note_id: String) -> Result<Value, String> {
     database::run("DELETE FROM file_relations WHERE entity_type='note' AND entity_id=? AND file_id=?", &[json!(&note_id), json!(&file_id)]).map_err(|e| e.to_string())?;
+    release_asset_if_orphan(&file_id);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn file_list_by_note(note_id: String) -> Result<Vec<Value>, String> {
@@ -286,6 +287,7 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
 }
 #[tauri::command] pub async fn file_remove_todo_mapping(file_id: String, todo_id: String) -> Result<Value, String> {
     database::run("DELETE FROM file_relations WHERE entity_type='todo' AND entity_id=? AND file_id=?", &[json!(&todo_id), json!(&file_id)]).map_err(|e| e.to_string())?;
+    release_asset_if_orphan(&file_id);
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn file_list_by_todo(todo_id: String) -> Result<Vec<Value>, String> {
@@ -382,12 +384,16 @@ pub(crate) fn collect_entity_asset_ids(entity_type: &str, entity_ids: &[String])
     out
 }
 
-/// 全局资产回收（幂等，三段）：
+/// 自动/手动共用的孤儿扫描宽限期：上传时 file_assets 插入与 file_relations 插入是两条语句，
+/// 存在"资产刚建、引用未写"的瞬时窗口；没有宽限的周期扫描会误删刚上传的附件（backfill 2 分钟宽限同一先例）
+const SWEEP_GRACE_MINUTES: i64 = 10;
+
+/// 全局资产回收核心（幂等三段，命令与数据中台周期兜底共用）：
 /// ① 悬垂关系行（实体已不存在的 file_relations；entity_type='library' 为资料库根/目录文件，恒合法）
-/// ② 零引用资产（无关系行、无邮件附件引用 → release：物理文件+知识库+边+资产行）
-/// ③ 磁盘游离文件（files/ 下 64 位 hex 命名但无任何 file_assets 记录）
-#[tauri::command]
-pub async fn assets_cleanup_orphans() -> Result<Value, String> {
+/// ② 零引用资产（无关系行、无邮件附件引用 → release：物理文件+知识库+边+资产行；受宽限期保护）
+/// ③ 磁盘游离文件（files/ 下 64 位 hex 命名但无任何 file_assets 记录；受宽限期保护）
+/// 返回 (悬垂关系数, 回收资产数, 清理磁盘文件数)
+pub(crate) fn sweep_orphans() -> (usize, usize, usize) {
     // ① 悬垂关系行
     let dangling: Vec<(String, String)> = database::all(
         "SELECT fr.id, fr.file_id FROM file_relations fr \
@@ -415,12 +421,13 @@ pub async fn assets_cleanup_orphans() -> Result<Value, String> {
         database::run("DELETE FROM file_relations WHERE id=?", &[json!(rel_id)]).ok();
     }
 
-    // ② 零引用资产（悬垂关系涉及资产 + 天然孤儿）
+    // ② 零引用资产（悬垂关系涉及资产 + 天然孤儿；新资产在宽限期内不回收）
     let mut candidates = affected_assets;
     candidates.extend(database::all(
-        "SELECT fa.id FROM file_assets fa \
+        &format!("SELECT fa.id FROM file_assets fa \
          WHERE NOT EXISTS(SELECT 1 FROM file_relations fr WHERE fr.file_id=fa.id) \
-           AND NOT EXISTS(SELECT 1 FROM email_attachments ea WHERE ea.file_asset_id=fa.id)", &[])
+           AND NOT EXISTS(SELECT 1 FROM email_attachments ea WHERE ea.file_asset_id=fa.id) \
+           AND fa.created_at < datetime('now','localtime','-{} minutes')", SWEEP_GRACE_MINUTES), &[])
         .unwrap_or_default().iter().filter_map(|r| r["id"].as_str().map(String::from)));
     candidates.sort(); candidates.dedup();
     let mut assets_removed = 0usize;
@@ -433,7 +440,7 @@ pub async fn assets_cleanup_orphans() -> Result<Value, String> {
         if before > 0 && after == 0 { assets_removed += 1; }
     }
 
-    // ③ 磁盘游离的 hash 文件（我们只写过 64-hex 命名；其余文件一律不碰）
+    // ③ 磁盘游离的 hash 文件（我们只写过 64-hex 命名；其余文件一律不碰；刚落盘的文件在宽限期内不删）
     let known: std::collections::HashSet<String> = database::all("SELECT content_hash FROM file_assets", &[])
         .unwrap_or_default().iter()
         .filter_map(|r| r["content_hash"].as_str().map(|s| s.to_lowercase()))
@@ -444,13 +451,23 @@ pub async fn assets_cleanup_orphans() -> Result<Value, String> {
             let name = entry.file_name().to_string_lossy().to_lowercase();
             if name.len() != 64 || !name.bytes().all(|b| b.is_ascii_hexdigit()) { continue; }
             if known.contains(&name) { continue; }
+            let fresh = entry.metadata().and_then(|m| m.modified())
+                .map(|t| t.elapsed().map(|d| d.as_secs() < (SWEEP_GRACE_MINUTES * 60) as u64).unwrap_or(false))
+                .unwrap_or(false);
+            if fresh { continue; }
             if entry.path().is_file() && std::fs::remove_file(entry.path()).is_ok() { disk_removed += 1; }
         }
     }
 
     database::save().ok();
-    log::info!("[资产回收] 悬垂关系 {} 行 | 回收资产 {} 个 | 磁盘游离文件 {} 个", dangling.len(), assets_removed, disk_removed);
-    Ok(json!({ "success": true, "danglingRelations": dangling.len(), "assetsRemoved": assets_removed, "diskFilesRemoved": disk_removed }))
+    (dangling.len(), assets_removed, disk_removed)
+}
+
+#[tauri::command]
+pub async fn assets_cleanup_orphans() -> Result<Value, String> {
+    let (d, a, f) = sweep_orphans();
+    log::info!("[资产回收] 悬垂关系 {} 行 | 回收资产 {} 个 | 磁盘游离文件 {} 个", d, a, f);
+    Ok(json!({ "success": true, "danglingRelations": d, "assetsRemoved": a, "diskFilesRemoved": f }))
 }
 
 /// 简化删除：按 file_relations.id 删除关联，无剩余引用时清理 file_assets
