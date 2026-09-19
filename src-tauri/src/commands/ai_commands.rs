@@ -71,30 +71,32 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
     let source_projects: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM source_data WHERE source_type='PROJECT'", [], |r| r.get(0))).unwrap_or(0);
     let source_todos: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM source_data WHERE source_type='TODO'", [], |r| r.get(0))).unwrap_or(0);
     let source_total: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM source_data", [], |r| r.get(0))).unwrap_or(0);
-    // 从 knowledge_push_queue 查询文件解析状态
-    let files_pending: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='pending'", [], |r| r.get(0))).unwrap_or(0);
-    let files_processing: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='processing'", [], |r| r.get(0))).unwrap_or(0);
-    let files_failed: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='failed'", [], |r| r.get(0))).unwrap_or(0);
-    let files_unsupported: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='unsupported'", [], |r| r.get(0))).unwrap_or(0);
-    // 已完成文件 = file_assets 总数 − 队列中 FILE 任务数（成功任务会从队列删除；unsupported 为终态视为完成）
+    // 从 knowledge_push_queue 查询文件解析状态。
+    // ★ 排除 operation='delete'：删除任务（如孤儿资产回收入队）与解析共用 FILE 队列，
+    //   计入"文件解析"会让删除显示成"正在解析"、delete 失败混进"解析失败文件"、done 双扣
+    let files_pending: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='pending' AND operation!='delete'", [], |r| r.get(0))).unwrap_or(0);
+    let files_processing: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='processing' AND operation!='delete'", [], |r| r.get(0))).unwrap_or(0);
+    let files_failed: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='failed' AND operation!='delete'", [], |r| r.get(0))).unwrap_or(0);
+    let files_unsupported: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM knowledge_push_queue WHERE source_type='FILE' AND status='unsupported' AND operation!='delete'", [], |r| r.get(0))).unwrap_or(0);
+    // 已完成文件 = file_assets 总数 − 队列中 FILE 解析任务数（成功任务会从队列删除；unsupported 为终态视为完成）
     let files_total: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM file_assets", [], |r| r.get(0))).unwrap_or(0);
     let files_done = files_total - files_pending - files_processing - files_failed - files_unsupported;
     // 当前正在解析的文件（页级进度）
     let current_file: Option<Value> = crate::database::get(
-        "SELECT f.original_name AS name, q.progress_page AS page, q.progress_total AS total FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id WHERE q.source_type='FILE' AND q.status='processing' ORDER BY q.id DESC LIMIT 1",
+        "SELECT f.original_name AS name, q.progress_page AS page, q.progress_total AS total FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id WHERE q.source_type='FILE' AND q.status='processing' AND q.operation!='delete' ORDER BY q.id DESC LIMIT 1",
         &[],
     ).ok().flatten();
     // 解析失败/不支持的文件明细（供设置页展示，便于用户确认是哪些文件）
     let failed_files: Vec<Value> = crate::database::all(
         "SELECT COALESCE(NULLIF(f.original_name, ''), q.source_id) AS name, q.last_error AS error, q.retry_count AS retries, q.updated_at AS at \
          FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id \
-         WHERE q.source_type='FILE' AND q.status='failed' ORDER BY q.updated_at DESC LIMIT 500",
+         WHERE q.source_type='FILE' AND q.status='failed' AND q.operation!='delete' ORDER BY q.updated_at DESC LIMIT 500",
         &[],
     ).unwrap_or_default();
     let unsupported_files: Vec<Value> = crate::database::all(
         "SELECT COALESCE(NULLIF(f.original_name, ''), q.source_id) AS name, q.last_error AS error, q.updated_at AS at \
          FROM knowledge_push_queue q LEFT JOIN file_assets f ON f.id=q.source_id \
-         WHERE q.source_type='FILE' AND q.status='unsupported' ORDER BY q.updated_at DESC LIMIT 500",
+         WHERE q.source_type='FILE' AND q.status='unsupported' AND q.operation!='delete' ORDER BY q.updated_at DESC LIMIT 500",
         &[],
     ).unwrap_or_default();
     Ok(json!({
@@ -105,11 +107,14 @@ pub async fn pipeline_debug_status() -> Result<Value, String> {
     }))
 }
 
-/// 立即重试所有 failed 状态的解析任务（免冷启动）；unsupported 为终态不重试
+/// 立即重试所有"解析失败"的 FILE 任务（免冷启动）；unsupported 为终态不重试。
+/// 口径与设置页"重试失败文件"按钮展示数一致：仅 FILE、仅解析类（排除 delete 清理任务，
+/// 且不再误伤 NOTE/PROJECT 等非文件域的 failed 任务）
 #[tauri::command]
 pub async fn pipeline_retry_failed() -> Result<Value, String> {
     let count = crate::database::run(
-        "UPDATE knowledge_push_queue SET status='pending', retry_count=0, last_error='', debounce_until=NULL WHERE status='failed'",
+        "UPDATE knowledge_push_queue SET status='pending', retry_count=0, last_error='', debounce_until=NULL \
+         WHERE status='failed' AND source_type='FILE' AND operation!='delete'",
         &[],
     ).map(|r| r.changes).map_err(|e| e.to_string())?;
     Ok(json!({"success": true, "count": count}))
