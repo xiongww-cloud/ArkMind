@@ -161,7 +161,6 @@ pub async fn agent_chat_workflow_internal(
 
             let role = r["role"].as_str().unwrap_or("");
             let db_content = r["content"].as_str().unwrap_or("");
-            let created_at = r["created_at"].as_str().unwrap_or("");
 
             if db_content.is_empty() { return None; }
 
@@ -351,7 +350,6 @@ pub async fn agent_chat_workflow_internal(
                         rows.into_iter().filter_map(|r| {
                             let role = r["role"].as_str().unwrap_or("");
                             let db_content = r["content"].as_str().unwrap_or("");
-                            let created_at = r["created_at"].as_str().unwrap_or("");
 
                             if db_content.is_empty() { return None; }
 

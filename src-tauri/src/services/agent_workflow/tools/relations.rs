@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use crate::services::agent_workflow::*;
 
 pub(crate) fn execute_relations(entity_type: &str, entity_id: &str, target_type: Option<&str>, limit: usize, offset: usize) -> String {
+    let limit = limit.clamp(1, 100);
     if entity_type.is_empty() || entity_id.is_empty() {
         let envelope = ToolResultEnvelope {
             result_type: "relations_result".to_string(),
@@ -119,8 +120,11 @@ pub(crate) fn execute_relations(entity_type: &str, entity_id: &str, target_type:
         } else {
             format!("{} 没有关联对象。", source_name)
         }
+    } else if total > relations.len() {
+        format!("{}关联 {} 个对象，本页返回第 {}-{} 条，还有更多未返回——需要完整列表时用 offset={} 继续获取。",
+            source_name, total, offset + 1, offset + relations.len(), offset + relations.len())
     } else {
-        format!("{}关联 {} 个对象。", source_name, relations.len())
+        format!("{}关联 {} 个对象。", source_name, total)
     };
 
     let envelope = ToolResultEnvelope {
