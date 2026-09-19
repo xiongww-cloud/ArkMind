@@ -35,6 +35,8 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
                 let partners = crate::database::all("SELECT * FROM partners", &[]).unwrap_or_default();
                 let partner_contacts = crate::database::all("SELECT * FROM partner_contacts", &[]).unwrap_or_default();
                 let partner_contact_mapping = crate::database::all("SELECT * FROM partner_contact_mapping", &[]).unwrap_or_default();
+                let partner_project_mapping = crate::database::all("SELECT * FROM partner_project_mapping", &[]).unwrap_or_default();
+                let contact_project_mapping = crate::database::all("SELECT * FROM contact_project_mapping", &[]).unwrap_or_default();
                 let business_relations = crate::database::all("SELECT * FROM business_relations WHERE source_type IN ('CHANNEL','VENDOR','CUSTOMER','CONTACT')", &[]).unwrap_or_default();
                 domain_data = json!({
                     "projects": projects, "solutions": solutions,
@@ -42,6 +44,8 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
                     "project_dynamics": dynamics, "partners": partners,
                     "partner_contacts": partner_contacts,
                     "partner_contact_mapping": partner_contact_mapping,
+                    "partner_project_mapping": partner_project_mapping,
+                    "contact_project_mapping": contact_project_mapping,
                     "business_relations": business_relations,
                 });
             }
@@ -92,6 +96,7 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
                 };
                 domain_data = json!({
                     "notes": notes, "notebooks": notebooks,
+                    "note_project_mapping": crate::database::all("SELECT * FROM note_project_mapping", &[]).unwrap_or_default(),
                     "file_relations": note_files, "file_assets": file_assets,
                 });
                 // 复制笔记附件
@@ -122,6 +127,7 @@ pub async fn export_data(domains: Vec<String>, save_path: String, app_handle: ta
                 };
                 domain_data = json!({
                     "todos": todos,
+                    "todo_project_mapping": crate::database::all("SELECT * FROM todo_project_mapping", &[]).unwrap_or_default(),
                     "file_relations": todo_files, "file_assets": file_assets,
                 });
                 // 复制待办附件
@@ -619,6 +625,9 @@ pub async fn import_data(file_path: String) -> Result<Value, String> {
     }
     database::run("COMMIT", &[]).map_err(|e| format!("提交事务失败: {}", e))?;
 
+    // ★ 方案 B 收口：business_relations 是映射表的派生视图，导入完成后全量对账一次
+    crate::services::business_relations::rebuild_all_derived_edges();
+
     // 清理临时目录
     std::fs::remove_dir_all(&tmp).ok();
 
@@ -743,7 +752,24 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
             ]).ok();
         }
     }
-    // 业务关联
+    // 伙伴/联系人 → 项目映射（方案 B：映射表是真相源，必须完整恢复，UI 读它们）
+    if let Some(arr) = data["partner_project_mapping"].as_array() {
+        for m in arr {
+            database::run("INSERT OR IGNORE INTO partner_project_mapping(partner_id,project_id,partner_type,selected_contact_id,remark,created_at) VALUES(?1,?2,?3,?4,?5,?6)", &[
+                json!(m["partner_id"]),json!(m["project_id"]),
+                m["partner_type"].as_str().map(|s| json!(s)).unwrap_or_else(|| json!("CHANNEL")),
+                json!(m["selected_contact_id"]),json!(m["remark"]),json!(m["created_at"])
+            ]).ok();
+        }
+    }
+    if let Some(arr) = data["contact_project_mapping"].as_array() {
+        for m in arr {
+            database::run("INSERT OR IGNORE INTO contact_project_mapping(contact_id,project_id,remark,created_at) VALUES(?1,?2,?3,?4)", &[
+                json!(m["contact_id"]),json!(m["project_id"]),json!(m["remark"]),json!(m["created_at"])
+            ]).ok();
+        }
+    }
+    // 业务关联（归档边保留用于方案图谱等不可派生边；派生边由导入末尾统一对账）
     if let Some(arr) = data["business_relations"].as_array() {
         for br in arr {
             crate::services::business_relations::upsert(
@@ -756,15 +782,15 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
             );
         }
     }
-    // 映射表（保留兼容）
+    // 旧归档兼容：legacy *_mapping keys → partner_project_mapping（表本身已退役）
     if let Some(maps) = data["project_channel_mapping"].as_array() {
-        for m in maps { database::run("INSERT OR IGNORE INTO project_channel_mapping(project_id,channel_id,selected_contact_id,created_at) VALUES(?1,?2,?3,?4)", &[json!(m["project_id"]),json!(m["channel_id"]),json!(m["selected_contact_id"]),json!(m["created_at"])]).ok(); }
+        for m in maps { database::run("INSERT OR IGNORE INTO partner_project_mapping(partner_id,project_id,partner_type,remark) VALUES(?1,?2,'CHANNEL','')", &[json!(m["channel_id"]),json!(m["project_id"])]).ok(); }
     }
     if let Some(maps) = data["project_vendor_mapping"].as_array() {
-        for m in maps { database::run("INSERT OR IGNORE INTO project_vendor_mapping(project_id,vendor_id,selected_contact_id,created_at) VALUES(?1,?2,?3,?4)", &[json!(m["project_id"]),json!(m["vendor_id"]),json!(m["selected_contact_id"]),json!(m["created_at"])]).ok(); }
+        for m in maps { database::run("INSERT OR IGNORE INTO partner_project_mapping(partner_id,project_id,partner_type,remark) VALUES(?1,?2,'VENDOR','')", &[json!(m["vendor_id"]),json!(m["project_id"])]).ok(); }
     }
     if let Some(maps) = data["project_customer_mapping"].as_array() {
-        for m in maps { database::run("INSERT OR IGNORE INTO project_customer_mapping(project_id,customer_id,created_at) VALUES(?1,?2,?3)", &[json!(m["project_id"]),json!(m["customer_id"]),json!(m["created_at"])]).ok(); }
+        for m in maps { database::run("INSERT OR IGNORE INTO partner_project_mapping(partner_id,project_id,partner_type,remark) VALUES(?1,?2,'CUSTOMER','')", &[json!(m["customer_id"]),json!(m["project_id"])]).ok(); }
     }
     Ok(())
 }
@@ -828,6 +854,14 @@ fn import_notes(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
     if let Some(notes) = data["notes"].as_array() {
         for n in notes { database::run("INSERT OR IGNORE INTO notes(note_id,title,content,is_daily,notebook_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(n["note_id"]),json!(n["title"]),json!(n["content"]),json!(n["is_daily"]),json!(n["notebook_id"]),json!(n["created_at"]),json!(n["updated_at"])]).ok(); }
     }
+    // 笔记→项目映射（真相源）
+    if let Some(arr) = data["note_project_mapping"].as_array() {
+        for m in arr {
+            database::run("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?1,?2)", &[
+                json!(m["note_id"]),json!(m["project_id"])
+            ]).ok();
+        }
+    }
     // 笔记附件：先恢复 file_assets 行（二进制复制依赖 content_hash 查询）
     if let Some(assets) = data["file_assets"].as_array() {
         for a in assets {
@@ -873,6 +907,14 @@ fn import_todos(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
                 json!(id), json!(t["title"]), json!(t["content"]), json!(t["done"]),
                 json!(t["priority"]), json!(t["due_date"]), json!(t["repeat"]),
                 json!(t["created_at"]), json!(t["updated_at"]),
+            ]).ok();
+        }
+    }
+    // 待办→项目映射（真相源，派生边由 import_data 末尾统一对账）
+    if let Some(arr) = data["todo_project_mapping"].as_array() {
+        for m in arr {
+            database::run("INSERT OR IGNORE INTO todo_project_mapping(todo_id,project_id,created_at) VALUES(?1,?2,?3)", &[
+                json!(m["todo_id"]),json!(m["project_id"]),json!(m["created_at"])
             ]).ok();
         }
     }
@@ -992,26 +1034,12 @@ fn import_contacts(data: &Value) -> Result<(), String> {
             }
         }
     }
-    // Import partner_contact_mapping
+    // Import partner_contact_mapping（派生边由 import_data 末尾统一对账重建）
     if let Some(arr) = data["partner_contact_mapping"].as_array() {
         for pcm in arr {
             database::run(
                 "INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id,created_at) VALUES(?1,?2,?3)",
                 &[pcm["partner_id"].clone(), pcm["contact_id"].clone(), pcm["created_at"].clone()],
-            ).ok();
-        }
-    }
-    // Import business_relations
-    if let Some(arr) = data["business_relations"].as_array() {
-        for br in arr {
-            database::run(
-                "INSERT OR IGNORE INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                &[
-                    br["id"].clone(), br["source_type"].clone(), br["source_id"].clone(),
-                    br["target_type"].clone(), br["target_id"].clone(), br["relation_type"].clone(),
-                    br["metadata"].as_str().map(|s| json!(s)).unwrap_or(json!("{}")),
-                    br["created_at"].clone(), br["updated_at"].clone(),
-                ],
             ).ok();
         }
     }

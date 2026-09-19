@@ -34,6 +34,7 @@ pub async fn todos_list() -> Result<Value, String> {
                 )?;
                 Ok(())
             }).ok();
+            crate::services::business_relations::resync_todo_edges(&new_id);
         }
     }
 
@@ -112,6 +113,7 @@ pub async fn todos_create(data: Value) -> Result<Value, String> {
     if let Some(ref pid) = linked_pid {
         crate::commands::project_commands::touch_project(pid);
     }
+    crate::services::business_relations::resync_todo_edges(&id);
 
     let todo = database::get(
         "SELECT t.*, tpm.project_id, p.name as project_name FROM todos t \
@@ -201,6 +203,10 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
     // 项目关联变化 → 刷新项目活跃时间（with_db 闭包外调用，避免死锁）
     if let Some(ref pid) = pid_newly_linked {
         crate::commands::project_commands::touch_project(pid);
+    }
+    // ★ 派生边按映射表重建（同时清除换绑项目后残留的旧 belongs_to 边）
+    if update_project {
+        crate::services::business_relations::resync_todo_edges(&id);
     }
 
     if !fields.is_empty() {

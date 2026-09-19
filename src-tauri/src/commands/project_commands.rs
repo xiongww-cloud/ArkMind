@@ -69,7 +69,6 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM partner_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM contact_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM todo_project_mapping WHERE project_id=?", &[json!(&id)]).ok();
-    database::run("DELETE FROM project_product_mapping WHERE project_id=?", &[json!(&id)]).ok();
     database::run("DELETE FROM notifications WHERE entity_type='project' AND entity_id=?", &[json!(&id)]).ok();
     // M1: 清理项目附件 file_relations（项目文件成为孤儿）
     database::run("DELETE FROM file_relations WHERE entity_type='project' AND entity_id=?", &[json!(&id)]).ok();
@@ -80,8 +79,9 @@ pub async fn project_create(data: Value) -> Result<Value, String> {
     database::run("DELETE FROM solution_items WHERE solution_version_id IN (SELECT id FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?))", &[json!(&id)]).ok();
     database::run("DELETE FROM solution_versions WHERE solution_id IN (SELECT id FROM solutions WHERE project_id=?)", &[json!(&id)]).ok();
     database::run("DELETE FROM solutions WHERE project_id=?", &[json!(&id)]).ok();
-    // 清理 business_relations 表中与该项目相关的关联
-    database::run("DELETE FROM business_relations WHERE (source_type='PROJECT' AND source_id=?) OR (target_type='PROJECT' AND target_id=?)", &[json!(&id), json!(&id)]).ok();
+    // 清理 business_relations 表中与该项目相关的全部边（源+目标两侧）
+    crate::services::business_relations::delete_by_source("PROJECT", &id);
+    crate::services::business_relations::delete_by_target("PROJECT", &id);
     for aid in &project_assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({"success":true}))
@@ -543,6 +543,7 @@ async fn project_export_inner(project_id: &str) -> Result<Value, String> {
         }
     }
     std::fs::remove_dir_all(&tmp).ok();
+    crate::services::business_relations::rebuild_all_derived_edges();
     Ok(json!({"success":true}))
 }
 
@@ -926,6 +927,7 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
     }
     std::fs::remove_dir_all(&tmp).ok();
     eprintln!("[导入] 完成: {}", file_path);
+    crate::services::business_relations::rebuild_all_derived_edges();
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn project_export(project_id: String, save_path: Option<String>) -> Result<Value, String> {
@@ -1052,7 +1054,8 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
     Ok(version)
 }
 
-/// 收集项目所有方案中使用的所有产品，重写 project_product_mapping 与 business_relations
+/// 从 solution_items 派生重建项目的 PROJECT→belongs_to→PRODUCT 边（business_relations 为唯一存储，
+/// 原 project_product_mapping 中间表已废弃）
 pub fn sync_project_products(project_id: &str) -> Result<(), String> {
     let products = database::all(
         "SELECT DISTINCT si.product_id, si.product_name FROM solution_items si \
@@ -1069,14 +1072,9 @@ pub fn sync_project_products(project_id: &str) -> Result<(), String> {
         Ok(r) => log::info!("[业务关联] 删除: PROJECT[{}] → PRODUCT[*] (belongs_to) {} 行", project_id, r.changes),
         Err(e) => log::info!("[业务关联] 删除失败: PROJECT[{}] → PRODUCT[*] (belongs_to): {}", project_id, e),
     }
-    database::run("DELETE FROM project_product_mapping WHERE project_id=?", &[json!(project_id)]).ok();
     for p in &products {
         let product_id = match p["product_id"].as_str() { Some(pid) => pid, None => continue };
         let product_name = p["product_name"].as_str().unwrap_or("");
-        database::run(
-            "INSERT OR IGNORE INTO project_product_mapping(project_id,product_id,product_name) VALUES(?1,?2,?3)",
-            &[json!(project_id), json!(product_id), json!(product_name)]
-        ).ok();
         let meta = serde_json::json!({"product_name": product_name});
         crate::services::business_relations::upsert("PROJECT", project_id, "PRODUCT", product_id, "belongs_to", &meta.to_string());
     }

@@ -78,10 +78,10 @@ pub async fn notes_create(data: Value) -> Result<Value, String> {
         conn.execute("COMMIT",[]).map(|_|())?;
         Ok(())
     }).map_err(|e|e.to_string())?;
-    // business_relations::upsert must be called outside with_db to avoid mutex deadlock
+    // business_relations 派生边由映射表重建（resync 必须在 with_db 外调用）
     // 新建笔记：所有项目关联都是新增的，统一刷新项目活跃时间（touch 也必须在 with_db 外调用）
+    crate::services::business_relations::resync_note_edges(&note_id);
     for pid in &project_ids {
-        crate::services::business_relations::upsert("NOTE", &note_id, "PROJECT", pid, "authored_by", "{}");
         crate::commands::project_commands::touch_project(pid);
     }
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
@@ -104,16 +104,16 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
             "SELECT project_id FROM note_project_mapping WHERE note_id=?", &[json!(note_id)]
         ).unwrap_or_default().iter().filter_map(|r| r["project_id"].as_str().map(String::from)).collect();
         database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(note_id)]).ok();
-        crate::services::business_relations::delete_by_source("NOTE", &note_id);
         for p in pids {
             if let Some(pid) = p.as_str() {
                 database::run("INSERT OR IGNORE INTO note_project_mapping(note_id,project_id) VALUES(?,?)",&[json!(note_id),p.clone()]).ok();
-                crate::services::business_relations::upsert("NOTE", &note_id, "PROJECT", pid, "authored_by", "{}");
                 if !old_pids.contains(pid) {
                     crate::commands::project_commands::touch_project(pid);
                 }
             }
         }
+        // 派生边按映射表整体重建（先删后建，天然清除解绑项目的残留边）
+        crate::services::business_relations::resync_note_edges(note_id);
     }
     database::save().map_err(|e|e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
@@ -135,6 +135,8 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
         None::<String>
     } else { Some(notebook_id) };
     database::run("UPDATE notes SET deleted_at=NULL, notebook_id=?, updated_at=datetime('now', 'localtime') WHERE note_id=?",&[json!(actual_nb),json!(&note_id)]).map_err(|e|e.to_string())?;
+    // ★ 恢复进项目笔记本时补建 authored_by 派生边（软删时已清）
+    crate::services::business_relations::resync_note_edges(&note_id);
     // 恢复笔记时通知知识库重新物化（软删除时未清理知识管线，恢复后需更新内容）
     crate::services::knowledge_lifecycle::notify_changed("NOTE", &note_id);
     database::save().map_err(|e|e.to_string())?;
@@ -153,8 +155,8 @@ pub async fn notes_delete(note_id: String) -> Result<Value, String> {
     database::run("DELETE FROM note_project_mapping WHERE note_id=?",&[json!(&note_id)]).ok();
     database::run("DELETE FROM file_relations WHERE entity_type='note' AND entity_id=?",&[json!(&note_id)]).ok();
     crate::services::business_relations::delete_by_source("NOTE", &note_id);
-    // 清理以该笔记为目标的边（真实附件的 FILE→NOTE has_file 边，由 add_relation 写入）
-    database::run("DELETE FROM business_relations WHERE target_type='NOTE' AND target_id=?", &[json!(&note_id)]).ok();
+    // 清理以该笔记为目标的边（真实附件的 FILE→NOTE has_file 边，由 file_relations 派生）
+    crate::services::business_relations::delete_by_target("NOTE", &note_id);
     database::run("DELETE FROM notes WHERE note_id=?",&[json!(&note_id)]).map_err(|e|e.to_string())?;
     for aid in &note_assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
     database::save().map_err(|e| e.to_string())?;

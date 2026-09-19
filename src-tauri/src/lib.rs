@@ -109,8 +109,7 @@ pub fn run() {
             //    从现存业务映射表回填恢复全部关联 + 重建方案图谱边
             let br_rebuilt = services::business_relations::init();
             if br_rebuilt {
-                log::info!("[业务关联] 检测到坏表修复，开始从业务数据重建关联...");
-                services::business_relations::backfill();
+                log::info!("[业务关联] 检测到坏表修复，重建方案图谱...");
                 if let Ok(projects) = database::all("SELECT id FROM projects", &[]) {
                     for p in &projects {
                         if let Some(pid) = p["id"].as_str() {

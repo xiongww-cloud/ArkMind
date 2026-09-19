@@ -1149,6 +1149,12 @@ pub fn purge_stale_queue_entries() {
         for t in &["channel_partners", "channel_contacts", "vendor_partners", "vendor_contacts", "customers", "customer_contacts", "project_customer_mapping", "user_policies", "system_notifications"] {
             let _ = conn.execute(&format!("DROP TABLE IF EXISTS {}", t), []);
         }
+        // ★ 方案 B 收口：退役纯关联表（run_migrations 的升级迁移链已在其之前完成读取回填）
+        //   project_channel/vendor_mapping → 由 partner_project_mapping + business_relations 派生取代
+        //   project_product_mapping → 从未被任何查询读取，项目↔产品边由 solution_items 现算派生
+        for t in &["project_channel_mapping", "project_vendor_mapping", "project_product_mapping"] {
+            let _ = conn.execute(&format!("DROP TABLE IF EXISTS {}", t), []);
+        }
 
         Ok(())
     }) {

@@ -55,9 +55,6 @@ const REFS: &[(&str, &str, &str)] = &[
     ("todo_project_mapping.project_id",
      "UPDATE todo_project_mapping SET project_id=?1 WHERE project_id=?2",
      "SELECT COUNT(*) FROM todo_project_mapping WHERE project_id=?1"),
-    ("project_product_mapping.project_id",
-     "UPDATE project_product_mapping SET project_id=?1 WHERE project_id=?2",
-     "SELECT COUNT(*) FROM project_product_mapping WHERE project_id=?1"),
     ("partner_project_mapping.project_id",
      "UPDATE partner_project_mapping SET project_id=?1 WHERE project_id=?2",
      "SELECT COUNT(*) FROM partner_project_mapping WHERE project_id=?1"),
@@ -273,7 +270,6 @@ mod tests {
             CREATE TABLE solutions (id TEXT PRIMARY KEY, project_id TEXT);
             CREATE TABLE note_project_mapping (note_id TEXT, project_id TEXT, PRIMARY KEY(note_id, project_id));
             CREATE TABLE todo_project_mapping (todo_id TEXT, project_id TEXT, PRIMARY KEY(todo_id, project_id));
-            CREATE TABLE project_product_mapping (project_id TEXT, product_id TEXT, PRIMARY KEY(project_id, product_id));
             CREATE TABLE partner_project_mapping (partner_id TEXT, project_id TEXT, PRIMARY KEY(partner_id, project_id));
             CREATE TABLE contact_project_mapping (contact_id TEXT, project_id TEXT, PRIMARY KEY(contact_id, project_id));
             CREATE TABLE file_relations (id TEXT PRIMARY KEY, entity_type TEXT, entity_id TEXT);
@@ -294,7 +290,6 @@ mod tests {
         conn.execute("INSERT INTO solutions(id, project_id) VALUES(?2, ?1)", rusqlite::params![backend, s("s")]).unwrap();
         conn.execute("INSERT INTO note_project_mapping(note_id, project_id) VALUES(?2, ?1)", rusqlite::params![backend, s("n")]).unwrap();
         conn.execute("INSERT INTO todo_project_mapping(todo_id, project_id) VALUES(?2, ?1)", rusqlite::params![backend, s("t")]).unwrap();
-        conn.execute("INSERT INTO project_product_mapping(project_id, product_id) VALUES(?1, ?2)", rusqlite::params![backend, s("prod")]).unwrap();
         conn.execute("INSERT INTO partner_project_mapping(partner_id, project_id) VALUES(?2, ?1)", rusqlite::params![backend, s("pa")]).unwrap();
         conn.execute("INSERT INTO contact_project_mapping(contact_id, project_id) VALUES(?2, ?1)", rusqlite::params![backend, s("c")]).unwrap();
         conn.execute("INSERT INTO file_relations(id, entity_type, entity_id) VALUES(?2, 'project', ?1)", rusqlite::params![backend, s("f")]).unwrap();
@@ -323,7 +318,7 @@ mod tests {
     fn snapshot(conn: &Connection) -> String {
         let tables = [
             "projects", "project_dynamics", "solutions", "note_project_mapping",
-            "todo_project_mapping", "project_product_mapping", "partner_project_mapping",
+            "todo_project_mapping", "partner_project_mapping",
             "contact_project_mapping", "file_relations", "business_relations",
             "source_data", "library_folders", "knowledge_push_queue",
             "project_id_migration_log",

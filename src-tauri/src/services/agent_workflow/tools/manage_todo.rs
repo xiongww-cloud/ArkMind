@@ -45,12 +45,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                 Ok(result) => {
                     let todo_id = result["todo"]["id"].as_str().unwrap_or("");
                     let todo_title = result["todo"]["title"].as_str().unwrap_or(title.trim());
-                    // ★ 双写 business_relations
-                    if let Some(ref pid) = pid {
-                        if !todo_id.is_empty() {
-                            crate::services::business_relations::upsert("TODO", todo_id, "PROJECT", pid, "belongs_to", "{}");
-                        }
-                    }
+                    // 派生边由 todos_create 内部 resync（business_relations 为映射表派生视图）
                     if !todo_id.is_empty() && pid.is_some() {
                         log::info!("[待办] 关联项目: todo_id={}, project_id={:?}", todo_id, pid);
                     }
@@ -96,12 +91,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                     // 使用 block_on 调用异步函数
                     match block_on_async(crate::commands::todo_commands::todos_update(fid.clone(), data)) {
                         Ok(_) => {
-                            // ★ 双写 business_relations（如果有关联项目）
-                            if !project_id.trim().is_empty() {
-                                if let Some(ref pid) = resolve_project_id(project_id) {
-                                    crate::services::business_relations::upsert("TODO", &fid, "PROJECT", pid, "belongs_to", "{}");
-                                }
-                            }
+                            // 派生边由 todos_update 内部 resync
                             let envelope = ToolResultEnvelope {
                                 result_type: "object_update_result".to_string(),
                                 data: json!({"success": true, "id": fid, "type": "TODO", "name": ftitle}),

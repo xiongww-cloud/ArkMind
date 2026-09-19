@@ -157,20 +157,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             PRIMARY KEY (partner_id, contact_id)
         );
-        -- ★ Project ↔ Channel/Vendor mapping (many-to-many) - 旧表保留兼容
-        CREATE TABLE IF NOT EXISTS project_channel_mapping (
-            project_id TEXT NOT NULL, channel_id TEXT NOT NULL,
-            selected_contact_id TEXT DEFAULT NULL,
-            created_at TEXT DEFAULT (datetime('now', 'localtime')),
-            PRIMARY KEY (project_id, channel_id)
-        );
-        CREATE TABLE IF NOT EXISTS project_vendor_mapping (
-            project_id TEXT NOT NULL, vendor_id TEXT NOT NULL,
-            selected_contact_id TEXT DEFAULT NULL,
-            created_at TEXT DEFAULT (datetime('now', 'localtime')),
-            PRIMARY KEY (project_id, vendor_id)
-        );
-        -- ★ 统一项目↔合作伙伴映射表（替代上面三张旧表）
+        -- ★ 统一项目↔合作伙伴映射表（project_channel/vendor/customer_mapping 已退役，存量库由迁移链清理）
         CREATE TABLE IF NOT EXISTS partner_project_mapping (
             partner_id TEXT NOT NULL,
             project_id TEXT NOT NULL,
@@ -188,12 +175,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             PRIMARY KEY (contact_id, project_id)
         );
-        -- ★ Project ↔ Product mapping
-        CREATE TABLE IF NOT EXISTS project_product_mapping (
-            project_id TEXT NOT NULL, product_id TEXT NOT NULL, product_name TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now', 'localtime')),
-            PRIMARY KEY (project_id, product_id)
-        );
+        -- （project_product_mapping 已退役：项目↔产品边由 solution_items 现算派生）
 
         -- ★ Todos: task management
         CREATE TABLE IF NOT EXISTS todos (

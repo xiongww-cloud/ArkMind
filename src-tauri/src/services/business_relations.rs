@@ -1,4 +1,5 @@
 use crate::database;
+use serde_json::json;
 
 /// Initialize the business_relations table
 /// 返回 true 表示检测并修复了 INTEGER id 坏表（调用方应触发数据回填恢复）
@@ -106,6 +107,10 @@ pub fn init() -> bool {
     // 启动时清扫解决方案图谱孤儿边（修复历史遗留）
     cleanup_solution_graph_orphans();
 
+    // ★ 方案 B：本表是映射表的派生视图，启动必做一次全量对账（幂等），
+    // 任何同步路径漏写的边最迟下次启动自动收敛
+    rebuild_all_derived_edges();
+
     rebuilt_from_integer
 }
 
@@ -147,99 +152,190 @@ fn cleanup_duplicates() {
     }
 }
 
-/// Incremental sync: sync all business layer relations into business_relations table
-/// upsert handles dedup, so full sync is safe to run every time
-pub fn backfill() {
-    log::info!("[业务关联] 开始同步业务关联...");
-    let mut total = 0i64;
+/// 派生边全量对账（方案 B：业务映射表是唯一真相源，本表是可重建的派生视图）。
+/// 幂等，每次启动必跑。对每个派生边族执行两步：
+///   1) 删除"映射源里已不存在"的过期边（修历史双写漏网的 stale 边）
+///   2) 从映射源 INSERT..ON CONFLICT UPDATE（补缺失边 + 用权威列刷新 metadata，
+///      彻底消除 upsert 覆盖丢 remark/selected_contact_id 的陷阱——metadata 永远来自源列）
+pub fn rebuild_all_derived_edges() {
+    // 0. 方向规范化：旧版 backfill 曾按 PRODUCT→PROJECT 写入（运行时真相是 PROJECT→belongs_to→PRODUCT，
+    //    由 sync_project_products 从 solution_items 派生），反向遗留边直接清除
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type='PRODUCT' AND target_type='PROJECT' AND relation_type='belongs_to'", &[]);
 
-    // 1. file_relations → has_file (FILE → PRODUCT/NOTE/TODO/PROJECT/etc.)
+    // 1. FILE has_file（源：file_relations）
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE relation_type='has_file' AND source_type='FILE' AND NOT EXISTS (\
+           SELECT 1 FROM file_relations fr WHERE fr.file_id=business_relations.source_id \
+             AND upper(fr.entity_type)=business_relations.target_type AND fr.entity_id=business_relations.target_id)", &[]);
+    let _ = database::with_db(|conn| {
+        conn.execute(
+            "INSERT INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) \
+             SELECT lower(hex(randomblob(16))),'FILE',fr.file_id,upper(fr.entity_type),fr.entity_id,'has_file', \
+               CASE WHEN COALESCE(fr.description,'')!='' THEN json_object('custom_name',fr.custom_name,'creator',fr.creator,'description',fr.description) \
+                    ELSE json_object('custom_name',fr.custom_name,'creator',fr.creator) END, \
+               datetime('now','localtime'),datetime('now','localtime') \
+             FROM file_relations fr WHERE COALESCE(fr.entity_id,'')!='' \
+             ON CONFLICT(source_type,source_id,target_type,target_id,relation_type) DO UPDATE SET metadata=excluded.metadata, updated_at=datetime('now','localtime')", [])
+    });
+
+    // 2. NOTE authored_by PROJECT（源：note_project_mapping，排除回收站笔记）
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type='NOTE' AND target_type='PROJECT' AND relation_type='authored_by' AND NOT EXISTS (\
+           SELECT 1 FROM note_project_mapping npm JOIN notes n ON n.note_id=npm.note_id AND n.deleted_at IS NULL \
+           WHERE npm.note_id=business_relations.source_id AND npm.project_id=business_relations.target_id)", &[]);
+    let _ = database::with_db(|conn| {
+        conn.execute(
+            "INSERT INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) \
+             SELECT lower(hex(randomblob(16))),'NOTE',npm.note_id,'PROJECT',npm.project_id,'authored_by','{}', \
+               datetime('now','localtime'),datetime('now','localtime') \
+             FROM note_project_mapping npm JOIN notes n ON n.note_id=npm.note_id AND n.deleted_at IS NULL \
+             JOIN projects p ON p.id=npm.project_id \
+             ON CONFLICT(source_type,source_id,target_type,target_id,relation_type) DO UPDATE SET updated_at=datetime('now','localtime')", [])
+    });
+
+    // 3. TODO belongs_to PROJECT（源：todo_project_mapping）
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type='TODO' AND target_type='PROJECT' AND relation_type='belongs_to' AND NOT EXISTS (\
+           SELECT 1 FROM todo_project_mapping tpm JOIN todos td ON td.id=tpm.todo_id JOIN projects p ON p.id=tpm.project_id \
+           WHERE tpm.todo_id=business_relations.source_id AND tpm.project_id=business_relations.target_id)", &[]);
+    let _ = database::with_db(|conn| {
+        conn.execute(
+            "INSERT INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) \
+             SELECT lower(hex(randomblob(16))),'TODO',tpm.todo_id,'PROJECT',tpm.project_id,'belongs_to','{}', \
+               datetime('now','localtime'),datetime('now','localtime') \
+             FROM todo_project_mapping tpm JOIN todos td ON td.id=tpm.todo_id JOIN projects p ON p.id=tpm.project_id \
+             ON CONFLICT(source_type,source_id,target_type,target_id,relation_type) DO UPDATE SET updated_at=datetime('now','localtime')", [])
+    });
+
+    // 4. PROJECT belongs_to PRODUCT（方向与 sync_project_products 一致：项目→产品；源：solution_items，非 mapping 表）
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type='PROJECT' AND target_type='PRODUCT' AND relation_type='belongs_to' AND NOT EXISTS (\
+           SELECT 1 FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN products pr ON pr.id=si.product_id \
+           WHERE s.project_id=business_relations.source_id AND si.product_id=business_relations.target_id)", &[]);
+    let _ = database::with_db(|conn| {
+        conn.execute(
+            "INSERT INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) \
+             SELECT DISTINCT lower(hex(randomblob(16))),s.project_id,'PROJECT','PRODUCT',si.product_id,'belongs_to', \
+               json_object('product_name', COALESCE(si.product_name,'')), datetime('now','localtime'),datetime('now','localtime') \
+             FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id \
+             JOIN products pr ON pr.id=si.product_id WHERE COALESCE(si.product_id,'')!='' \
+             ON CONFLICT(source_type,source_id,target_type,target_id,relation_type) DO UPDATE SET metadata=excluded.metadata, updated_at=datetime('now','localtime')", [])
+    });
+
+    // 5. CHANNEL/VENDOR/CUSTOMER belongs_to PROJECT（源：partner_project_mapping；type 以 partners 表为权威）
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type IN ('CHANNEL','VENDOR','CUSTOMER') AND target_type='PROJECT' AND relation_type='belongs_to' AND NOT EXISTS (\
+           SELECT 1 FROM partner_project_mapping ppm JOIN partners pa ON pa.id=ppm.partner_id AND upper(pa.type)=business_relations.source_type JOIN projects pr ON pr.id=ppm.project_id \
+           WHERE ppm.partner_id=business_relations.source_id AND ppm.project_id=business_relations.target_id)", &[]);
+    let _ = database::with_db(|conn| {
+        conn.execute(
+            "INSERT INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) \
+             SELECT lower(hex(randomblob(16))),upper(pa.type),ppm.partner_id,'PROJECT',ppm.project_id,'belongs_to', \
+               json_object('remark',COALESCE(ppm.remark,''),'selected_contact_id',COALESCE(ppm.selected_contact_id,'')), \
+               datetime('now','localtime'),datetime('now','localtime') \
+             FROM partner_project_mapping ppm JOIN partners pa ON pa.id=ppm.partner_id JOIN projects pr ON pr.id=ppm.project_id \
+             ON CONFLICT(source_type,source_id,target_type,target_id,relation_type) DO UPDATE SET metadata=excluded.metadata, updated_at=datetime('now','localtime')", [])
+    });
+
+    // 6. CONTACT employed_by PARTNER（源：partner_contact_mapping）
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE relation_type='employed_by' AND source_type='CONTACT' AND NOT EXISTS (\
+           SELECT 1 FROM partner_contact_mapping pcm JOIN partners pa ON pa.id=pcm.partner_id AND upper(pa.type)=business_relations.target_type JOIN partner_contacts c ON c.id=pcm.contact_id \
+           WHERE pcm.contact_id=business_relations.source_id AND pcm.partner_id=business_relations.target_id)", &[]);
+    let _ = database::with_db(|conn| {
+        conn.execute(
+            "INSERT INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) \
+             SELECT lower(hex(randomblob(16))),'CONTACT',pcm.contact_id,upper(pa.type),pcm.partner_id,'employed_by','{}', \
+               datetime('now','localtime'),datetime('now','localtime') \
+             FROM partner_contact_mapping pcm JOIN partners pa ON pa.id=pcm.partner_id JOIN partner_contacts c ON c.id=pcm.contact_id \
+             ON CONFLICT(source_type,source_id,target_type,target_id,relation_type) DO UPDATE SET updated_at=datetime('now','localtime')", [])
+    });
+
+    // 7. CONTACT belongs_to PROJECT（源：contact_project_mapping，remark 进 metadata）
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type='CONTACT' AND target_type='PROJECT' AND relation_type='belongs_to' AND NOT EXISTS (\
+           SELECT 1 FROM contact_project_mapping cpm JOIN partner_contacts c ON c.id=cpm.contact_id JOIN projects pr ON pr.id=cpm.project_id \
+           WHERE cpm.contact_id=business_relations.source_id AND cpm.project_id=business_relations.target_id)", &[]);
+    let _ = database::with_db(|conn| {
+        conn.execute(
+            "INSERT INTO business_relations(id,source_type,source_id,target_type,target_id,relation_type,metadata,created_at,updated_at) \
+             SELECT lower(hex(randomblob(16))),'CONTACT',cpm.contact_id,'PROJECT',cpm.project_id,'belongs_to', \
+               json_object('remark',COALESCE(cpm.remark,'')), datetime('now','localtime'),datetime('now','localtime') \
+             FROM contact_project_mapping cpm JOIN partner_contacts c ON c.id=cpm.contact_id JOIN projects pr ON pr.id=cpm.project_id \
+             ON CONFLICT(source_type,source_id,target_type,target_id,relation_type) DO UPDATE SET metadata=excluded.metadata, updated_at=datetime('now','localtime')", [])
+    });
+
+    let edges: i64 = database::get("SELECT COUNT(*) c FROM business_relations", &[])
+        .ok().flatten().and_then(|r| r["c"].as_i64()).unwrap_or(0);
+    log::info!("[业务关联] 派生边对账完成，当前 {} 条", edges);
+}
+
+/// 单实体重建：某联系人的全部派生边（employed_by + belongs_to PROJECT）
+pub fn resync_contact_edges(contact_id: &str) {
+    if contact_id.is_empty() { return; }
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type='CONTACT' AND source_id=?", &[json!(contact_id)]);
     if let Ok(rows) = database::all(
-        "SELECT fr.file_id, fr.entity_type, fr.entity_id FROM file_relations fr WHERE fr.entity_id IS NOT NULL AND fr.entity_id != ''",
-        &[]
-    ) {
+        "SELECT pcm.partner_id, upper(pa.type) ptype FROM partner_contact_mapping pcm JOIN partners pa ON pa.id=pcm.partner_id WHERE pcm.contact_id=?",
+        &[json!(contact_id)]) {
         for r in &rows {
-            let fid = r["file_id"].as_str().unwrap_or("");
-            let etype = r["entity_type"].as_str().unwrap_or("").to_uppercase();
-            let eid = r["entity_id"].as_str().unwrap_or("");
-            if fid.is_empty() || eid.is_empty() { continue; }
-            upsert("FILE", fid, &etype, eid, "has_file", "{}");
-            total += 1;
+            upsert("CONTACT", contact_id, r["ptype"].as_str().unwrap_or("CHANNEL"), r["partner_id"].as_str().unwrap_or(""), "employed_by", "{}");
         }
     }
-
-    // 2. note_project_mapping → authored_by (NOTE → PROJECT)
     if let Ok(rows) = database::all(
-        "SELECT note_id, project_id FROM note_project_mapping WHERE project_id IS NOT NULL AND project_id != ''",
-        &[]
-    ) {
+        "SELECT project_id, COALESCE(remark,'') remark FROM contact_project_mapping WHERE contact_id=?",
+        &[json!(contact_id)]) {
         for r in &rows {
-            let nid = r["note_id"].as_str().unwrap_or("");
-            let pid = r["project_id"].as_str().unwrap_or("");
-            if nid.is_empty() || pid.is_empty() { continue; }
-            upsert("NOTE", nid, "PROJECT", pid, "authored_by", "{}");
-            total += 1;
+            let meta = serde_json::json!({"remark": r["remark"].as_str().unwrap_or("")}).to_string();
+            upsert("CONTACT", contact_id, "PROJECT", r["project_id"].as_str().unwrap_or(""), "belongs_to", &meta);
         }
     }
+}
 
-    // 3. todo_project_mapping → belongs_to (TODO → PROJECT)
+/// 单实体重建：某合作伙伴→项目的 belongs_to 边（源：partner_project_mapping）
+pub fn resync_partner_edges(partner_id: &str) {
+    if partner_id.is_empty() { return; }
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_id=? AND relation_type='belongs_to' AND target_type='PROJECT'", &[json!(partner_id)]);
+    let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(partner_id)])
+        .ok().flatten().and_then(|r| r["type"].as_str().map(|s| s.to_uppercase()))
+        .unwrap_or_else(|| "CHANNEL".into());
     if let Ok(rows) = database::all(
-        "SELECT todo_id, project_id FROM todo_project_mapping WHERE project_id IS NOT NULL AND project_id != ''",
-        &[]
-    ) {
+        "SELECT project_id, COALESCE(remark,'') remark, COALESCE(selected_contact_id,'') sc FROM partner_project_mapping WHERE partner_id=?",
+        &[json!(partner_id)]) {
         for r in &rows {
-            let tid = r["todo_id"].as_str().unwrap_or("");
-            let pid = r["project_id"].as_str().unwrap_or("");
-            if tid.is_empty() || pid.is_empty() { continue; }
-            upsert("TODO", tid, "PROJECT", pid, "belongs_to", "{}");
-            total += 1;
+            let meta = serde_json::json!({"remark": r["remark"].as_str().unwrap_or(""), "selected_contact_id": r["sc"].as_str().unwrap_or("")}).to_string();
+            upsert(&ptype, partner_id, "PROJECT", r["project_id"].as_str().unwrap_or(""), "belongs_to", &meta);
         }
     }
+}
 
-    // 4. project_product_mapping → belongs_to (PRODUCT → PROJECT)
+/// 单实体重建：某待办→项目的 belongs_to 边（源：todo_project_mapping）
+pub fn resync_todo_edges(todo_id: &str) {
+    if todo_id.is_empty() { return; }
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type='TODO' AND source_id=?", &[json!(todo_id)]);
     if let Ok(rows) = database::all(
-        "SELECT project_id, product_id FROM project_product_mapping WHERE product_id IS NOT NULL AND product_id != ''",
-        &[]
-    ) {
+        "SELECT project_id FROM todo_project_mapping WHERE todo_id=?", &[json!(todo_id)]) {
         for r in &rows {
-            let pid = r["project_id"].as_str().unwrap_or("");
-            let prid = r["product_id"].as_str().unwrap_or("");
-            if pid.is_empty() || prid.is_empty() { continue; }
-            upsert("PRODUCT", prid, "PROJECT", pid, "belongs_to", "{}");
-            total += 1;
+            upsert("TODO", todo_id, "PROJECT", r["project_id"].as_str().unwrap_or(""), "belongs_to", "{}");
         }
     }
+}
 
-    // 5. partner_project_mapping → belongs_to (PARTNER → PROJECT)
-    if let Ok(rows_full) = database::all(
-        "SELECT partner_id, partner_type, project_id FROM partner_project_mapping WHERE project_id IS NOT NULL AND project_id != ''",
-        &[]
-    ) {
-        for r in &rows_full {
-                let partner_id = r["partner_id"].as_str().unwrap_or("");
-                let ptype = r["partner_type"].as_str().unwrap_or("").to_uppercase();
-                let project_id = r["project_id"].as_str().unwrap_or("");
-                if partner_id.is_empty() || project_id.is_empty() || ptype.is_empty() { continue; }
-                upsert(&ptype, partner_id, "PROJECT", project_id, "belongs_to", "{}");
-                total += 1;
-            }
-    }
-
-    // 6. contact_project_mapping → belongs_to (CONTACT → PROJECT)
+/// 单实体重建：某笔记→项目的 authored_by 边（源：note_project_mapping）
+pub fn resync_note_edges(note_id: &str) {
+    if note_id.is_empty() { return; }
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE source_type='NOTE' AND source_id=?", &[json!(note_id)]);
     if let Ok(rows) = database::all(
-        "SELECT contact_id, project_id FROM contact_project_mapping WHERE project_id IS NOT NULL AND project_id != ''",
-        &[]
-    ) {
+        "SELECT npm.project_id FROM note_project_mapping npm JOIN notes n ON n.note_id=npm.note_id AND n.deleted_at IS NULL WHERE npm.note_id=?",
+        &[json!(note_id)]) {
         for r in &rows {
-            let cid = r["contact_id"].as_str().unwrap_or("");
-            let pid = r["project_id"].as_str().unwrap_or("");
-            if cid.is_empty() || pid.is_empty() { continue; }
-            upsert("CONTACT", cid, "PROJECT", pid, "belongs_to", "{}");
-            total += 1;
+            upsert("NOTE", note_id, "PROJECT", r["project_id"].as_str().unwrap_or(""), "authored_by", "{}");
         }
     }
-
-    log::info!("[业务关联] Backfill 完成，共同步 {} 条关联", total);
 }
 
 /// Insert or update a business relation (dedup by source+target+type)
@@ -320,6 +416,15 @@ pub(crate) fn delete_by_source_on(conn: &rusqlite::Connection, source_type: &str
         rusqlite::params![source_type, source_id],
     ).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Delete all relations where an entity is the target
+pub fn delete_by_target(target_type: &str, target_id: &str) {
+    if target_id.is_empty() { return; }
+    let _ = database::run(
+        "DELETE FROM business_relations WHERE target_type=? AND target_id=?",
+        &[json!(target_type), json!(target_id)]);
+    log::info!("[业务关联] 删除所有目标关联: {}[{}]", target_type, target_id);
 }
 
 #[cfg(test)]

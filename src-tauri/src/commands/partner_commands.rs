@@ -84,7 +84,7 @@ pub async fn partner_create(data: Value) -> Result<Value, String> {
             "INSERT OR IGNORE INTO partner_project_mapping(partner_id, project_id, partner_type, remark) VALUES(?, ?, ?, ?)",
             &[json!(&id), json!(&pid), json!(&partner_type), json!("")]
         ).ok();
-        crate::services::business_relations::upsert(&partner_type, &id, "PROJECT", &pid, "belongs_to", "{}");
+        crate::services::business_relations::resync_partner_edges(&id);
     }
     crate::services::knowledge_lifecycle::notify_changed(&partner_type, &id);
     emit_for_project(&pid);
@@ -146,6 +146,9 @@ pub async fn partner_delete(partner_id: String) -> Result<Value, String> {
             crate::services::source_doc_sync::delete_entity_source_doc("CONTACT", cid);
             crate::services::business_relations::delete_by_source("CONTACT", cid);
             database::run("DELETE FROM partner_contacts WHERE id=?", &[json!(cid)]).ok();
+        } else {
+            // 存活联系人：contact_project_mapping 已在上方删除，派生边必须同步重建
+            crate::services::business_relations::resync_contact_edges(cid);
         }
     }
     database::run("DELETE FROM partner_contact_mapping WHERE partner_id=?",&[json!(clean_id)]).ok();
@@ -169,8 +172,8 @@ pub async fn partner_link_project(partner_id: String, project_id: String, contac
     if newly_linked {
         crate::commands::project_commands::touch_project(&project_id);
     }
-    // WRITE 2: business_relations（Partner → Project）
-    crate::services::business_relations::upsert(&ptype, &partner_id, "PROJECT", &project_id, "belongs_to", "{}");
+    // 派生边重建（映射表为真相源）
+    crate::services::business_relations::resync_partner_edges(&partner_id);
     // 如果指定了联系人，同时关联联系人到项目
     if let Some(ref cid) = contact_id {
         if !cid.is_empty() {
@@ -178,7 +181,7 @@ pub async fn partner_link_project(partner_id: String, project_id: String, contac
                 "INSERT OR IGNORE INTO contact_project_mapping(contact_id, project_id) VALUES(?, ?)",
                 &[json!(cid), json!(&project_id)]
             ).ok();
-            crate::services::business_relations::upsert("CONTACT", cid, "PROJECT", &project_id, "belongs_to", "{}");
+            crate::services::business_relations::resync_contact_edges(cid);
         }
     }
     crate::services::knowledge_lifecycle::notify_changed(&ptype, &partner_id);
@@ -188,7 +191,6 @@ pub async fn partner_link_project(partner_id: String, project_id: String, contac
 /// 取消合作伙伴与项目的关联
 #[tauri::command]
 pub async fn partner_unlink_project(partner_id: String, project_id: String) -> Result<Value, String> {
-    let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
     // DELETE 1: partner_project_mapping
     database::run(
         "DELETE FROM partner_project_mapping WHERE partner_id=? AND project_id=?",
@@ -199,9 +201,8 @@ pub async fn partner_unlink_project(partner_id: String, project_id: String) -> R
         "DELETE FROM contact_project_mapping WHERE project_id=?1 AND contact_id IN (SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?2)",
         &[json!(&project_id), json!(&partner_id)]
     ).ok();
-    // DELETE 3: business_relations（Partner → Project）
-    crate::services::business_relations::delete(&ptype, &partner_id, "PROJECT", &project_id, "belongs_to");
-    // DELETE 4: business_relations（该 Partner 下联系人的 CONTACT → Project）
+    // DELETE 3: 派生边重建（Partner 与受影响联系人的边都由映射表现算）
+    crate::services::business_relations::resync_partner_edges(&partner_id);
     let contact_ids: Vec<String> = database::all(
         "SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?",
         &[json!(&partner_id)]
@@ -209,7 +210,7 @@ pub async fn partner_unlink_project(partner_id: String, project_id: String) -> R
         .filter_map(|r| r["contact_id"].as_str().map(String::from))
         .collect();
     for cid in &contact_ids {
-        crate::services::business_relations::delete("CONTACT", cid, "PROJECT", &project_id, "belongs_to");
+        crate::services::business_relations::resync_contact_edges(cid);
     }
     Ok(json!({"success":true}))
 }
@@ -228,6 +229,14 @@ pub async fn partner_update_remark(partner_id: String, project_id: String, remar
         "UPDATE contact_project_mapping SET remark=? WHERE project_id=?1 AND contact_id IN (SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?2)",
         &[json!(new_remark), json!(&project_id), json!(&partner_id)]
     ).ok();
+    // 派生边 metadata 同步（remark 以映射表列为权威刷进边 metadata）
+    crate::services::business_relations::resync_partner_edges(&partner_id);
+    if let Ok(rows) = database::all(
+        "SELECT contact_id FROM partner_contact_mapping WHERE partner_id=?", &[json!(&partner_id)]) {
+        for r in &rows {
+            if let Some(cid) = r["contact_id"].as_str() { crate::services::business_relations::resync_contact_edges(cid); }
+        }
+    }
     Ok(json!({"success":true}))
 }
 
@@ -250,6 +259,10 @@ pub async fn partner_contact_create(data: Value) -> Result<Value, String> {
             &[json!(&name), json!(&partner_id)],
         ) {
             let eid = existing["id"].as_str().unwrap_or("").to_string();
+            // ★ 复用同名联系人时补建映射与派生边（旧数据可能只建了联系人未挂到本 partner 下）
+            database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)", &[json!(&partner_id), json!(&eid)]).ok();
+            crate::services::business_relations::resync_contact_edges(&eid);
+            emit_for_partner(&partner_id);
             return Ok(json!({"success":true,"id":eid,"name":name,"duplicate":true,"message":"同合作伙伴下已存在同名联系人，已复用"}));
         }
     }
@@ -262,9 +275,8 @@ pub async fn partner_contact_create(data: Value) -> Result<Value, String> {
     database::run("INSERT INTO partner_contacts(id,name,phone,email,position,remark) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(id),json!(&name),json!(&phone),json!(&email),json!(&position),json!(&remark)]).map_err(|e|e.to_string())?;
     crate::services::knowledge_lifecycle::notify_changed("CONTACT", &id);
     if !partner_id.is_empty() {
-        let ptype = database::get("SELECT type FROM partners WHERE id=?", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(String::from)).unwrap_or_else(|| "CHANNEL".into());
         database::run("INSERT OR IGNORE INTO partner_contact_mapping(partner_id,contact_id) VALUES(?1,?2)", &[json!(&partner_id), json!(&id)]).map_err(|e|e.to_string())?;
-        crate::services::business_relations::upsert("CONTACT", &id, &ptype, &partner_id, "employed_by", "{}");
+        crate::services::business_relations::resync_contact_edges(&id);
         emit_for_partner(&partner_id);
     }
     Ok(json!({"success":true,"id":id,"name":name,"phone":phone,"email":email,"position":position,"remark":remark}))
@@ -311,13 +323,11 @@ pub async fn partner_contact_delete(contact_id: String) -> Result<Value, String>
 /// 关联联系人到项目（主映射方式）
 #[tauri::command]
 pub async fn contact_link_project(contact_id: String, project_id: String) -> Result<Value, String> {
-    // WRITE 1: contact_project_mapping
     database::run(
         "INSERT OR IGNORE INTO contact_project_mapping(contact_id, project_id) VALUES(?, ?)",
         &[json!(&contact_id), json!(&project_id)]
     ).ok();
-    // WRITE 2: business_relations
-    crate::services::business_relations::upsert("CONTACT", &contact_id, "PROJECT", &project_id, "belongs_to", "{}");
+    crate::services::business_relations::resync_contact_edges(&contact_id);
     crate::services::knowledge_lifecycle::notify_changed("CONTACT", &contact_id);
     Ok(json!({"success":true}))
 }
@@ -325,13 +335,11 @@ pub async fn contact_link_project(contact_id: String, project_id: String) -> Res
 /// 取消联系人与项目的关联
 #[tauri::command]
 pub async fn contact_unlink_project(contact_id: String, project_id: String) -> Result<Value, String> {
-    // DELETE 1: contact_project_mapping
     database::run(
         "DELETE FROM contact_project_mapping WHERE contact_id=? AND project_id=?",
         &[json!(&contact_id), json!(&project_id)]
     ).ok();
-    // DELETE 2: business_relations
-    crate::services::business_relations::delete("CONTACT", &contact_id, "PROJECT", &project_id, "belongs_to");
+    crate::services::business_relations::resync_contact_edges(&contact_id);
     Ok(json!({"success":true}))
 }
 
