@@ -165,18 +165,8 @@ pub async fn agent_chat_workflow_internal(
 
             if db_content.is_empty() { return None; }
 
-            // 为 user 和 assistant 消息添加时间戳（格式与发送时一致，保证 prompt cache 命中）
-            let time_str = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S").map(cn_datetime_str).unwrap_or_default();
-            let content_with_timestamp = if role == "user" && !time_str.is_empty() {
-                format!("时间：{}\n提问：{}", time_str, db_content)
-            } else if role == "assistant" && !time_str.is_empty() {
-                format!("时间：{}\n回答：{}", time_str, db_content)
-            } else {
-                db_content.to_string()
-            };
-
             // 历史消息纯内容，不含 metadata（tool_metadata 在 session 级别）
-            let msg = json!({"role": role, "content": content_with_timestamp});
+            let msg = json!({"role": role, "content": db_content});
             Some(msg)
         }).collect()
     } else {
@@ -307,10 +297,8 @@ pub async fn agent_chat_workflow_internal(
         );
     }
 
-    // ★ 追加本轮新问题（带时间戳前缀，与历史加载格式一致，保证 LLM prompt cache 命中）
-    let now = cn_now_str();
-    let timestamped = format!("时间：{}\n提问：{}", now, augmented_query);
-    messages.push(ChatMessage{role:MessageRole::User,content:Some(timestamped),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+    // ★ 追加本轮新问题
+    messages.push(ChatMessage{role:MessageRole::User,content:Some(augmented_query),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
 
     // ★ 上下文压缩：复用会话上下文，LLM 返回 JSON 摘要
     // 单个会话上下文长度 256k，自动压缩阈值 80%（204,800 tokens）
@@ -367,17 +355,7 @@ pub async fn agent_chat_workflow_internal(
 
                             if db_content.is_empty() { return None; }
 
-                            // 为 user 和 assistant 消息添加时间戳（格式与发送时一致）
-                            let time_str = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S").map(cn_datetime_str).unwrap_or_default();
-                            let content_with_timestamp = if role == "user" && !time_str.is_empty() {
-                                format!("时间：{}\n提问：{}", time_str, db_content)
-                            } else if role == "assistant" && !time_str.is_empty() {
-                                format!("时间：{}\n回答：{}", time_str, db_content)
-                            } else {
-                                db_content.to_string()
-                            };
-
-                            let msg = json!({"role": role, "content": content_with_timestamp});
+                            let msg = json!({"role": role, "content": db_content});
                             Some(msg)
                         }).collect()
                     };
