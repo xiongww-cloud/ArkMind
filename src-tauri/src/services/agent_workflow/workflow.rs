@@ -92,7 +92,7 @@ pub async fn agent_chat_workflow_internal(
     let has_delegate = allowed_tools.as_ref().map_or(true, |t| t.iter().any(|x| x == "ext_tool_delegate_agent"));
     let agent_section = if has_delegate {
         let agents: Vec<Value> = database::all(
-            "SELECT id, name, description FROM agent_profiles WHERE status='active'",
+            "SELECT id, name, description, COALESCE(routing_hint,'') AS routing_hint FROM agent_profiles WHERE status='active'",
             &[],
         ).unwrap_or_default();
         if agents.is_empty() {
@@ -102,7 +102,12 @@ pub async fn agent_chat_workflow_internal(
                 let id = a["id"].as_str()?;
                 let name = a["name"].as_str()?;
                 let desc = a["description"].as_str().unwrap_or("无描述");
-                Some(format!("- {}: {} (agent_id: \"{}\")", name, desc, id))
+                let hint = a["routing_hint"].as_str().unwrap_or("").trim();
+                if hint.is_empty() {
+                    Some(format!("- {}: {} (agent_id: \"{}\")", name, desc, id))
+                } else {
+                    Some(format!("- {}: {} (agent_id: \"{}\")\n  → {}", name, desc, id, hint))
+                }
             }).collect();
             format!("\n\n【可用专业 Agent】\n{}", lines.join("\n"))
         }

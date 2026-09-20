@@ -443,6 +443,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             status TEXT DEFAULT 'active',
             is_builtin INTEGER DEFAULT 0,
             preset_tools TEXT DEFAULT '[]',
+            routing_hint TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );

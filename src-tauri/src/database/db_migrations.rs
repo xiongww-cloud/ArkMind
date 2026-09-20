@@ -264,6 +264,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE emails ADD COLUMN cc_addr TEXT DEFAULT ''",
         // Agent 预设工具字段
         "ALTER TABLE agent_profiles ADD COLUMN preset_tools TEXT DEFAULT '[]'",
+        // Agent 委托路由提示（动态注入到主 Agent 的【可用专业 Agent】列表中）
+        "ALTER TABLE agent_profiles ADD COLUMN routing_hint TEXT DEFAULT ''",
         // 记忆来源标记（user=聊天/手动，notification_confirmed=用户确认的分析发现）
         "ALTER TABLE memories ADD COLUMN source TEXT DEFAULT 'user'",
         // 用户身份认知：档案字段 + users 单例行兜底（修复无行时保存静默丢失）
@@ -473,6 +475,11 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
             "UPDATE agent_profiles SET preset_tools=?1 WHERE id='business' AND preset_tools IN (?1, ?2)",
             rusqlite::params![preset_tools, preset_legacy],
         ).ok();
+        // ★ 委托路由提示（动态注入，仅当未被用户自定义时刷新）
+        conn.execute(
+            "UPDATE agent_profiles SET routing_hint='当用户提到创建、编辑、删除项目/待办/合作伙伴/联系人/产品/笔记时，必须委托此 Agent' WHERE id='business' AND (routing_hint IS NULL OR routing_hint='')",
+            [],
+        ).ok();
         // ★ 确保已有业务助手也有工具分配（补插）
         for tool_name in &["ext_tool_object", "ext_tool_relations", "ext_tool_manage_project", "ext_tool_manage_todo", "ext_tool_manage_partner", "ext_tool_manage_contact", "ext_tool_manage_product", "ext_tool_manage_note"] {
             conn.execute(
@@ -512,6 +519,11 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         conn.execute(
             "UPDATE agent_profiles SET preset_tools=?1 WHERE id='bidding' AND preset_tools=?1",
             rusqlite::params![preset_tools],
+        ).ok();
+        // ★ 委托路由提示（动态注入，仅当未被用户自定义时刷新）
+        conn.execute(
+            "UPDATE agent_profiles SET routing_hint='当用户提到\"招标参数编制\"\"招标规格书\"\"技术偏离比对\"\"应答\"\"控标排查\"及与产品技术参数相关的任务时，必须委托此 Agent' WHERE id='bidding' AND (routing_hint IS NULL OR routing_hint='')",
+            [],
         ).ok();
         for tool_name in &["ext_tool_manage_product", "ext_tool_search", "ext_tool_chunk_navigate", "ext_tool_web_search"] {
             conn.execute(
