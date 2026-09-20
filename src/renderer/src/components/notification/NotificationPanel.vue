@@ -9,6 +9,7 @@ import { useTooltip } from '@/composables/useTooltip'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
+import ContactQuickCreateModal from '@/components/common/ContactQuickCreateModal.vue'
 import { invoke } from '@tauri-apps/api/core'
 
 const props = defineProps<{
@@ -245,8 +246,12 @@ async function handleAction(n: Notification, action: NotificationAction) {
         emit('close')
         break
       case 'create_contact':
-        await router.push({ path: '/contacts', query: { action: 'create_contact', name: p.name as string || '', position: p.position as string || '', email: p.email as string || '', phone: p.phone as string || '', partner_id: p.partner_id as string || '', partner_name: p.partner_name as string || '' } })
-        emit('close')
+        quickContactPrefill.value = {
+          name: (p.name as string) || '', position: (p.position as string) || '',
+          email: (p.email as string) || '', phone: (p.phone as string) || '',
+          partnerId: (p.partner_id as string) || '', partnerName: (p.partner_name as string) || '',
+        }
+        quickContactVisible.value = true
         break
       case 'create_partner':
         await router.push({ path: '/contacts', query: { action: 'create', name: p.name as string || '', type: p.type as string || 'CUSTOMER' } })
@@ -314,6 +319,10 @@ async function handleAction(n: Notification, action: NotificationAction) {
     toast({ message: '操作失败', type: 'error' })
   }
 }
+
+// ── 快捷建联系人：就地弹窗（不跳转页面） ──
+const quickContactVisible = ref(false)
+const quickContactPrefill = ref<{ name?: string; position?: string; email?: string; phone?: string; partnerId?: string; partnerName?: string }>({})
 
 // ── 一键创建确认弹窗 ──
 const createAllDialogVisible = ref(false)
@@ -411,7 +420,7 @@ async function executeCreate(type: string, params: Record<string, unknown>, ctx:
     case 'create_contact': {
       let pid = (p.partner_id as string) || ''
       if (!pid && p.partner_name) pid = ctx[String(p.partner_name).trim().toLowerCase()] || ''
-      if (!pid) throw new Error('缺少归属公司，请单独点击该按钮在弹窗中处理')
+      if (!pid) throw new Error('缺少归属公司，请单独点击该按钮选择归属后创建')
       const r: any = await createPartnerContact({ partnerId: pid, name: p.name || '新建联系人', email: p.email || '', phone: p.phone || '', position: p.position || '', remark: p.remark || '' })
       if (!r?.id && !r?.success) throw new Error('create contact failed')
       return r?.id
@@ -670,6 +679,9 @@ function onTitleEnter(e: MouseEvent, title: string) {
         </div>
       </Transition>
     </Teleport>
+
+    <!-- 快捷建联系人（就地弹窗） -->
+    <ContactQuickCreateModal :visible="quickContactVisible" :prefill="quickContactPrefill" @close="quickContactVisible = false" />
   </div>
 </template>
 
