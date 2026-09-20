@@ -435,6 +435,10 @@ function handleRouteQuery() {
     selectedNoteId.value = focus
   }
 }
+// ★ 同路由内 query 变化不触发 onActivated（KeepAlive 已激活），通知快捷操作跳转时在此消费
+watch(() => route.query, () => {
+  if (route.path === '/notes') handleRouteQuery()
+})
 async function deleteNote(id: string) {
   const ok = await dangerConfirm({ title: '删除笔记', message: '确定删除此笔记？将放入回收站，30天后自动清空。', confirmText: '删除' })
   if (!ok) return

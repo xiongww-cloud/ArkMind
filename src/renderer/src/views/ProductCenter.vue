@@ -658,6 +658,10 @@ function handleRouteQuery() {
     selectedProductId.value = focus
   }
 }
+// ★ 同路由内 query 变化不触发 onActivated（KeepAlive 已激活），通知快捷操作跳转时在此消费
+watch(() => route.query, () => {
+  if (route.path === '/products') handleRouteQuery()
+})
 
 async function createProductPrefilled(name: string) {
   try {

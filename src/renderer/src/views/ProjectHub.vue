@@ -560,6 +560,11 @@ function handleRouteQuery() {
   const focus = route.query.focus as string
   if (action === 'create') {
     const name = route.query.name as string || ''
+    // ★ 先消费 action 参数：KeepAlive 下双触发/重触发会重复弹窗
+    const rest: Record<string, string> = {}
+    const s = route.query.status
+    if (typeof s === 'string') rest.status = s
+    router.replace({ path: route.path, query: rest })
     resetForm()
     if (name) projectForm.value.name = name
     showNewProjectModal.value = true
@@ -569,6 +574,11 @@ function handleRouteQuery() {
     router.replace(`/projects/${focus}`)
   }
 }
+
+// ★ 同路由内 query 变化不触发 onActivated（KeepAlive 已激活），通知快捷操作跳转时在此消费
+watch(() => route.query, () => {
+  if (route.path === '/projects') handleRouteQuery()
+})
 
 function closeModal() {
   showNewProjectModal.value = false
