@@ -4,6 +4,60 @@ use crate::database;
 use serde_json::{json, Value};
 use crate::services::agent_workflow::*;
 
+/// 校验通知 action 按钮数组：view_* 按钮必须带可解析 ID 且指向真实存在的对象，
+/// 否则（缺参/死链）移除该按钮。返回 (清理后的 JSON, 被移除按钮的标签列表)。
+/// 被移除标签会回显进工具结果，让创建方 Agent 当场感知并修正。
+pub(crate) fn sanitize_actions_json(actions_raw: &str) -> (String, Vec<String>) {
+    let parsed: Vec<Value> = match serde_json::from_str(actions_raw) { Ok(v) => v, Err(_) => return (actions_raw.to_string(), vec![]) };
+    let mut kept: Vec<Value> = Vec::new();
+    let mut dropped: Vec<String> = Vec::new();
+    for item in parsed {
+        let atype = item["type"].as_str().unwrap_or("").to_string();
+        let target = match atype.strip_prefix("view_") {
+            Some(t) => t,
+            None => { kept.push(item); continue; }
+        };
+        let (table, id_col, id_param) = match target {
+            "email" => ("emails", "id", "email_id"),
+            "project" => ("projects", "id", "project_id"),
+            "todo" => ("todos", "id", "todo_id"),
+            "note" => ("notes", "note_id", "note_id"),
+            "product" => ("products", "id", "product_id"),
+            "contact" => ("partner_contacts", "id", "contact_id"),
+            "partner" | "channel" | "vendor" | "customer" => ("partners", "id", "partner_id"),
+            _ => { kept.push(item); continue; }
+        };
+        let raw = item["params"][id_param].as_str().unwrap_or("").trim().to_string();
+        // 剥离 TYPE- 前缀（首段全大写才剥，避免切坏裸 UUID）
+        let bare = match raw.find('-') {
+            Some(i) if i > 0 && raw[..i].chars().all(|c| c.is_ascii_uppercase()) => raw[i + 1..].to_string(),
+            _ => raw.clone(),
+        };
+        let exists = !bare.is_empty() && database::get(
+            &format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", table, id_col), &[json!(&bare)]
+        ).ok().flatten().is_some();
+        if exists { kept.push(item); }
+        else { dropped.push(item["label"].as_str().filter(|s| !s.is_empty()).unwrap_or(&atype).to_string()); }
+    }
+    (serde_json::to_string(&kept).unwrap_or_else(|_| "[]".to_string()), dropped)
+}
+
+/// 启动清扫：移除存量通知里指向不存在对象的 view_* 死按钮
+pub fn sweep_dead_notification_actions() {
+    let rows = match database::all("SELECT id, actions FROM notifications WHERE actions IS NOT NULL AND actions NOT IN ('', '[]')", &[]) { Ok(r) => r, Err(_) => return };
+    let mut fixed = 0usize;
+    for r in &rows {
+        let id = r["id"].as_str().unwrap_or("");
+        let raw = r["actions"].as_str().unwrap_or("[]");
+        let (clean, dropped) = sanitize_actions_json(raw);
+        if !dropped.is_empty() && clean != raw {
+            database::run("UPDATE notifications SET actions=?1 WHERE id=?2", &[json!(clean), json!(id)]).ok();
+            fixed += 1;
+        }
+    }
+    if fixed > 0 { log::info!("[通知] 已清理 {} 条通知中指向不存在对象的失效跳转按钮", fixed); }
+}
+
 pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> String {
     let a = a.clone();
                             let action = a["action"].as_str().unwrap_or("create");
@@ -160,6 +214,7 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                     } else {
                                         let mut sets = Vec::new();
                                         let mut params: Vec<Value> = Vec::new();
+                                        let mut dropped_actions: Vec<String> = Vec::new();
                                         if let Some(t) = a.get("type").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                                             sets.push("type=?"); params.push(json!(t));
                                         }
@@ -179,8 +234,11 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                             sets.push("entity_id=?"); params.push(json!(ei));
                                         }
                                         if let Some(actions_arr) = a.get("actions") {
-                                            let actions_str = serde_json::to_string(actions_arr).unwrap_or_else(|_| "[]".to_string());
-                                            sets.push("actions=?"); params.push(json!(actions_str));
+                                            let raw = serde_json::to_string(actions_arr).unwrap_or_else(|_| "[]".to_string());
+                                            // ★ 更新侧同样校验，防死按钮经 update 混入
+                                            let (clean, dropped) = sanitize_actions_json(&raw);
+                                            dropped_actions = dropped;
+                                            sets.push("actions=?"); params.push(json!(clean));
                                         }
                                         if sets.is_empty() {
                                             let envelope = ToolResultEnvelope {
@@ -209,10 +267,15 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                                         &[json!(nid)],
                                                     ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
                                                     let display_name = if notification_title.is_empty() { nid.to_string() } else { notification_title };
+                                                    let summary = if dropped_actions.is_empty() {
+                                                        format!("已更新通知「{}」", display_name)
+                                                    } else {
+                                                        format!("已更新通知「{}」；注意：{} 个跳转按钮因引用对象不存在已被移除（{}）", display_name, dropped_actions.len(), dropped_actions.join("、"))
+                                                    };
                                                     ToolResultEnvelope {
                                                         result_type: "notification_update_result".to_string(),
                                                         data: json!({"id": nid, "success": true}),
-                                                        summary: Some(format!("已更新通知「{}」", display_name)),
+                                                        summary: Some(summary),
                                                     }.to_json()
                                                 }
                                             }
@@ -234,12 +297,22 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                     } else {
                                         "[]".to_string()
                                     };
-                                    let is_dup = if !entity_id.is_empty() {
-                                        database::get(
-                                            "SELECT id FROM notifications WHERE type=?1 AND entity_id=?2 AND created_at > datetime('now','-1 day')",
-                                            &[json!(ntype), json!(entity_id)]
+                                    // ★ 创建侧校验：剔除指向不存在对象的 view_* 死按钮
+                                    let (actions_str, dropped_actions) = sanitize_actions_json(&actions_str);
+                                    // ★ 去重（两路并行，任一命中即跳过）：
+                                    //   ① 同类型+同实体 → 永久去重（不再限 1 天窗口，用户已知该建议）
+                                    //   ② 同标题+内容前 200 字相同 → 针对 insight 类（无 entity_id）的内容去重
+                                    let is_dup = (!entity_id.is_empty() && database::get(
+                                        "SELECT id FROM notifications WHERE type=?1 AND entity_id=?2 LIMIT 1",
+                                        &[json!(ntype), json!(entity_id)]
+                                    ).ok().flatten().is_some()) || {
+                                        let title_trim = title.trim();
+                                        let content_prefix: String = content.chars().take(200).collect();
+                                        !title_trim.is_empty() && !content_prefix.is_empty() && database::get(
+                                            "SELECT id FROM notifications WHERE title=?1 AND substr(content,1,200)=?2 LIMIT 1",
+                                            &[json!(title_trim), json!(&content_prefix)]
                                         ).ok().flatten().is_some()
-                                    } else { false };
+                                    };
                                     if is_dup {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "notification_create_result".to_string(),
@@ -260,10 +333,15 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                             }.to_json(),
                                             Ok(_) => {
                                                 if let Some(ref h) = app_handle { let _ = h.emit("notification:new", &id); }
+                                                let summary = if dropped_actions.is_empty() {
+                                                    format!("已创建通知「{}」", title)
+                                                } else {
+                                                    format!("已创建通知「{}」；注意：{} 个跳转按钮因引用对象不存在已被移除（{}）；view_* 按钮的 ID 必须来自本轮工具查询确认存在的对象", title, dropped_actions.len(), dropped_actions.join("、"))
+                                                };
                                                 ToolResultEnvelope {
                                                     result_type: "notification_create_result".to_string(),
                                                     data: json!({"id": id, "title": title, "success": true}),
-                                                    summary: Some(format!("已创建通知「{}」", title)),
+                                                    summary: Some(summary),
                                                 }.to_json()
                                             }
                                         }

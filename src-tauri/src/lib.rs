@@ -121,6 +121,9 @@ pub fn run() {
                 }
             }
 
+            // ★ 启动清扫：移除通知中指向不存在对象的 view_* 死按钮
+            services::agent_workflow::tools::notification::sweep_dead_notification_actions();
+
             // 清理过期 compressed 消息：每 session 最多保留 50 条，清理空 session
             commands::kb::cleanup_chat_messages(50);
 
