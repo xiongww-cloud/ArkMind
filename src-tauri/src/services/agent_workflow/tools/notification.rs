@@ -299,18 +299,16 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                     };
                                     // ★ 创建侧校验：剔除指向不存在对象的 view_* 死按钮
                                     let (actions_str, dropped_actions) = sanitize_actions_json(&actions_str);
-                                    // ★ 去重（两路并行，任一命中即跳过）：
-                                    //   ① 同类型+同实体 → 永久去重（不再限 1 天窗口，用户已知该建议）
-                                    //   ② 同标题+内容前 200 字相同 → 针对 insight 类（无 entity_id）的内容去重
+                                    // ★ 去重安全网（7 天窗口，仅防完全相同 title+entity_id 重复）：
+                                    //   语义级去重由分析师自行调 list 查近 7 天通知判断，这里只兜底防机器级重复
                                     let is_dup = (!entity_id.is_empty() && database::get(
-                                        "SELECT id FROM notifications WHERE type=?1 AND entity_id=?2 LIMIT 1",
+                                        "SELECT id FROM notifications WHERE type=?1 AND entity_id=?2 AND created_at > datetime('now','-7 days') LIMIT 1",
                                         &[json!(ntype), json!(entity_id)]
                                     ).ok().flatten().is_some()) || {
                                         let title_trim = title.trim();
-                                        let content_prefix: String = content.chars().take(200).collect();
-                                        !title_trim.is_empty() && !content_prefix.is_empty() && database::get(
-                                            "SELECT id FROM notifications WHERE title=?1 AND substr(content,1,200)=?2 LIMIT 1",
-                                            &[json!(title_trim), json!(&content_prefix)]
+                                        !title_trim.is_empty() && !entity_id.is_empty() && database::get(
+                                            "SELECT id FROM notifications WHERE title=?1 AND entity_id=?2 AND created_at > datetime('now','-7 days') LIMIT 1",
+                                            &[json!(title_trim), json!(entity_id)]
                                         ).ok().flatten().is_some()
                                     };
                                     if is_dup {
