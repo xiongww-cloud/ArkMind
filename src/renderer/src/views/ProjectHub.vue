@@ -894,47 +894,47 @@ async function handleImportProject() {
       <div v-if="showNewProjectModal" class="fixed inset-0 z-50 flex items-center justify-center">
         <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" @click="closeModal" />
         <div class="relative bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4 p-6">
-          <h2 class="text-lg font-semibold text-surface-800 mb-4">新建项目</h2>
+          <h2 class="text-sm font-semibold text-surface-800 mb-4">新建项目</h2>
           <div class="space-y-3">
             <div>
-              <label class="block text-xs font-medium text-surface-300 mb-1">项目名称 *</label>
+              <label class="block text-[11px] font-medium text-surface-500 mb-1">项目名称 *</label>
               <div class="relative">
-                <input v-model="projectForm.name" type="text" maxlength="30" class="input-field pr-10" placeholder="例如：华为 OceanStor — 某银行" />
+                <input v-model="projectForm.name" type="text" maxlength="30" class="input-field !h-7 !py-1 !text-[12px] pr-10" placeholder="例如：华为 OceanStor — 某银行" />
                 <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] flex-shrink-0" :class="projectForm.name.length >= 30 ? 'text-red-400' : 'text-surface-300'">{{ projectForm.name.length }}/30</span>
               </div>
             </div>
             <div>
-              <label class="block text-xs font-medium text-surface-300 mb-1">项目金额（万）</label>
-              <input v-model.number="projectForm.budget" type="number" class="input-field" placeholder="例如：300" />
+              <label class="block text-[11px] font-medium text-surface-500 mb-1">项目金额（万）</label>
+              <input v-model.number="projectForm.budget" type="number" class="input-field !h-7 !py-1 !text-[12px]" placeholder="例如：300" />
             </div>
             <div>
-              <label class="block text-xs font-medium text-surface-300 mb-1">客户</label>
+              <label class="block text-[11px] font-medium text-surface-500 mb-1">客户</label>
               <SelectWithSearch v-model="projectForm.customerId" :options="customerSelectOptions" placeholder="选择客户（可选）" search-placeholder="搜索客户..." />
             </div>
             <div class="relative">
-              <label class="block text-xs font-medium text-surface-300 mb-1">项目阶段 *</label>
+              <label class="block text-[11px] font-medium text-surface-500 mb-1">项目阶段 *</label>
               <button @click="newProjectStatusOpen = !newProjectStatusOpen" class="flex items-center gap-1 h-7 text-xs w-full bg-white border border-slate-200 rounded-md px-2.5 outline-none focus:ring-1 focus:ring-blue-300/20 focus:border-blue-400 text-slate-600 hover:border-slate-500 transition-colors">
                 <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusDotColors[projectForm.status] || 'bg-gray-400'" />
                 <span class="truncate flex-1 text-left">{{ statusLabels[projectForm.status] || '选择阶段' }}</span>
                 <AppIcon name="chevron-down" class="w-3.5 h-3.5 text-slate-400 transition-transform" :class="newProjectStatusOpen ? 'rotate-180' : ''" />
               </button>
               <div v-if="newProjectStatusOpen" class="absolute top-full left-0 mt-1 z-50 w-full bg-white rounded-lg shadow-lg border border-slate-100 py-1">
-                <button v-for="s in allStatusOptions" :key="s" @click="projectForm.status = s; newProjectStatusOpen = false" class="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors" :class="projectForm.status === s ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
+                <button v-for="s in allStatusOptions" :key="s" @click="projectForm.status = s; newProjectStatusOpen = false" class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition-colors" :class="projectForm.status === s ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600 hover:bg-slate-50'">
                   <span class="w-2 h-2 rounded-full flex-shrink-0" :class="statusDotColors[s] || 'bg-gray-400'" />
                   <span>{{ statusLabels[s] }}</span>
                 </button>
               </div>
             </div>
             <div v-if="projectForm.status === 'Bidding'">
-              <label class="block text-xs font-medium text-surface-300 mb-1">投标时间 *</label>
-              <input v-model="projectForm.bidTime" type="datetime-local" class="input-field" />
+              <label class="block text-[11px] font-medium text-surface-500 mb-1">投标时间 *</label>
+              <input v-model="projectForm.bidTime" type="datetime-local" class="input-field !h-7 !py-1 !text-[12px]" />
             </div>
             <div class="pt-2 border-t border-surface-100">
-              <label class="block text-xs font-medium text-surface-300 mb-1">项目描述</label>
-              <textarea v-model="projectForm.description" rows="3" class="input-field" placeholder="简要描述项目背景与需求" />
+              <label class="block text-[11px] font-medium text-surface-500 mb-1">项目描述</label>
+              <textarea v-model="projectForm.description" rows="3" class="input-field !py-1.5 !text-[12px]" placeholder="简要描述项目背景与需求" />
             </div>
           </div>
-          <div class="flex justify-end gap-3 mt-5">
+          <div class="flex justify-end gap-2 mt-5">
             <button class="btn-secondary" @click="closeModal">取消</button>
             <button class="btn-primary" @click="createProject">新建</button>
           </div>

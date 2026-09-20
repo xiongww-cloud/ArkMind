@@ -208,8 +208,8 @@ async function save() {
             </div>
           </div>
           <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
-            <button @click="emit('close')" class="h-7 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
-            <button @click="save" :disabled="saving" class="h-7 px-3 text-[12px] text-white bg-brand-600 hover:bg-brand-700 rounded transition-colors disabled:opacity-50">{{ saving ? '创建中…' : '创建' }}</button>
+            <button @click="emit('close')" class="btn-secondary">取消</button>
+            <button @click="save" :disabled="saving" class="btn-primary disabled:opacity-50">{{ saving ? '创建中…' : '创建' }}</button>
           </div>
         </div>
       </div>
@@ -238,8 +238,8 @@ async function save() {
             </div>
           </div>
           <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
-            <button @click="newCompanyVisible = false" class="h-7 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
-            <button @click="confirmCreateCompany" :disabled="newCompanyBusy" class="h-7 px-3 text-[12px] text-white bg-brand-600 hover:bg-brand-700 rounded transition-colors disabled:opacity-50">{{ newCompanyBusy ? '创建中…' : '创建公司' }}</button>
+            <button @click="newCompanyVisible = false" class="btn-secondary">取消</button>
+            <button @click="confirmCreateCompany" :disabled="newCompanyBusy" class="btn-primary disabled:opacity-50">{{ newCompanyBusy ? '创建中…' : '创建公司' }}</button>
           </div>
         </div>
       </div>
