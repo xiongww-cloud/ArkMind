@@ -14,7 +14,6 @@ const route = useRoute()
 
 const navItems = [
   { path: '/dashboard', label: '总览', icon: 'dashboard' },
-  { path: '/ai-insights', label: 'AI洞察', icon: 'bell' },
   { path: '/projects', label: '项目', icon: 'folder-open' },
   { path: '/notes', label: '笔记', icon: 'file-doc' },
   { path: '/todos', label: '待办', icon: 'list' },
@@ -24,6 +23,7 @@ const navItems = [
   { path: '/assets', label: '资料', icon: 'archive' },
   { path: '/knowledge-graph', label: '知识观测台', icon: 'network' },
   { path: '/knowledge/brain', label: '智能问答', icon: 'chat' },
+  { path: '/ai-insights', label: 'AI洞察', icon: 'bell' },
   // { path: '/agent-debug', label: 'Agent调试', icon: 'bar-chart' },
   // { path: '/inspector', label: '索引检查', icon: 'search' },
   { path: '/settings', label: '系统设置', icon: 'settings' }

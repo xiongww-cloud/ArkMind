@@ -14,6 +14,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 const props = defineProps<{
   visible?: boolean
+  unread?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -105,7 +106,7 @@ async function renderContent(n: Notification) {
 async function loadNotifications() {
   loading.value = true
   try {
-    const r = await notificationList()
+    const r = await notificationList(props.unread)
     notifications.value = r.notifications || []
     // Pre-render all content
     for (const n of notifications.value) {

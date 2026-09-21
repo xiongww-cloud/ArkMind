@@ -13,7 +13,7 @@ pub async fn notification_list(unread_only: Option<bool>) -> Result<Value, Strin
     let sql = if unread_only.unwrap_or(false) {
         "SELECT * FROM notifications WHERE read=0 ORDER BY created_at DESC"
     } else {
-        "SELECT * FROM notifications ORDER BY created_at DESC"
+        "SELECT * FROM notifications ORDER BY read ASC, created_at DESC"
     };
     let mut rows = database::all(sql, &[]).map_err(|e| e.to_string())?;
     // 将 actions 从 JSON 字符串解析为数组
