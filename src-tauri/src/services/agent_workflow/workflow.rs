@@ -1081,10 +1081,32 @@ pub async fn agent_chat_workflow_internal(
                         "ext_tool_delegate_agent" => {
                             let agent_id = a["agent_id"].as_str().unwrap_or("");
                             let task = a["task"].as_str().unwrap_or("");
-                            let context = a.get("context");
                             let expected_output = a["expected_output"].as_str().unwrap_or("");
+                            // ★ 注入最近对话历史到 context，让子 Agent 能看到主 Agent 的对话脉络
+                            let mut ctx = a.get("context").cloned().unwrap_or(json!({}));
+                            let recent: Vec<Value> = messages.iter()
+                                .filter(|m| {
+                                    let role_ok = m.role == MessageRole::User || m.role == MessageRole::Assistant;
+                                    let not_dynamic = m.content.as_deref().map_or(true, |c| !c.starts_with("[DYNAMIC_CONTEXT]"));
+                                    role_ok && not_dynamic
+                                })
+                                .rev()
+                                .take(20)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .filter_map(|m| {
+                                    let role = match m.role { MessageRole::User => "user", MessageRole::Assistant => "assistant", _ => return None };
+                                    let content = m.content.as_deref().unwrap_or("");
+                                    if content.is_empty() { return None; }
+                                    Some(json!({"role": role, "content": content}))
+                                })
+                                .collect();
+                            if !recent.is_empty() {
+                                ctx["recent_messages"] = json!(recent);
+                            }
                             let res = crate::services::delegate_agent::execute_delegate_agent(
-                                agent_id, task, context, expected_output, app_handle.clone(), delegate_depth,
+                                agent_id, task, Some(&ctx), expected_output, app_handle.clone(), delegate_depth,
                             ).await;
                             // ★ 取消透传 + 委托扣费（合并解析；解析失败也扣基础额度，防绕过）
                             match serde_json::from_str::<Value>(&res) {
