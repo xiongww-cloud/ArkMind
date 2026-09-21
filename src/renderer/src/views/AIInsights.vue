@@ -56,7 +56,6 @@ onActivated(() => { loadStats(); panelRef.value?.reload() })
         <button @click="panelRef?.enterMultiSelect()" class="btn-secondary">多选</button>
       </template>
       <div class="flex-1" />
-      <span v-if="unreadCount > 0" class="text-[11px] text-surface-400">未读{{ unreadCount }}</span>
     </div>
     <!-- 通知列表（全宽复用 NotificationPanel） -->
     <div class="flex-1 min-h-0 overflow-y-auto">
