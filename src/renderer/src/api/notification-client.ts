@@ -57,6 +57,10 @@ export async function profileFactMerge(ids: string[], content: string, notificat
   return invoke('profile_fact_merge', { ids, content, notificationId: notificationId ?? null })
 }
 
+export async function notificationCreateProjectLog(projectId: string, content: string, notificationId?: string): Promise<{ success: boolean }> {
+  return invoke('notification_create_project_log', { projectId, content, notificationId: notificationId ?? null })
+}
+
 export interface ProfileFact {
   id: string
   content: string

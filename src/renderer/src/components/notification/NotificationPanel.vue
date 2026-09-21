@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
@@ -184,6 +184,7 @@ const ACTION_ICONS: Record<string, string> = {
   save_profile: 'user',
   merge_profile: 'refresh',
   revert_profile: 'undo',
+  create_project_log: 'file-text',
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -303,6 +304,21 @@ async function handleAction(n: Notification, action: NotificationAction) {
           notifications.value = notifications.value.filter(x => x.id !== n.id)
         } catch {
           toast({ message: '整合失败', type: 'error' })
+        }
+        break
+      }
+      case 'create_project_log': {
+        const projectId = (p.project_id as string || '').trim()
+        const content = (p.content as string || '').trim()
+        if (!projectId) { toast({ message: '缺少项目ID', type: 'info' }); break }
+        if (!content) { toast({ message: '缺少日志内容', type: 'info' }); break }
+        try {
+          await notificationCreateProjectLog(projectId, content, n.id)
+          toast({ message: '已记录到项目日志', type: 'success' })
+          await notificationMarkRead(n.id)
+          notifications.value = notifications.value.filter(x => x.id !== n.id)
+        } catch {
+          toast({ message: '记录失败', type: 'error' })
         }
         break
       }

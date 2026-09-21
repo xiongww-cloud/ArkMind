@@ -205,6 +205,23 @@ pub async fn profile_fact_merge(ids: Vec<String>, content: String, notification_
     create_confirmed_fact(&c, notification_id.as_deref(), "profile")
 }
 
+/// 用户从通知的 create_project_log 按钮确认记录业务事件到项目动态
+#[tauri::command]
+pub async fn notification_create_project_log(project_id: String, content: String, notification_id: Option<String>) -> Result<Value, String> {
+    let pid = project_id.trim().strip_prefix("PROJECT-").unwrap_or(project_id.trim()).to_string();
+    if pid.is_empty() { return Err("project_id 不能为空".into()); }
+    let c = content.trim().to_string();
+    if c.is_empty() { return Err("日志内容不能为空".into()); }
+    // 调用已有的 project_dynamics_add
+    let event = json!({"type": "ai", "content": c, "operator": "AI"});
+    let result = crate::commands::project_commands::project_dynamics_add(pid.clone(), event).await.map_err(|e| e.to_string())?;
+    // 标记通知已处理（如有 notification_id）
+    if let Some(nid) = notification_id {
+        database::run("UPDATE notifications SET read=1 WHERE id=?1", &[json!(nid)]).ok();
+    }
+    Ok(json!({"success": true, "dynamic": result}))
+}
+
 /// 画像事实列表（设置页"我的档案"卡用）
 #[tauri::command]
 pub async fn profile_facts_list() -> Result<Value, String> {
