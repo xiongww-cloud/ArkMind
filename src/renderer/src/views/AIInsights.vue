@@ -54,11 +54,9 @@ onActivated(() => { loadStats(); panelRef.value?.reload() })
       </template>
       <template v-else>
         <button @click="panelRef?.enterMultiSelect()" class="btn-secondary">多选</button>
-        <span v-if="unreadCount > 0"
-          class="px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-medium leading-none">
-          {{ unreadCount > 99 ? '99+' : unreadCount }}
-        </span>
       </template>
+      <div class="flex-1" />
+      <span v-if="unreadCount > 0" class="text-[11px] text-surface-400">未读{{ unreadCount }}</span>
     </div>
     <!-- 通知列表（全宽复用 NotificationPanel） -->
     <div class="flex-1 min-h-0 overflow-y-auto">
