@@ -3,6 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 const routes = [
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', name: 'Dashboard', component: () => import('@/views/Dashboard.vue'), meta: { title: '总览' } },
+  { path: '/ai-insights', name: 'AIInsights', component: () => import('@/views/AIInsights.vue'), meta: { title: 'AI洞察' } },
   { path: '/projects', name: 'Projects', component: () => import('@/views/ProjectHub.vue'), meta: { title: '项目库' } },
   { path: '/projects/:id', name: 'ProjectDetail', component: () => import('@/views/ProjectDetail.vue'), props: true, meta: { title: '项目详情' } },
   { path: '/products', name: 'Products', component: () => import('@/views/ProductCenter.vue'), meta: { title: '产品库' } },

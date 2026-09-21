@@ -14,6 +14,7 @@ const route = useRoute()
 
 const navItems = [
   { path: '/dashboard', label: '总览', icon: 'dashboard' },
+  { path: '/ai-insights', label: 'AI洞察', icon: 'bell' },
   { path: '/projects', label: '项目', icon: 'folder-open' },
   { path: '/notes', label: '笔记', icon: 'file-doc' },
   { path: '/todos', label: '待办', icon: 'list' },
