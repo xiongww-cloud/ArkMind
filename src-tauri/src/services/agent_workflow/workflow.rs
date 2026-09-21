@@ -1182,7 +1182,9 @@ pub async fn agent_chat_workflow_internal(
                 for (_, result, _) in &all_results {
                     if let Ok(v) = serde_json::from_str::<Value>(result) {
                         let status = v["data"]["status"].as_str().unwrap_or("");
-                        let answer = v["data"]["answer"].as_str().unwrap_or("");
+                        let answer = v["data"]["answer"].as_str()
+                            .or_else(|| v["data"]["result"].as_str())
+                            .unwrap_or("");
                         if status == "completed" && !answer.is_empty() {
                             if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                             let ws = session.generate_scratchpad();
