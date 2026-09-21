@@ -320,11 +320,42 @@ pub(crate) fn ext_tool_manage_product(a: &Value) -> String {
                 }
             }
         }
+        "list_series" => {
+            match block_on_async(crate::commands::product_commands::product_series_list()) {
+                Ok(series_list) => {
+                    let items: Vec<Value> = series_list.iter().map(|s| {
+                        json!({
+                            "id": s["id"].as_str().unwrap_or(""),
+                            "name": s["name"].as_str().unwrap_or(""),
+                            "parent_id": s["parent_id"].as_str().unwrap_or("")
+                        })
+                    }).collect();
+                    let summary_lines: Vec<String> = items.iter().map(|s| {
+                        let name = s["name"].as_str().unwrap_or("未命名");
+                        let id = s["id"].as_str().unwrap_or("");
+                        format!("{}（{}）", name, &id[..8.min(id.len())])
+                    }).collect();
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_query_result".to_string(),
+                        data: json!({"success": true, "items": items, "count": items.len()}),
+                        summary: Some(format!("共 {} 个目录：{}", items.len(), summary_lines.join("、"))),
+                    };
+                    envelope.to_json()
+                }
+                Err(e) => {
+                    ToolResultEnvelope {
+                        result_type: "object_error".to_string(),
+                        data: json!({"success": false}),
+                        summary: Some(format!("查询目录列表失败: {}", e)),
+                    }.to_json()
+                }
+            }
+        }
         _ => {
             let envelope = ToolResultEnvelope {
                 result_type: "object_error".to_string(),
-                data: json!({"error": format!("未知操作「{}」。支持：create, update, delete, move, create_series, update_series, delete_series。", action)}),
-                summary: Some(format!("未知操作「{}」。支持：create, update, delete, move, create_series, update_series, delete_series。", action)),
+                data: json!({"error": format!("未知操作「{}」。支持：create, update, delete, move, list_series, create_series, update_series, delete_series。", action)}),
+                summary: Some(format!("未知操作「{}」。支持：create, update, delete, move, list_series, create_series, update_series, delete_series。", action)),
             };
             envelope.to_json()
         }

@@ -153,6 +153,47 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
                 }
             }
         }
-        _ => fail(format!("未知操作类型: {}。支持 create/update/delete。", action)),
+        "list_notebooks" => {
+            match block_on_async(crate::commands::notes_commands::notebook_list()) {
+                Ok(result) => {
+                    let notebooks = result["notebooks"].as_array().cloned().unwrap_or_default();
+                    let items: Vec<Value> = notebooks.iter().map(|nb| {
+                        json!({
+                            "id": nb["id"].as_str().unwrap_or(""),
+                            "name": nb["name"].as_str().unwrap_or("未命名"),
+                            "color": nb["color"].as_str().unwrap_or("")
+                        })
+                    }).collect();
+                    let summary_lines: Vec<String> = items.iter().map(|nb| {
+                        nb["name"].as_str().unwrap_or("未命名").to_string()
+                    }).collect();
+                    ToolResultEnvelope {
+                        result_type: "object_query_result".to_string(),
+                        data: json!({"success": true, "items": items, "count": items.len()}),
+                        summary: Some(format!("共 {} 个笔记本：{}", items.len(), summary_lines.join("、"))),
+                    }.to_json()
+                }
+                Err(e) => fail(format!("查询笔记本列表失败: {}", e)),
+            }
+        }
+        "create_notebook" => {
+            if title.trim().is_empty() {
+                return fail("创建笔记本需要提供 title。".to_string());
+            }
+            match block_on_async(crate::commands::notes_commands::notebook_create(json!({"name": title.trim()}))) {
+                Ok(created) => {
+                    let nb = &created["notebook"];
+                    let nid = nb["id"].as_str().unwrap_or("");
+                    let nname = nb["name"].as_str().unwrap_or(title.trim());
+                    ToolResultEnvelope {
+                        result_type: "object_create_result".to_string(),
+                        data: json!({"success": true, "id": nid, "name": nname}),
+                        summary: Some(format!("已创建笔记本「{}」。", nname)),
+                    }.to_json()
+                }
+                Err(e) => fail(format!("创建笔记本失败: {}", e)),
+            }
+        }
+        _ => fail(format!("未知操作类型: {}。支持 create/update/delete/list_notebooks/create_notebook。", action)),
     }
 }
