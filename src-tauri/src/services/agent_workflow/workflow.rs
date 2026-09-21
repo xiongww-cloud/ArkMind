@@ -1178,6 +1178,26 @@ pub async fn agent_chat_workflow_internal(
                 }
                 current_round["tools"] = json!(round_tools);
                 tool_log.push(current_round);
+                // ★ 委托直出：本轮有 completed 的委托，直接输出子 Agent 回答，跳过主 Agent 的 LLM 再加工
+                for (_, result, _) in &all_results {
+                    if let Ok(v) = serde_json::from_str::<Value>(result) {
+                        let status = v["data"]["status"].as_str().unwrap_or("");
+                        let answer = v["data"]["answer"].as_str().unwrap_or("");
+                        if status == "completed" && !answer.is_empty() {
+                            if let Some(ref sid) = session_id { save_session_state(sid, &session); }
+                            let ws = session.generate_scratchpad();
+                            return Ok(json!({
+                                "success": true, "result_type": "answer", "answer": answer,
+                                "delegated_completion": true, "workspace": ws,
+                                "iterations": iters,
+                                "promptTokens": session.prompt_tokens,
+                                "completionTokens": session.completion_tokens,
+                                "cachedTokens": session.cached_tokens,
+                                "tool_log": tool_log
+                            }));
+                        }
+                    }
+                }
                 // ★ 同时记录工具调用历史到检索计划
                 for t in &round_tools {
                     let result_str = t["result"].as_str().unwrap_or("");
