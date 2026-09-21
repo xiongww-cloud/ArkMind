@@ -34,7 +34,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
                                                     data: json!({"success": true, "id": id, "type": ptype.to_uppercase(), "name": name}),
-                                                    summary: Some(format!("已创建{}「{}」", ptype.to_uppercase(), name)),
+                                                    summary: Some(format!("已创建{}「{}」，ID: {}", ptype.to_uppercase(), name, id)),
                                                 };
                                                 envelope.to_json()
                                             },

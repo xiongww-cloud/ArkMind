@@ -52,7 +52,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                     let envelope = ToolResultEnvelope {
                         result_type: "object_create_result".to_string(),
                         data: json!({"success": true, "id": todo_id, "type": "TODO", "name": todo_title}),
-                        summary: Some(format!("已创建待办「{}」", todo_title)),
+                        summary: Some(format!("已创建待办「{}」，ID: {}", todo_title, todo_id)),
                     };
                     envelope.to_json()
                 },

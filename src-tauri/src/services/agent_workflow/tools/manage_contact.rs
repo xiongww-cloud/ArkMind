@@ -49,9 +49,9 @@ pub(crate) fn execute(a: &Value) -> String {
                                                     ));
                                                 }
                                                 let summary = if is_dup {
-                                                    format!("已存在同名联系人「{}」(ID: {})，已复用，未重复创建。", name, id)
+                                                    format!("已存在同名联系人「{}」，ID: {}，已复用，未重复创建。", name, id)
                                                 } else {
-                                                    format!("已创建联系人「{}」", name)
+                                                    format!("已创建联系人「{}」，ID: {}", name, id)
                                                 };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),

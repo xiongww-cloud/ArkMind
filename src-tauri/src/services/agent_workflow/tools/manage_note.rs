@@ -188,7 +188,7 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
                     ToolResultEnvelope {
                         result_type: "object_create_result".to_string(),
                         data: json!({"success": true, "id": nid, "name": nname}),
-                        summary: Some(format!("已创建笔记本「{}」。", nname)),
+                        summary: Some(format!("已创建笔记本「{}」，ID: {}", nname, nid)),
                     }.to_json()
                 }
                 Err(e) => fail(format!("创建笔记本失败: {}", e)),

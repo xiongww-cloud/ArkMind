@@ -66,9 +66,9 @@ pub(crate) fn execute(a: &Value) -> String {
                                                     result_type: "object_create_result".to_string(),
                                                     data: json!({"success": true, "id": pid, "type": "PROJECT", "name": name}),
                                                     summary: Some(if bid_dropped {
-                                                        format!("已创建项目「{}」。注意：bid_time 已忽略——投标时间仅在 status=Bidding（投标）时生效", name)
+                                                        format!("已创建项目「{}」，ID: {}。注意：bid_time 已忽略——投标时间仅在 status=Bidding（投标）时生效", name, pid)
                                                     } else {
-                                                        format!("已创建项目「{}」", name)
+                                                        format!("已创建项目「{}」，ID: {}", name, pid)
                                                     }),
                                                 };
                                                 envelope.to_json()
