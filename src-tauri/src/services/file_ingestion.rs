@@ -1258,4 +1258,16 @@ pub fn cleanup_orphan_source_data() {
             Err(e) => log::info!("[数据中台] business_relations 孤儿清理失败: {}", e),
         }
     }
+
+    // 5. 清理 materialize_retry 孤儿（source_data 已不存在的债务条目）
+    match crate::database::run(
+        "DELETE FROM materialize_retry WHERE NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type=materialize_retry.source_type AND sd.source_id=materialize_retry.source_id)",
+        &[],
+    ) {
+        Ok(r) if r.changes > 0 => log::info!(
+            "[数据中台] 孤儿 materialize_retry 清理: {} 行",
+            r.changes
+        ),
+        _ => {}
+    }
 }

@@ -18,6 +18,7 @@
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
+use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Semaphore};
@@ -302,6 +303,21 @@ impl DebouncedMaterializer {
                         }
                         clear_materialize_debt(&st, &sid);
                     } else {
+                        // ★ source_data 已删除则跳过重试（避免死循环）
+                        let sd_exists = crate::database::get(
+                            "SELECT 1 FROM source_data WHERE source_type=?1 AND source_id=?2",
+                            &[json!(&st), json!(&sid)],
+                        ).ok().flatten().is_some();
+                        if !sd_exists {
+                            retries_ref.remove(&key_clone);
+                            state_ref.remove(&key_clone);
+                            crate::database::run(
+                                "DELETE FROM materialize_retry WHERE source_type=?1 AND source_id=?2",
+                                &[json!(&st), json!(&sid)],
+                            ).ok();
+                            log::info!("[防抖调度器] source_data 已删除，跳过重试并清理债务: {st}:{sid}");
+                            return;
+                        }
                         // 物化失败 → 记录重试次数，按退避间隔重新排队
                         // ★ 防自死锁：不得跨 len()/remove()/insert() 持有 entry 的 RefMut（DashMap 分片锁非重入）
                         let prev = retries_ref.get(&key_clone).map(|x| *x);

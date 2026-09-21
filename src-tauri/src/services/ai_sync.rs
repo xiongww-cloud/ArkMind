@@ -215,7 +215,15 @@ pub async fn process_single_entity(source_type: &str, source_id: &str) -> bool {
             let content = r["content"].as_str().unwrap_or("").to_string();
             materialize_and_store(source_type, source_id, sd_id, &content).await.is_ok()
         }
-        None => false,
+        None => {
+            // source_data 已被删除，清理债务表避免死循环重试
+            log::info!("[物化] source_data 已不存在，清理债务: {}:{}", source_type, source_id);
+            database::run(
+                "DELETE FROM materialize_retry WHERE source_type=?1 AND source_id=?2",
+                &[json!(source_type), json!(source_id)],
+            ).ok();
+            true // 不是失败，是实体已被删除，返回成功避免重试
+        }
     }
 }
 
