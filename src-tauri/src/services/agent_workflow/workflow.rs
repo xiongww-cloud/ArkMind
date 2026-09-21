@@ -1224,29 +1224,6 @@ pub async fn agent_chat_workflow_internal(
                     session.update_from_tool_result(tool_name, &result_str);
                 }
 
-                // ★ 子Agent单轮执行跳过总结：首个工具轮全部为成功的执行类调用
-                //   → 跳过后续LLM总结轮，直接返回工具摘要（链式任务天然需要多轮，不受影响）
-                if !is_root && tool_log.len() == 1 && !round_tools.is_empty() {
-                    let all_exec_success = round_tools.iter().all(|t| {
-                        t["tool"].as_str().unwrap_or("").starts_with("ext_tool_manage_")
-                            && serde_json::from_str::<Value>(t["result"].as_str().unwrap_or(""))
-                                .ok()
-                                .map(|v| v["data"]["success"].as_bool() == Some(true))
-                                .unwrap_or(false)
-                    });
-                    if all_exec_success {
-                        let summaries: Vec<String> = round_tools.iter().filter_map(|t| {
-                            serde_json::from_str::<Value>(t["result"].as_str().unwrap_or(""))
-                                .ok()
-                                .and_then(|v| v["summary"].as_str().map(|s| s.to_string()))
-                        }).collect();
-                        let answer = if summaries.is_empty() { "所有操作已完成。".to_string() } else { summaries.join("\n") };
-                        log::info!("[子Agent跳过总结] 单轮 {} 次执行类调用全部成功，省去总结轮", round_tools.len());
-                        let ws = session.generate_scratchpad();
-                        return Ok(json!({"success":true,"result_type":"answer","answer":answer,"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
-                    }
-                }
-
                 // ★ 状态驱动熔断检查
                 let mut circuit_break_reason = String::new();
 
