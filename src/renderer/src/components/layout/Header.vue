@@ -557,17 +557,14 @@ onUnmounted(() => {
     <!-- Notification dropdown (fixed to viewport) -->
     <div v-if="showNotifications" class="titlebar-overlay fixed inset-0 z-40" @mousedown.self="showNotifications = false">
       <div :style="notifDropdownStyle" class="fixed w-[440px] max-h-[480px] bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden flex flex-col">
-        <div class="flex items-center justify-between px-3 py-2 border-b border-slate-100">
-          <div class="flex items-center gap-2 min-w-0">
-            <span class="text-[12px] font-semibold text-slate-700 flex-shrink-0">AI洞察</span>
-          </div>
-          <div class="flex items-center gap-2 flex-shrink-0">
-            <button v-if="unreadCount > 0" @click="handleMarkAllRead"
-              class="text-[10px] text-blue-600 hover:underline">全部已读</button>
-            <button @click="showNotifications = false" class="p-0.5 rounded hover:bg-slate-100 transition-colors">
-              <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
-          </div>
+        <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-100">
+          <span class="text-[12px] font-semibold text-slate-700">AI洞察</span>
+          <button v-if="unreadCount > 0" @click="handleMarkAllRead"
+            class="text-[10px] text-blue-600 hover:underline">全部已读</button>
+          <div class="flex-1" />
+          <button @click="showNotifications = false" class="p-0.5 rounded hover:bg-slate-100 transition-colors">
+            <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
         </div>
         <div class="flex-1 min-h-0 overflow-y-auto">
           <NotificationPanel ref="notifPanelRef" :visible="showNotifications" unread @close="showNotifications = false" @read="loadNotificationStats" />
