@@ -115,14 +115,18 @@ pub fn fetch_new_emails(
     }
 
     // 逐封获取邮件（更稳健，避免批量获取导致解析失败）
+    // ★ Connection Lost 时重连一次继续，避免整轮邮件漏拉
     let mut all_emails = Vec::new();
-    for uid in &new_uids {
+    let mut reconnected = false;
+    let mut idx = 0usize;
+    while idx < new_uids.len() {
+        let uid = new_uids[idx];
         let uid_str = uid.to_string();
         match session.uid_fetch(&uid_str, "(BODY.PEEK[])") {
             Ok(messages) => {
                 for msg in messages.iter() {
                     if let Some(body) = msg.body() {
-                        let msg_uid = msg.uid.unwrap_or(*uid);
+                        let msg_uid = msg.uid.unwrap_or(uid);
                         match parse_email(body) {
                             Ok(mut email) => {
                                 email.uid = msg_uid;
@@ -136,9 +140,32 @@ pub fn fetch_new_emails(
                 }
             }
             Err(e) => {
-                log::warn!("[邮件] 获取邮件 UID={} 失败: {}", uid, e);
+                let es = e.to_string();
+                if !reconnected && (es.contains("Connection Lost") || es.contains("connection closed") || es.contains("Broken pipe")) {
+                    log::warn!("[邮件] 连接中断 (UID={})，尝试重连...", uid);
+                    reconnected = true;
+                    match imap_connect(&account.imap_host, account.imap_port)
+                        .and_then(|c| c.login(&account.username, &password).map_err(|e| format!("重连登录失败: {}", e.0)))
+                    {
+                        Ok(mut new_session) => {
+                            if let Err(sel_err) = new_session.select(folder) {
+                                log::warn!("[邮件] 重连后选择文件夹失败: {}", sel_err);
+                                break;
+                            }
+                            session = new_session;
+                            continue; // 重试当前 UID
+                        }
+                        Err(re) => {
+                            log::warn!("[邮件] 重连失败: {}，本轮剩余邮件将在下次轮询拉取", re);
+                            break;
+                        }
+                    }
+                } else {
+                    log::warn!("[邮件] 获取邮件 UID={} 失败: {}", uid, e);
+                }
             }
         }
+        idx += 1;
     }
 
     let _ = session.logout();

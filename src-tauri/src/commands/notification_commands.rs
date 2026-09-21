@@ -1,10 +1,11 @@
 use crate::database;
 use serde_json::{json, Value};
 
-/// 剥除通知标题/内容中暴露的对象 UUID，避免泄露内部标识符
+/// 剥除通知标题/内容中暴露的对象 UUID，避免泄露内部标识符；标题强制单行化（合并换行为空格）
 pub(crate) fn sanitize_notification_text(text: &str) -> String {
     let re = regex::Regex::new(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
-    re.replace_all(text, "").trim().to_string()
+    let cleaned = re.replace_all(text, "").to_string();
+    cleaned.replace('\r', "").replace('\n', " ").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[tauri::command]
