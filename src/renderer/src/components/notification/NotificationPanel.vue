@@ -11,6 +11,7 @@ import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
 import ContactQuickCreateModal from '@/components/common/ContactQuickCreateModal.vue'
 import { invoke } from '@tauri-apps/api/core'
+import { emit as tauriEmit } from '@tauri-apps/api/event'
 
 const props = defineProps<{
   visible?: boolean
@@ -70,6 +71,7 @@ async function batchDelete() {
     toast({ message: `已删除 ${ids.length} 条通知`, type: 'success' })
     exitMultiSelect()
     emit('read')
+    tauriEmit('notification:updated')
   } catch (e) {
     console.error('[NotificationPanel] batch delete failed:', e)
     toast({ message: '批量删除失败', type: 'error' })
@@ -133,6 +135,7 @@ async function markRead(id: string) {
   const n = notifications.value.find(n => n.id === id)
   if (n) n.read = 1
   emit('read')
+  tauriEmit('notification:updated')
 }
 
 async function removeNotification(id: string) {
@@ -140,6 +143,8 @@ async function removeNotification(id: string) {
   if (!ok) return
   await notificationDelete(id)
   notifications.value = notifications.value.filter(n => n.id !== id)
+  emit('read')
+  tauriEmit('notification:updated')
 }
 
 function goToEntity(n: Notification) {

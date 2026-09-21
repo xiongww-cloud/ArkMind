@@ -353,6 +353,7 @@ async function discardQuickNote() {
 const unreadCount = ref(0)
 const showNotifications = ref(false)
 const unlistenNotify = ref<(() => void) | null>(null)
+const unlistenNotifyUpdate = ref<(() => void) | null>(null)
 const notifWrapRef = ref<HTMLElement | null>(null)
 const notifPanelRef = ref<InstanceType<typeof NotificationPanel> | null>(null)
 
@@ -389,6 +390,9 @@ onMounted(async () => {
   unlistenNotify.value = await listen<string>('notification:new', async () => {
     await loadNotificationStats()
   })
+  unlistenNotifyUpdate.value = await listen<string>('notification:updated', async () => {
+    await loadNotificationStats()
+  })
   notifPollTimer = setInterval(loadNotificationStats, 60 * 1000)
   todoPollTimer = setInterval(loadQuickTodos, 30 * 1000)
   document.addEventListener('mousedown', onDocumentMouseDown, true)
@@ -403,6 +407,7 @@ onUnmounted(() => {
   document.removeEventListener('mousedown', onDocumentMouseDown, true)
   window.removeEventListener('resize', onWindowResize)
   unlistenNotify.value?.()
+  unlistenNotifyUpdate.value?.()
 })
 </script>
 
