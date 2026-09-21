@@ -103,10 +103,32 @@ pub async fn agent_chat_workflow_internal(
                 let name = a["name"].as_str()?;
                 let desc = a["description"].as_str().unwrap_or("无描述");
                 let hint = a["routing_hint"].as_str().unwrap_or("").trim();
+                // 查询该 Agent 的工具列表，映射为中文能力标签
+                let tools: Vec<String> = database::all(
+                    "SELECT tool_name FROM agent_tool_assignments WHERE agent_id=?",
+                    &[json!(id)]
+                ).unwrap_or_default().iter()
+                    .filter_map(|r| r["tool_name"].as_str().map(|s| match s {
+                        "ext_tool_object" => "业务对象查询",
+                        "ext_tool_search" => "知识库检索",
+                        "ext_tool_chunk_navigate" => "文档翻页",
+                        "ext_tool_web_search" => "联网搜索",
+                        "ext_tool_manage_product" => "产品管理(读写)",
+                        "ext_tool_manage_project" => "项目管理(读写)",
+                        "ext_tool_manage_todo" => "待办管理(读写)",
+                        "ext_tool_manage_partner" => "合作伙伴管理(读写)",
+                        "ext_tool_manage_contact" => "联系人管理(读写)",
+                        "ext_tool_manage_note" => "笔记管理(读写)",
+                        "ext_tool_relations" => "关联查询",
+                        "ext_tool_memory" => "记忆管理",
+                        _ => "其他",
+                    }.to_string()))
+                    .collect();
+                let tools_str = if tools.is_empty() { String::new() } else { format!("\n  工具：{}", tools.join("、")) };
                 if hint.is_empty() {
-                    Some(format!("- {}: {} (agent_id: \"{}\")", name, desc, id))
+                    Some(format!("- {}: {} (agent_id: \"{}\"){}", name, desc, id, tools_str))
                 } else {
-                    Some(format!("- {}: {} (agent_id: \"{}\")\n  → {}", name, desc, id, hint))
+                    Some(format!("- {}: {} (agent_id: \"{}\")\n  → {}{}", name, desc, id, hint, tools_str))
                 }
             }).collect();
             format!("\n\n【可用专业 Agent】\n{}", lines.join("\n"))
