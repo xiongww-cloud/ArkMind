@@ -209,6 +209,58 @@ const todayStr = computed(() => {
   return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
 })
 
+// ─── Bid Date Calendar (create modal) ────────────────────────────
+const showBidCalendar = ref(false)
+const bidCalendarYear = ref(new Date().getFullYear())
+const bidCalendarMonth = ref(new Date().getMonth())
+
+function toggleBidCalendar() {
+  if (projectForm.value.bidTime) {
+    const d = new Date(projectForm.value.bidTime)
+    if (!isNaN(d.getTime())) {
+      bidCalendarYear.value = d.getFullYear()
+      bidCalendarMonth.value = d.getMonth()
+    }
+  }
+  showBidCalendar.value = !showBidCalendar.value
+}
+
+function prevBidMonth() {
+  if (bidCalendarMonth.value === 0) { bidCalendarMonth.value = 11; bidCalendarYear.value-- }
+  else { bidCalendarMonth.value-- }
+}
+
+function nextBidMonth() {
+  if (bidCalendarMonth.value === 11) { bidCalendarMonth.value = 0; bidCalendarYear.value++ }
+  else { bidCalendarMonth.value++ }
+}
+
+const bidCalendarDays = computed(() => {
+  const year = bidCalendarYear.value
+  const month = bidCalendarMonth.value
+  const firstDay = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const days = []
+  for (let i = 0; i < firstDay; i++) days.push(null)
+  for (let d = 1; d <= daysInMonth; d++) days.push(d)
+  return days
+})
+
+function selectBidDay(day: number) {
+  const y = bidCalendarYear.value
+  const m = String(bidCalendarMonth.value + 1).padStart(2, '0')
+  const d = String(day).padStart(2, '0')
+  projectForm.value.bidTime = `${y}-${m}-${d}`
+  showBidCalendar.value = false
+}
+
+function isSelectedBidDay(day: number) {
+  const y = bidCalendarYear.value
+  const m = String(bidCalendarMonth.value + 1).padStart(2, '0')
+  const d = String(day).padStart(2, '0')
+  return projectForm.value.bidTime === `${y}-${m}-${d}`
+}
+
 function startEditExpectedDateCalendar(project: any, e: MouseEvent) {
   e.stopPropagation()
   const raw = (project.expectedOrderDate || project.expected_order_date || '')
@@ -927,7 +979,35 @@ async function handleImportProject() {
             </div>
             <div v-if="projectForm.status === 'Bidding'">
               <label class="block text-[11px] font-medium text-surface-500 mb-1">投标时间 *</label>
-              <input v-model="projectForm.bidTime" type="datetime-local" class="input-field !h-7 !py-1 !text-[12px]" />
+              <div class="relative">
+                <button type="button" @click="toggleBidCalendar" class="input-field !h-7 !py-1 !text-[12px] text-left w-full flex items-center justify-between">
+                  <span :class="projectForm.bidTime ? '' : 'text-surface-400'">{{ projectForm.bidTime || '选择日期' }}</span>
+                  <AppIcon name="chevron-down" size="12" class="text-surface-400" />
+                </button>
+                <div v-if="showBidCalendar" @click.stop class="absolute top-full left-0 mt-1 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
+                  <div class="flex items-center justify-between mb-3">
+                    <button type="button" @click="prevBidMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
+                      <AppIcon name="chevron-left" class="w-4 h-4 text-slate-500" />
+                    </button>
+                    <span class="text-sm font-medium text-slate-700">{{ bidCalendarYear }} 年 {{ bidCalendarMonth + 1 }} 月</span>
+                    <button type="button" @click="nextBidMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
+                      <AppIcon name="chevron-right" class="w-4 h-4 text-slate-500" />
+                    </button>
+                  </div>
+                  <div class="grid grid-cols-7 mb-1">
+                    <span v-for="w in ['日','一','二','三','四','五','六']" :key="w" class="text-center text-[11px] text-slate-400 py-1">{{ w }}</span>
+                  </div>
+                  <div class="grid grid-cols-7 gap-0.5">
+                    <div v-for="(day, idx) in bidCalendarDays" :key="idx" class="aspect-square flex items-center justify-center">
+                      <button v-if="day !== null" type="button" @click="selectBidDay(day)"
+                        class="w-8 h-8 rounded-full text-xs transition-colors"
+                        :class="isSelectedBidDay(day) ? 'bg-blue-600 text-white font-medium' : (todayStr === `${bidCalendarYear}-${String(bidCalendarMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}` ? 'bg-blue-50 text-blue-600 font-medium' : 'text-slate-700 hover:bg-slate-100')">
+                        {{ day }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
             <div class="pt-2 border-t border-surface-100">
               <label class="block text-[11px] font-medium text-surface-500 mb-1">项目描述</label>

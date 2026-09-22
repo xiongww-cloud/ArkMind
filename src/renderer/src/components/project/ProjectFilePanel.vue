@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { fetchFiles, previewFile, updateFileMeta, fetchFileTree } from '@/api/db-client'
 import AppIcon from '@/components/common/AppIcon.vue'
@@ -55,6 +55,9 @@ async function loadFiles() {
   } catch { files.value = []; folders.value = [] }
   finally { loading.value = false }
 }
+
+// 挂载即加载，无需等待父组件 watch 触发
+onMounted(() => { loadFiles() })
 
 function fileDisplayName(f: any): string {
   return f.custom_name || f.displayName || f.name || f.lib_cn || f.lib_gn || '未命名'
