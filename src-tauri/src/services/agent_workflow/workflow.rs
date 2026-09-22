@@ -1105,7 +1105,9 @@ pub async fn agent_chat_workflow_internal(
                             let task = a["task"].as_str().unwrap_or("");
                             let expected_output = a["expected_output"].as_str().unwrap_or("");
                             // ★ 注入最近对话历史到 context，让子 Agent 能看到主 Agent 的对话脉络
-                            let mut ctx = a.get("context").cloned().unwrap_or(json!({}));
+                            let mut ctx = a.get("context").cloned()
+                                .filter(|v| v.is_object())
+                                .unwrap_or(json!({}));
                             let recent: Vec<Value> = messages.iter()
                                 .filter(|m| {
                                     let role_ok = m.role == MessageRole::User || m.role == MessageRole::Assistant;
