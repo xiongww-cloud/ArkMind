@@ -1188,7 +1188,7 @@ pub async fn agent_chat_workflow_internal(
                             .or_else(|| v["data"]["result"].as_str())
                             .unwrap_or("");
                         log::info!("[委托直出] 检查: result_type={}, status={}, answer_len={}", v["result_type"].as_str().unwrap_or(""), status, answer.len());
-                        if status == "completed" && !answer.is_empty() {
+                        if (status == "completed" || status == "partial") && !answer.is_empty() {
                             if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                             let ws = session.generate_scratchpad();
                             return Ok(json!({
