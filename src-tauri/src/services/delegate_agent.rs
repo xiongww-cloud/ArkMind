@@ -127,15 +127,55 @@ pub async fn execute_delegate_agent(
 /// 构建子 Agent 的任务描述
 fn build_sub_query(task: &str, context: Option<&Value>, expected_output: &str, has_tools: bool) -> String {
     let mut parts = Vec::new();
-    parts.push(format!("任务：{}", task));
+
+    // 优先使用用户原始输入，主 Agent 的 task 作为补充
+    if let Some(ctx) = context {
+        if let Some(user_query) = ctx["user_query"].as_str().filter(|s| !s.is_empty()) {
+            parts.push(format!("用户问题：{}", user_query));
+            // task 和 user_query 不同时，task 作为补充说明
+            if task.trim() != user_query.trim() {
+                parts.push(format!("补充说明：{}", task));
+            }
+        } else {
+            parts.push(format!("任务：{}", task));
+        }
+    } else {
+        parts.push(format!("任务：{}", task));
+    }
 
     if !has_tools {
         parts.push("注意：你当前没有分配任何工具，无法执行任何操作。不要编造信息，直接回复最后一行：MISSING: 当前 Agent 未配置任何工具".to_string());
     }
 
     if let Some(ctx) = context {
-        if !ctx.is_null() && ctx.as_object().map_or(false, |o| !o.is_empty()) {
-            parts.push(format!("上下文：{}", ctx));
+        // 注入 context（去掉 user_query 避免重复）
+        if !ctx.is_null() {
+            if let Some(obj) = ctx.as_object() {
+                let filtered: Vec<(&String, &Value)> = obj.iter()
+                    .filter(|(k, _)| *k != "user_query" && *k != "recent_messages")
+                    .collect();
+                if !filtered.is_empty() {
+                    let mut ctx_obj = serde_json::Map::new();
+                    for (k, v) in filtered { ctx_obj.insert(k.clone(), v.clone()); }
+                    parts.push(format!("上下文：{}", Value::Object(ctx_obj)));
+                }
+            }
+        }
+        // recent_messages 单独注入（更清晰）
+        if let Some(recent) = ctx["recent_messages"].as_array().filter(|a| !a.is_empty()) {
+            let mut lines = Vec::new();
+            for msg in recent {
+                let role = msg["role"].as_str().unwrap_or("");
+                let content = msg["content"].as_str().unwrap_or("");
+                if !content.is_empty() {
+                    let label = if role == "user" { "用户" } else { "助手" };
+                    let preview: String = content.chars().take(200).collect();
+                    lines.push(format!("{}：{}", label, preview));
+                }
+            }
+            if !lines.is_empty() {
+                parts.push(format!("最近对话：\n{}", lines.join("\n")));
+            }
         }
     }
 

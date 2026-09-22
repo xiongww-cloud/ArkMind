@@ -1129,6 +1129,8 @@ pub async fn agent_chat_workflow_internal(
                             if !recent.is_empty() {
                                 ctx["recent_messages"] = json!(recent);
                             }
+                            // ★ 注入用户原始输入，让子 Agent 看到未经主 Agent 改写的问题
+                            ctx["user_query"] = json!(query);
                             let res = crate::services::delegate_agent::execute_delegate_agent(
                                 agent_id, task, Some(&ctx), expected_output, app_handle.clone(), delegate_depth,
                             ).await;
