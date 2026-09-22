@@ -132,10 +132,6 @@ fn build_sub_query(task: &str, context: Option<&Value>, expected_output: &str, h
     if let Some(ctx) = context {
         if let Some(user_query) = ctx["user_query"].as_str().filter(|s| !s.is_empty()) {
             parts.push(format!("用户问题：{}", user_query));
-            // task 和 user_query 不同时，task 作为补充说明
-            if task.trim() != user_query.trim() {
-                parts.push(format!("补充说明：{}", task));
-            }
         } else {
             parts.push(format!("任务：{}", task));
         }
