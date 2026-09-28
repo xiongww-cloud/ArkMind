@@ -22,6 +22,7 @@ pub(crate) mod manage_product;
 pub(crate) mod manage_note;
 pub(crate) mod memory;
 pub(crate) mod notification;
+pub(crate) mod write_document;
 
 pub(crate) use common::*;
 pub(crate) use search::*;

@@ -308,14 +308,14 @@ defineExpose({ open, close })
                     @focus="$event.target.select()"
                     @blur="() => pasteArea?.focus()"
                     class="flex-1 min-w-0 text-[11px] text-surface-800 bg-transparent border border-transparent focus:border-brand-400 focus:bg-white rounded px-1 py-0.5 outline-none transition-colors"
-                    :title="`编辑文件名（当前：${item.name}.${item.ext}）`"
+                    v-tooltip="`编辑文件名（当前：${item.name}.${item.ext}）`"
                   />
                   <span class="text-[10px] text-surface-400 flex-shrink-0">.{{ item.ext }}</span>
                 </div>
                 <button
                   @click="removeUpload(idx)"
                   class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
-                  title="移除"
+                  v-tooltip="'移除'"
                 >
                   <AppIcon name="x" size="11" />
                 </button>

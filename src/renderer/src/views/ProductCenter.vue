@@ -739,7 +739,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
   <!-- Product list -->
   <div class="flex-shrink-0 flex flex-col overflow-hidden border-r border-surface-200 relative" :style="{width:listWidth+'px'}">
     <div class="absolute right-[-3px] top-0 bottom-0 w-[6px] cursor-col-resize z-10 select-none" @mousedown="onResizeStart('list', $event)"></div>
-    <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0"><span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">产品</span><div class="flex items-center gap-1"><button @click="handleExportProducts" :disabled="exportingProducts" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="导出产品到 Excel"><AppIcon name="download" size="12" stroke="2.5"/></button><button @click="showProductImportWizard = true" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="从 Excel 导入产品"><AppIcon name="upload" size="12" stroke="2.5"/></button><button @click="createProduct" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="plus" size="12" stroke="2.5"/></button></div></div>
+    <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0"><span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">产品</span><div class="flex items-center gap-1"><button @click="handleExportProducts" :disabled="exportingProducts" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'导出产品到 Excel'"><AppIcon name="download" size="12" stroke="2.5"/></button><button @click="showProductImportWizard = true" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'从 Excel 导入产品'"><AppIcon name="upload" size="12" stroke="2.5"/></button><button @click="createProduct" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="plus" size="12" stroke="2.5"/></button></div></div>
     <div ref="productListRef" class="flex-1 overflow-y-auto p-2 space-y-1">
       <div v-for="p in filteredProducts" :key="p.id" :data-product-id="p.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden select-none" :class="[selectedProductId===p.id || isSelected(p.id)?'bg-blue-50/70 border-brand-200 shadow-md scale-[1.02] z-10':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragProductId===p.id?'opacity-30':'']" @click="onProductCardClick($event, p.id)" @mousedown="onProductMouseDown($event, p.id)">
         <div v-if="selectedProductId===p.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
@@ -810,9 +810,9 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                   </template>
                   <p class="text-[9px] text-surface-400 mt-0.5">{{ formatDateTime(m.created_at) }}</p>
                 </div>
-                <button @mousedown.stop @click.stop="startRenameMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="重命名"><AppIcon name="edit" size="13"/></button>
-                <button @click.stop="handleDownloadMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="下载"><AppIcon name="download" size="13"/></button>
-                <button @click.stop="openAssocMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="关联产品"><AppIcon name="link" size="13"/></button>
+                <button @mousedown.stop @click.stop="startRenameMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'重命名'"><AppIcon name="edit" size="13"/></button>
+                <button @click.stop="handleDownloadMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'下载'"><AppIcon name="download" size="13"/></button>
+                <button @click.stop="openAssocMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'关联产品'"><AppIcon name="link" size="13"/></button>
                 <button @click.stop="handleDeleteMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="13"/></button>
               </div>
             </div>
@@ -899,11 +899,11 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                   @focus="$event.target.select()"
                   @blur="() => materialPasteArea?.focus()"
                   class="flex-1 min-w-0 text-[12px] font-medium text-surface-800 bg-transparent border border-transparent focus:border-brand-400 focus:bg-white rounded px-1 py-0.5 outline-none transition-colors"
-                  title="编辑文件名"
+                  v-tooltip="'编辑文件名'"
                 />
                 <span v-if="f.ext" class="text-[10px] text-surface-400 flex-shrink-0">.{{ f.ext }}</span>
               </div>
-              <button @click="removeMaterialFile(idx)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100" title="移除"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M6 18L18 6"/></svg></button>
+              <button @click="removeMaterialFile(idx)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100" v-tooltip="'移除'"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M6 18L18 6"/></svg></button>
             </div>
           </div>
         </div>

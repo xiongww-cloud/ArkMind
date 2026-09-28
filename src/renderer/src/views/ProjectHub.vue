@@ -839,7 +839,7 @@ async function handleImportProject() {
               <template v-else>
                 <div class="flex items-center justify-center gap-1 group/name">
                   <span class="font-medium text-surface-800 truncate cursor-pointer hover:text-blue-600 transition-colors" @click="goToProject(project.id)">{{ project.name }}</span>
-                  <button @click.stop="startEditName(project)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100 flex-shrink-0" title="编辑名称">
+                  <button @click.stop="startEditName(project)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100 flex-shrink-0" v-tooltip="'编辑名称'">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
                   </button>
                 </div>
@@ -863,7 +863,7 @@ async function handleImportProject() {
               <template v-else>
                 <div class="flex items-center gap-1 group/budget">
                   <span>{{ formatBudget(project.budget) }}</span>
-                  <button @click.stop="startEditBudget(project)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/budget:opacity-100 flex-shrink-0" title="编辑金额">
+                  <button @click.stop="startEditBudget(project)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/budget:opacity-100 flex-shrink-0" v-tooltip="'编辑金额'">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
                   </button>
                 </div>
@@ -874,7 +874,7 @@ async function handleImportProject() {
                 <span @click.stop="startEditExpectedDateCalendar(project, $event)" class="text-xs text-surface-600 rounded px-1 py-0.5 border border-transparent cursor-pointer hover:bg-slate-50 transition-colors">
                   {{ (project.expectedOrderDate || project.expected_order_date) || '-' }}
                 </span>
-                <button @click.stop="startEditExpectedDateCalendar(project, $event)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expected-inline:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
+                <button @click.stop="startEditExpectedDateCalendar(project, $event)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expected-inline:opacity-100 flex items-center justify-center" v-tooltip="'编辑预计下单时间'">
                   <AppIcon name="edit" class="w-2.5 h-2.5" />
                 </button>
                 <div v-if="showExpectedDateCalendar && expectedDateCalendarProjectId === project.id" @click.stop class="absolute top-full left-0 mt-1 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">

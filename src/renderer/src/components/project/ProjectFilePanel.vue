@@ -126,9 +126,9 @@ defineExpose({ loadFiles })
                   <input v-model="editingFileName" data-panel-rename-input class="w-full text-[10px] font-medium text-surface-700 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text" @keyup.enter="confirmRename(f)" @blur="confirmRename(f)" @click.stop @mousedown.stop @keyup.escape="cancelRename()" />
                 </template>
                 <template v-else>
-                  <p class="text-[10px] font-medium text-surface-700 truncate leading-tight cursor-pointer hover:text-blue-600 flex-1 min-w-0" :title="fileDisplayName(f)" @click="previewFileById(f.id)">{{ fileDisplayName(f) }}</p>
+                  <p class="text-[10px] font-medium text-surface-700 truncate leading-tight cursor-pointer hover:text-blue-600 flex-1 min-w-0" v-tooltip.auto="fileDisplayName(f)" @click="previewFileById(f.id)">{{ fileDisplayName(f) }}</p>
                 </template>
-                <button @click.stop="emit('insertFile', f)" class="shrink-0 w-4.5 h-4.5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100 ml-1" title="插入到笔记"><AppIcon name="file-plus" size="12"/></button>
+                <button @click.stop="emit('insertFile', f)" class="shrink-0 w-4.5 h-4.5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100 ml-1" v-tooltip="'插入到笔记'"><AppIcon name="file-plus" size="12"/></button>
               </div>
             </div>
           </div>

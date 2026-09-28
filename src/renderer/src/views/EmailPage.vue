@@ -484,7 +484,7 @@ watch(() => route.query, async () => {
           class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors"
           :disabled="syncing"
           @click="handleSync"
-          :title="syncing ? '同步中...' : '同步邮件'"
+          v-tooltip="syncing ? '同步中...' : '同步邮件'"
         >
           <AppIcon name="refresh" size="12" stroke="2.5" :class="syncing ? 'animate-spin' : ''"/>
         </button>
@@ -721,10 +721,10 @@ watch(() => route.query, async () => {
                   <span class="text-surface-400 flex-shrink-0">{{ formatSize(att.size) }}</span>
                   <span class="flex-1"></span>
                   <div v-if="att.file_asset_id" class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button @click.stop="downloadAttachment(att)" class="w-5 h-5 flex items-center justify-center rounded hover:bg-surface-200 text-surface-400 hover:text-surface-600" title="下载">
+                    <button @click.stop="downloadAttachment(att)" class="w-5 h-5 flex items-center justify-center rounded hover:bg-surface-200 text-surface-400 hover:text-surface-600" v-tooltip="'下载'">
                       <AppIcon name="download" size="12" />
                     </button>
-                    <button @click.stop="copyAttachment(att)" class="w-5 h-5 flex items-center justify-center rounded hover:bg-surface-200 text-surface-400 hover:text-surface-600" title="复制文件到剪贴板">
+                    <button @click.stop="copyAttachment(att)" class="w-5 h-5 flex items-center justify-center rounded hover:bg-surface-200 text-surface-400 hover:text-surface-600" v-tooltip="'复制文件到剪贴板'">
                       <AppIcon name="copy" size="12" />
                     </button>
                   </div>

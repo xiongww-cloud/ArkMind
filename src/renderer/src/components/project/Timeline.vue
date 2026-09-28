@@ -96,10 +96,10 @@ async function handleDelete(event) {
 
         <!-- Actions (user/AI log only, hover) -->
         <div v-if="event.type === 'note' || event.type === 'ai'" class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover/log:opacity-100 transition-opacity -mr-0.5">
-          <button @click.stop="startEdit(event)" class="btn-ghost !p-0.5 text-slate-300 hover:text-blue-600" title="编辑">
+          <button @click.stop="startEdit(event)" class="btn-ghost !p-0.5 text-slate-300 hover:text-blue-600" v-tooltip="'编辑'">
             <AppIcon name="edit" class="w-3 h-3" />
           </button>
-          <button @click.stop="handleDelete(event)" class="btn-ghost !p-0.5 text-slate-300 hover:text-red-500" title="删除">
+          <button @click.stop="handleDelete(event)" class="btn-ghost !p-0.5 text-slate-300 hover:text-red-500" v-tooltip="'删除'">
             <AppIcon name="trash" class="w-3 h-3" />
           </button>
         </div>

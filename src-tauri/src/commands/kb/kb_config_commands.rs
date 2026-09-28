@@ -69,7 +69,8 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
 }
 
 /// 主 Agent 认知协调工具集（不含 CRUD 与通知管理——通知产出归分析师与用户主动指令场景，
-/// 主 Agent 对话在场即通知，其 schema 最重，移除以省每轮上下文）。
+/// 主 Agent 对话在场即通知，其 schema 最重，移除以省每轮上下文；
+/// 文档生成(write_document, 2508 字符全场最重)同样剥离：生成文件一律委托文档助手 document_writer）。
 /// 联网工具特性门控：仅在已配置搜索服务时提供（未配置时模型完全无感知）。
 pub(crate) fn main_agent_tool_list() -> Vec<String> {
     let base: Vec<String> = vec![
@@ -108,9 +109,18 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                     if answer.contains("<tool_call") || answer.contains("<invoke") || answer.contains("DSML") {
                         answer = crate::services::agent_workflow::clean_tool_markers(&answer, false);
                     }
+                    // ★ 提取本轮生成的文档对象写入消息 metadata（重启后恢复文档卡片）
+                    let docs = crate::services::agent_workflow::tools::write_document::extract_created_documents(
+                        v.get("tool_log"),
+                    );
+                    let metadata = if docs.is_empty() {
+                        Value::Null
+                    } else {
+                        json!({"documents": docs})
+                    };
                     let _ = crate::database::run(
-                        "INSERT INTO chat_messages(session_id, role, content) VALUES(?1, 'assistant', ?2)",
-                        &[json!(sid), json!(answer)],
+                        "INSERT INTO chat_messages(session_id, role, content, metadata) VALUES(?1, 'assistant', ?2, ?3)",
+                        &[json!(sid), json!(answer), metadata],
                     );
                     // ★ 保存本轮工具数据到 session 级别（覆盖式，不含 content/role）
                     let mut tool_meta = serde_json::Map::new();

@@ -147,10 +147,12 @@ pub fn run() {
                                 }
                             }
                             // 关闭窗口时隐藏而非退出（macOS 保留在 Dock）
+                            // 关闭=隐藏驻留 Dock；hide 后让出 key，避免隐藏窗间歇吞其它 App 的 ⌘C/⌘V
                             tauri::WindowEvent::CloseRequested { api, .. } => {
                                 if let Some(w) = handle.get_webview_window("main") {
                                     let _ = w.hide();
                                 }
+                                commands::yield_key_on_main_hide(&handle);
                                 api.prevent_close();
                             }
                             _ => {}
@@ -161,6 +163,7 @@ pub fn run() {
 
             migrate_fix_is_daily_corruption();
             commands::file_commands::cleanup_preview_links();
+            services::doc_writer::cleanup_generated_docs();
             if database::check_license_premium() { upgrade_fts5_triggers_on_startup(); }
 
             // ★ 启动时根据开关显示精灵

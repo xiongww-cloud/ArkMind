@@ -525,8 +525,9 @@ async fn apply_suggestion(email_id: &str, s: &Value) -> Result<Value, String> {
             if let Some(p) = s["phone"].as_str().filter(|x| !x.is_empty()) {
                 create["phone"] = json!(p);
             }
-            if let Some(c) = s["company"].as_str().filter(|x| !x.is_empty()) {
-                create["company"] = json!(c);
+            // 地址键统一 address，兼容 LLM 历史习惯键 company
+            if let Some(c) = s["address"].as_str().or_else(|| s["company"].as_str()).filter(|x| !x.is_empty()) {
+                create["address"] = json!(c);
             }
             if let Some(cp) = s["contact_person"].as_str().filter(|x| !x.is_empty()) {
                 create["contact_person"] = json!(cp);

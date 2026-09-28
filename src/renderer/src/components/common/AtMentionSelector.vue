@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
-import { useTooltip } from '@/composables/useTooltip'
 import { fetchFileTree, listGlobalFiles } from '@/api/db-client'
 
 const props = defineProps<{ projects: { id: string; name: string }[] }>()
@@ -16,8 +15,6 @@ const atSearch = ref('')
 const atFilesLoading = ref(false)
 const fileTreeNodes = ref<any[]>([])
 const collapsedFolders = ref<Set<string>>(new Set())
-
-const { tooltipText, tooltipX, tooltipY, tooltipVisible, show, hide } = useTooltip()
 
 // ─── Auto-position below @ button ─────────────────────────────────
 const popoverX = ref(-1)
@@ -214,11 +211,8 @@ function onSelectFile(f: any) {
   emit('selectFile', f._data || f)
 }
 function onClose() {
-  hide()
   emit('close')
 }
-
-hide()
 
 function handleClickOutside(e: MouseEvent) {
   const el = document.querySelector('[data-at-popover]')
@@ -278,8 +272,7 @@ defineExpose({ open, updatePosition })
               <button
                 v-for="p in filteredProjects" :key="p.id"
                 @click="onSelectProject(p)"
-                @mouseenter="(e: MouseEvent) => show(e.currentTarget as HTMLElement, p.name)"
-                @mouseleave="hide"
+                v-tooltip.auto="p.name"
                 class="w-full flex items-center gap-2 px-3 py-2 text-xs text-left transition-colors hover:bg-surface-50 group relative"
               >
                 <AppIcon name="folder-open" size="13" class="text-surface-400 flex-shrink-0"/>
@@ -298,8 +291,7 @@ defineExpose({ open, updatePosition })
                   <button
                     v-if="node._type !== 'file'"
                     @click="toggleFolder(node.id)"
-                    @mouseenter="(e: MouseEvent) => show(e.currentTarget as HTMLElement, node.name)"
-                    @mouseleave="hide"
+                    v-tooltip.auto="node.name"
                     class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-surface-600 hover:bg-surface-50 transition-colors"
                     :style="{ paddingLeft: `${12 + (node._depth||0) * 16}px` }"
                   >
@@ -311,8 +303,7 @@ defineExpose({ open, updatePosition })
                   <button
                     v-else
                     @click="onSelectFile(node)"
-                    @mouseenter="(e: MouseEvent) => show(e.currentTarget as HTMLElement, node.name)"
-                    @mouseleave="hide"
+                    v-tooltip.auto="node.name"
                     class="w-full flex items-center gap-2 pr-3 py-1.5 text-xs text-left hover:bg-surface-50 transition-colors"
                     :style="{ paddingLeft: `${12 + (node._depth||0) * 16}px` }"
                   >
@@ -329,16 +320,5 @@ defineExpose({ open, updatePosition })
           </div>
         </div>
       </div>
-  </Teleport>
-
-  <!-- Global tooltip -->
-  <Teleport to="body">
-    <Transition name="fade">
-      <div
-        v-if="tooltipVisible"
-        class="fixed pointer-events-none z-[9999] px-3 py-1.5 text-[11px] text-white bg-gray-800 rounded-md shadow-lg whitespace-nowrap"
-        :style="{ left: tooltipX + 'px', top: tooltipY + 'px', transform: 'translate(-50%, -100%)' }"
-      >{{ tooltipText }}</div>
-    </Transition>
   </Teleport>
 </template>

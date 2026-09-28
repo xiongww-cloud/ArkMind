@@ -35,7 +35,7 @@ const emit = defineEmits<{
   <!-- Header -->
   <div class="h-10 flex items-center justify-between px-3 border-b border-surface-200">
     <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">会话</span>
-    <button @click="emit('new')" class="w-6 h-6 flex items-center justify-center rounded-lg text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors" title="新建会话">
+    <button @click="emit('new')" class="w-6 h-6 flex items-center justify-center rounded-lg text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors" v-tooltip="'新建会话'">
       <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 4v16m8-8H4"/></svg>
     </button>
   </div>
@@ -64,12 +64,12 @@ const emit = defineEmits<{
         </div>
         <!-- Rename button — matches NotesPage notebook edit style -->
         <button @click.stop="emit('startRename', s.id)"
-          class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 hover:bg-brand-50 opacity-0 group-hover:opacity-100 transition-colors" title="重命名">
+          class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 hover:bg-brand-50 opacity-0 group-hover:opacity-100 transition-colors" v-tooltip="'重命名'">
           <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
         </button>
         <!-- Delete button -->
         <button @click.stop="emit('confirmDelete', s.id)"
-          class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" title="删除">
+          class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" v-tooltip="'删除'">
           <AppIcon name="trash" size="12"/>
         </button>
       </template>

@@ -128,10 +128,12 @@ fn ingestion_loop() {
 }
 
 /// FILE 补漏：file_assets 存在、但 source_data 无文本且队列无任何在途/终态记录 → 重新入队解析
+/// 排除 AI 生成文档（entity_type='generated'）：生成物是输出而非知识输入，不进知识库
 fn backfill_missing_file_sources() {
     let missing = match crate::database::all(
         "SELECT f.id FROM file_assets f \
          WHERE f.created_at < datetime('now','localtime','-2 minutes') \
+           AND NOT EXISTS (SELECT 1 FROM file_relations fr WHERE fr.file_id=f.id AND fr.entity_type='generated') \
            AND NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type='FILE' AND sd.source_id=f.id) \
            AND NOT EXISTS (SELECT 1 FROM knowledge_push_queue q \
                WHERE q.source_type='FILE' AND q.source_id=f.id \

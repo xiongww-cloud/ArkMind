@@ -68,7 +68,12 @@ pub async fn partner_create(data: Value) -> Result<Value, String> {
     let partner_type = data["type"].as_str().unwrap_or("CHANNEL").to_string();
     let name = data["name"].as_str().unwrap_or("").to_string();
     let phone = data["phone"].as_str().unwrap_or("").to_string();
-    let company = data["company"].as_str().unwrap_or("").to_string();
+    // 地址兼容两种键名：address（自然命名，前端调用方）与 company（历史键名），均写入 address 列
+    let company = data["address"]
+        .as_str()
+        .or_else(|| data["company"].as_str())
+        .unwrap_or("")
+        .to_string();
     let remark = data["remark"].as_str().unwrap_or("").to_string();
     let contact_person = data["contact_person"].as_str().unwrap_or("").to_string();
     let contact_phone = data["contact_phone"].as_str().unwrap_or("").to_string();
@@ -99,7 +104,10 @@ pub async fn partner_update(data: Value) -> Result<Value, String> {
     let mut values: Vec<Value> = Vec::new();
     if let Some(v) = data["name"].as_str() { fields.push("name=?".into()); values.push(json!(v)); }
     if let Some(v) = data["phone"].as_str() { fields.push("phone=?".into()); values.push(json!(v)); }
-    if let Some(v) = data["company"].as_str() { fields.push("address=?".into()); values.push(json!(v)); }
+    if let Some(v) = data["address"].as_str().or_else(|| data["company"].as_str()) {
+        fields.push("address=?".into());
+        values.push(json!(v));
+    }
     if let Some(v) = data["remark"].as_str() { fields.push("remark=?".into()); values.push(json!(v)); }
     if let Some(v) = data["contact_person"].as_str() { fields.push("contact_person=?".into()); values.push(json!(v)); }
     if let Some(v) = data["contact_phone"].as_str() { fields.push("contact_phone=?".into()); values.push(json!(v)); }

@@ -119,13 +119,13 @@ function checkDeepDescendant(node, targetId) {
       <span class="truncate ml-1.5 flex-1">{{ node.name }}</span>
 
       <div class="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 flex items-center gap-0.5">
-        <button v-if="canHaveChildren" @click.stop="emit('create-child', node.id)" class="btn-ghost !p-0.5 text-slate-400 hover:text-blue-500" title="添加子目录">
+        <button v-if="canHaveChildren" @click.stop="emit('create-child', node.id)" class="btn-ghost !p-0.5 text-slate-400 hover:text-blue-500" v-tooltip="'添加子目录'">
           <AppIcon name="plus" class="w-3 h-3" />
         </button>
-        <button @click.stop="emit('edit', node.id)" class="btn-ghost !p-0.5 text-slate-400 hover:text-blue-500" title="编辑">
+        <button @click.stop="emit('edit', node.id)" class="btn-ghost !p-0.5 text-slate-400 hover:text-blue-500" v-tooltip="'编辑'">
           <AppIcon name="edit" class="w-3 h-3" />
         </button>
-        <button v-if="!isUncategorized" @click.stop="emit('delete', node.id)" class="btn-ghost !p-0.5 text-slate-400 hover:text-red-500" title="删除">
+        <button v-if="!isUncategorized" @click.stop="emit('delete', node.id)" class="btn-ghost !p-0.5 text-slate-400 hover:text-red-500" v-tooltip="'删除'">
           <AppIcon name="trash" class="w-3 h-3" />
         </button>
       </div>

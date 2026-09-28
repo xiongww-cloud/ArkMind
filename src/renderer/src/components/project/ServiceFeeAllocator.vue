@@ -376,7 +376,7 @@ defineExpose({ handleConfirm })
               <button
                 @click="openDevicePicker"
                 class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-blue-600 hover:bg-blue-50 transition-colors"
-                title="添加设备"
+                v-tooltip="'添加设备'"
               >
                 <AppIcon name="plus" class="w-3 h-3" /> 添加设备
               </button>

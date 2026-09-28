@@ -4,6 +4,7 @@ import { createPinia } from 'pinia'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import App from './App.vue'
 import router from './router'
+import { vTooltip } from './directives/tooltip'
 import './assets/main.css'
 import './assets/markdown.css'
 
@@ -32,4 +33,5 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(router)
 app.use(VueApexCharts)
+app.directive('tooltip', vTooltip)
 app.mount('#app')

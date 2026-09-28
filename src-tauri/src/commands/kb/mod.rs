@@ -26,7 +26,7 @@ pub use kb_memory_commands::*;
 #[tauri::command] pub async fn kb_load_sessions() -> Result<Value, String> {
     let mut rows = database::all(
         "SELECT s.id, s.title, s.created_at, s.updated_at, \
-         (SELECT json_group_array(json_object('id', m.id, 'role', m.role, 'content', m.content, 'status', m.status, 'created_at', m.created_at)) \
+         (SELECT json_group_array(json_object('id', m.id, 'role', m.role, 'content', m.content, 'status', m.status, 'created_at', m.created_at, 'metadata', m.metadata)) \
           FROM chat_messages m \
           WHERE m.id IN (SELECT id FROM chat_messages WHERE session_id=s.id ORDER BY id DESC LIMIT 10) \
           ORDER BY m.id ASC) as messages \
@@ -49,24 +49,66 @@ pub use kb_memory_commands::*;
     let limit = limit.unwrap_or(10);
     let rows = match before_id {
         Some(bid) => database::all(
-            "SELECT id, role, content, status, created_at FROM chat_messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+            "SELECT id, role, content, status, metadata, created_at FROM chat_messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
             &[json!(session_id), json!(bid), json!(limit)]
         ).unwrap_or_default(),
         None => database::all(
-            "SELECT id, role, content, status, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
+            "SELECT id, role, content, status, metadata, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
             &[json!(session_id), json!(limit)]
         ).unwrap_or_default(),
     };
     // 反转为正序（从旧到新）
     let messages: Vec<Value> = rows.into_iter().rev().map(|m| {
-        json!({"id": m["id"], "role": m["role"], "content": m["content"], "status": m["status"], "created_at": m["created_at"]})
+        json!({"id": m["id"], "role": m["role"], "content": m["content"], "status": m["status"], "metadata": m["metadata"], "created_at": m["created_at"]})
     }).collect();
     Ok(json!({"success": true, "messages": messages}))
 }
 
 #[tauri::command] pub async fn kb_delete_session(session_id: String) -> Result<Value, String> {
+    // ★ 删除前收集本会话 AI 生成文档的 file_id（存于消息 metadata，会话删除后即失联）
+    let doc_file_ids = collect_session_document_ids(&session_id);
+    // 级联删除会话与消息
     database::run("DELETE FROM chat_sessions WHERE id=?", &[json!(&session_id)]).ok();
+    // ★ 联动删除生成的文档（本会话消息已删，此时剩余的 metadata 引用均来自其他会话）
+    for fid in &doc_file_ids {
+        let other_refs: i64 = database::get(
+            "SELECT COUNT(*) as cnt FROM chat_messages WHERE metadata IS NOT NULL AND metadata LIKE ?1",
+            &[json!(format!("%{}%", fid))],
+        ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
+        if other_refs > 0 {
+            // 同字节内容被其他会话复用（CAS 同 hash）→ 保留，避免他处文档卡片失效
+            log::info!("[删除会话] 文档 {} 仍被其他会话引用，保留", fid);
+            continue;
+        }
+        crate::services::doc_writer::delete_generated_doc(fid);
+    }
+    if !doc_file_ids.is_empty() {
+        log::info!("[删除会话] {} 联动处理了 {} 个生成文档", session_id, doc_file_ids.len());
+    }
     Ok(json!({"success":true}))
+}
+
+/// 从会话消息的 metadata 中提取 AI 生成文档的 file_id 列表（去重）
+fn collect_session_document_ids(session_id: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let rows = database::all(
+        "SELECT metadata FROM chat_messages WHERE session_id=?1 AND metadata IS NOT NULL",
+        &[json!(session_id)],
+    ).unwrap_or_default();
+    for r in &rows {
+        let Some(meta) = r["metadata"].as_str() else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(meta) else { continue };
+        if let Some(arr) = v["documents"].as_array() {
+            for d in arr {
+                if let Some(fid) = d["file_id"].as_str().filter(|s| !s.is_empty()) {
+                    ids.push(fid.to_string());
+                }
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -90,18 +132,18 @@ pub async fn kb_fab_load_history(limit: Option<usize>, before_id: Option<i64>) -
     let limit = limit.unwrap_or(50);
     let rows = match before_id {
         Some(bid) => database::all(
-            "SELECT id, role, content, status, created_at FROM chat_messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+            "SELECT id, role, content, status, metadata, created_at FROM chat_messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
             &[json!(FAB_SESSION_ID), json!(bid), json!(limit)]
         ).unwrap_or_default(),
         None => database::all(
-            "SELECT id, role, content, status, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
+            "SELECT id, role, content, status, metadata, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
             &[json!(FAB_SESSION_ID), json!(limit)]
         ).unwrap_or_default(),
     };
 
     // 反转为正序（从旧到新）
     let messages: Vec<Value> = rows.into_iter().rev().map(|m| {
-        json!({"id": m["id"], "role": m["role"], "content": m["content"], "created_at": m["created_at"]})
+        json!({"id": m["id"], "role": m["role"], "content": m["content"], "metadata": m["metadata"], "created_at": m["created_at"]})
     }).collect();
     Ok(json!({"success": true, "messages": messages}))
 }

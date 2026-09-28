@@ -488,7 +488,7 @@ async function handleDelete(id: string) {
             />
           </template>
           <template v-else>
-            <span class="text-[12px] text-surface-800 truncate inline-block max-w-full hover:text-blue-600 transition-colors cursor-pointer" :title="fileDisplayName(f)" @click="onFileCardClick($event, f.id)">{{ fileDisplayName(f) }}</span>
+            <span class="text-[12px] text-surface-800 truncate inline-block max-w-full hover:text-blue-600 transition-colors cursor-pointer" v-tooltip.auto="fileDisplayName(f)" @click="onFileCardClick($event, f.id)">{{ fileDisplayName(f) }}</span>
           </template>
           <div v-if="editingRemarkFileId === f.id" class="mt-1">
             <input v-model="editingRemarkValue" data-lib-remark-input class="w-full text-[11px] text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text" placeholder="输入备注..." @keyup.enter="saveRemark(f)" @blur="saveRemark(f)" @mousedown.stop @keyup.escape="cancelEditRemark()"/>
@@ -496,16 +496,16 @@ async function handleDelete(id: string) {
           <div v-else class="mt-0.5 flex items-center gap-1">
             <p v-if="f.lib_remark" class="text-[10px] text-surface-400 truncate cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">{{ f.lib_remark }}</p>
             <p v-else class="text-[10px] text-surface-300 cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">无备注</p>
-            <button @mousedown.stop @click.stop="startEditRemark(f)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="编辑备注"><AppIcon name="edit" size="10"/></button>
+            <button @mousedown.stop @click.stop="startEditRemark(f)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" v-tooltip="'编辑备注'"><AppIcon name="edit" size="10"/></button>
           </div>
         </div>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatSize(f.file_size) }}</span>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ (f.updated_at||f.created_at||'').slice(0,10) }}</span>
         <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
             <button @mousedown.stop @click.stop="startFileRename(f)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="edit" size="13"/></button>
-          <button @click.stop="handleDownload(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="下载"><AppIcon name="download" size="13"/></button>
-          <button @click.stop="handleCopyFile(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="复制文件到剪贴板"><AppIcon name="copy" size="13"/></button>
-          <button @click.stop="handleDelete(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="trash" size="13"/></button>
+          <button @click.stop="handleDownload(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'下载'"><AppIcon name="download" size="13"/></button>
+          <button @click.stop="handleCopyFile(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'复制文件到剪贴板'"><AppIcon name="copy" size="13"/></button>
+          <button @click.stop="handleDelete(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="trash" size="13"/></button>
         </div>
       </div>
       <div v-if="filteredFiles.length === 0" class="text-center py-8"><p class="text-xs text-surface-400">暂无文件</p></div>

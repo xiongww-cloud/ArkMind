@@ -121,6 +121,7 @@ pub async fn agent_chat_workflow_internal(
                         "ext_tool_manage_note" => "笔记管理(读写)",
                         "ext_tool_relations" => "关联查询",
                         "ext_tool_memory" => "记忆管理",
+                        "ext_tool_write_document" => "文档生成",
                         _ => "其他",
                     }.to_string()))
                     .collect();
@@ -131,6 +132,9 @@ pub async fn agent_chat_workflow_internal(
                     Some(format!("- {}: {} (agent_id: \"{}\")\n  → {}{}", name, desc, id, hint, tools_str))
                 }
             }).collect();
+            // ★ 路由决策日志：记录本次注入主 Agent 的可用清单（路由未命中时的第一排查点）
+            let names: Vec<&str> = agents.iter().filter_map(|a| a["name"].as_str()).collect();
+            log::info!("[Route] 注入【可用专业 Agent】{} 个: {}", names.len(), names.join("、"));
             format!("\n\n【可用专业 Agent】\n{}", lines.join("\n"))
         }
     } else {
@@ -550,7 +554,9 @@ pub async fn agent_chat_workflow_internal(
             }
             Err(e) => {
                 log::error!("[Agent] call_llm_streaming 失败: {}", e);
-                if !silent { if let Some(ref h) = app_handle {
+                // ★ 仅根工作流上报 agent:error：子 Agent（delegate_depth≥1）失败由委托信封回传，
+                // 若直接发 error 会让前端提前拆掉 done/token 监听，导致父流程最终回复丢失（仅刷新可见）
+                if !silent && delegate_depth == 0 { if let Some(ref h) = app_handle {
                     let _ = h.emit("agent:error", json!({"error": e}));
                 } }
                 return Ok(json!({"success":false,"answer":format!("LLM 调用失败: {}", e),"iterations":iters}));
@@ -1100,10 +1106,15 @@ pub async fn agent_chat_workflow_internal(
                         "ext_tool_manage_notification" => {
                             (tools::notification::execute(&a, &app_handle), vec![])
                         }
+                        "ext_tool_write_document" => {
+                            (tools::write_document::execute(&a), vec![])
+                        }
                         "ext_tool_delegate_agent" => {
                             let agent_id = a["agent_id"].as_str().unwrap_or("");
                             let task = a["task"].as_str().unwrap_or("");
                             let expected_output = a["expected_output"].as_str().unwrap_or("");
+                            // ★ 路由决策日志：记录 LLM 选中的目标（未命中时与注入清单对照）
+                            log::info!("[Route] 选择委托 agent_id={} task={:.80}", agent_id, task);
                             // ★ 注入最近对话历史到 context，让子 Agent 能看到主 Agent 的对话脉络
                             let mut ctx = a.get("context").cloned()
                                 .filter(|v| v.is_object())
@@ -1191,6 +1202,11 @@ pub async fn agent_chat_workflow_internal(
                             .unwrap_or("");
                         log::info!("[委托直出] 检查: result_type={}, status={}, answer_len={}", v["result_type"].as_str().unwrap_or(""), status, answer.len());
                         if (status == "completed" || status == "partial") && !answer.is_empty() {
+                            // ★ 与正常回答路径对齐：委托直出同样向前端广播最终答案
+                            if !silent { if let Some(ref h) = app_handle {
+                                let _ = h.emit("agent:status", json!({"stage":"answer"}));
+                                let _ = h.emit("agent:final-answer", json!({"answer": answer}));
+                            } }
                             if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                             let ws = session.generate_scratchpad();
                             return Ok(json!({

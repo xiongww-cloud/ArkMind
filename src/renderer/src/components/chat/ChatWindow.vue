@@ -4,8 +4,9 @@ import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { kbFabInitSession, kbFabLoadHistory } from '@/api/db-client'
-import { useAgentChat, type ChatMessage } from '@/composables/useAgentChat'
+import { useAgentChat, type ChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata } from '@/composables/useAgentChat'
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
+import DocumentObject from '@/components/chat/DocumentObject.vue'
 
 const agent = useAgentChat()
 
@@ -132,12 +133,14 @@ const loadingMore = ref(false)
 const hasMore = ref(true)
 
 function mapHistoryMessage(m: any) {
+  const docs = parseDocumentsMetadata(m.metadata)
   return {
     id: 'hist-' + m.id,
     dbId: m.id,
     role: m.role,
     content: m.content,
     timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
+    ...(docs ? { documents: docs } : {}),
   }
 }
 
@@ -275,6 +278,8 @@ async function send() {
     onDone: (result, ctx) => {
       if (ctx.finalAnswer && ctx.finalAnswer.trim()) {
         aiMsg.toolCalls = result.tool_log || []
+        const docs = extractDocumentsFromToolLog(result.tool_log)
+        if (docs.length) aiMsg.documents = docs
       }
     },
     onError: (error) => {
@@ -372,6 +377,9 @@ onUnmounted(() => {
               <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
               <div v-else class="markdown-body chat-md" v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
             </div>
+            <div v-if="m.role !== 'user' && !m.thinking && m.documents?.length" class="mt-1 flex flex-col gap-1.5">
+              <DocumentObject v-for="d in m.documents" :key="d.file_id" :doc="d" />
+            </div>
           </div>
         </div>
       </div>
@@ -386,16 +394,16 @@ onUnmounted(() => {
     <div class="chat-input-bar"
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp">
       <div class="flex items-center gap-1 flex-1 min-w-0">
-        <button @click.stop="expanded ? collapseChat() : expandChat()" class="icon-btn" :title="expanded ? '收起' : '展开'">
+        <button @click.stop="expanded ? collapseChat() : expandChat()" class="icon-btn" v-tooltip="expanded ? '收起' : '展开'">
           <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-180': expanded }" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
         </button>
-        <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" title="附加文件">
+        <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" v-tooltip="'附加文件'">
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
         </button>
         <input v-model="inputText" :placeholder="expanded ? '...' : currentSpeechText" class="chat-input"
-          :title="isMac ? '支持 Cmd+V 粘贴图片/文件' : ''"
+          v-tooltip="isMac ? '支持 Cmd+V 粘贴图片/文件' : ''"
           @keydown.enter.exact.prevent="send" @paste="onPaste" />
-        <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" title="停止">
+        <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" v-tooltip="'停止'">
           <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
         </button>
         <button v-else @click.stop="send" :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">

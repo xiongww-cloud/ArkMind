@@ -42,25 +42,21 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
 
     <!-- 加粗/斜体/下划线/删除线 -->
     <div class="flex items-center gap-0.5">
-      <button @mousedown.prevent="tb.execFormat('bold')" class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 relative group"
+      <button @mousedown.prevent="tb.execFormat('bold')" v-tooltip="'加粗'" class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200"
         :class="editor?.isActive('bold') ? 'bg-blue-50 text-blue-600' : 'text-surface-500 hover:bg-surface-100'">
         <b class="text-[11px]">B</b>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">加粗</span>
       </button>
-      <button @mousedown.prevent="tb.execFormat('italic')" class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 relative group"
+      <button @mousedown.prevent="tb.execFormat('italic')" v-tooltip="'斜体'" class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200"
         :class="editor?.isActive('italic') ? 'bg-blue-50 text-blue-600' : 'text-surface-500 hover:bg-surface-100'">
         <i class="text-[11px]">I</i>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">斜体</span>
       </button>
-      <button @mousedown.prevent="tb.execFormat('underline')" class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 relative group"
+      <button @mousedown.prevent="tb.execFormat('underline')" v-tooltip="'下划线'" class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200"
         :class="editor?.isActive('underline') ? 'bg-blue-50 text-blue-600' : 'text-surface-500 hover:bg-surface-100'">
         <u class="text-[11px]">U</u>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">下划线</span>
       </button>
-      <button @mousedown.prevent="tb.execFormat('strikeThrough')" class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100 line-through relative group"
+      <button @mousedown.prevent="tb.execFormat('strikeThrough')" v-tooltip="'删除线'" class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100 line-through"
         :class="editor?.isActive('strike') ? 'bg-blue-50 text-blue-600' : ''">
         <span>S</span>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">删除线</span>
       </button>
     </div>
 
@@ -68,11 +64,10 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
 
     <!-- 列表下拉 -->
     <div class="relative" @click.stop>
-      <button @mousedown.prevent @click.stop="tb.togglePopup('list')"
-        class="flex items-center gap-0.5 h-6 px-1.5 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100 relative group">
+      <button @mousedown.prevent @click.stop="tb.togglePopup('list')" v-tooltip="'列表'"
+        class="flex items-center gap-0.5 h-6 px-1.5 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100">
         <AppIcon name="list" size="13"/>
         <svg class="w-2 h-2 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">列表</span>
       </button>
       <div v-if="tb.listOpen.value" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[100px]">
         <button @mousedown.prevent="tb.insertList('ul'); tb.listOpen.value=false" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left text-surface-600 hover:bg-surface-50"><AppIcon name="list" size="13"/>无序列表</button>
@@ -81,23 +76,20 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
     </div>
 
     <!-- 任务清单 -->
-    <button @mousedown.prevent="tb.toggleTaskList()"
-      class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 relative group"
-      :class="editor?.isActive('taskList') ? 'bg-blue-50 text-blue-600' : 'text-surface-500 hover:bg-surface-100'"
-      title="任务清单">
+    <button @mousedown.prevent="tb.toggleTaskList()" v-tooltip="'任务清单'"
+      class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200"
+      :class="editor?.isActive('taskList') ? 'bg-blue-50 text-blue-600' : 'text-surface-500 hover:bg-surface-100'">
       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M8 12l3 3 5-6"/></svg>
-      <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">任务清单</span>
     </button>
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
     <!-- 对齐下拉 -->
     <div class="relative" @click.stop>
-      <button @mousedown.prevent @click.stop="tb.togglePopup('align')"
-        class="flex items-center gap-0.5 h-6 px-1.5 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100 relative group">
+      <button @mousedown.prevent @click.stop="tb.togglePopup('align')" v-tooltip="'对齐'"
+        class="flex items-center gap-0.5 h-6 px-1.5 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100">
         <AppIcon :name="tb.alignLabel.value === '右对齐' ? 'align-right' : tb.alignLabel.value === '居中' ? 'align-center' : 'align-left'" size="13"/>
         <svg class="w-2 h-2 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">对齐</span>
       </button>
       <div v-if="tb.alignOpen.value" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[110px]">
         <button @mousedown.prevent="tb.execAlign('left')" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left text-surface-600 hover:bg-surface-50"><AppIcon name="align-left" size="13"/>左对齐</button>
@@ -110,53 +102,46 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
 
     <!-- 分隔线 / 代码块 / 引用 -->
     <div class="flex items-center gap-0.5">
-      <button @mousedown.prevent="tb.execFormat('insertHorizontalRule')"
-        class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group">
+      <button @mousedown.prevent="tb.execFormat('insertHorizontalRule')" v-tooltip="'分隔线'"
+        class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100">
         <span class="text-[11px]">—</span>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">分隔线</span>
       </button>
-      <button @mousedown.prevent="tb.insertBlock('pre')"
-        class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group">
+      <button @mousedown.prevent="tb.insertBlock('pre')" v-tooltip="'代码块'"
+        class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100">
         <AppIcon name="code-bracket" size="13"/>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">代码块</span>
       </button>
-      <button @mousedown.prevent="tb.insertBlock('blockquote')"
-        class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group">
+      <button @mousedown.prevent="tb.insertBlock('blockquote')" v-tooltip="'引用'"
+        class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100">
         <AppIcon name="quote" size="13"/>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">引用</span>
       </button>
     </div>
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
     <!-- 插入时间 -->
-    <button @mousedown.prevent="tb.insertTime()"
-      class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group"
-      title="插入时间">
+    <button @mousedown.prevent="tb.insertTime()" v-tooltip="'插入时间'"
+      class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100">
       <AppIcon name="clock" size="13"/>
-      <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">插入时间</span>
     </button>
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
     <!-- @ 插入链接 -->
-    <button data-at-btn @mousedown.prevent @click.stop="onAtClick"
-      class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100 relative group"
-      :class="atActive ? 'bg-blue-50 text-blue-600' : ''" title="插入链接">
+    <button data-at-btn @mousedown.prevent @click.stop="onAtClick" v-tooltip="'插入链接'"
+      class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100"
+      :class="atActive ? 'bg-blue-50 text-blue-600' : ''">
       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 12v1a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
-      <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">插入链接</span>
     </button>
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
     <!-- 表格下拉 -->
     <div class="relative" @click.stop>
-      <button @mousedown.prevent @click.stop="tb.togglePopup('table')"
-        class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 relative group"
+      <button @mousedown.prevent @click.stop="tb.togglePopup('table')" v-tooltip="'表格'"
+        class="flex items-center gap-0.5 h-6 px-1.5 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100"
         :class="editor?.isActive('table') ? 'bg-blue-50 text-blue-600' : 'text-surface-500 hover:bg-surface-100'">
         <AppIcon name="table-grid" size="13"/>
         <svg class="w-1.5 h-1.5 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none">表格</span>
       </button>
       <div v-if="tb.tableMenuOpen.value" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-lg shadow-sm border border-surface-100 p-1 w-[120px]" @click.stop>
         <template v-if="!editor?.isActive('table')">

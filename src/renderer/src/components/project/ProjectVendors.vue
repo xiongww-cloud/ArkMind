@@ -4,12 +4,11 @@ import { useProjectStore } from '@/stores/project'
 import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
 import {
-  fetchPartners, updatePartner, deletePartner, partnerLinkProject, partnerUnlinkProject,
+  fetchPartners, createPartner, updatePartner, deletePartner, partnerLinkProject, partnerUnlinkProject,
   partnerUpdateRemark, contactsListAll, contactLinkProject, contactUnlinkProject,
   createPartnerContact, updatePartnerContact,
 } from '@/api/db-client'
 import AppIcon from '@/components/common/AppIcon.vue'
-import SelectWithSearch from '@/components/common/SelectWithSearch.vue'
 
 const props = defineProps<{ project: any; projectId: string }>()
 const emit = defineEmits<{ update: [] }>()
@@ -132,6 +131,8 @@ async function saveVendorRemark(vendorId: string) {
 }
 
 async function addVendor() {
+  partnerInput.value = ''
+  partnerListOpen.value = false
   showVendorSelectModal.value = true
   try {
     allVendors.value = await contactsListAll('VENDOR') || []
@@ -169,25 +170,57 @@ const createContactName = ref('')
 const createContactPhone = ref('')
 const createContactEmail = ref('')
 const createContactPosition = ref('')
+const createContactPartnerId = ref('')
+const createContactFromCard = ref(false)
 
-function openCreateContactModal() {
+function resetCreateContactForm() {
   createContactName.value = ''
   createContactPhone.value = ''
   createContactEmail.value = ''
   createContactPosition.value = ''
+}
+
+function openCreateContactModal() {
+  resetCreateContactForm()
+  createContactPartnerId.value = selectedVendorId.value
+  createContactFromCard.value = false
+  showCreateContactModal.value = true
+}
+
+// 卡片「选择联系人」弹窗入口：支持新建联系人
+function openCreateContactForCard() {
+  resetCreateContactForm()
+  createContactPartnerId.value = cardPartnerIdForCreate.value
+  createContactFromCard.value = true
   showCreateContactModal.value = true
 }
 
 async function confirmCreateContact() {
   const name = createContactName.value.trim()
-  if (!name || !selectedVendorId.value) return
+  const partnerId = createContactPartnerId.value
+  if (!name || !partnerId) return
   try {
-    const ct = await createPartnerContact({ partnerId: selectedVendorId.value, name, phone: createContactPhone.value.trim(), email: createContactEmail.value.trim(), position: createContactPosition.value.trim() })
+    const ct = await createPartnerContact({ partnerId, name, phone: createContactPhone.value.trim(), email: createContactEmail.value.trim(), position: createContactPosition.value.trim() })
+    const payload = { id: ct.id, name: ct.name || name, phone: ct.phone || '', email: ct.email || '', position: ct.position || '' }
+    if (createContactFromCard.value) {
+      // 卡片流程：创建后进入候选列表并自动勾选，点「确定」时再关联项目
+      if (!availableVendorContacts.value.some(c => c.id === ct.id)) availableVendorContacts.value.push({ ...payload })
+      if (!selectedVendorContactToAddIds.value.includes(ct.id)) selectedVendorContactToAddIds.value.push(ct.id)
+      showCreateContactModal.value = false
+      toast({ message: `已创建联系人「${name}」，已自动勾选`, type: 'success' })
+      return
+    }
     await contactLinkProject(ct.id, props.projectId)
-    const vd = vendors.value.find(v => v.id === selectedVendorId.value)
+    const vd = vendors.value.find(v => v.id === partnerId)
     if (vd) {
       if (!Array.isArray(vd.contacts)) vd.contacts = []
-      vd.contacts.push({ id: ct.id, name: ct.name || name, phone: ct.phone || '', email: ct.email || '', position: ct.position || '' })
+      vd.contacts.push({ ...payload })
+    }
+    // 弹窗内联系人列表渲染自 allVendors，同步写入以实时显示
+    const allVd = allVendors.value.find(v => v.id === partnerId)
+    if (allVd) {
+      if (!Array.isArray(allVd.contacts)) allVd.contacts = []
+      allVd.contacts.push({ ...payload })
     }
     selectedVendorContactIds.value = [ct.id]
     showCreateContactModal.value = false
@@ -199,8 +232,84 @@ async function confirmCreateContact() {
   }
 }
 
+// ── 行内搜索选择 partner（不使用下拉组件）──
+const partnerInput = ref('')
+const partnerListOpen = ref(false)
+let partnerBlurTimer: ReturnType<typeof setTimeout> | null = null
+
+const partnerMatches = computed(() => {
+  const q = partnerInput.value.trim().toLowerCase()
+  if (!q) return allVendors.value
+  return allVendors.value.filter(c => (c.name || '').toLowerCase().includes(q))
+})
+
+function onPartnerFocus() {
+  if (partnerBlurTimer) { clearTimeout(partnerBlurTimer); partnerBlurTimer = null }
+  partnerListOpen.value = true
+}
+
+function onPartnerType() {
+  partnerListOpen.value = true
+  const sel = allVendors.value.find(c => c.id === selectedVendorId.value)
+  if (sel && partnerInput.value.trim() !== (sel.name || '')) {
+    selectedVendorId.value = ''
+    selectedVendorContactIds.value = []
+    vendorContactSearch.value = ''
+  }
+}
+
+function onPartnerBlur() {
+  partnerBlurTimer = setTimeout(() => { partnerListOpen.value = false }, 140)
+}
+
+function pickPartner(c: { id: string; name?: string }) {
+  selectedVendorId.value = c.id
+  partnerInput.value = c.name || ''
+  partnerListOpen.value = false
+  selectedVendorContactIds.value = []
+  vendorContactSearch.value = ''
+}
+
+// 新建供应商（字段与联系人页面一致）
+const showCreatePartnerModal = ref(false)
+const newPartnerForm = ref({ name: '', phone: '', address: '' })
+const newPartnerBusy = ref(false)
+
+function openCreatePartner() {
+  newPartnerForm.value = {
+    name: selectedVendorId.value ? '' : partnerInput.value.trim(),
+    phone: '',
+    address: '',
+  }
+  showCreatePartnerModal.value = true
+}
+
+async function confirmCreatePartner() {
+  const name = newPartnerForm.value.name.trim()
+  if (!name) { toast({ message: '请输入名称', type: 'error' }); return }
+  newPartnerBusy.value = true
+  try {
+    const phone = newPartnerForm.value.phone.trim()
+    const addr = newPartnerForm.value.address.trim()
+    // 后端 partner_create 从 company 字段读取地址，address 同步携带以兼容其他读取方
+    const r = await createPartner({ name, phone, address: addr, company: addr, type: 'VENDOR' })
+    if (!r?.id) throw new Error('创建失败')
+    allVendors.value.push({ id: r.id, name, address: addr, contacts: [] })
+    selectedVendorId.value = r.id
+    selectedVendorContactIds.value = []
+    partnerInput.value = name
+    showCreatePartnerModal.value = false
+    toast({ message: `供应商「${name}」已创建`, type: 'success' })
+  } catch (e) {
+    toast({ message: '创建供应商失败: ' + (e instanceof Error ? e.message : String(e)), type: 'error' })
+  } finally {
+    newPartnerBusy.value = false
+  }
+}
+
 const showVendorContactSelectModal = ref(false)
 const vendorContactSelectVendorId = ref('')
+const cardPartnerIdForCreate = ref('')
 const selectedVendorContactToAddIds = ref<string[]>([])
 const availableVendorContacts = ref<any[]>([])
 const vendorContactSelectSearch = ref('')
@@ -218,9 +327,12 @@ async function startAddVendorContact(vendorId: string) {
   if (allVendors.value.length === 0) {
     try { allVendors.value = await contactsListAll('VENDOR') || [] } catch {}
   }
+  // 优先按 id 匹配系统供应商，回退名称匹配
   const vd = vendors.value.find(v => v.id === vendorId)
-  const systemVendor = allVendors.value.find(sv => sv.name === vd?.name)
+  const systemVendor = allVendors.value.find(sv => sv.id === vendorId)
+    || allVendors.value.find(sv => sv.name === vd?.name)
   availableVendorContacts.value = systemVendor?.contacts || []
+  cardPartnerIdForCreate.value = systemVendor?.id || vendorId
   showVendorContactSelectModal.value = true
 }
 
@@ -351,14 +463,14 @@ watch(() => props.projectId, () => { loadVendors() }, { immediate: true })
           </template>
           <template v-else>
             <span class="text-[11px] text-slate-400 whitespace-nowrap shrink-0">{{ vd.project_remark || '无备注' }}</span>
-            <button v-if="!project.isArchived" @click.stop="startEditVendorRemark(vd)" class="text-slate-300 hover:text-blue-500 shrink-0" title="编辑备注">
+            <button v-if="!project.isArchived" @click.stop="startEditVendorRemark(vd)" class="text-slate-300 hover:text-blue-500 shrink-0" v-tooltip="'编辑备注'">
               <AppIcon name="edit" size="10" />
             </button>
           </template>
         </div>
         <div class="flex items-center gap-0.5 flex-shrink-0">
           <span class="text-[11px] text-slate-400">{{ (vd.contacts || []).length }} 个联系人</span>
-          <button v-if="!project.isArchived" @click.stop="removeVendor(vd.id)" class="btn-ghost !p-1 text-slate-400 hover:text-red-500" title="删除供应商">
+          <button v-if="!project.isArchived" @click.stop="removeVendor(vd.id)" class="btn-ghost !p-1 text-slate-400 hover:text-red-500" v-tooltip="'删除供应商'">
             <AppIcon name="trash" class="w-3 h-3" />
           </button>
           <AppIcon name="chevron-right" class="h-4 w-4 text-surface-300 transition-transform duration-200" :class="expandedVendorId === vd.id ? 'rotate-90' : ''" />
@@ -384,7 +496,7 @@ watch(() => props.projectId, () => { loadVendors() }, { immediate: true })
                   <td class="py-2 pr-2"><span class="text-xs text-slate-500 truncate block">{{ ct.phone || '-' }}</span></td>
                   <td class="py-2 pr-2"><span class="text-xs text-slate-500 truncate block">{{ ct.position || '-' }}</span></td>
                   <td class="py-2 pr-2"><span class="text-xs text-slate-500 truncate block">{{ ct.email || '-' }}</span></td>
-                  <td class="py-2 text-center"><button v-if="!project.isArchived" @click.stop="removeVendorContact(vd.id, ct.id)" class="text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover/ct-row:opacity-100" title="删除联系人"><AppIcon name="trash" size="12"/></button></td>
+                  <td class="py-2 text-center"><button v-if="!project.isArchived" @click.stop="removeVendorContact(vd.id, ct.id)" class="text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover/ct-row:opacity-100" v-tooltip="'删除联系人'"><AppIcon name="trash" size="12"/></button></td>
                 </tr>
               </tbody>
             </table>
@@ -402,26 +514,46 @@ watch(() => props.projectId, () => { loadVendors() }, { immediate: true })
     <Transition name="confirm-fade">
       <div v-if="showVendorSelectModal" class="fixed inset-0 z-[80] flex items-center justify-center">
         <div class="absolute inset-0 bg-black/20" @click="showVendorSelectModal = false" />
-        <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-lg mx-4 z-10 flex flex-col" style="height: 520px;">
+        <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-lg mx-4 z-10 flex flex-col max-h-[85vh]">
           <!-- 固定头部 -->
           <div class="px-5 pt-5 pb-3 border-b border-surface-100 shrink-0">
             <h3 class="text-sm font-semibold text-surface-800 mb-3">选择供应商</h3>
-            <label class="text-[11px] text-surface-500 mb-1 block">供应商</label>
-            <SelectWithSearch
-              v-model="selectedVendorId"
-              :options="allVendors.map(v => ({ id: v.id, name: v.name, address: v.address }))"
-              placeholder="选择供应商..."
-            />
+            <div class="flex items-end gap-2">
+              <div class="flex-1 min-w-0 relative">
+                <label class="text-[11px] text-surface-500 mb-1 block">供应商</label>
+                <input
+                  v-model="partnerInput"
+                  type="text"
+                  class="w-full px-3 py-1 text-[11px] border border-surface-200 rounded-lg focus:outline-none focus:border-blue-400"
+                  placeholder="输入名称搜索供应商..."
+                  @focus="onPartnerFocus"
+                  @input="onPartnerType"
+                  @blur="onPartnerBlur"
+                />
+                <div v-if="partnerListOpen" class="absolute top-full left-0 right-0 mt-1 bg-white border border-surface-200 rounded-lg shadow-lg z-20 max-h-[180px] overflow-y-auto">
+                  <button v-for="c in partnerMatches" :key="c.id" type="button" @mousedown.prevent="pickPartner(c)"
+                    class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors"
+                    :class="selectedVendorId === c.id ? 'text-brand-600 bg-brand-50 font-medium' : 'text-surface-700 hover:bg-surface-50'">
+                    <span class="truncate">{{ c.name || '未命名' }}</span>
+                    <AppIcon v-if="selectedVendorId === c.id" name="check" class="w-3 h-3 shrink-0" />
+                  </button>
+                  <div v-if="partnerMatches.length === 0" class="px-3 py-3 text-center text-[11px] text-surface-400">无匹配结果，点击右侧「+」新建</div>
+                </div>
+              </div>
+              <button type="button" v-tooltip="'新建供应商'" @click="openCreatePartner" class="shrink-0 h-[28px] w-[28px] flex items-center justify-center rounded-lg border border-surface-200 text-surface-500 hover:border-brand-300 hover:text-brand-600 transition-colors">
+                <AppIcon name="plus" class="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
           <!-- 联系人区块 -->
-          <div v-if="selectedVendor" class="flex-1 flex flex-col min-h-0 px-5 py-3">
+          <div v-if="selectedVendor" class="min-h-0 overflow-y-auto px-5 py-3">
             <div class="flex items-center justify-between mb-2">
               <span class="text-[11px] text-surface-500 font-medium">联系人</span>
               <button @click="openCreateContactModal" class="text-[10px] text-blue-600 hover:underline">+ 添加联系人</button>
             </div>
-            <div v-if="vendorContacts.length > 0" class="flex-1 flex flex-col min-h-0">
-              <input v-model="vendorContactSearch" type="text" class="w-full px-3 py-1 text-[11px] border border-surface-200 rounded-lg focus:outline-none focus:border-blue-400 mb-2 shrink-0" placeholder="搜索联系人..." />
-              <div class="flex-1 overflow-y-auto border border-surface-200 rounded-lg">
+            <template v-if="vendorContacts.length > 0">
+              <input v-model="vendorContactSearch" type="text" class="w-full px-3 py-1 text-[11px] border border-surface-200 rounded-lg focus:outline-none focus:border-blue-400 mb-2" placeholder="搜索联系人..." />
+              <div class="border border-surface-200 rounded-lg">
                 <label v-for="ct in filteredVendorContacts" :key="ct.id" class="flex items-center gap-2 px-3 py-2 hover:bg-surface-50 cursor-pointer border-b border-surface-50 last:border-b-0">
                   <input type="checkbox" :value="ct.id" v-model="selectedVendorContactIds" class="w-3 h-3 rounded border-slate-200 text-blue-500 focus:ring-blue-400" />
                   <span class="text-xs text-slate-600 flex-1 truncate">{{ ct.name || '-' }}</span>
@@ -429,10 +561,10 @@ watch(() => props.projectId, () => { loadVendors() }, { immediate: true })
                   <span class="text-[10px] text-slate-400">{{ ct.phone || '' }}</span>
                 </label>
               </div>
-            </div>
-            <div v-else class="flex-1 flex items-center justify-center text-[12px] text-surface-400">该供应商暂无联系人</div>
+            </template>
+            <div v-else class="py-8 text-center text-[12px] text-surface-400">该供应商暂无联系人</div>
           </div>
-          <!-- 备注 + 按钮 -->
+          <!-- 备注 + 按钮（固定弹窗底部右侧） -->
           <div class="px-5 py-3 border-t border-surface-100 shrink-0">
             <div class="mb-3">
               <label class="text-[11px] text-surface-500 mb-1 block">备注</label>
@@ -448,21 +580,54 @@ watch(() => props.projectId, () => { loadVendors() }, { immediate: true })
     </Transition>
   </Teleport>
 
+  <!-- 新建供应商（嵌套小弹窗） -->
+  <Teleport to="body">
+    <Transition name="confirm-fade">
+      <div v-if="showCreatePartnerModal" class="fixed inset-0 z-[90] flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/30" @click="showCreatePartnerModal = false" />
+        <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-sm mx-4 p-5 z-10 max-h-[85vh] overflow-y-auto">
+          <h3 class="text-sm font-semibold text-surface-800 mb-4">新建供应商</h3>
+          <div class="space-y-2.5">
+            <div>
+              <label class="text-[11px] text-surface-500 mb-1 block">名称 <span class="text-red-400">*</span></label>
+              <input v-model="newPartnerForm.name" type="text" class="input-field !h-7 !py-1 !text-[12px]" placeholder="输入名称" @keyup.enter="confirmCreatePartner" />
+            </div>
+            <div>
+              <label class="text-[11px] text-surface-500 mb-1 block">电话</label>
+              <input v-model="newPartnerForm.phone" type="text" class="input-field !h-7 !py-1 !text-[12px]" placeholder="联系电话" />
+            </div>
+            <div>
+              <label class="text-[11px] text-surface-500 mb-1 block">地址</label>
+              <input v-model="newPartnerForm.address" type="text" class="input-field !h-7 !py-1 !text-[12px]" placeholder="公司地址" />
+            </div>
+          </div>
+          <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
+            <button class="btn-secondary" @click="showCreatePartnerModal = false">取消</button>
+            <button class="btn-primary disabled:opacity-50" :disabled="newPartnerBusy || !newPartnerForm.name.trim()" @click="confirmCreatePartner">{{ newPartnerBusy ? '创建中…' : '创建' }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
   <Teleport to="body">
     <Transition name="confirm-fade">
       <div v-if="showVendorContactSelectModal" class="fixed inset-0 z-[80] flex items-center justify-center">
         <div class="absolute inset-0 bg-black/20" @click="showVendorContactSelectModal = false" />
-        <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-lg mx-4 z-10 flex flex-col" style="height: 420px;">
+        <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-lg mx-4 z-10 flex flex-col max-h-[85vh]">
           <!-- 固定头部 -->
           <div class="px-5 pt-5 pb-3 border-b border-surface-100 shrink-0">
-            <h3 class="text-sm font-semibold text-surface-800 mb-3">选择联系人</h3>
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-semibold text-surface-800">选择联系人</h3>
+              <button @click="openCreateContactForCard" class="text-[10px] text-blue-600 hover:underline">+ 新建联系人</button>
+            </div>
             <div v-if="availableVendorContacts.length > 0">
               <input v-model="vendorContactSelectSearch" type="text" class="w-full px-3 py-1 text-[11px] border border-surface-200 rounded-lg focus:outline-none focus:border-blue-400" placeholder="搜索联系人..." />
             </div>
           </div>
           <!-- 联系人列表区块 -->
-          <div class="flex-1 min-h-0 px-5 py-3 flex flex-col">
-            <div v-if="availableVendorContacts.length > 0" class="flex-1 overflow-y-auto border border-surface-200 rounded-lg">
+          <div class="min-h-0 overflow-y-auto px-5 py-3">
+            <div v-if="availableVendorContacts.length > 0" class="border border-surface-200 rounded-lg">
               <label v-for="ct in filteredAvailableVendorContacts" :key="ct.id" class="flex items-center gap-2 px-3 py-2 hover:bg-surface-50 cursor-pointer border-b border-surface-50 last:border-b-0">
                 <input type="checkbox" :value="ct.id" v-model="selectedVendorContactToAddIds" class="w-3 h-3 rounded border-slate-200 text-blue-500 focus:ring-blue-400" />
                 <span class="text-xs text-slate-600 flex-1 truncate">{{ ct.name || '-' }}</span>
@@ -471,7 +636,7 @@ watch(() => props.projectId, () => { loadVendors() }, { immediate: true })
                 <span class="text-[10px] text-slate-400">{{ ct.email || '' }}</span>
               </label>
             </div>
-            <div v-else class="flex-1 flex items-center justify-center text-[12px] text-surface-400">该供应商暂无联系人</div>
+            <div v-else class="py-8 text-center text-[12px] text-surface-400">该供应商暂无联系人，点击右上角「+ 新建联系人」创建</div>
           </div>
           <!-- 底部按钮 -->
           <div class="px-5 py-3 border-t border-surface-100 shrink-0 flex items-center justify-end gap-2">

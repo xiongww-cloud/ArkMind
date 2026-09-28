@@ -1357,66 +1357,62 @@ fn read_pptx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(result.trim().to_string())
 }
 
-/// 读取 numbering.xml 获取列表编号格式（基于字符串解析，避免 XML API 兼容问题）
-/// DOCX → Markdown 解析：使用 rwml 库解析，支持完整格式（标题、粗斜体、表格、列表、超链接等）
+/// DOCX → Markdown：rwml 解析出文档模型后由 `word_markdown` 渲染 GFM
+/// （标题、粗斜体、删除线、表格、列表、超链接等），并对嵌入图片注入 OCR 文本。
 fn read_docx_to_markdown(p: &str) -> Result<String, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(p)?;
-    
-    // 使用 rwml 解析 DOCX
-    let doc = rwml::Document::open(&bytes)?;
-    let mut markdown = doc.to_markdown();
-    
-    // OCR 增强：提取嵌入图片并注入 OCR 文本
-    let images = doc.images();
-    for (i, img) in images.iter().enumerate() {
-        if let Some(ref img_bytes) = img.bytes {
-            let mime = img.mime.as_deref().unwrap_or("image/png");
-            let data_uri = bytes_to_data_uri(img_bytes, mime);
-            match ocr_image_sync_result(&data_uri) {
-                OcrOutcome::Ok(text) if !text.trim().is_empty() => {
-                    // 替换 Markdown 中的图片占位符为 OCR 文本
-                    let placeholder = format!("![image{}]()", i);
-                    let replacement = format!("[图片：{}]", text);
-                    markdown = markdown.replace(&placeholder, &replacement);
-                    log::info!("[文件解析] DOCX 图片 {} OCR 成功: {} 字符", i, text.len());
-                }
-                OcrOutcome::Blank => {
-                    log::info!("[文件解析] DOCX 图片 {} OCR 空白", i);
-                }
-                OcrOutcome::Failed(e) => {
-                    log::info!("[文件解析] DOCX 图片 {} OCR 失败: {}", i, e);
-                }
-                _ => {}
-            }
-        }
-    }
-    
-    // 后处理：合并相邻的加粗标记
-    markdown = merge_adjacent_emphasis(&markdown);
-    
-    Ok(markdown)
+    word_bytes_to_markdown(&bytes)
 }
 
-/// DOCX 解析：用 quick-xml 提取 word/document.xml 中的纯文本节点（保留旧接口调用但改用新实现）
+/// DOCX 解析：保留旧接口名，实现同 `read_docx_to_markdown`
 fn read_docx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
     read_docx_to_markdown(p)
 }
 
-/// 合并相邻的加粗/斜体标记
-/// 例如：**text1****text2** → **text1text2**
-fn merge_adjacent_emphasis(markdown: &str) -> String {
-    // 在连续的4个*中间加空格：**** → ** **
-    // 这样 Markdown 解析器可以正确识别相邻的加粗标记
-    let re = regex::Regex::new(r"\*\*\*\*").unwrap();
-    re.replace_all(markdown, "** **").to_string()
+/// Word（.doc/.docx）字节流 → Markdown。rwml 建模 + word_markdown 渲染，
+/// 并按渲染顺序对图片占位符注入 OCR 文本（失败则退化为图片注记）。
+fn word_bytes_to_markdown(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
+    use crate::services::word_markdown;
+
+    let doc = rwml::Document::open(bytes)?;
+    let model = doc.model();
+    let rendered = word_markdown::render(&model);
+    let mut markdown = rendered.markdown;
+
+    // OCR 增强：占位符与图片按渲染顺序一一对应，可精确替换
+    for (i, img) in rendered.images.iter().enumerate() {
+        let replacement = match &img.bytes {
+            Some(img_bytes) => {
+                let mime = img.mime.as_deref().unwrap_or("image/png");
+                let data_uri = bytes_to_data_uri(img_bytes, mime);
+                match ocr_image_sync_result(&data_uri) {
+                    OcrOutcome::Ok(text) if !text.trim().is_empty() => {
+                        log::info!("[文件解析] Word 图片 {} OCR 成功: {} 字符", i, text.len());
+                        word_markdown::image_note(&text)
+                    }
+                    OcrOutcome::Blank => {
+                        log::info!("[文件解析] Word 图片 {} OCR 空白", i);
+                        word_markdown::image_note_fallback(img.alt.as_deref())
+                    }
+                    OcrOutcome::Failed(e) => {
+                        log::info!("[文件解析] Word 图片 {} OCR 失败: {}", i, e);
+                        word_markdown::image_note_fallback(img.alt.as_deref())
+                    }
+                    _ => word_markdown::image_note_fallback(img.alt.as_deref()),
+                }
+            }
+            None => word_markdown::image_note_fallback(img.alt.as_deref()),
+        };
+        markdown = markdown.replace(&img.placeholder, &replacement);
+    }
+
+    Ok(markdown)
 }
 
-/// DOC 解析：使用 rwml 库解析旧版 Word 二进制格式（OLE2），输出 Markdown
+/// DOC 解析：使用 rwml 解析旧版 Word 二进制格式（OLE2），输出 Markdown
 fn read_doc_legacy(p: &str) -> Result<String, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(p)?;
-    let doc = rwml::Document::open(&bytes)?;
-    let markdown = doc.to_markdown();
-    Ok(merge_adjacent_emphasis(&markdown))
+    word_bytes_to_markdown(&bytes)
 }
 
 fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {

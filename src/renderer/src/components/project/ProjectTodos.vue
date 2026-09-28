@@ -106,7 +106,7 @@ defineExpose({ loadProjectTodos })
         <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">待办</span>
         <div class="flex items-center gap-2">
           <span class="text-[10px] text-surface-400 font-medium">{{ projectUndoneTodos.length }}</span>
-          <button @click="addProjectTodo" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建待办"><AppIcon name="plus" size="12" stroke="2.5"/></button>
+          <button @click="addProjectTodo" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建待办'"><AppIcon name="plus" size="12" stroke="2.5"/></button>
         </div>
       </div>
       <div style="display:flex;flex-direction:column;flex:1;min-height:0">
@@ -124,7 +124,7 @@ defineExpose({ loadProjectTodos })
               <p class="text-[9px] mt-1 text-surface-400" v-if="todo.content">{{ (todo.content || '').replace(/<[^>]*>/g,'').slice(0,40) }}</p>
               <p class="text-[9px] mt-0.5 text-surface-400" v-if="todo.dueDate">{{ todo.dueDate.slice(0,10) }}</p>
             </div>
-            <button @click.stop="removeProjectTodo(todo.id)" class="w-4 h-4 flex items-center justify-center rounded-full text-surface-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0" title="删除"><AppIcon name="trash" size="10"/></button>
+            <button @click.stop="removeProjectTodo(todo.id)" class="w-4 h-4 flex items-center justify-center rounded-full text-surface-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0" v-tooltip="'删除'"><AppIcon name="trash" size="10"/></button>
           </div>
           <div v-if="projectUndoneTodos.length === 0 && projectDoneTodos.length === 0" class="text-center py-10 text-surface-400 text-xs">暂无待办</div>
         </div>
@@ -148,7 +148,7 @@ defineExpose({ loadProjectTodos })
                   <span class="text-[8px] text-gray-300" v-if="todo.dueDate">{{ todo.dueDate.slice(0,10) }}</span>
                 </div>
               </div>
-              <button @click.stop="removeProjectTodo(todo.id)" class="w-3.5 h-3.5 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0" title="删除"><AppIcon name="trash" size="8"/></button>
+              <button @click.stop="removeProjectTodo(todo.id)" class="w-3.5 h-3.5 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0" v-tooltip="'删除'"><AppIcon name="trash" size="8"/></button>
             </div>
           </div>
         </div>

@@ -103,6 +103,8 @@ const dragStarted = ref(false)
 const dragTimer = ref<ReturnType<typeof setTimeout>|null>(null)
 const dragTargetId = ref<string|null>(null)
 const dragInsert = ref<{targetId:string;side:'above'|'below'|'inside'}|null>(null)
+// 外部拖文件（FileManager 传入）或内部拖目录时，悬停目录都显示高亮
+const dropHighlightOn = computed(() => isDragging.value || !!props.externalDragTargetId)
 
 function startFolderDrag(e: MouseEvent, fid: string) {
   dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY
@@ -148,7 +150,7 @@ defineExpose({ startAddFolder })
     <div class="px-2 py-1">
       <!-- 全部文件 -->
       <div>
-        <button @click="emit('select', null)" :data-drop-target="'__root__'" class="flex items-center gap-1.5 w-full py-1.5 px-2 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :class="[selectedId===null?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && effectiveDragTargetId==='__root__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
+        <button @click="emit('select', null)" :data-drop-target="'__root__'" class="flex items-center gap-1.5 w-full py-1.5 px-2 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :class="[selectedId===null?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', dropHighlightOn && effectiveDragTargetId==='__root__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
           <div v-if="selectedId===null" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
           <AppIcon name="grid" size="13" class="flex-shrink-0"/>全部文件
         </button>
@@ -163,7 +165,7 @@ defineExpose({ startAddFolder })
           <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
           <input data-folder-edit v-model="folderEditName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="confirmRename(d.id)" @blur="confirmRename(d.id)"/>
         </div>
-        <div v-else :data-drop-target="d.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedId===d.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragFolderId===d.id?'opacity-30':'', isDragging && effectiveDragTargetId===d.id && dragFolderId!==d.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="emit('select', d.id)" @mousedown="startFolderDrag($event, d.id)" :style="{ paddingLeft: `${12 + (d._depth||0) * 12}px` }">
+        <div v-else :data-drop-target="d.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedId===d.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragFolderId===d.id?'opacity-30':'', dropHighlightOn && effectiveDragTargetId===d.id && dragFolderId!==d.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="emit('select', d.id)" @mousedown="startFolderDrag($event, d.id)" :style="{ paddingLeft: `${12 + (d._depth||0) * 12}px` }">
           <div v-if="dragInsert?.targetId===d.id && dragInsert?.side==='inside'" class="absolute inset-0 border-2 border-brand-400 rounded-lg pointer-events-none"></div>
           <div v-if="selectedId===d.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
           <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
@@ -191,7 +193,7 @@ defineExpose({ startAddFolder })
 
       <!-- 未分类 -->
       <div>
-        <button @click="emit('select', '__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 px-2 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="[selectedId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && effectiveDragTargetId==='__uncategorized__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
+        <button @click="emit('select', '__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 px-2 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="[selectedId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', dropHighlightOn && effectiveDragTargetId==='__uncategorized__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
           <div v-if="selectedId==='__uncategorized__'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
           <span class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>未分类

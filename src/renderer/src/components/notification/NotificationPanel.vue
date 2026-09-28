@@ -5,7 +5,6 @@ import { notificationList, notificationMarkRead, notificationDelete, notificatio
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
-import { useTooltip } from '@/composables/useTooltip'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
@@ -261,7 +260,7 @@ async function handleAction(n: Notification, action: NotificationAction) {
         quickContactVisible.value = true
         break
       case 'create_partner':
-        await router.push({ path: '/contacts', query: { action: 'create', name: p.name as string || '', type: p.type as string || 'CUSTOMER' } })
+        await router.push({ path: '/contacts', query: { action: 'create', name: p.name as string || '', type: p.type as string || 'CUSTOMER', phone: p.phone as string || '', address: p.address as string || '', remark: p.remark as string || '', contact_person: p.contact_person as string || '', contact_phone: p.contact_phone as string || '' } })
         emit('close')
         break
       case 'create_all':
@@ -434,7 +433,7 @@ async function executeCreate(type: string, params: Record<string, unknown>, ctx:
       return r.id
     }
     case 'create_partner': {
-      const r: any = await createPartner({ name: p.name || '新建合作伙伴', type: p.type || 'CUSTOMER', phone: p.phone || '', address: p.address || '', remark: p.remark || '' })
+      const r: any = await createPartner({ name: p.name || '新建合作伙伴', type: p.type || 'CUSTOMER', phone: p.phone || '', address: p.address || '', remark: p.remark || '', contact_person: p.contact_person || '', contact_phone: p.contact_phone || '' })
       if (!r?.id) throw new Error('create partner failed')
       if (p.name) ctx[String(p.name).trim().toLowerCase()] = r.id
       return r.id
@@ -564,16 +563,6 @@ const priorityDot: Record<string, string> = {
   medium: 'bg-amber-400',
   low: 'bg-surface-300',
 }
-
-// ── Tooltip ──
-const { tooltipText, tooltipX, tooltipY, tooltipVisible, show: showTip, hide: hideTip } = useTooltip()
-
-function onTitleEnter(e: MouseEvent, title: string) {
-  const el = e.currentTarget as HTMLElement
-  if (el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) {
-    showTip(el, title)
-  }
-}
 </script>
 
 <template>
@@ -603,7 +592,7 @@ function onTitleEnter(e: MouseEvent, title: string) {
               </span>
               <div class="flex-1 min-w-0 flex items-center gap-2">
                 <div v-if="n.read === 0" class="w-2 h-2 rounded-full flex-shrink-0" :class="priorityDot[n.priority] || priorityDot.medium"></div>
-                <span @mouseenter="(e) => onTitleEnter(e, stripUuids(n.title))" @mouseleave="hideTip"
+                <span v-tooltip.auto="stripUuids(n.title)"
                   class="text-[13px] font-medium text-slate-800 truncate cursor-default select-text"
                   :class="{ 'font-normal text-slate-500': n.read === 1 }">{{ stripUuids(n.title) }}</span>
               </div>
@@ -668,16 +657,6 @@ function onTitleEnter(e: MouseEvent, title: string) {
         </div>
       </div>
     </div>
-
-    <!-- Tooltip (Teleport) -->
-    <Teleport to="body">
-      <div v-if="tooltipVisible"
-           class="fixed pointer-events-none z-[9999] px-2 py-1 text-[11px] text-white bg-gray-800 rounded shadow-lg max-w-[320px]"
-           :class="tooltipText.length > 40 ? 'break-words' : 'whitespace-nowrap'"
-           :style="{ left: tooltipX + 'px', top: tooltipY + 'px', transform: 'translate(-50%, -100%)' }">
-        {{ tooltipText }}
-      </div>
-    </Teleport>
 
     <!-- Create All Confirmation Dialog -->
     <Teleport to="body">

@@ -51,6 +51,9 @@ infer = "0.15"
 html2md = "0.2.17"
 rwml = "0.1.4"
 
+# File writing
+rust_xlsxwriter = "0.99"
+
 # Email (IMAP + MIME parsing)
 imap = "2.4"
 native-tls = "0.2"
@@ -86,9 +89,10 @@ regex = "1"
 tempfile = "3"
 
 # macOS: 设置 NSWindow collectionBehavior（前台调度辅助窗口）+ NSPasteboard（读取剪贴板文件）
+# + NSApplication/NSResponder：关窗后让出 key/前台，避免隐藏窗口间歇吞 ⌘C/⌘V
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSPasteboard", "NSPasteboardItem"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder", "NSApplication", "NSPasteboard", "NSPasteboardItem"] }
 objc2-foundation = "0.3"
 
 # Windows: 剪贴板文件列表写入（复制文件到剪贴板，供资源管理器/微信粘贴）

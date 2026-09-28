@@ -53,16 +53,13 @@ function navigate(path) {
         v-for="item in navItems"
         :key="item.path"
         @click="navigate(item.path)"
-        class="group relative flex w-full items-center justify-center rounded-lg py-2.5 transition-all duration-150"
+        v-tooltip.right="item.label"
+        class="relative flex w-full items-center justify-center rounded-lg py-2.5 transition-all duration-150"
         :class="isActive(item.path)
           ? 'bg-brand-50 text-brand-700'
           : 'text-surface-400 hover:bg-surface-50 hover:text-surface-600'"
       >
 <AppIcon :name="item.icon" class="h-5 w-5" />
-        <!-- Tooltip -->
-        <span class="absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-[11px] rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
-          {{ item.label }}
-        </span>
       </button>
     </nav>
   </aside>

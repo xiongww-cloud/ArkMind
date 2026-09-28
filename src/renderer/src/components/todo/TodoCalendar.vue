@@ -155,7 +155,7 @@ function fmtDateLabel(dateKey: string): string {
     <div class="flex-1 overflow-y-auto border-t border-surface-100">
       <div class="flex items-center justify-between px-3 py-2 sticky top-0 bg-white/90 backdrop-blur-sm z-10 border-b border-surface-50">
         <span class="text-[11px] font-semibold text-surface-600">{{ fmtDateLabel(selectedDate) }}</span>
-        <button @click="emit('createTodo', selectedDate)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="在此日期新建待办">
+        <button @click="emit('createTodo', selectedDate)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'在此日期新建待办'">
           <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 4v16m8-8H4"/></svg>
         </button>
       </div>

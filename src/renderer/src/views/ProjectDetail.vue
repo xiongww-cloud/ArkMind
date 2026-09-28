@@ -479,7 +479,7 @@ watch(
     <div :class="['sticky top-0 z-10 bg-surface-50 pt-1.5 px-3', props.embedded ? '' : 'border-b border-slate-200']">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-0">
-          <button v-if="!props.embedded" @click="goBack" class="btn-ghost !p-1 mr-2 flex-shrink-0" title="返回项目列表">
+          <button v-if="!props.embedded" @click="goBack" class="btn-ghost !p-1 mr-2 flex-shrink-0" v-tooltip="'返回项目列表'">
             <AppIcon name="arrow-left" class="h-4 w-4 text-slate-400" />
           </button>
           <nav class="flex gap-0 -mb-px">
@@ -524,7 +524,7 @@ watch(
             <template v-else>
               <div class="flex items-center gap-2 group/name">
                 <h2 class="text-lg font-semibold text-surface-800 border border-transparent rounded-lg px-2 py-1">{{ project.name }}</h2>
-                <button @click="startEditName" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100" title="编辑项目名称">
+                <button @click="startEditName" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/name:opacity-100" v-tooltip="'编辑项目名称'">
                   <AppIcon name="edit" class="w-4 h-4" />
                 </button>
               </div>
@@ -539,7 +539,7 @@ watch(
                   <span @click.stop="startEditBidTime" class="text-xs cursor-pointer" :class="isBidOverdue ? 'text-purple-300 font-medium' : bidDaysRemaining <= 3 ? 'text-red-300 font-medium' : 'text-slate-400'">
                     {{ formatBidTime(project.bidTime || project.bid_time) || '点击设置投标时间' }}
                   </span>
-                  <button @click.stop="startEditBidTime" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/bid-inline:opacity-100 flex-shrink-0" title="编辑投标时间">
+                  <button @click.stop="startEditBidTime" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/bid-inline:opacity-100 flex-shrink-0" v-tooltip="'编辑投标时间'">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
                   </button>
                   <div v-if="showBidCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
@@ -626,7 +626,7 @@ watch(
                 </template>
                 <template v-else>
                   <span class="text-sm font-normal text-slate-600 rounded px-0.5 py-0 border border-transparent">{{ budgetFormatted || '-' }}</span>
-                  <button @click="startEditBudget" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/budget:opacity-100 flex items-center justify-center" title="编辑金额">
+                  <button @click="startEditBudget" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/budget:opacity-100 flex items-center justify-center" v-tooltip="'编辑金额'">
                     <AppIcon name="edit" class="w-3.5 h-3.5" />
                   </button>
                 </template>
@@ -639,7 +639,7 @@ watch(
                   <span @click.stop="startEditExpectedDateCalendar" class="text-sm font-normal text-slate-600 rounded px-0.5 py-0 border border-transparent cursor-pointer">
                     {{ (project.expectedOrderDate || project.expected_order_date) || '-' }}
                   </span>
-                  <button @click.stop="startEditExpectedDateCalendar" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expectedDate:opacity-100 flex items-center justify-center" title="编辑预计下单时间">
+                  <button @click.stop="startEditExpectedDateCalendar" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/expectedDate:opacity-100 flex items-center justify-center" v-tooltip="'编辑预计下单时间'">
                     <AppIcon name="edit" class="w-3.5 h-3.5" />
                   </button>
                   <div v-if="showExpectedCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">

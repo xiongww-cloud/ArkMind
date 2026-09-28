@@ -243,9 +243,15 @@ function handleRouteQuery() {
     if (type && ['channels', 'vendors', 'customers'].includes(type)) {
       activeTab.value = type as TabType
     }
-    const name = route.query.name as string || ''
-    if (name) {
-      newEntity.value = { name, phone: '', address: '', remark: '', contact_person: '', contact_phone: '' }
+    // 预填全部已知字段（name/type/phone/address/remark/contact_person/contact_phone）
+    const q = (k: string) => (typeof route.query[k] === 'string' ? (route.query[k] as string) : '')
+    newEntity.value = {
+      name: q('name'),
+      phone: q('phone'),
+      address: q('address'),
+      remark: q('remark'),
+      contact_person: q('contact_person'),
+      contact_phone: q('contact_phone'),
     }
     showCreateModal.value = true
   }
@@ -287,7 +293,7 @@ watch(() => route.query, () => {
       <div class="w-[260px] border-r border-surface-200 flex flex-col shrink-0">
         <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0">
           <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">公司</span>
-          <button @click="openCreate" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="新建">
+          <button @click="openCreate" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'新建'">
             <AppIcon name="plus" size="12" stroke="2.5" />
           </button>
         </div>
@@ -435,8 +441,8 @@ watch(() => route.query, () => {
     <Teleport to="body">
       <Transition name="confirm-fade">
         <div v-if="showCreateModal" class="fixed inset-0 z-[80] flex items-center justify-center">
-          <div class="absolute inset-0 bg-black/20" />
-          <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-sm mx-4 p-5 z-10">
+          <div class="absolute inset-0 bg-black/20" @click="showCreateModal = false" />
+          <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-sm mx-4 p-5 z-10 max-h-[85vh] overflow-y-auto">
             <h3 class="text-sm font-semibold text-surface-800 mb-4">
               {{ activeTab === 'channels' ? '新建渠道' : activeTab === 'vendors' ? '新建供应商' : '新建客户' }}
             </h3>
@@ -455,8 +461,8 @@ watch(() => route.query, () => {
               </div>
             </div>
             <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
-              <button @click="showCreateModal = false" class="py-1 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
-              <button @click="createEntity" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors">创建</button>
+              <button class="btn-secondary" @click="showCreateModal = false">取消</button>
+              <button class="btn-primary disabled:opacity-50" :disabled="!newEntity.name.trim()" @click="createEntity">创建</button>
             </div>
           </div>
         </div>
@@ -500,8 +506,8 @@ watch(() => route.query, () => {
               </div>
             </div>
             <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
-              <button @click="cancelAddContact" class="py-1 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
-              <button @click="saveNewContact" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors">创建</button>
+              <button class="btn-secondary" @click="cancelAddContact">取消</button>
+              <button class="btn-primary disabled:opacity-50" :disabled="!newContact.name.trim()" @click="saveNewContact">创建</button>
             </div>
           </div>
         </div>
@@ -512,8 +518,8 @@ watch(() => route.query, () => {
     <Teleport to="body">
       <Transition name="confirm-fade">
         <div v-if="showEditContactModal && editingContact" class="fixed inset-0 z-[80] flex items-center justify-center">
-          <div class="absolute inset-0 bg-black/20" />
-          <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-sm mx-4 p-5 z-10">
+          <div class="absolute inset-0 bg-black/20" @click="cancelEditContact" />
+          <div class="relative bg-white rounded-xl shadow-lg border border-surface-100 w-full max-w-sm mx-4 p-5 z-10 max-h-[85vh] overflow-y-auto">
             <h3 class="text-sm font-semibold text-surface-800 mb-4">编辑联系人</h3>
             <div class="space-y-2.5">
               <div>
@@ -545,8 +551,8 @@ watch(() => route.query, () => {
               </div>
             </div>
             <div class="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-surface-100">
-              <button @click="cancelEditContact" class="py-1 px-2.5 text-[12px] text-surface-400 hover:text-surface-600 hover:bg-surface-50 rounded transition-colors">取消</button>
-              <button @click="saveEditContact" class="py-1 px-3 text-[12px] text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors">保存</button>
+              <button class="btn-secondary" @click="cancelEditContact">取消</button>
+              <button class="btn-primary disabled:opacity-50" :disabled="!editingContact.name.trim()" @click="saveEditContact">保存</button>
             </div>
           </div>
         </div>

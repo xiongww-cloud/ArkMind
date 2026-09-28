@@ -207,7 +207,7 @@ async function removeContact(ctId: string) {
           </template>
           <template v-else>
             <span class="text-xs truncate" :class="entity.remark ? 'text-surface-500' : 'text-surface-400 italic'">{{ entity.remark || '无备注' }}</span>
-            <button v-if="!isArchived" @click.stop="startEditRemark" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/rm:opacity-100 flex-shrink-0" title="编辑备注">
+            <button v-if="!isArchived" @click.stop="startEditRemark" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/rm:opacity-100 flex-shrink-0" v-tooltip="'编辑备注'">
               <AppIcon name="edit" class="w-2.5 h-2.5" />
             </button>
           </template>
@@ -215,7 +215,7 @@ async function removeContact(ctId: string) {
       </div>
       <div class="flex items-center gap-0.5 flex-shrink-0">
         <span class="text-[11px] text-slate-400">{{ contacts.length }} 个联系人</span>
-        <button v-if="!isArchived" @click.stop="removeEntity" class="btn-ghost !p-1 text-slate-400 hover:text-red-500" :title="`删除${config.label}`">
+        <button v-if="!isArchived" @click.stop="removeEntity" class="btn-ghost !p-1 text-slate-400 hover:text-red-500" v-tooltip="`删除${config.label}`">
           <AppIcon name="trash" class="w-3 h-3" />
         </button>
         <AppIcon name="chevron-right" class="h-3.5 w-3.5 text-surface-300 transition-transform duration-200" :class="expanded ? 'rotate-90' : ''" />
@@ -258,7 +258,7 @@ async function removeContact(ctId: string) {
                     </template>
                     <template v-else>
                       <span class="text-xs truncate" :class="ct.name ? 'text-slate-600' : 'text-slate-400 italic'">{{ ct.name || '暂未指定' }}</span>
-                      <button v-if="!isArchived" @click.stop="startEditContactName(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-nm:opacity-100 flex-shrink-0" title="编辑姓名">
+                      <button v-if="!isArchived" @click.stop="startEditContactName(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-nm:opacity-100 flex-shrink-0" v-tooltip="'编辑姓名'">
                         <AppIcon name="edit" class="w-2.5 h-2.5" />
                       </button>
                     </template>
@@ -273,7 +273,7 @@ async function removeContact(ctId: string) {
                     </template>
                     <template v-else>
                       <span class="text-xs text-slate-500 truncate">{{ ct.phone || '无' }}</span>
-                      <button v-if="!isArchived" @click.stop="startEditContactPhone(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-ph:opacity-100 flex-shrink-0" title="编辑电话">
+                      <button v-if="!isArchived" @click.stop="startEditContactPhone(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-ph:opacity-100 flex-shrink-0" v-tooltip="'编辑电话'">
                         <AppIcon name="edit" class="w-2.5 h-2.5" />
                       </button>
                     </template>
@@ -288,7 +288,7 @@ async function removeContact(ctId: string) {
                     </template>
                     <template v-else>
                       <span class="text-xs whitespace-normal break-words" :class="ct.remark ? 'text-surface-500' : 'text-surface-400 italic'">{{ ct.remark || '无备注' }}</span>
-                      <button v-if="!isArchived" @click.stop="startEditContactRemark(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-rm:opacity-100 flex-shrink-0" title="编辑备注">
+                      <button v-if="!isArchived" @click.stop="startEditContactRemark(ct)" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/ct-rm:opacity-100 flex-shrink-0" v-tooltip="'编辑备注'">
                         <AppIcon name="edit" class="w-2.5 h-2.5" />
                       </button>
                     </template>
@@ -296,7 +296,7 @@ async function removeContact(ctId: string) {
                 </td>
                 <!-- Delete -->
                 <td class="py-2 text-right">
-                  <button v-if="!isArchived" @click.stop="removeContact(ct.id)" class="btn-ghost !p-1 text-slate-400 hover:text-red-500 opacity-0 group-hover/ct-row:opacity-100 flex-shrink-0" title="删除联系人">
+                  <button v-if="!isArchived" @click.stop="removeContact(ct.id)" class="btn-ghost !p-1 text-slate-400 hover:text-red-500 opacity-0 group-hover/ct-row:opacity-100 flex-shrink-0" v-tooltip="'删除联系人'">
                     <AppIcon name="trash" class="w-3 h-3" />
                   </button>
                 </td>

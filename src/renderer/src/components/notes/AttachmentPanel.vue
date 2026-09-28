@@ -101,7 +101,7 @@ function fileNameFor(file: any) {
             <span class="text-[11px] font-semibold text-gray-700">附件</span>
             <span class="text-[9px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{{ files?.length || 0 }}</span>
           </div>
-          <button @click="emit('openUpload')" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors cursor-pointer" title="上传附件">
+          <button @click="emit('openUpload')" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors cursor-pointer" v-tooltip="'上传附件'">
             <AppIcon name="plus" size="10" stroke="2.5"/>
             <span>上传附件</span>
           </button>
@@ -136,14 +136,14 @@ function fileNameFor(file: any) {
                 />
               </template>
               <template v-else>
-                <p class="text-[11px] font-medium text-gray-700 truncate leading-tight cursor-pointer hover:text-blue-600 transition-colors" :title="fileNameFor(file)" @click="emit('preview', file)">{{ fileNameFor(file) }}</p>
+                <p class="text-[11px] font-medium text-gray-700 truncate leading-tight cursor-pointer hover:text-blue-600 transition-colors" v-tooltip.auto="fileNameFor(file)" @click="emit('preview', file)">{{ fileNameFor(file) }}</p>
               </template>
               <p class="text-[9px] text-gray-400 mt-0.5">{{ formatSize(file.file_size) }} · {{ (file.mapped_at || file.updated_at || '').slice(0,16) }}</p>
             </div>
             <div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 bg-gradient-to-l from-white via-white pl-4">
-              <button @click.stop="startRename(file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="重命名"><AppIcon name="edit" size="13"/></button>
-              <button @click.stop="emit('insert', file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="插入到光标"><AppIcon name="file-plus" size="13"/></button>
-              <button @click.stop="emit('delete', file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除附件"><AppIcon name="trash" size="13"/></button>
+              <button @click.stop="startRename(file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'重命名'"><AppIcon name="edit" size="13"/></button>
+              <button @click.stop="emit('insert', file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'插入到光标'"><AppIcon name="file-plus" size="13"/></button>
+              <button @click.stop="emit('delete', file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除附件'"><AppIcon name="trash" size="13"/></button>
             </div>
           </div>
         </div>

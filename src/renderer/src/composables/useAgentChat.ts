@@ -33,6 +33,7 @@ const toolStatusTexts: Record<string, string[]> = {
   'ext_tool_manage_partner': ['看看合作伙伴...', '查查合作方信息...'],
   'ext_tool_manage_contact': ['查查联系人...', '看看联系人信息...'],
   'ext_tool_manage_note': ['记一下笔记...', '整理笔记内容...'],
+  'ext_tool_write_document': ['正在生成文档...', '我来整理成文档...', '生成文件中...', '排版中...', '正在写入内容...'],
 }
 const defaultStatusTexts = ['处理中...', '请稍等...', '正在处理...']
 export function pickToolStatus(toolName: string): string {
@@ -41,6 +42,12 @@ export function pickToolStatus(toolName: string): string {
 }
 
 // ─── Types ──────────────────────────────────────────────────────
+export interface GeneratedDocument {
+  file_id: string
+  file_name: string
+  file_type: string
+  file_size: number
+}
 export interface ChatMessage {
   id?: string
   role: 'user' | 'assistant'
@@ -56,6 +63,73 @@ export interface ChatMessage {
   typewriterText?: string
   typewriterDone?: boolean
   timestamp?: number
+  documents?: GeneratedDocument[]
+}
+
+/// 从 tool_log 提取 ext_tool_write_document 成功生成的文档对象列表。
+/// 两条路径：1) 直调 write_document；2) 委托 document_writer 子 Agent →
+/// delegate envelope 的 data.artifacts 中 type=document_created 条目。
+export function extractDocumentsFromToolLog(toolLog: any[] | undefined | null): GeneratedDocument[] {
+  const docs: GeneratedDocument[] = []
+  for (const round of toolLog || []) {
+    for (const t of round?.tools || []) {
+      try {
+        const env = JSON.parse(t.result)
+        // 路径1：直调
+        if (
+          t.tool === 'ext_tool_write_document' &&
+          env?.result_type === 'document_write_result' &&
+          env.data?.success &&
+          env.data?.file_id
+        ) {
+          docs.push({
+            file_id: env.data.file_id,
+            file_name: env.data.file_name || '未命名文档',
+            file_type: env.data.file_type || 'docx',
+            file_size: env.data.file_size || 0,
+          })
+          continue
+        }
+        // 路径2：委托文档助手（主 Agent tool_log 只有 delegate 条目）
+        if (t.tool === 'ext_tool_delegate_agent' && env?.result_type === 'delegate_agent_result') {
+          for (const a of env.data?.artifacts || []) {
+            if (a?.type === 'document_created' && a.file_id) {
+              docs.push({
+                file_id: a.file_id,
+                file_name: a.file_name || '未命名文档',
+                file_type: a.file_type || 'docx',
+                file_size: a.file_size || 0,
+              })
+            }
+          }
+        }
+      } catch { /* 非 JSON 结果忽略 */ }
+    }
+  }
+  // 按 file_id 去重（保序）
+  const seen = new Set<string>()
+  return docs.filter((d) => (seen.has(d.file_id) ? false : (seen.add(d.file_id), true)))
+}
+
+/// 从消息 metadata（chat_messages.metadata JSON 字符串）恢复文档对象列表。
+/// 重启后历史消息没有 tool_log，文档卡片靠该字段恢复。
+export function parseDocumentsMetadata(metadata: unknown): GeneratedDocument[] | undefined {
+  if (!metadata || typeof metadata !== 'string') return undefined
+  try {
+    const m = JSON.parse(metadata)
+    const arr = m?.documents
+    if (Array.isArray(arr) && arr.length > 0) {
+      return arr
+        .filter((d: any) => d && typeof d.file_id === 'string')
+        .map((d: any) => ({
+          file_id: d.file_id,
+          file_name: d.file_name || '未命名文档',
+          file_type: d.file_type || 'docx',
+          file_size: d.file_size || 0,
+        }))
+    }
+  } catch { /* 非 JSON 忽略 */ }
+  return undefined
 }
 
 // ─── Agent:done result type ─────────────────────────────────────
@@ -209,8 +283,9 @@ export function useAgentChat() {
     scrollFn()
 
     try {
-      const unlistenProgress = await listen<{ msg: string }>('agent:progress', (ev) => {
-        setThinkingProgress(pickRetrievalPhrase())
+      // ★ 实时进度（优先展示后端 msg，如"已路由到「XX」"，否则随机话术）
+      const unlistenProgress = await listen<{ msg?: string }>('agent:progress', (ev) => {
+        setThinkingProgress(ev.payload?.msg || pickRetrievalPhrase())
         scrollFn()
       })
       // ★ 实时 token 流（打字机队列）
@@ -266,12 +341,12 @@ export function useAgentChat() {
             if (objectRefs.length > 0) {
               const refsHtml = renderObjectReference({ objects: objectRefs })
               renderMd(finalAnswer.replace(/~/g, '～')).then(async mdHtml => {
-                if (!msg.content) msg.content = finalAnswer
+                if (finalAnswer && !result.cancelled) msg.content = finalAnswer
                 if (msg.id) rendered.value[msg.id!] = await sanitizeHtml(`<div class="object-references">${refsHtml}</div><div class="answer-content">${mdHtml}</div>`)
               })
             } else {
-              // 普通 Markdown 渲染
-              if (finalAnswer && !msg.content) msg.content = finalAnswer
+              // 普通 Markdown 渲染：成功时用权威答案覆盖已流出片段（取消时保留部分内容）
+              if (finalAnswer && !result.cancelled) msg.content = finalAnswer
               renderMd(msg.content.replace(/~/g, '～')).then(h => {
                 if (msg && msg.id) rendered.value[msg.id!] = h
               })

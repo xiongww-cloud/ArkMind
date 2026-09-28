@@ -125,6 +125,12 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             FOREIGN KEY (folder_id) REFERENCES library_folders(id) ON DELETE SET NULL
         );
         CREATE INDEX IF NOT EXISTS idx_file_rel_entity ON file_relations(entity_type, entity_id);
+        -- ★ AI 生成文档：原始 content 快照（多轮 read 回读）+ 保留期清理锚点
+        CREATE TABLE IF NOT EXISTS generated_docs (
+            file_id TEXT PRIMARY KEY,
+            content TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
         -- idx_file_rel_object / idx_file_rel_unique 在 run_migrations(ALTER TABLE ADD object_id)之后创建
 
         -- ★ 统一合作伙伴表（渠道/厂商/客户）
@@ -133,7 +139,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             type TEXT NOT NULL,  -- 'CHANNEL', 'VENDOR', 'CUSTOMER'
             name TEXT NOT NULL,
             phone TEXT DEFAULT '',
-            company TEXT DEFAULT '',
+            address TEXT DEFAULT '',
             remark TEXT DEFAULT '',
             contact_person TEXT DEFAULT '',  -- 客户专用
             contact_phone TEXT DEFAULT '',   -- 客户专用

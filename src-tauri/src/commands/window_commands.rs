@@ -64,6 +64,47 @@ fn set_sprite_window_behavior(app: &AppHandle, label: &str) {
 #[cfg(not(target_os = "macos"))]
 fn set_sprite_window_behavior(_app: &AppHandle, _label: &str) {}
 
+/// macOS：主窗 hide 后让出 key/前台，避免隐藏 WKWebView 卡在 key 链上间歇吞 ⌘C/⌘V。
+/// 无 chat/sprite 可见时 NSApp.hide，把 Active 完全交还系统。
+/// 注意：必须在主线程调用 AppKit API（使用 run_on_main_thread 调度）
+#[cfg(target_os = "macos")]
+pub fn yield_key_on_main_hide(app: &AppHandle) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSApplication, NSWindow};
+
+        let Some(mtm) = MainThreadMarker::new() else { return };
+
+        // 1. 清主窗 first responder + 幂等 orderOut（hide 竞态兜底）
+        if let Some(win) = app.get_webview_window("main") {
+            if let Ok(ptr) = win.ns_window() {
+                if !ptr.is_null() {
+                    let ns_window: &NSWindow = unsafe { &*ptr.cast() };
+                    let _ = ns_window.makeFirstResponder(None);
+                    if ns_window.isVisible() {
+                        let _ = ns_window.orderOut(None);
+                    }
+                }
+            }
+        }
+
+        // 2. 无其它可见浮窗时，让 NSApp 彻底 inactive（交还前台）
+        let any_aux_visible = ["chat", "sprite"].iter().any(|label| {
+            app.get_webview_window(label)
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false)
+        });
+        if !any_aux_visible {
+            let ns_app = NSApplication::sharedApplication(mtm);
+            ns_app.hide(None);
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn yield_key_on_main_hide(_app: &AppHandle) {}
+
 #[tauri::command]
 pub fn window_minimize(w: WebviewWindow) {
     let _ = w.minimize();

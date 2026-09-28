@@ -33,7 +33,7 @@ function isOverdue(t: Todo): boolean {
     <div class="absolute right-[-3px] top-0 bottom-0 w-[6px] cursor-col-resize z-10 select-none" @mousedown="emit('resizeStart', $event)"></div>
     <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0">
       <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">待办</span>
-      <button class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建待办">
+      <button class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建待办'">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 4v16m8-8H4"/></svg>
       </button>
     </div>

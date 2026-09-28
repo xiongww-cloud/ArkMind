@@ -103,7 +103,7 @@ defineExpose({ open })
                 <span class="ml-2 text-[11px] text-surface-400">v{{ __APP_VERSION__ }}</span>
               </div>
             </div>
-            <button @click="close" class="w-7 h-7 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition-colors" title="关闭">
+            <button @click="close" class="w-7 h-7 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition-colors" v-tooltip="'关闭'">
               <AppIcon name="x" size="14" />
             </button>
           </div>

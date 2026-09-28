@@ -423,7 +423,7 @@ onUnmounted(() => {
 
     <!-- Quick todo button -->
     <div class="relative" ref="quickTodoWrap">
-      <button class="titlebar-btn titlebar-btn--todo" @mousedown.stop @click="toggleQuickTodo" title="快速待办">
+      <button class="titlebar-btn titlebar-btn--todo" @mousedown.stop @click="toggleQuickTodo" v-tooltip="'快速待办'">
         <AppIcon name="list" size="14" />
         <span>待办</span>
         <span v-if="pendingTodoCount > 0" class="ml-1 px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[9px] font-medium leading-none">{{ pendingTodoCount > 99 ? '99+' : pendingTodoCount }}</span>
@@ -434,7 +434,7 @@ onUnmounted(() => {
         <div class="p-3">
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs font-semibold text-surface-700">待办清单</span>
-            <button @click="goToTodos" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建待办">
+            <button @click="goToTodos" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建待办'">
               <AppIcon name="plus" size="12" stroke="2.5"/>
             </button>
           </div>
@@ -457,7 +457,7 @@ onUnmounted(() => {
                   </span>
                 </div>
               </div>
-              <button @click.stop="deleteQuickTodo(t)" class="shrink-0 text-surface-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all" title="删除">
+              <button @click.stop="deleteQuickTodo(t)" class="shrink-0 text-surface-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all" v-tooltip="'删除'">
                 <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
               </button>
             </div>
@@ -531,8 +531,8 @@ onUnmounted(() => {
               @mousedown.prevent="selectSearchResult(obj)"
               class="flex items-center gap-2 px-3 py-2 hover:bg-surface-50 cursor-pointer transition-colors border-b border-surface-50 last:border-b-0">
               <span class="text-[9px] px-1.5 py-0.5 rounded font-medium shrink-0" :class="typeBadgeMap[obj.source_type] || 'bg-surface-100 text-surface-500'">{{ typeLabelMap[obj.source_type] || obj.source_type }}</span>
-              <span class="text-[12px] text-surface-700 truncate" :title="obj.title || '无标题'">{{ obj.title || '无标题' }}</span>
-              <span v-if="obj.project_name" class="text-[10px] text-violet-500 truncate max-w-[120px]" :title="obj.project_name">{{ obj.project_name }}</span>
+              <span class="text-[12px] text-surface-700 truncate" v-tooltip.auto="obj.title || '无标题'">{{ obj.title || '无标题' }}</span>
+              <span v-if="obj.project_name" class="text-[10px] text-violet-500 truncate max-w-[120px]" v-tooltip.auto="obj.project_name">{{ obj.project_name }}</span>
             </div>
           </div>
         </div>
@@ -540,14 +540,14 @@ onUnmounted(() => {
     </div>
 
     <!-- Quick note (闪记) button -->
-    <button ref="quickNoteBtnRef" class="titlebar-btn titlebar-btn--quicknote" @mousedown.stop @click="openQuickNote" title="快速闪记">
+    <button ref="quickNoteBtnRef" class="titlebar-btn titlebar-btn--quicknote" @mousedown.stop @click="openQuickNote" v-tooltip="'快速闪记'">
       <AppIcon name="bolt" size="14" />
       <span>闪记</span>
     </button>
 
     <!-- Notification button -->
     <div class="relative" ref="notifWrapRef">
-      <button class="titlebar-btn titlebar-btn--notif" title="AI洞察"
+      <button class="titlebar-btn titlebar-btn--notif" v-tooltip="'AI洞察'"
               @mousedown.stop @click="showNotifications = !showNotifications">
         <AppIcon name="bell" size="14" />
         <span>AI洞察</span>
@@ -574,13 +574,13 @@ onUnmounted(() => {
 
     <!-- Window controls (macOS 使用原生红绿灯，隐藏自定义按钮) -->
     <div v-if="!isMac" class="titlebar-controls">
-      <button class="titlebar-btn titlebar-btn--win" @click="minimizeWindow" title="最小化">
+      <button class="titlebar-btn titlebar-btn--win" @click="minimizeWindow" v-tooltip="'最小化'">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 12h16"/></svg>
       </button>
-      <button class="titlebar-btn titlebar-btn--win" @click="toggleMaximize" title="最大化/还原">
+      <button class="titlebar-btn titlebar-btn--win" @click="toggleMaximize" v-tooltip="'最大化/还原'">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/></svg>
       </button>
-      <button class="titlebar-btn titlebar-btn--win titlebar-btn--close" @click="closeWindow" title="关闭">
+      <button class="titlebar-btn titlebar-btn--win titlebar-btn--close" @click="closeWindow" v-tooltip="'关闭'">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M6 18L18 6"/></svg>
       </button>
     </div>
@@ -594,7 +594,7 @@ onUnmounted(() => {
           <button
             @mousedown.prevent @click.stop="discardQuickNote"
             class="absolute top-2.5 right-2.5 w-6 h-6 flex items-center justify-center rounded-md text-stone-400 hover:text-stone-600 hover:bg-stone-100 transition-colors z-10"
-            title="丢弃输入并关闭"
+            v-tooltip="'丢弃输入并关闭'"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M6 18L18 6"/></svg>
           </button>

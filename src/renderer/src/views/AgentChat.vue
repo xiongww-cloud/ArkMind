@@ -8,9 +8,10 @@ import { dangerConfirm } from '@/composables/useConfirm'
 import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbLoadSessionMessages, kbDeleteSession } from '@/api/db-client'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import { useAgentChat, type ChatMessage as AgentChatMessage } from '@/composables/useAgentChat'
+import { useAgentChat, type ChatMessage as AgentChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata } from '@/composables/useAgentChat'
 import { pickRetrievalPhrase } from '@/utils/chat'
 import { ProjectCard, TodoCard, ObjectList } from '@/components/renderer'
+import DocumentObject from '@/components/chat/DocumentObject.vue'
 
 const agent = useAgentChat()
 
@@ -124,8 +125,14 @@ function displayContent(content: string): string {
 }
 
 // ─── Types ──────────────────────────────────────────────────────
-interface ChatMessage extends AgentChatMessage { id?: string; role: 'user'|'assistant'; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; contextDocs?: any[]; workspace?: string; attachments?: Array<{path:string;name:string;kind:'image'|'doc'}> }
+interface ChatMessage extends AgentChatMessage { id?: string; role: 'user'|'assistant'; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; contextDocs?: any[]; workspace?: string; attachments?: Array<{path:string;name:string;kind:'image'|'doc'}>; documents?: import('@/composables/useAgentChat').GeneratedDocument[] }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
+
+/// 历史消息恢复：从 chat_messages.metadata 还原文档卡片（重启后 tool_log 不在，靠 metadata）
+function docFieldsFromMeta(m: any): { documents?: import('@/composables/useAgentChat').GeneratedDocument[] } {
+  const docs = parseDocumentsMetadata(m.metadata)
+  return docs ? { documents: docs } : {}
+}
 
 function formatChatTime(ts: number) {
   const d = new Date(ts)
@@ -227,7 +234,7 @@ onMounted(async () => {
     if (savedAttachments) { pendingAttachments.value = JSON.parse(savedAttachments); localStorage.removeItem('chat_attachments_backup') }
   } catch {}
   
-  try { const r = await kbLoadSessions(); if (mySeq !== sessionsLoadSeq) return; if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
+  try { const r = await kbLoadSessions(); if (mySeq !== sessionsLoadSeq) return; if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, ...docFieldsFromMeta(rest), dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
   // ★ 允许无会话状态：首次发送消息时自动创建
   if (!currentSessionId.value && sessions.value.length) { currentSessionId.value = sessions.value[0].id }
   // 初始化分页状态：初始不足 10 条的会话没有更早消息
@@ -258,7 +265,7 @@ onActivated(async () => {
         createdAt: s.created_at || s.createdAt,
         messages: (s.messages || []).map((m: any) => {
           const { isThinking, typewriterText, typewriterDone, ...rest } = m
-          return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) }
+          return { ...rest, ...docFieldsFromMeta(rest), dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) }
         })
       })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
     }
@@ -320,7 +327,7 @@ function saveToStorage(target?: ChatSession) {
   }
 }
 async function loadFromStorage() {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return rest }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, ...docFieldsFromMeta(rest) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
   if (!sessions.value.length) { currentSessionId.value = null; return }
   currentSessionId.value = sessions.value[0].id
   // 初始化内容快照
@@ -371,7 +378,7 @@ async function loadOlderMessages() {
     if (r?.success && Array.isArray(r.messages) && r.messages.length > 0) {
       const older = r.messages.map((m: any) => {
         const { isThinking, typewriterText, typewriterDone, ...rest } = m
-        return { ...rest, dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.created_at ? new Date(rest.created_at).getTime() : Date.now() }
+        return { ...rest, ...docFieldsFromMeta(rest), dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.created_at ? new Date(rest.created_at).getTime() : Date.now() }
       })
       session.messages.unshift(...older)
       // 渲染旧消息的 markdown
@@ -401,7 +408,7 @@ let unlistenDone: (() => void) | null = null
 let unlistenError: (() => void) | null = null
 
 async function confirmDeleteSession(id: string) {
-  const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？此操作不可撤销。', confirmText: '删除' })
+  const ok = await dangerConfirm({ title: '删除会话', message: '确定删除此会话？会话中生成的文档将一并删除，此操作不可撤销。', confirmText: '删除' })
   if (!ok) return
   try {
     await kbDeleteSession(id)
@@ -462,9 +469,9 @@ async function handleSendMessage() {
   nextTick(() => { const el = textareaRef.value; if (el) el.style.height = '' })
   agent.isChatting.value = true
   agent.setThinkingProgress('')
-  // ★ Real Cognitive Stream: 实时进度
-  unlistenProgress = await listen<{msg:string}>('agent:progress', (ev) => {
-    agent.setThinkingProgress(pickRetrievalPhrase())
+  // ★ Real Cognitive Stream: 实时进度（优先展示后端 msg，如"已路由到「XX」"，否则随机话术）
+  unlistenProgress = await listen<{msg?:string}>('agent:progress', (ev) => {
+    agent.setThinkingProgress(ev.payload?.msg || pickRetrievalPhrase())
     scrollToBottomIfNear()
   })
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
@@ -506,8 +513,13 @@ async function handleSendMessage() {
       aiMsg.isThinking = false
       if (result.success) {
         const finalAnswer = (result.answer || '').replace(/<refs>[\s\S]*<\/refs>/g, '').trim()
-        if (finalAnswer && !aiMsg.content) aiMsg.content = finalAnswer
-        if (!aiMsg.content) aiMsg.content = result.answer || '（无回复内容）'
+        // ★ 提取 AI 生成的文档对象（预览/下载/复制卡片）
+        const docs = extractDocumentsFromToolLog(result.tool_log)
+        if (docs.length) aiMsg.documents = docs
+        // ★ 权威答案覆盖已流出的片段（委托/多轮场景下 content 可能是委托前的开场白）；取消时保留已流出的部分内容
+        if (finalAnswer && !result.cancelled) {
+          aiMsg.content = finalAnswer
+        } else if (!aiMsg.content) aiMsg.content = result.answer || '（无回复内容）'
         // ★ 先完成渲染，再清空 progress（避免短暂窗口显示原始 Markdown）
         await renderMessageContent(aiMsg.id || '', aiMsg.content)
         agent.setThinkingProgress('')
@@ -711,12 +723,15 @@ onUnmounted(() => {
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
               </div>
               <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
-                <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" title="复制答案"><AppIcon name="copy" class="w-3 h-3" /></button>
-                <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" title="查看 Workspace">
+                <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" v-tooltip="'复制答案'"><AppIcon name="copy" class="w-3 h-3" /></button>
+                <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" v-tooltip="'查看 Workspace'">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 17V7m0 10a2 2 0 01-2-2V9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2m-6 0h6"/></svg>
                 </button>
               </div>
               <div v-if="showWorkspaceIdx === idx && msg.workspace" class="mt-1 p-3 bg-[#f8f9fa] border border-[#e5e5ea] rounded-xl text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-[#3a3a3c] max-h-[300px] overflow-y-auto">{{ msg.workspace }}</div>
+              <div v-if="!msg.isThinking && msg.documents?.length" class="mt-1.5 flex flex-col gap-1.5">
+                <DocumentObject v-for="d in msg.documents" :key="d.file_id" :doc="d" />
+              </div>
             </div>
           </div>
         </div>
@@ -731,14 +746,14 @@ onUnmounted(() => {
           <p class="text-[10px] text-surface-300 pr-1 flex-shrink-0 mt-0.5 ml-auto">↵ 发送 · Shift+↵ 换行</p>
         </div>
         <div class="flex items-end gap-2 bg-white rounded-2xl border border-surface-200 px-3 py-2 shadow-[0_2px_8px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.02)] transition-all duration-200 focus-within:border-brand-300 focus-within:shadow-[0_0_0_3px_rgba(37,99,235,0.1),0_4px_12px_rgba(0,0,0,0.08)]">
-          <button @click="openAttachmentDialog" class="w-6 h-6 flex items-center justify-center flex-shrink-0 rounded-md text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors" title="附加文件（图片/文档）">
+          <button @click="openAttachmentDialog" class="w-6 h-6 flex items-center justify-center flex-shrink-0 rounded-md text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors" v-tooltip="'附加文件（图片/文档）'">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
           </button>
           <textarea ref="textareaRef" v-model="inputMessage" rows="1" maxlength="5000" placeholder="向 AI 提问..." class="flex-1 border-none resize-none outline-none text-[13px] text-surface-800 bg-transparent leading-relaxed placeholder:text-surface-400 max-h-[80px] py-1" @keydown.enter.exact.prevent="handleSendMessage" @paste="onPaste" @input="(e: any) => { if (!inputMessage.trim()) { e.target.style.height = ''; return }; e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 80) + 'px' }" />
-          <button v-if="agent.isChatting.value" @click="stopAgent" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-red-500 hover:bg-red-600 text-white transition-all duration-200" title="停止">
+          <button v-if="agent.isChatting.value" @click="stopAgent" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-red-500 hover:bg-red-600 text-white transition-all duration-200" v-tooltip="'停止'">
             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
           </button>
-          <button v-else @click="handleSendMessage" :disabled="!inputMessage.trim()" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-200" :class="inputMessage.trim() ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'" title="发送">
+          <button v-else @click="handleSendMessage" :disabled="!inputMessage.trim()" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-200" :class="inputMessage.trim() ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'" v-tooltip="'发送'">
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
           </button>
         </div>

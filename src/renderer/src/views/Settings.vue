@@ -3,7 +3,6 @@ import { ref, computed, onMounted, onActivated, onDeactivated, onBeforeUnmount, 
 import AppIcon from '@/components/common/AppIcon.vue'
 import GuideModal from '@/components/common/GuideModal.vue'
 import { alert, dangerConfirm } from '@/composables/useConfirm'
-import { useTooltip } from '@/composables/useTooltip'
 import { toast } from '@/composables/useToast'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import {
@@ -968,12 +967,17 @@ const availableTools = ref<AgentToolInfo[]>([])
 const showAgentModal = ref(false)
 const agentSaving = ref(false)
 const editingAgentId = ref<string | null>(null)
+/// 当前编辑的是否为系统预设 Agent（内置：可改提示词/描述/路由，启停与工具锁定）
+const editingAgentIsBuiltin = computed(() => {
+  const a = agentProfiles.value.find((x) => x.id === editingAgentId.value)
+  return !!a?.is_builtin
+})
 const agentForm = ref({
   name: '',
   description: '',
+  routing_hint: '',
   system_prompt: '',
   max_iterations: 20,
-  can_delegate: false,
   tools: [] as string[],
   presetTools: [] as string[],
 })
@@ -996,9 +1000,9 @@ function openAddAgent() {
   agentForm.value = {
     name: '',
     description: '',
+    routing_hint: '',
     system_prompt: '',
     max_iterations: 20,
-    can_delegate: false,
     tools: [],
     presetTools: [],
   }
@@ -1012,9 +1016,9 @@ function editAgent(agent: AgentProfile) {
   agentForm.value = {
     name: agent.name,
     description: agent.description || '',
+    routing_hint: agent.routing_hint || '',
     system_prompt: agent.system_prompt || '',
     max_iterations: agent.max_iterations || 20,
-    can_delegate: !!agent.can_delegate,
     tools: agent.tools || [],
     presetTools: presetTools,
   }
@@ -1037,6 +1041,23 @@ function toggleAgentTool(toolName: string) {
   }
 }
 
+// ─── 委托说明常用模板（点击填入，聚焦"负责什么/不负责什么"的路由写法） ───
+const descriptionTemplates: { label: string; text: string }[] = [
+  { label: '会议纪要', text: '会议纪要与知识卡片的创建整理；不处理项目/待办类任务' },
+  { label: '数据分析', text: '业务数据的查询、统计与分析报表；只读不写，不创建/修改业务对象' },
+  { label: '文档写作', text: '方案、报告、邮件等文档的起草与润色；不直接操作业务数据' },
+  { label: '知识检索', text: '知识库资料的检索、汇总与引用；不负责创建或修改数据' },
+]
+
+function applyDescriptionTemplate(text: string) {
+  const cur = agentForm.value.description.trim()
+  if (!cur) {
+    agentForm.value.description = text
+  } else if (!cur.includes(text)) {
+    agentForm.value.description = cur.replace(/[；;。]$/, '') + '；' + text
+  }
+}
+
 const toolLabels: Record<string, { name: string; brief: string }> = {
   ext_tool_search: { name: '知识搜索', brief: '全文+语义检索文档、笔记、技术资料' },
   ext_tool_object: { name: '数据查询', brief: '查看/筛选/统计业务对象' },
@@ -1049,6 +1070,8 @@ const toolLabels: Record<string, { name: string; brief: string }> = {
   ext_tool_manage_product: { name: '产品管理', brief: '管理产品及产品目录' },
   ext_tool_manage_note: { name: '笔记管理', brief: '创建/编辑/删除笔记' },
   ext_tool_manage_notification: { name: '通知管理', brief: '创建/查看系统通知' },
+  ext_tool_write_document: { name: '文档生成', brief: '创建 Word/Excel 文档并返回可预览/下载的文件' },
+  ext_tool_memory: { name: '记忆管理', brief: '记录/检索长期记忆与用户画像' },
   ext_tool_web_search: { name: '联网搜索', brief: '搜索公开互联网信息' },
   ext_tool_web_fetch: { name: '网页抓取', brief: '抓取网页全文转为 Markdown' },
 }
@@ -1076,9 +1099,9 @@ async function saveAgent() {
       await updateAgentProfile(editingAgentId.value, {
         name: f.name,
         description: f.description,
+        routing_hint: f.routing_hint,
         system_prompt: f.system_prompt,
         max_iterations: f.max_iterations,
-        can_delegate: f.can_delegate ? 1 : 0,
         tools: allTools,
       })
       toast({ message: 'Agent 已更新', type: 'success' })
@@ -1086,12 +1109,12 @@ async function saveAgent() {
       await createAgentProfile({
         name: f.name,
         description: f.description,
+        routing_hint: f.routing_hint,
         system_prompt: f.system_prompt,
         max_iterations: f.max_iterations,
-        can_delegate: f.can_delegate ? 1 : 0,
         tools: allTools,
       })
-      toast({ message: 'Agent 已创建', type: 'success' })
+      toast({ message: 'Agent 已创建并启用——主 Agent 下次对话即可按「委托说明/路由提示」派活；记得为其分配工具', type: 'success' })
     }
     closeAgentModal()
     await loadAgentProfiles()
@@ -1551,13 +1574,6 @@ async function saveProfileEditor() {
     profileSaving.value = false
   }
 }
-
-// ─── 截断文本悬浮提示 ─────────────────────────────────────
-const { tooltipText, tooltipX, tooltipY, tooltipVisible, show: showTip, hide: hideTip } = useTooltip()
-function onTruncEnter(e: MouseEvent, text: string) {
-  const el = e.currentTarget as HTMLElement
-  if (el.scrollWidth > el.clientWidth) showTip(el, text)
-}
 </script>
 
 <template>
@@ -1646,11 +1662,11 @@ function onTruncEnter(e: MouseEvent, text: string) {
                   <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
                   <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
                 </div>
-                <button @click="testProviderConnection(p)" :disabled="testingProviderId" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                <button @click="testProviderConnection(p)" :disabled="testingProviderId" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" v-tooltip="'测试连接'">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                 </button>
-                <button @click="openEditProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-                <button @click="removeProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+                <button @click="openEditProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'编辑'"><AppIcon name="edit" size="12" /></button>
+                <button @click="removeProvider(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="x" size="12" /></button>
               </div>
               <div class="flex items-center justify-between gap-2">
                 <div class="flex items-center gap-3">
@@ -1671,11 +1687,11 @@ function onTruncEnter(e: MouseEvent, text: string) {
                   <p class="text-[12px] font-medium text-surface-700 truncate">{{ p.modelName }}</p>
                   <p class="text-[10px] text-surface-400 truncate font-mono">{{ p.baseUrl }}</p>
                 </div>
-                <button @click="testVisionConnection(p)" :disabled="visionTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                <button @click="testVisionConnection(p)" :disabled="visionTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" v-tooltip="'测试连接'">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                 </button>
-                <button @click="openEditVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-                <button @click="removeVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+                <button @click="openEditVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'编辑'"><AppIcon name="edit" size="12" /></button>
+                <button @click="removeVision(p)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="x" size="12" /></button>
               </div>
               <div class="flex items-center justify-between gap-2">
                 <div class="flex items-center gap-3">
@@ -1696,11 +1712,11 @@ function onTruncEnter(e: MouseEvent, text: string) {
                   <p class="text-[12px] font-medium text-surface-700 truncate">{{ vecSavedData.modelName }}</p>
                   <p class="text-[10px] text-surface-400 truncate font-mono">{{ vecSavedData.baseUrl }}</p>
                 </div>
-                <button @click="testVecConnection" :disabled="vecTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" title="测试连接">
+                <button @click="testVecConnection" :disabled="vecTesting" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-emerald-600" v-tooltip="'测试连接'">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                 </button>
-                <button @click="openVecModal" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-                <button @click="deleteVecConfig" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+                <button @click="openVecModal" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'编辑'"><AppIcon name="edit" size="12" /></button>
+                <button @click="deleteVecConfig" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="x" size="12" /></button>
               </div>
               <div class="flex items-center justify-between">
                 <div></div>
@@ -1743,7 +1759,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                 <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">可在AI洞察里点「记入画像」沉淀，或在「编辑」中添加</p>
                 <div v-else class="mt-1.5 space-y-1">
                   <div v-for="f in profileFacts.slice(0, 3)" :key="f.id" class="px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
-                    <span class="block truncate text-[11px] text-surface-600 leading-snug cursor-default" @mouseenter="onTruncEnter($event, f.content)" @mouseleave="hideTip">{{ f.content }}</span>
+                    <span class="block truncate text-[11px] text-surface-600 leading-snug cursor-default" v-tooltip.auto="f.content">{{ f.content }}</span>
                   </div>
                   <p v-if="profileFacts.length > 3" class="text-[10px] text-surface-400 pl-1">…共 {{ profileFacts.length }} 条，在「编辑」中查看全部</p>
                 </div>
@@ -1790,7 +1806,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                       <div class="mt-2 space-y-1.5">
                         <div v-for="(f, i) in draftFacts" :key="i" class="flex items-center gap-1.5">
                           <input v-model="f.content" maxlength="500" placeholder="例：用户习惯每周三前交付方案" class="flex-1 px-2.5 py-1.5 text-[12px] border border-surface-200 rounded-lg focus:outline-none focus:border-brand-400" />
-                          <button @click="removeDraftFact(i)" class="shrink-0 w-6 h-6 flex items-center justify-center rounded text-surface-300 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+                          <button @click="removeDraftFact(i)" class="shrink-0 w-6 h-6 flex items-center justify-center rounded text-surface-300 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="x" size="12" /></button>
                         </div>
                         <p v-if="!draftFacts.length" class="text-[10px] text-surface-400">还没有画像事实。AI洞察里的「记入画像」会自动沉淀到这里，也可以直接添加。</p>
                       </div>
@@ -1803,15 +1819,6 @@ function onTruncEnter(e: MouseEvent, text: string) {
                 </div>
               </div>
             </Transition>
-          </Teleport>
-
-          <!-- 准则悬浮完整内容 tooltip -->
-          <Teleport to="body">
-            <div v-if="tooltipVisible"
-                 class="fixed pointer-events-none z-[9999] px-2 py-1 text-[11px] text-white bg-gray-800 rounded shadow-lg max-w-[320px] whitespace-pre-wrap break-words"
-                 :style="{ left: tooltipX + 'px', top: tooltipY + 'px', transform: 'translate(-50%, -100%)' }">
-              {{ tooltipText }}
-            </div>
           </Teleport>
 
           <!-- AI洞察 -->
@@ -1978,7 +1985,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                     </span>
                     <span class="text-surface-400">{{ (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) ? (((pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0) / (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children)) * 100).toFixed(1) : 0 }}%</span>
                   </div>
-                  <div v-if="pipelineData.knowledge?.lastEmbedError" class="mt-1 text-[10px] text-red-500 truncate" :title="pipelineData.knowledge.lastEmbedError">
+                  <div v-if="pipelineData.knowledge?.lastEmbedError" class="mt-1 text-[10px] text-red-500 truncate" v-tooltip.auto="pipelineData.knowledge.lastEmbedError">
                     向量化错误：{{ pipelineData.knowledge.lastEmbedError }}
                   </div>
                 </div>
@@ -1989,8 +1996,8 @@ function onTruncEnter(e: MouseEvent, text: string) {
                       <span class="text-emerald-600">{{ pipelineData.fileParse?.done ?? 0 }}</span>
                       <span class="text-surface-300 mx-0.5">/</span>
                       <span>{{ pipelineData.fileParse?.total ?? 0 }}</span>
-                      <button v-if="pipelineData.fileParse?.failed" @click="showParseErrorsModal = true" class="text-red-400 ml-1 hover:underline cursor-pointer" title="点击查看失败文件明细">({{ pipelineData.fileParse.failed }} 失败)</button>
-                      <button v-if="pipelineData.fileParse?.unsupported" @click="showParseErrorsModal = true" class="text-surface-400 ml-1 hover:text-surface-600 hover:underline cursor-pointer" title="点击查看不支持的文件明细">({{ pipelineData.fileParse.unsupported }} 不支持)</button>
+                      <button v-if="pipelineData.fileParse?.failed" @click="showParseErrorsModal = true" class="text-red-400 ml-1 hover:underline cursor-pointer" v-tooltip="'点击查看失败文件明细'">({{ pipelineData.fileParse.failed }} 失败)</button>
+                      <button v-if="pipelineData.fileParse?.unsupported" @click="showParseErrorsModal = true" class="text-surface-400 ml-1 hover:text-surface-600 hover:underline cursor-pointer" v-tooltip="'点击查看不支持的文件明细'">({{ pipelineData.fileParse.unsupported }} 不支持)</button>
                     </span>
                   </div>
                   <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
@@ -2102,8 +2109,8 @@ function onTruncEnter(e: MouseEvent, text: string) {
                   <p class="text-[12px] font-medium text-surface-700 truncate">{{ acc.name }}</p>
                   <p class="text-[10px] text-surface-400 truncate font-mono">{{ acc.email_address }}</p>
                 </div>
-                <button @click="editEmailAccount(acc)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="12" /></button>
-                <button @click="removeEmailAccount(acc.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="12" /></button>
+                <button @click="editEmailAccount(acc)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'编辑'"><AppIcon name="edit" size="12" /></button>
+                <button @click="removeEmailAccount(acc.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="x" size="12" /></button>
               </div>
               <div v-if="emailAccounts.length === 0" class="text-[11px] text-surface-400 text-center py-3">
                 未配置邮件账户
@@ -2129,20 +2136,21 @@ function onTruncEnter(e: MouseEvent, text: string) {
               <div v-for="agent in agentProfiles" :key="agent.id" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-surface-200 hover:border-surface-300 transition-colors">
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-1.5">
-                    <span class="text-[12px] font-medium text-surface-700 truncate">{{ agent.name }}</span>
+                    <span class="text-[12px] font-medium text-surface-700 truncate" v-tooltip.auto="agent.name">{{ agent.name }}</span>
                     <span class="text-[9px] px-1 py-0.5 rounded bg-surface-50 text-surface-500 flex-shrink-0">工具{{ agent.tools?.length || 0 }}</span>
                     <span class="text-[9px] px-1 py-0.5 rounded bg-surface-50 text-surface-500 flex-shrink-0">迭代{{ agent.max_iterations }}</span>
-                    <span v-if="agent.can_delegate" class="text-[9px] px-1 py-0.5 rounded bg-blue-50 text-blue-600 flex-shrink-0">可委托</span>
                     <span v-if="agent.is_builtin" class="text-[9px] px-1 py-0.5 rounded bg-emerald-50 text-emerald-600 flex-shrink-0">系统预设</span>
                   </div>
-                  <p class="text-[10px] text-surface-400 truncate mt-0.5">{{ agent.description || '未填委托说明，主 Agent 不知何时该派活给它' }}</p>
+                    <p class="text-[10px] text-surface-400 truncate mt-0.5" v-tooltip.auto="agent.description || '未填委托说明，主 Agent 不知何时该派活给它'">{{ agent.description || '未填委托说明，主 Agent 不知何时该派活给它' }}</p>
                 </div>
-                <label class="relative inline-flex items-center cursor-pointer flex-shrink-0" :title="agent.status === 'active' ? '已启用' : '已禁用'">
+                <label v-if="!agent.is_builtin" class="relative inline-flex items-center cursor-pointer flex-shrink-0" v-tooltip="agent.status === 'active' ? '已启用' : '已禁用'">
                   <input type="checkbox" :checked="agent.status === 'active'" @change="toggleAgentStatus(agent)" class="sr-only peer">
                   <div class="w-8 h-[18px] bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-brand-600"></div>
                 </label>
-                <button v-if="!agent.is_builtin" @click="editAgent(agent)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑"><AppIcon name="edit" size="11" /></button>
-                <button v-if="!agent.is_builtin" @click="removeAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="x" size="11" /></button>
+                <span v-else class="w-8 flex-shrink-0"></span>
+                <button v-if="agent.is_builtin" @click="resetAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-amber-600" v-tooltip="'还原默认配置'"><AppIcon name="refresh" size="11" /></button>
+                <button @click="editAgent(agent)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'编辑'"><AppIcon name="edit" size="11" /></button>
+                <button v-if="!agent.is_builtin" @click="removeAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="x" size="11" /></button>
               </div>
               <div v-if="agentProfiles.length === 0" class="text-[11px] text-surface-400 text-center py-3">
                 尚未创建 Agent
@@ -2175,27 +2183,36 @@ function onTruncEnter(e: MouseEvent, text: string) {
                     <!-- 委托说明（原"描述"：主 Agent 派活的路由依据） -->
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">委托说明（主 Agent 靠它派活）*</label>
-                      <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">主 Agent 决定是否委托时，只能看到「名称 + 这段文字」，看不到它的提示词和工具列表——这是路由依据，不是简介</p>
+                      <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">主 Agent 决定是否委托时，看到的是「名称 + 这段文字 + 路由提示 + 工具能力标签」，看不到系统提示词——这是主要路由依据，不是简介</p>
                       <input v-model="agentForm.description" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="写清负责什么、不负责什么，如：会议纪要与知识卡片的创建整理；不处理项目/待办类任务" />
+                      <div class="flex flex-wrap items-center gap-1 mt-1.5">
+                        <span class="text-[9px] text-surface-400">模板：</span>
+                        <button v-for="t in descriptionTemplates" :key="t.label" type="button"
+                          @click="applyDescriptionTemplate(t.text)"
+                          class="text-[9px] px-1.5 py-0.5 rounded border border-surface-200 text-surface-500 hover:border-brand-300 hover:text-brand-600 transition-colors"
+                          v-tooltip="t.text">{{ t.label }}</button>
+                      </div>
+                    </div>
+                    <!-- 路由提示（强路由条件，可选） -->
+                    <div>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">路由提示（强匹配，可选）</label>
+                      <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">写「何时必须委托」的关键词触发条件，会以「→」行追加在委托说明后注入主 Agent；内置 Agent 的强路由就靠它</p>
+                      <input v-model="agentForm.routing_hint" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="如：当用户提到「会议纪要」「周报整理」时，必须委托此 Agent" />
+                    </div>
+                    <!-- 系统预设 Agent 编辑说明 -->
+                    <div v-if="editingAgentIsBuiltin" class="flex items-start gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200">
+                      <AppIcon name="info" size="11" class="text-amber-500 flex-shrink-0 mt-px" />
+                      <p class="text-[9px] leading-relaxed text-amber-700">系统预设 Agent：可编辑名称、委托说明、路由提示与系统提示词；启停与工具分配为系统锁定。改坏了可在列表中点「还原默认配置」一键恢复。</p>
                     </div>
                     <!-- 系统提示词 -->
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">系统提示词 *</label>
                       <textarea v-model="agentForm.system_prompt" rows="8" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400 resize-y" placeholder="定义 Agent 的身份、目标和行为规则..."></textarea>
                     </div>
-                    <!-- 最大迭代次数 + 允许委托 -->
-                    <div class="flex items-center gap-4">
-                      <div class="flex-1">
-                        <label class="block text-[10px] font-medium text-surface-400 mb-1">最大迭代次数</label>
-                        <input v-model.number="agentForm.max_iterations" type="number" min="1" max="50" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
-                      </div>
-                      <div class="flex items-center gap-2 pt-4">
-                        <label class="relative inline-flex items-center cursor-pointer">
-                          <input type="checkbox" v-model="agentForm.can_delegate" class="sr-only peer">
-                          <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
-                        </label>
-                        <span class="text-[11px] text-surface-600">允许委托其他 Agent</span>
-                      </div>
+                    <!-- 最大迭代次数 -->
+                    <div>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">最大迭代次数</label>
+                      <input v-model.number="agentForm.max_iterations" type="number" min="1" max="50" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
                     </div>
                     <!-- 工具分配 -->
                     <div>
@@ -2211,7 +2228,7 @@ function onTruncEnter(e: MouseEvent, text: string) {
                             @click="!(agentForm.presetTools || []).includes(tool.name) && toggleAgentTool(tool.name)">
                             <div class="flex items-start justify-between">
                               <span class="text-[11px] font-medium leading-tight" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-700' : 'text-surface-700'">{{ toolLabels[tool.name]?.name || tool.name }}</span>
-                              <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0 ml-1" :title="tool.description">?</span>
+                              <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0 ml-1" v-tooltip="tool.description">?</span>
                             </div>
                             <span v-if="(agentForm.presetTools || []).includes(tool.name)" class="text-[8px] px-1 py-0.5 rounded bg-surface-100 text-surface-400 w-fit mt-0.5">预设</span>
                             <p class="text-[9px] mt-0.5 leading-relaxed line-clamp-2" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-500' : 'text-surface-400'">{{ toolLabels[tool.name]?.brief || '' }}</p>

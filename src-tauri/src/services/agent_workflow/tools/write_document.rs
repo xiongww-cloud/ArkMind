@@ -1,0 +1,231 @@
+//! ext_tool_write_document：AI 生成 Word(.docx)/Excel(.xlsx) 文档执行器
+//!
+//! - create：按 AI 设计的 content 结构生成文档 → CAS 入库 → 返回 file_id（供预览/下载/复制）
+//! - read：回读已有生成文档的原始 content（多轮修改：先读结构，再整体重新生成）
+
+use crate::services::agent_workflow::ToolResultEnvelope;
+use crate::services::doc_writer;
+use serde_json::{json, Value};
+
+pub(crate) fn execute(a: &Value) -> String {
+    let file_type = a["file_type"].as_str().unwrap_or("").trim().to_lowercase();
+    let action = a["action"].as_str().unwrap_or("create").trim().to_lowercase();
+
+    // ── read：回读原文档结构（多轮修改第一步）──
+    if action == "read" {
+        let source_id = a["source_file_id"].as_str().unwrap_or("");
+        return match doc_writer::read_content(source_id) {
+            Ok(data) => ToolResultEnvelope {
+                result_type: "document_read_result".to_string(),
+                data,
+                summary: Some(
+                    "已返回该文档的原始 content 结构。修改后用 action=create 传入完整新内容重新生成（传完整内容，不要只传增量）。"
+                        .to_string(),
+                ),
+            }
+            .to_json(),
+            Err(e) => ToolResultEnvelope {
+                result_type: "document_read_result".to_string(),
+                data: json!({"success": false, "error": e}),
+                summary: Some(format!("读取文档失败: {}", e)),
+            }
+            .to_json(),
+        };
+    }
+
+    if action != "create" {
+        return err(format!(
+            "未知 action「{}」。支持：create（生成文档）、read（读取已有文档结构）。",
+            action
+        ));
+    }
+
+    if file_type != "docx" && file_type != "xlsx" {
+        return err(format!(
+            "不支持的 file_type「{}」。支持：docx（Word）、xlsx（Excel）。",
+            file_type
+        ));
+    }
+    let filename = a["filename"].as_str().unwrap_or("").trim();
+    if filename.is_empty() {
+        return err("创建文档需要提供 filename（文件名，不含扩展名）。".to_string());
+    }
+    let content = &a["content"];
+    if !content.is_object() || content.as_object().map_or(true, |m| m.is_empty()) {
+        return err(
+            "创建文档需要提供 content（文档内容结构，由你根据需求设计）。".to_string(),
+        );
+    }
+
+    let result = if file_type == "docx" {
+        doc_writer::write_docx(filename, content, a.get("metadata"))
+    } else {
+        doc_writer::write_xlsx(filename, content)
+    };
+
+    match result {
+        Ok(doc) => {
+            let type_label = if doc.file_type == "docx" { "Word" } else { "Excel" };
+            ToolResultEnvelope {
+                result_type: "document_write_result".to_string(),
+                data: json!({
+                    "success": true,
+                    "file_id": doc.file_id,
+                    "file_name": doc.file_name,
+                    "file_type": doc.file_type,
+                    "file_size": doc.file_size,
+                }),
+                summary: Some(format!(
+                    "已创建{}文档「{}」（{}），用户可在对话中预览/下载/复制。需要修改它时：action=read & source_file_id={} 读取原结构，再 action=create 传完整新内容重新生成。",
+                    type_label,
+                    doc.file_name,
+                    human_size(doc.file_size),
+                    doc.file_id
+                )),
+            }
+            .to_json()
+        }
+        Err(e) => ToolResultEnvelope {
+            result_type: "document_write_result".to_string(),
+            data: json!({"success": false, "error": e}),
+            summary: Some(format!("文档创建失败: {}", e)),
+        }
+        .to_json(),
+    }
+}
+
+fn err(msg: String) -> String {
+    ToolResultEnvelope {
+        result_type: "document_write_result".to_string(),
+        data: json!({"success": false, "error": msg}),
+        summary: Some(msg),
+    }
+    .to_json()
+}
+
+fn human_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// 从 tool_log 提取本轮成功生成的文档对象列表（供 assistant 消息 metadata 持久化，
+/// 重启后前端据此恢复聊天记录中的文档卡片）。
+/// 两条路径：
+/// 1. 直调 ext_tool_write_document（保留兼容）
+/// 2. 委托 ext_tool_delegate_agent → delegate envelope 的 data.artifacts 中 type=document_created
+///    （文档助手子 Agent 生成时，主 Agent tool_log 只有 delegate 条目）
+pub(crate) fn extract_created_documents(tool_log: Option<&Value>) -> Vec<Value> {
+    let mut docs: Vec<Value> = Vec::new();
+    let Some(rounds) = tool_log.and_then(|t| t.as_array()) else {
+        return docs;
+    };
+    for round in rounds {
+        let Some(tools) = round["tools"].as_array() else { continue };
+        for t in tools {
+            let Ok(env) = serde_json::from_str::<Value>(t["result"].as_str().unwrap_or("")) else {
+                continue;
+            };
+            match t["tool"].as_str() {
+                // 路径1：直调 write_document
+                Some("ext_tool_write_document") => {
+                    if env["result_type"] == "document_write_result"
+                        && env["data"]["success"] == true
+                        && env["data"]["file_id"].as_str().is_some()
+                    {
+                        docs.push(json!({
+                            "file_id": env["data"]["file_id"],
+                            "file_name": env["data"]["file_name"],
+                            "file_type": env["data"]["file_type"],
+                            "file_size": env["data"]["file_size"],
+                        }));
+                    }
+                }
+                // 路径2：委托文档助手 → artifacts 中的文档产物
+                Some("ext_tool_delegate_agent") => {
+                    if env["result_type"] != "delegate_agent_result" {
+                        continue;
+                    }
+                    let Some(artifacts) = env["data"]["artifacts"].as_array() else { continue };
+                    for a in artifacts {
+                        if a["type"] != "document_created" || a["file_id"].as_str().is_none() {
+                            continue;
+                        }
+                        docs.push(json!({
+                            "file_id": a["file_id"],
+                            "file_name": a["file_name"],
+                            "file_type": a["file_type"],
+                            "file_size": a["file_size"],
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // 按 file_id 去重（保序）
+    let mut seen = std::collections::HashSet::new();
+    docs.retain(|d| seen.insert(d["file_id"].as_str().unwrap_or("").to_string()));
+    docs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 双路径提取：直调 + 委托嵌套（artifacts）+ file_id 去重
+    #[test]
+    fn test_extract_created_documents_both_paths() {
+        let tool_log = json!([
+            {
+                "round": 1,
+                "tools": [{
+                    "tool": "ext_tool_write_document",
+                    "result": r#"{"result_type":"document_write_result","data":{"success":true,"file_id":"fid-direct","file_name":"直调.docx","file_type":"docx","file_size":100}}"#
+                }]
+            },
+            {
+                "round": 2,
+                "tools": [{
+                    "tool": "ext_tool_delegate_agent",
+                    "result": r#"{"result_type":"delegate_agent_result","data":{"status":"completed","artifacts":[{"type":"document_created","file_id":"fid-delegated","file_name":"委托.xlsx","file_type":"xlsx","file_size":200},{"type":"object_created","id":"x","name":"y"}]}}"#
+                }]
+            },
+            {
+                "round": 3,
+                "tools": [{
+                    "tool": "ext_tool_delegate_agent",
+                    "result": r#"{"result_type":"delegate_agent_result","data":{"artifacts":[{"type":"document_created","file_id":"fid-direct","file_name":"重复.docx","file_type":"docx","file_size":100}]}}"#
+                }]
+            }
+        ]);
+        let docs = extract_created_documents(Some(&tool_log));
+        assert_eq!(docs.len(), 2, "应提取2个文档（按 file_id 去重）: {:?}", docs);
+        assert_eq!(docs[0]["file_id"].as_str(), Some("fid-direct"));
+        assert_eq!(docs[1]["file_id"].as_str(), Some("fid-delegated"));
+        assert_eq!(docs[1]["file_name"].as_str(), Some("委托.xlsx"));
+    }
+
+    /// 空输入与非文档条目不产出
+    #[test]
+    fn test_extract_created_documents_empty_and_noise() {
+        assert!(extract_created_documents(None).is_empty());
+        assert!(extract_created_documents(Some(&json!([]))).is_empty());
+        // 只有失败的生成与非文档 artifacts → 空
+        let noise = json!([{
+            "round": 1,
+            "tools": [
+                {"tool": "ext_tool_write_document",
+                 "result": r#"{"result_type":"document_write_result","data":{"success":false,"error":"boom"}}"#},
+                {"tool": "ext_tool_delegate_agent",
+                 "result": r#"{"result_type":"delegate_agent_result","data":{"artifacts":[{"type":"object_created","id":"a","name":"b"}]}}"#},
+                {"tool": "ext_tool_search", "result": "not json"},
+            ]
+        }]);
+        assert!(extract_created_documents(Some(&noise)).is_empty());
+    }
+}

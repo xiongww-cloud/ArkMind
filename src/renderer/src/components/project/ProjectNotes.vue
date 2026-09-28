@@ -180,7 +180,7 @@ watch(selectedNote, () => {
     <div class="w-[280px] flex-shrink-0 border-r border-surface-200 flex flex-col bg-white/50">
       <div class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0">
         <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">笔记</span>
-        <button @click="addProjectNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建笔记"><AppIcon name="plus" size="12" stroke="2.5"/></button>
+        <button @click="addProjectNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建笔记'"><AppIcon name="plus" size="12" stroke="2.5"/></button>
       </div>
       <div class="flex-1 overflow-y-auto px-2 py-1 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full">
         <div v-for="note in sortedProjectNotes" :key="note.note_id" @click="selectedNoteId = note.note_id"

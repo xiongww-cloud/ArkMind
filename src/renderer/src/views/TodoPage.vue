@@ -410,17 +410,17 @@ function isOverdue(t: Todo): boolean {
       <div class="flex items-center gap-1.5">
         <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">待办</span>
         <div class="flex items-center bg-surface-100 rounded-md p-0.5">
-          <button @click="viewMode = 'list'" class="w-5 h-5 flex items-center justify-center rounded transition-all" :class="viewMode === 'list' ? 'bg-white text-brand-600 shadow-sm' : 'text-surface-400 hover:text-surface-600'" title="列表视图">
+          <button @click="viewMode = 'list'" class="w-5 h-5 flex items-center justify-center rounded transition-all" :class="viewMode === 'list' ? 'bg-white text-brand-600 shadow-sm' : 'text-surface-400 hover:text-surface-600'" v-tooltip="'列表视图'">
             <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3.75 6h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
           </button>
-          <button @click="viewMode = 'calendar'" class="w-5 h-5 flex items-center justify-center rounded transition-all" :class="viewMode === 'calendar' ? 'bg-white text-brand-600 shadow-sm' : 'text-surface-400 hover:text-surface-600'" title="日历视图">
+          <button @click="viewMode = 'calendar'" class="w-5 h-5 flex items-center justify-center rounded transition-all" :class="viewMode === 'calendar' ? 'bg-white text-brand-600 shadow-sm' : 'text-surface-400 hover:text-surface-600'" v-tooltip="'日历视图'">
             <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/></svg>
           </button>
         </div>
       </div>
       <div class="flex items-center gap-2">
         <span v-if="viewMode === 'list'" class="text-[10px] text-surface-400 font-medium">{{ undoneTodos.length }}</span>
-        <button @click="handleCreate" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建待办">
+        <button @click="handleCreate" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建待办'">
           <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 4v16m8-8H4"/></svg>
         </button>
       </div>
@@ -460,7 +460,7 @@ function isOverdue(t: Todo): boolean {
               </span>
             </div>
           </div>
-          <button @click.stop="handleDelete(todo.id)" class="w-4 h-4 flex items-center justify-center rounded-full text-surface-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0" title="删除">
+          <button @click.stop="handleDelete(todo.id)" class="w-4 h-4 flex items-center justify-center rounded-full text-surface-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0" v-tooltip="'删除'">
             <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6M10 10v7M14 10v7"/></svg>
           </button>
         </div>
@@ -499,7 +499,7 @@ function isOverdue(t: Todo): boolean {
               </span>
             </div>
           </div>
-          <button @click.stop="handleDelete(todo.id)" class="w-3.5 h-3.5 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0" title="删除">
+          <button @click.stop="handleDelete(todo.id)" class="w-3.5 h-3.5 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0" v-tooltip="'删除'">
             <svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6M10 10v7M14 10v7"/></svg>
           </button>
         </div>
@@ -568,8 +568,8 @@ function isOverdue(t: Todo): boolean {
               <div v-for="f in group.files" :key="f.id" class="group relative flex items-center py-1 px-1.5 rounded hover:bg-white hover:shadow-sm transition-all">
                 <div class="w-6 h-6 flex items-center justify-center rounded font-bold text-[7px] tracking-wider shrink-0 select-none" :class="fileTypeColor(f.file_ext || '')">{{ (f.file_ext || 'file').toUpperCase() }}</div>
                 <div class="ml-1.5 flex-1 min-w-0 flex items-center gap-1">
-                  <p class="text-[10px] font-medium text-surface-700 truncate leading-tight cursor-pointer hover:text-blue-600 flex-1 min-w-0" :title="fileDisplayName(f)" @click="previewAttachment(f.id)">{{ fileDisplayName(f) }}</p>
-                  <button @click.stop="insertAttachmentToEditor(f)" class="shrink-0 w-4.5 h-4.5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="插入到待办"><AppIcon name="file-plus" size="12"/></button>
+                  <p class="text-[10px] font-medium text-surface-700 truncate leading-tight cursor-pointer hover:text-blue-600 flex-1 min-w-0" v-tooltip.auto="fileDisplayName(f)" @click="previewAttachment(f.id)">{{ fileDisplayName(f) }}</p>
+                  <button @click.stop="insertAttachmentToEditor(f)" class="shrink-0 w-4.5 h-4.5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" v-tooltip="'插入到待办'"><AppIcon name="file-plus" size="12"/></button>
       </div>
     </div>
   </div>
@@ -609,7 +609,7 @@ function isOverdue(t: Todo): boolean {
               />
             </template>
             <template v-else>
-              <p class="text-[11px] font-medium text-gray-700 truncate leading-tight cursor-pointer hover:text-blue-600 transition-colors" :title="fileDisplayName(f)" @click="previewAttachment(f.id)">{{ fileDisplayName(f) }}</p>
+              <p class="text-[11px] font-medium text-gray-700 truncate leading-tight cursor-pointer hover:text-blue-600 transition-colors" v-tooltip.auto="fileDisplayName(f)" @click="previewAttachment(f.id)">{{ fileDisplayName(f) }}</p>
             </template>
             <p class="text-[9px] text-gray-400 mt-0.5">{{ formatSize(f.file_size) }} · {{ (f.mapped_at || f.updated_at || f.created_at || '').slice(0,16) }}</p>
           </div>
@@ -618,19 +618,19 @@ function isOverdue(t: Todo): boolean {
             <button
               @click.stop="startRename(f)"
               class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"
-              title="重命名"
+              v-tooltip="'重命名'"
             ><AppIcon name="edit" size="13"/></button>
             <button
               v-if="selectedTodoId"
               @click.stop="insertAttachmentToEditor(f)"
               class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"
-              title="插入到光标处"
+              v-tooltip="'插入到光标处'"
             ><AppIcon name="file-plus" size="13"/></button>
             <button
               v-if="attTab !== 'project'"
               @click.stop="removeAttachment(f.id)"
               class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500"
-              title="删除附件"
+              v-tooltip="'删除附件'"
             ><AppIcon name="trash" size="13"/></button>
           </div>
         </div>

@@ -24,8 +24,11 @@ pub(crate) fn execute(a: &Value) -> String {
                                             "type": ptype.to_uppercase(),
                                             "name": name,
                                             "phone": a["phone"].as_str().unwrap_or(""),
-                                            "company": a["address"].as_str().unwrap_or(""),
-                                            "remark": a["remark"].as_str().unwrap_or("")
+                                            "address": a["address"].as_str().unwrap_or(""),
+                                            "remark": a["remark"].as_str().unwrap_or(""),
+                                            "contact_person": a["contact_person"].as_str().unwrap_or(""),
+                                            "contact_phone": a["contact_phone"].as_str().unwrap_or(""),
+                                            "projectId": a["project_id"].as_str().unwrap_or("")
                                         });
                                         // 使用 block_on 调用异步函数
                                         match block_on_async(crate::commands::partner_commands::partner_create(data)) {
@@ -64,7 +67,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                         let mut data = json!({"id": partner_id});
                                         if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { data["name"] = json!(v); }
                                         if let Some(v) = a["phone"].as_str().filter(|s| !s.is_empty()) { data["phone"] = json!(v); }
-                                        if let Some(v) = a["address"].as_str().filter(|s| !s.is_empty()) { data["company"] = json!(v); }
+                                        if let Some(v) = a["address"].as_str().filter(|s| !s.is_empty()) { data["address"] = json!(v); }
                                         if let Some(v) = a["remark"].as_str().filter(|s| !s.is_empty()) { data["remark"] = json!(v); }
                                         if data.as_object().map_or(true, |m| m.len() <= 1) {
                                             let envelope = ToolResultEnvelope {

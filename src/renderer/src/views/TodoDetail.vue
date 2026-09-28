@@ -186,7 +186,7 @@ onUnmounted(() => { flushPending(); editor.value?.destroy() })
               :class="todo.projectId ? 'bg-surface-100 text-surface-600 border-surface-200' : 'bg-surface-100 text-surface-400 border-surface-200 hover:bg-surface-200 hover:text-surface-600'"
             >
               <AppIcon name="folder-open" size="13" stroke="1.5"/><span>{{ todo.projectName || '项目' }}</span>
-              <button v-if="todo.projectId" @click.stop="goToProject" class="inline-flex items-center justify-center text-surface-400 hover:text-brand-600 ml-0.5 relative z-20 transition-colors" title="跳转到项目"><AppIcon name="arrow-up-right" size="9" stroke="2.5"/></button>
+              <button v-if="todo.projectId" @click.stop="goToProject" class="inline-flex items-center justify-center text-surface-400 hover:text-brand-600 ml-0.5 relative z-20 transition-colors" v-tooltip="'跳转到项目'"><AppIcon name="arrow-up-right" size="9" stroke="2.5"/></button>
               <button v-if="todo.projectId" @click.stop="clearProject" class="w-3.5 h-3.5 flex items-center justify-center rounded-full text-surface-400 hover:text-red-400 ml-0.5 relative z-20"><svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 18L18 6M6 6l12 12"/></svg></button>
             </button>
             <div v-if="projectOpen" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 w-[220px]" @click.stop>

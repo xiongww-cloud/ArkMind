@@ -47,6 +47,11 @@ pub async fn execute_delegate_agent(
         }
     };
     if rows.is_empty() {
+        // ★ 路由未命中：日志 + 前端可见反馈（LLM 会收到错误信封自行修正，用户也应看到）
+        log::warn!("[Route] 委托未命中: agent_id={}（不存在或已禁用）", agent_id);
+        if let Some(ref h) = app_handle {
+            let _ = h.emit("agent:progress", json!({"msg": format!("路由未命中：目标 Agent（{}）不存在或已禁用", agent_id)}));
+        }
         return make_error(&format!("未找到 Agent「{}」或已禁用。", agent_id));
     }
 
@@ -73,9 +78,10 @@ pub async fn execute_delegate_agent(
         allowed_tools.len()
     );
 
-    // ★ 委托可见性：通知前端委托开始
+    // ★ 委托可见性：通知前端委托开始（status + progress 双通道，聊天页只监听 progress）
     if let Some(ref h) = app_handle {
         let _ = h.emit("agent:status", json!({"stage":"delegating","msg":format!("委托「{}」处理中...", agent_name)}));
+        let _ = h.emit("agent:progress", json!({"msg":format!("已路由到「{}」，处理中...", agent_name)}));
     }
 
     // 使用 Box::pin 解决递归 async 调用（无独立 session，避免无用DB操作）
@@ -84,7 +90,7 @@ pub async fn execute_delegate_agent(
         vec![],
         Some(max_iterations),
         app_handle,
-        true, // silent
+        false, // ★ silent=false：子 Agent 的 token/进度直连前端流式输出（回复不再只在刷新后可见）
         None, // ★ 无独立 session：load/save 有守卫，避免4次无用DB操作
         Some(allowed_tools),
         Some(system_prompt.as_str()),
@@ -280,6 +286,20 @@ fn extract_artifacts(tool_log: &[Value]) -> Vec<Value> {
                             }));
                         }
                     }
+                }
+            }
+
+            // 文档生成结果：提取 file_id（主 Agent 的文档卡片与 metadata 持久化靠此回传）
+            if result_type == "document_write_result" && data["success"].as_bool() == Some(true) {
+                if let Some(file_id) = data["file_id"].as_str() {
+                    artifacts.push(json!({
+                        "type": "document_created",
+                        "file_id": file_id,
+                        "file_name": data["file_name"].as_str().unwrap_or(""),
+                        "file_type": data["file_type"].as_str().unwrap_or(""),
+                        "file_size": data["file_size"].as_i64().unwrap_or(0),
+                        "tool": tool_name
+                    }));
                 }
             }
         }

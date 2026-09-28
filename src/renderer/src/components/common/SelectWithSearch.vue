@@ -89,7 +89,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
       :class="{ 'opacity-50 cursor-not-allowed': disabled }"
     >
       <!-- Selected chips -->
-      <div v-if="selectedLabels.length" class="flex flex-wrap gap-1 flex-1">
+      <div v-if="selectedLabels.length" class="flex flex-wrap gap-1 flex-1 min-w-0">
         <span
           v-for="opt in selectedLabels"
           :key="opt.id"
@@ -105,7 +105,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
           </button>
         </span>
       </div>
-      <span v-else class="text-[11px] text-surface-400">{{ placeholder }}</span>
+      <span v-else class="flex-1 min-w-0 text-[11px] text-surface-400">{{ placeholder }}</span>
       <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 flex-shrink-0" />
     </div>
 

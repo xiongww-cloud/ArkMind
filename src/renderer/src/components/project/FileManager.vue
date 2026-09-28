@@ -437,7 +437,7 @@ function getFileColor(fileName) {
     <div class="absolute right-[-3px] top-0 bottom-0 w-[6px] cursor-col-resize z-10 select-none" @mousedown="onResizeStart"></div>
     <div class="flex items-center justify-between shrink-0 px-3 h-10 border-b border-surface-100">
       <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">目录</span>
-      <button v-if="!isArchived" @click="$refs.folderTree?.startAddFolder()" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="新建目录"><AppIcon name="plus" size="12" stroke="2.5"/></button>
+      <button v-if="!isArchived" @click="$refs.folderTree?.startAddFolder()" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'新建目录'"><AppIcon name="plus" size="12" stroke="2.5"/></button>
     </div>
     <FolderTree ref="folderTree" :folders="allFolders" :selected-id="selectedFolderId" :project-id="projectId" :external-drag-target-id="isDraggingFile ? dragTargetId : null"
       @select="selectFolder"
@@ -472,7 +472,7 @@ function getFileColor(fileName) {
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 min-w-0">
             <input v-if="editingNameFileId === file.id" v-model="editingNameValue" data-name-input class="text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 w-full min-w-0 select-text" @keyup.enter="saveFileName(file.id)" @blur="saveFileName(file.id)" @mousedown.stop @keyup.escape="cancelEditName()"/>
-            <p v-else class="text-[12px] font-medium text-surface-800 truncate inline-block max-w-full cursor-pointer hover:text-blue-600 transition-colors" :title="file.displayName || file.custom_name || file.name" @click="onFileCardClick($event, file.id)">{{ file.displayName || file.custom_name || file.name }}</p>
+            <p v-else class="text-[12px] font-medium text-surface-800 truncate inline-block max-w-full cursor-pointer hover:text-blue-600 transition-colors" v-tooltip.auto="file.displayName || file.custom_name || file.name" @click="onFileCardClick($event, file.id)">{{ file.displayName || file.custom_name || file.name }}</p>
             <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatFileSize(file.file_size) }}</span>
             <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatDateTime(file.updated_at || file.created_at) }}</span>
           </div>
@@ -484,14 +484,14 @@ function getFileColor(fileName) {
           <div v-else class="mt-0.5 flex items-center gap-1">
             <p v-if="file.remark" class="text-[10px] text-surface-400 truncate cursor-pointer hover:text-blue-600" @click="startEditRemark(file)">{{ file.remark }}</p>
             <p v-else class="text-[10px] text-surface-300 cursor-pointer hover:text-blue-600" @click="startEditRemark(file)">无备注</p>
-            <button @mousedown.stop @click.stop="startEditRemark(file)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" title="编辑备注"><AppIcon name="edit" size="10"/></button>
+            <button @mousedown.stop @click.stop="startEditRemark(file)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" v-tooltip="'编辑备注'"><AppIcon name="edit" size="10"/></button>
           </div>
         </div>
         <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button v-if="!isArchived" @mousedown.stop @click.stop="startEditName(file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="编辑文件名"><AppIcon name="edit" size="13"/></button>
-          <button @click.stop="downloadFileFromId(file.id, file.displayName || file.name, (file.name || '').split('.').pop())" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="下载"><AppIcon name="download" size="12"/></button>
-          <button @click.stop="copyFile(file.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" title="复制文件到剪贴板"><AppIcon name="copy" size="12"/></button>
-          <button v-if="!isArchived" @click.stop="deleteFile(file.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" title="删除"><AppIcon name="trash" size="12"/></button>
+          <button v-if="!isArchived" @mousedown.stop @click.stop="startEditName(file)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'编辑文件名'"><AppIcon name="edit" size="13"/></button>
+          <button @click.stop="downloadFileFromId(file.id, file.displayName || file.name, (file.name || '').split('.').pop())" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'下载'"><AppIcon name="download" size="12"/></button>
+          <button @click.stop="copyFile(file.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'复制文件到剪贴板'"><AppIcon name="copy" size="12"/></button>
+          <button v-if="!isArchived" @click.stop="deleteFile(file.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="trash" size="12"/></button>
         </div>
       </div>
     </div>

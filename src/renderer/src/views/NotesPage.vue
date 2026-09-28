@@ -723,7 +723,7 @@ const restoreNotebookList = computed(() => {
     <!-- Title bar -->
     <div class="flex items-center justify-between shrink-0 px-3 h-10 border-b border-surface-100">
       <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">笔记本</span>
-      <button @click="startAddNotebook" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建笔记本">
+      <button @click="startAddNotebook" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建笔记本'">
         <AppIcon name="plus" size="12" stroke="2.5"/>
       </button>
     </div>
@@ -770,7 +770,7 @@ const restoreNotebookList = computed(() => {
           <span v-else class="w-3 flex-shrink-0 mr-0.5"></span>
           <AppIcon name="folder-open" size="13" class="flex-shrink-0 text-surface-400"/>
           <span class="truncate flex-1">{{ nb.name }}</span>
-          <span @mousedown.stop @click.stop="startAddNotebook(nb.id)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" title="新建子笔记本"><AppIcon name="plus" size="10"/></span>
+          <span @mousedown.stop @click.stop="startAddNotebook(nb.id)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'新建子笔记本'"><AppIcon name="plus" size="10"/></span>
           <span @mousedown.stop @click.stop="startEditNotebook(nb)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span>
           <span @click.stop="removeNotebook(nb.id)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="10"/></span>
         </div>
@@ -793,7 +793,7 @@ const restoreNotebookList = computed(() => {
     <div class="absolute right-[-3px] top-0 bottom-0 w-[6px] cursor-col-resize z-10 select-none" @mousedown="onResizeStart('list', $event)"></div>
     <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0">
       <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">{{ currentView==='daily' ? '闪记' : currentView==='all' ? '全部' : '笔记' }}</span>
-      <button v-if="currentView!=='daily'" @click="createNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" title="新建"><AppIcon name="plus" size="12" stroke="2.5"/></button>
+      <button v-if="currentView!=='daily'" @click="createNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建'"><AppIcon name="plus" size="12" stroke="2.5"/></button>
     </div>
     <div class="flex-1 overflow-y-auto p-2 space-y-1.5">
       <div v-for="note in displayedNotes" :key="note.note_id" @mousedown="onNoteMouseDown($event, note.note_id||note.id)" class="flex items-center px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden hover:scale-[1.02] hover:z-10 select-none" :class="[selectedNoteId===(note.note_id||note.id)||isSelected(note.note_id||note.id)?'bg-blue-50/70 border-brand-200 shadow-none scale-100':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragNoteId===(note.note_id||note.id)?'opacity-50':'']" @click="onNoteCardClick($event, note.note_id||note.id)">
@@ -821,8 +821,8 @@ const restoreNotebookList = computed(() => {
           <p class="text-[11px] text-surface-400 mt-0.5">删除于 {{ note.deleted_at?.slice(0,10)||'-' }}</p>
         </div>
         <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
-          <button @click.stop="openRestoreDialog(note.note_id)" class="w-7 h-7 flex items-center justify-center rounded text-surface-500 hover:text-blue-600 hover:bg-blue-50 transition-colors" title="恢复"><AppIcon name="undo" size="14"/></button>
-          <button @click.stop="permanentDelete(note.note_id)" class="w-7 h-7 flex items-center justify-center rounded text-surface-500 hover:text-red-600 hover:bg-red-50 transition-colors" title="永久删除"><AppIcon name="trash" size="14"/></button>
+          <button @click.stop="openRestoreDialog(note.note_id)" class="w-7 h-7 flex items-center justify-center rounded text-surface-500 hover:text-blue-600 hover:bg-blue-50 transition-colors" v-tooltip="'恢复'"><AppIcon name="undo" size="14"/></button>
+          <button @click.stop="permanentDelete(note.note_id)" class="w-7 h-7 flex items-center justify-center rounded text-surface-500 hover:text-red-600 hover:bg-red-50 transition-colors" v-tooltip="'永久删除'"><AppIcon name="trash" size="14"/></button>
         </div>
       </div>
     </div>

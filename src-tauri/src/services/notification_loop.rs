@@ -57,7 +57,7 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 1. 提取：发件人姓名/邮箱/单位、签名档里的姓名+电话+职位、正文提到的人名/客户名/项目名
 2. 对账：用 ext_tool_object 查 CONTACT/CUSTOMER/CHANNEL/VENDOR/PROJECT，逐个判断：
    ⓪ 命中【关于我】的姓名或邮箱 = 用户本人 → 直接跳过，绝不是新客户/新联系人
-   ① 不存在且疑似真实业务方 → 通知建议建档，params 预填全部已知字段，正文注明证据来源（"首次出现在X月X日『主题』邮件签名中"）。区分人与公司：人已存在仅信息更新→提示更新；人是新的、公司已建档→create_contact（params 带 name/position/email/phone + 已有公司的 partner_id）；人和公司都是新的→同一条通知并列 create_partner（params: name/type:CHANNEL|VENDOR|CUSTOMER）与 create_contact（params 带 partner_name=公司名，系统会引导一次建齐）——联系人绝不能没有归属公司
+   ① 不存在且疑似真实业务方 → 通知建议建档，params 预填全部已知字段，正文注明证据来源（"首次出现在X月X日『主题』邮件签名中"）。区分人与公司：人已存在仅信息更新→提示更新；人是新的、公司已建档→create_contact（params 带 name/position/email/phone + 已有公司的 partner_id）；人和公司都是新的→同一条通知并列 create_partner（params 必填 name/type:CHANNEL|VENDOR|CUSTOMER，证据里已知就带 phone/address/remark/contact_person/contact_phone）与 create_contact（params 带 partner_name=公司名，系统会引导一次建齐）——联系人绝不能没有归属公司
    ② 已存在但联系方式/单位/职位有变 → 通知提示更新（view_contact + 差异说明）
    ③ 已存在且一致 → 无事
 3. 未处理的历史建档建议不得重复播报——记入 WATCH 跟踪用户是否已创建。

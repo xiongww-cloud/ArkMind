@@ -1,6 +1,8 @@
 pub mod ai_sync;
 pub mod debounced_sync;
 pub mod file_parser;
+pub mod doc_writer;
+pub mod word_markdown;
 pub mod file_ingestion;
 pub mod hybrid_knowledge;
 pub mod knowledge_pipeline;

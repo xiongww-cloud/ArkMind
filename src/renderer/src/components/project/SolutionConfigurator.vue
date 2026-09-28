@@ -1296,7 +1296,7 @@ onUnmounted(() => {
         <button
           @click="anp"
           class="flex items-center justify-center w-5 h-5 rounded text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors"
-          title="新增方案"
+          v-tooltip="'新增方案'"
         >
           <AppIcon name="plus" class="w-3.5 h-3.5" />
         </button>
@@ -1364,7 +1364,7 @@ onUnmounted(() => {
           <button
             @click="ommBlank"
             class="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors"
-            title="新增空白版本"
+            v-tooltip="'新增空白版本'"
           >
             <AppIcon name="plus" class="w-3 h-3" />
           </button>
@@ -1399,7 +1399,7 @@ onUnmounted(() => {
               <button
                 @click.stop="cancelDraft"
                 class="btn-ghost !p-0.5 text-slate-300 hover:text-red-500 opacity-0 group-hover/card:opacity-100 shrink-0"
-                title="删除草稿"
+                v-tooltip="'删除草稿'"
               >
                 <AppIcon name="trash" class="w-3 h-3" />
               </button>
@@ -1475,7 +1475,7 @@ onUnmounted(() => {
               <button
                 @click.stop="evx(entry.data)"
                 class="btn-ghost !p-0.5 text-slate-300 hover:text-blue-600 opacity-0 group-hover/ver:opacity-100 shrink-0"
-                title="下载 Excel"
+                v-tooltip="'下载 Excel'"
               >
                 <AppIcon name="download" class="w-3 h-3" />
               </button>
@@ -1524,21 +1524,21 @@ onUnmounted(() => {
             <button
               @click="apl"
               class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-              title="添加设备"
+              v-tooltip="'添加设备'"
             >
               <AppIcon name="plus" class="w-3.5 h-3.5" />
             </button>
             <button
               @click="asub"
               class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-              title="子网"
+              v-tooltip="'子网'"
             >
               <AppIcon name="folder" class="w-3.5 h-3.5" />
             </button>
             <button
               @click="showImportWizard = true"
               class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-              title="导入"
+              v-tooltip="'导入'"
             >
               <AppIcon name="upload" class="w-3.5 h-3.5" />
             </button>
@@ -2076,7 +2076,7 @@ onUnmounted(() => {
                   @click.stop="tpm(param.id)"
                   class="w-16 h-6 mr-3 flex-shrink-0 flex items-center justify-center border rounded-md text-[11px] font-medium transition-all"
                   :class="gmbc(ms.tm[param.id])"
-                  title="点击切换状态"
+                  v-tooltip="'点击切换状态'"
                 >
                   {{ gmbt(ms.tm[param.id]) }}
                 </button>

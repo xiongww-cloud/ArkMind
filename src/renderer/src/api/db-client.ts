@@ -1631,6 +1631,7 @@ export interface AgentProfile {
   id: string
   name: string
   description: string
+  routing_hint: string
   system_prompt: string
   max_iterations: number
   can_delegate: number
@@ -1663,9 +1664,9 @@ export async function fetchAgentProfile(id: string): Promise<AgentProfile> {
 export async function createAgentProfile(data: {
   name: string
   description?: string
+  routing_hint?: string
   system_prompt?: string
   max_iterations?: number
-  can_delegate?: number
   output_format?: string
   tools?: string[]
 }): Promise<AgentProfile> {
@@ -1678,9 +1679,9 @@ export async function updateAgentProfile(
   data: {
     name?: string
     description?: string
+    routing_hint?: string
     system_prompt?: string
     max_iterations?: number
-    can_delegate?: number
     output_format?: string
     status?: string
     tools?: string[]

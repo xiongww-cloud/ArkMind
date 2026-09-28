@@ -440,7 +440,7 @@ defineExpose({ open })
               </div>
               <span class="text-[13px] font-semibold text-surface-700">ArkMind 使用指南</span>
             </div>
-            <button @click="finish" class="w-7 h-7 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition-colors" title="关闭">
+            <button @click="finish" class="w-7 h-7 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition-colors" v-tooltip="'关闭'">
               <AppIcon name="x" size="14" />
             </button>
           </div>
