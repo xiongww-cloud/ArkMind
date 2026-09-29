@@ -3,7 +3,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { kbFabInitSession, kbFabLoadHistory } from '@/api/db-client'
+import { fabResolveSession, kbFabLoadHistory } from '@/api/db-client'
 import { useAgentChat, type ChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata, parseClarificationMetadata } from '@/composables/useAgentChat'
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
@@ -161,6 +161,8 @@ const chatListRef = ref<HTMLElement | null>(null)
 const composerRef = ref<HTMLTextAreaElement | null>(null)
 const historyLoaded = ref(false)
 const messages = ref<ChatMessage[]>([])
+// 当前浮窗会话（30 分钟活跃窗口轮转，后端 fab_resolve_session 为单一真源）
+const sessionId = ref('')
 
 // ─── 快呼语义：召唤只淡显上一轮问答，新问题/主动展开才见全历史 ───
 const revealOlder = ref(false)
@@ -231,8 +233,9 @@ function mapHistoryMessage(m: any) {
 
 async function loadHistory() {
   try {
-    await kbFabInitSession()
-    const result = await kbFabLoadHistory(10)
+    const r = await fabResolveSession()
+    sessionId.value = r.sessionId
+    const result = await kbFabLoadHistory(sessionId.value, 10)
     if (result.success && result.messages) {
       messages.value = result.messages.map(mapHistoryMessage)
       historyLoaded.value = true
@@ -258,7 +261,7 @@ async function loadOlderMessages() {
   loadingMore.value = true
   const prevHeight = el.scrollHeight
   try {
-    const result = await kbFabLoadHistory(10, oldestDbId)
+    const result = await kbFabLoadHistory(sessionId.value, 10, oldestDbId)
     if (result.success && result.messages && result.messages.length > 0) {
       const older = result.messages.map(mapHistoryMessage)
       messages.value.unshift(...older)
@@ -282,6 +285,38 @@ function onChatScroll() {
   const el = chatListRef.value
   if (!el || el.scrollTop > 100) return
   loadOlderMessages()
+}
+
+/// 会话窗口同步（召唤/焦点时）：后端判 30min 活跃窗——
+///   rotated → 换新会话，面板回到干净态（旧会话在库等 7 天 GC，浮窗不可见）
+///   未轮转 → touch 活跃时间
+///   流式中冻结判定（进行中的运行持有发送时的会话 id，不得中途换轨）
+///   reset 与 focus 常同刻触发 → in-flight 去重，避免双建会话
+let syncInflight: Promise<void> | null = null
+function syncSession(): Promise<void> {
+  if (!syncInflight) {
+    syncInflight = doSyncSession().finally(() => { syncInflight = null })
+  }
+  return syncInflight
+}
+async function doSyncSession() {
+  if (agent.isChatting.value) return
+  try {
+    const r = await fabResolveSession()
+    if (r.rotated) {
+      agent.stopAllTypewriters(messages.value)
+      messages.value = []
+      revealOlder.value = false
+      fadedIds.value = new Set()
+      lastRoundCount.value = 0
+      hasMore.value = false
+      historyLoaded.value = true // 新会话必为空，无需再拉历史
+    }
+    sessionId.value = r.sessionId
+    if (!historyLoaded.value) await loadHistory()
+  } catch (e) {
+    console.error('[Chat] 会话同步失败:', e)
+  }
 }
 
 function scrollChat() {
@@ -320,6 +355,19 @@ async function send() {
     return
   }
 
+  // 发送即活跃：touch 会话窗口；若已在窗口外则轮转到新会话（清掉旧会话残留）
+  try {
+    const r = await fabResolveSession()
+    if (r.rotated && messages.value.length) {
+      agent.stopAllTypewriters(messages.value)
+      messages.value = []
+      fadedIds.value = new Set()
+      lastRoundCount.value = 0
+      hasMore.value = false
+    }
+    sessionId.value = r.sessionId
+  } catch (e) { console.error('[Chat] 会话解析失败:', e) }
+
   // 新问题即展开全历史并解除淡显
   revealOlder.value = true
   fadedIds.value = new Set()
@@ -341,7 +389,7 @@ async function send() {
   await agent.startAgentChat(q, {
     getMessage: () => aiMsg,
     scrollFn: scrollChat,
-    sessionId: 'fab-main-session',
+    sessionId: sessionId.value || 'fab-main-session',
     attachments: atts.map(a => ({ path: a.path, name: a.name })),
     onDone: (result, ctx) => {
       if (ctx.finalAnswer && ctx.finalAnswer.trim()) {
@@ -386,17 +434,18 @@ let unlistenFocus: (() => void) | null = null
 onMounted(async () => {
   await loadHistory()
 
-  // 召唤/收起复位（Rust 在 show/hide 前发）：回到"淡显最近一轮"态并聚焦输入框
+  // 召唤/收起复位（Rust 在 show/hide 前发）：先同步会话窗口（可能轮转清面板），再回淡显态并聚焦
   unlistenReset = await listen('chat:reset', async () => {
+    await syncSession()
     revealOlder.value = false
     applyLastRoundFaint()
     await nextTick()
     focusComposer()
   })
-  // 窗口获得焦点（热键/点击唤回）即聚焦输入框——桌面 agent 的核心手感
+  // 窗口获得焦点（热键/点击唤回）：同步会话窗口（30min 轮转点）+ 聚焦输入框
   try {
     unlistenFocus = await getCurrentWebviewWindow().onFocusChanged(({ payload }) => {
-      if (payload) focusComposer()
+      if (payload) { syncSession(); focusComposer() }
     })
   } catch {}
 })

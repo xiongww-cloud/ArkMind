@@ -730,7 +730,7 @@ const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
 import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, profileFactSave, type LoopStatus, type ProfileFact } from '@/api/notification-client'
-import { getSpriteEnabled, setSpriteEnabled, getChatHotkey, setChatHotkey, kbDeleteSession, fetchUserProfile, updateUserProfile } from '@/api/db-client'
+import { getSpriteEnabled, setSpriteEnabled, getChatHotkey, setChatHotkey, kbClearFabSessions, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
@@ -868,7 +868,7 @@ async function clearSpriteChat() {
   })
   if (!ok) return
   try {
-    await kbDeleteSession('fab-main-session')
+    await kbClearFabSessions()
     toast.success('精灵对话已清空')
   } catch (e) {
     toast.error('清空失败')

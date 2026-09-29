@@ -1275,21 +1275,29 @@ export async function kbDeleteSession(sessionId: string): Promise<SuccessRespons
 }
 
 // ─── FAB Session API ─────────────────────────────────────────────
-export async function kbFabInitSession(): Promise<{ success: boolean; session_id?: string }> {
-  return invoke('kb_fab_init_session')
+// 快呼浮窗会话：30 分钟活跃窗口轮转（Spotlight 语义）
+export interface FabResolveResult { success: boolean; sessionId: string; rotated: boolean }
+export async function fabResolveSession(): Promise<FabResolveResult> {
+  return invoke('fab_resolve_session')
 }
 export async function kbFabLoadHistory(
+  sessionId?: string | null,
   limit?: number,
   beforeId?: number
 ): Promise<{ success: boolean; messages?: ChatMessage[] }> {
-  return invoke('kb_fab_load_history', { limit: limit || null, beforeId: beforeId || null })
+  return invoke('kb_fab_load_history', { sessionId: sessionId || null, limit: limit || null, beforeId: beforeId || null })
 }
 export async function kbFabSaveMessage(data: {
   role: string
   content: string
   metadata?: unknown
+  session_id?: string
 }): Promise<SuccessResponse> {
   return invoke('kb_fab_save_message', { data })
+}
+/** 清空全部快呼会话（设置页"清空精灵对话"） */
+export async function kbClearFabSessions(): Promise<SuccessResponse> {
+  return invoke('kb_clear_fab_sessions')
 }
 
 // ─── Sprite Window API ───────────────────────────────────────────
