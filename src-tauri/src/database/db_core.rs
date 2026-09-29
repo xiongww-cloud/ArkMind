@@ -118,11 +118,18 @@ pub(crate) fn save_forced() -> rusqlite::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_util {
     use super::*;
     use tempfile::tempdir;
 
-    fn setup_test_db() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+    /// 全局 DB 单连接被测试共享：set_db 会替换全局连接，必须串行化所有使用全局连接的测试
+    /// （db_core 自身测试与 tools 层去重测试共用此锁）
+    pub(crate) fn test_db_mutex() -> &'static Mutex<()> {
+        static M: Mutex<()> = Mutex::new(());
+        &M
+    }
+
+    pub(crate) fn setup_test_db() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
         let guard = test_db_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
@@ -131,12 +138,13 @@ mod tests {
         set_db(conn);
         (dir, guard)
     }
+}
 
-    // 全局 DB 单连接被测试共享：set_db 会替换全局连接，必须串行化所有使用全局连接的测试
-    fn test_db_mutex() -> &'static Mutex<()> {
-        static M: Mutex<()> = Mutex::new(());
-        &M
-    }
+#[cfg(test)]
+mod tests {
+    use super::test_util::setup_test_db;
+    use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_escape_like() {

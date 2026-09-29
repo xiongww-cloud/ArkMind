@@ -73,6 +73,34 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
             if title.trim().is_empty() && content.trim().is_empty() {
                 return fail("创建笔记需要提供 title（或至少 content）。".to_string());
             }
+            // ★ 同名分流（AI 重复建档/并发写入防护）：
+            //   同名+同内容 → 复用；同名+不同内容 → 拒绝并引导 update（防止新内容静默丢失）
+            if !title.trim().is_empty() {
+                if let Ok(Some(existing)) = crate::database::get(
+                    "SELECT note_id, title, content FROM notes WHERE title=?1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                    &[json!(title.trim())],
+                ) {
+                    let eid = existing["note_id"].as_str().unwrap_or("").to_string();
+                    let econtent = existing["content"].as_str().unwrap_or("");
+                    if !eid.is_empty() {
+                        if econtent == content.trim() || content.trim().is_empty() {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_create_result".to_string(),
+                                data: json!({"success": true, "id": eid, "type": "NOTE", "name": title.trim(), "duplicate": true}),
+                                summary: Some(format!("已存在同名笔记「{}」，ID: {}，内容一致已复用，未重复创建。", title.trim(), eid)),
+                            };
+                            return envelope.to_json();
+                        } else {
+                            let envelope = ToolResultEnvelope {
+                                result_type: "object_create_result".to_string(),
+                                data: json!({"success": false, "id": eid, "type": "NOTE", "duplicate_conflict": true, "error": "同名笔记已存在且内容不同"}),
+                                summary: Some(format!("已存在同名笔记「{}」（ID: {}）但内容不同，未创建。如需修改已有笔记请用 update（传 note_id），如需新建请换一个标题。", title.trim(), eid)),
+                            };
+                            return envelope.to_json();
+                        }
+                    }
+                }
+            }
             let nb = match match_notebook(notebook) {
                 Ok(v) => v,
                 Err(msg) => return fail(msg),

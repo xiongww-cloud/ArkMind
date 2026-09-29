@@ -28,6 +28,22 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                 };
                 return envelope.to_json();
             }
+            // ★ 同名复用：精确同名待办直接复用，不重复创建（AI 重复建档/并发写入防护）
+            if let Ok(Some(existing)) = database::get(
+                "SELECT id, title FROM todos WHERE title=?1 ORDER BY created_at DESC LIMIT 1",
+                &[json!(title.trim())],
+            ) {
+                let eid = existing["id"].as_str().unwrap_or("").to_string();
+                let etitle = existing["title"].as_str().unwrap_or(title.trim()).to_string();
+                if !eid.is_empty() {
+                    let envelope = ToolResultEnvelope {
+                        result_type: "object_create_result".to_string(),
+                        data: json!({"success": true, "id": eid, "type": "TODO", "name": etitle, "duplicate": true}),
+                        summary: Some(format!("已存在同名待办「{}」，ID: {}，已复用，未重复创建。", etitle, eid)),
+                    };
+                    return envelope.to_json();
+                }
+            }
             let p = normalize_pri(priority);
             let d = if due_date.trim().is_empty() { None } else { Some(due_date.trim()) };
             let r = if repeat.trim().is_empty() { None } else { Some(repeat.trim()) };

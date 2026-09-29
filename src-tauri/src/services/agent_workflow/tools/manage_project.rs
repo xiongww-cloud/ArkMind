@@ -44,6 +44,21 @@ pub(crate) fn execute(a: &Value) -> String {
                                         envelope.to_json()
                                     }
                                     else {
+                                        // ★ 同名复用：精确同名项目直接复用（AI 重复建档/并发写入防护）
+                                        if let Ok(Some(existing)) = crate::database::get(
+                                            "SELECT id, name FROM projects WHERE name=?1 ORDER BY created_at DESC LIMIT 1",
+                                            &[json!(name)],
+                                        ) {
+                                            let eid = existing["id"].as_str().unwrap_or("");
+                                            if !eid.is_empty() {
+                                                let envelope = ToolResultEnvelope {
+                                                    result_type: "object_create_result".to_string(),
+                                                    data: json!({"success": true, "id": eid, "type": "PROJECT", "name": name, "duplicate": true}),
+                                                    summary: Some(format!("已存在同名项目「{}」，ID: {}，已复用，未重复创建。", name, eid)),
+                                                };
+                                                return envelope.to_json();
+                                            }
+                                        }
                                         let budget = a["budget"].as_f64().unwrap_or(0.0);
                                         let description = a["description"].as_str().unwrap_or("");
                                         let status = norm_status(a["status"].as_str().unwrap_or("Lead"));

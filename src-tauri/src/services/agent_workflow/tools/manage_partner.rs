@@ -20,6 +20,21 @@ pub(crate) fn execute(a: &Value) -> String {
                                         envelope.to_json()
                                     }
                                     else {
+                                        // ★ 同名复用：同 type+name 精确命中直接复用（AI 重复建档/并发写入防护）
+                                        if let Ok(Some(existing)) = database::get(
+                                            "SELECT id, name FROM partners WHERE type=?1 AND name=?2 LIMIT 1",
+                                            &[json!(ptype.to_uppercase()), json!(name)],
+                                        ) {
+                                            let eid = existing["id"].as_str().unwrap_or("");
+                                            if !eid.is_empty() {
+                                                let envelope = ToolResultEnvelope {
+                                                    result_type: "object_create_result".to_string(),
+                                                    data: json!({"success": true, "id": eid, "type": ptype.to_uppercase(), "name": name, "duplicate": true}),
+                                                    summary: Some(format!("已存在{}「{}」，ID: {}，已复用，未重复创建。", ptype.to_uppercase(), name, eid)),
+                                                };
+                                                return envelope.to_json();
+                                            }
+                                        }
                                         let data = json!({
                                             "type": ptype.to_uppercase(),
                                             "name": name,
