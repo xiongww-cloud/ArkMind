@@ -759,9 +759,9 @@ fn build_styled_docx_table(
             tb = tb.col_widths_pct(w);
         }
     }
-    if let Some(wp) = child["width_pct"].as_f64() {
-        tb = tb.width_pct(wp as f32);
-    }
+    // 表格恒铺满页宽（fixed layout）：列宽由 col_widths_pct 比例或等分决定，
+    // 行高由 Word 按单元格文本自动撑开（不写 trHeight）；AI 不再控制总宽
+    tb = tb.width_pct(1.0).fixed_layout();
 
     // 表格对齐（table 节点上的 align 字段）
     if let Some(a) = parse_docx_align(child) {
@@ -1064,11 +1064,8 @@ fn apply_xlsx_children(
                 }
             }
             "row_height" => {
-                let row = child["row"].as_u64().unwrap_or(row_cursor as u64) as u32;
-                if let Some(h) = child["height"].as_f64() {
-                    ws.set_row_height(row, h)
-                        .map_err(|e| format!("设置行高失败: {}", e))?;
-                }
+                // 行高由 Excel 按内容自适应——固定行高会截断/挤压文本，AI 设置已弃用
+                log::warn!("[文档生成] xlsx row_height 已弃用（行高自适应文本），已忽略: {:?}", child);
             }
             "image" => match decode_base64_image(child["base64"].as_str().unwrap_or("")) {
                 Ok(bytes) => match Image::new_from_buffer(&bytes) {
@@ -1982,10 +1979,9 @@ mod tests {
         assert_eq!(&bytes[..2], b"PK");
     }
 
-    /// 行高坐标0基回归：row_height{row:0} 必须落在第一行，第二行不受污染
-    /// （历史 bug：AI 按1基传 row:1 意图表头，0基解释落到第二行 → schema 已标注基准）
+    /// xlsx 行高自适应：AI 传 row_height 块被忽略（不生成 ht 属性），行高交由 Excel 按内容自适应
     #[test]
-    fn test_build_xlsx_row_height_zero_based() {
+    fn test_build_xlsx_row_height_ignored() {
         use std::io::Read;
         let content = json!({
             "sheets": [{
@@ -1997,28 +1993,39 @@ mod tests {
                 ]
             }]
         });
-        let bytes = build_xlsx(&content).expect("build_xlsx failed");
+        let bytes = build_xlsx(&content).expect("row_height 块应被安全忽略而非报错");
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
         let mut sheet = String::new();
         zip.by_name("xl/worksheets/sheet1.xml")
             .unwrap()
             .read_to_string(&mut sheet)
             .unwrap();
-        // 第一行有 ht=24
+        // 行属性形式 ` ht="`（勿用裸 ht= ——会误中 defaultRowHeight="15"）
         assert!(
-            sheet.contains(r#"<row r="1""#) && sheet.contains(r#"ht="24""#),
-            "第一行应被设为 24 磅: {}",
+            !sheet.contains(r#" ht=""#),
+            "行高不得固化（Excel 自适应文本），实际: {}",
             sheet
         );
-        // 第二行不带 ht（默认行高）
-        let r2_start = sheet.find(r#"<row r="2""#).expect("应有第二行");
-        let r2_end = sheet[r2_start..].find('>').map(|p| r2_start + p).unwrap();
-        let r2_tag = &sheet[r2_start..r2_end];
-        assert!(
-            !r2_tag.contains("ht="),
-            "第二行不应被设置行高（0基 row:0 只作用第一行），实际: {}",
-            r2_tag
+    }
+
+    /// Word 表格恒铺满页宽（fixed layout）且行高自适应：tblW=5000pct + tblLayout fixed + 无 trHeight
+    #[test]
+    fn docx_table_full_width_autofit_height() {
+        let xml = docx_part(
+            &json!({"children": [
+                {"type": "table", "headers": ["甲", "乙"], "rows": [
+                    ["内容很长的单元格文本内容很长的单元格文本内容很长的单元格文本", "短"]
+                ]},
+            ]}),
+            "document.xml",
         );
+        assert!(
+            xml.contains(r#"<w:tblW w:w="5000" w:type="pct"/>"#),
+            "表格应恒铺满页宽(5000=100%): {}",
+            &xml[..xml.len().min(700)]
+        );
+        assert!(xml.contains(r#"<w:tblLayout w:type="fixed"/>"#), "固定布局防内容撑破列宽");
+        assert!(!xml.contains("<w:trHeight"), "不得写死行高（Word 按单元格文本自动撑开）");
     }
 
     /// Word 样式：段落对齐/底纹、run 颜色、表格边框/列宽/单元格样式
