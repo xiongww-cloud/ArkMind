@@ -8,12 +8,14 @@ import { dangerConfirm } from '@/composables/useConfirm'
 import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbLoadSessionMessages, kbDeleteSession } from '@/api/db-client'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import { useAgentChat, type ChatMessage as AgentChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata } from '@/composables/useAgentChat'
+import { useAgentChat, type ChatMessage as AgentChatMessage, type GeneratedDocument, type ClarificationData, extractDocumentsFromToolLog, parseDocumentsMetadata, parseClarificationMetadata } from '@/composables/useAgentChat'
 import { pickRetrievalPhrase } from '@/utils/chat'
 import { ProjectCard, TodoCard, ObjectList } from '@/components/renderer'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
+import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
+import { parseClarificationMetadata } from '@/composables/useAgentChat'
 
 const agent = useAgentChat()
 const agentRun = useAgentRunStore()
@@ -165,10 +167,14 @@ function displayContent(content: string): string {
 interface ChatMessage extends AgentChatMessage { id?: string; role: 'user'|'assistant'; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; contextDocs?: any[]; workspace?: string; attachments?: Array<{path:string;name:string;kind:'image'|'doc'}>; documents?: import('@/composables/useAgentChat').GeneratedDocument[] }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
-/// 历史消息恢复：从 chat_messages.metadata 还原文档卡片（重启后 tool_log 不在，靠 metadata）
-function docFieldsFromMeta(m: any): { documents?: import('@/composables/useAgentChat').GeneratedDocument[] } {
+/// 历史消息恢复：从 chat_messages.metadata 还原文档卡片与追问卡片（重启后 tool_log 不在，靠 metadata）
+function docFieldsFromMeta(m: any): { documents?: GeneratedDocument[]; clarification?: ClarificationData } {
+  const out: { documents?: GeneratedDocument[]; clarification?: ClarificationData } = {}
   const docs = parseDocumentsMetadata(m.metadata)
-  return docs ? { documents: docs } : {}
+  if (docs) out.documents = docs
+  const clar = parseClarificationMetadata(m.metadata)
+  if (clar) out.clarification = clar
+  return out
 }
 
 function formatChatTime(ts: number) {
@@ -567,6 +573,10 @@ async function handleSendMessage() {
         // ★ 提取 AI 生成的文档对象（预览/下载/复制卡片）
         const docs = extractDocumentsFromToolLog(result.tool_log)
         if (docs.length) aiMsg.documents = docs
+        // ★ 追问卡片：done 载荷携带结构化 clarification（正文已是文本版，双轨）
+        if (result.clarification && Array.isArray(result.clarification.questions) && result.clarification.questions.length) {
+          aiMsg.clarification = result.clarification
+        }
         // ★ 权威答案覆盖已流出的片段（委托/多轮场景下 content 可能是委托前的开场白）；取消时保留已流出的部分内容
         if (finalAnswer && !result.cancelled) {
           aiMsg.content = finalAnswer
@@ -608,6 +618,12 @@ async function handleSendMessage() {
     agent.isChatting.value = false; scrollToBottomIfNear()
     try { unlistenDone?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
   }
+}
+
+/// 追问卡片提交：合成答复文本走正常发送管线（handleSendMessage 自带忙碌守卫）
+function submitClarification(text: string) {
+  inputMessage.value = text
+  handleSendMessage()
 }
 
 async function stopAgent() {
@@ -784,6 +800,13 @@ onUnmounted(() => {
               <div v-if="showWorkspaceIdx === idx && msg.workspace" class="mt-1 p-3 bg-[#f8f9fa] border border-[#e5e5ea] rounded-xl text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-[#3a3a3c] max-h-[300px] overflow-y-auto">{{ msg.workspace }}</div>
               <div v-if="!msg.isThinking && msg.documents?.length" class="mt-1.5 flex flex-col gap-1.5">
                 <DocumentObject v-for="d in msg.documents" :key="d.file_id" :doc="d" />
+              </div>
+              <div v-if="!msg.isThinking && msg.clarification" class="mt-1.5">
+                <ClarifyCard
+                  :clarification="msg.clarification"
+                  :answered="idx < currentSession.messages.length - 1"
+                  @submit="submitClarification"
+                />
               </div>
             </div>
           </div>

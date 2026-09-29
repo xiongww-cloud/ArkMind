@@ -48,6 +48,19 @@ export interface GeneratedDocument {
   file_type: string
   file_size: number
 }
+/** ext_tool_ask_user 追问的单个问题（与后端 normalize_ask_args 输出契约一致） */
+export interface ClarificationQuestion {
+  question_id: string
+  prompt: string
+  type: 'single_choice' | 'multiple_choice' | 'text'
+  options: string[]
+}
+/** clarification 数据结构：{reason, questions[], truncated} */
+export interface ClarificationData {
+  reason: string
+  questions: ClarificationQuestion[]
+  truncated?: boolean
+}
 export interface ChatMessage {
   id?: string
   role: 'user' | 'assistant'
@@ -64,6 +77,7 @@ export interface ChatMessage {
   typewriterDone?: boolean
   timestamp?: number
   documents?: GeneratedDocument[]
+  clarification?: ClarificationData
 }
 
 /// 从 tool_log 提取 ext_tool_write_document 成功生成的文档对象列表。
@@ -132,6 +146,44 @@ export function parseDocumentsMetadata(metadata: unknown): GeneratedDocument[] |
   return undefined
 }
 
+/// 从消息 metadata 恢复追问卡片数据（text+card 双轨中的结构化轨）。
+export function parseClarificationMetadata(metadata: unknown): ClarificationData | undefined {
+  if (!metadata || typeof metadata !== 'string') return undefined
+  try {
+    const m = JSON.parse(metadata)
+    const c = m?.clarification
+    if (c && Array.isArray(c.questions) && c.questions.length > 0) {
+      return {
+        reason: typeof c.reason === 'string' ? c.reason : '',
+        questions: c.questions
+          .filter((q: any) => q && typeof q.prompt === 'string' && q.prompt)
+          .map((q: any) => ({
+            question_id: String(q.question_id || ''),
+            prompt: q.prompt,
+            type: q.type === 'single_choice' || q.type === 'multiple_choice' ? q.type : 'text',
+            options: Array.isArray(q.options) ? q.options.filter((o: any) => typeof o === 'string') : [],
+          })),
+        truncated: !!c.truncated,
+      }
+    }
+  } catch { /* 非 JSON 忽略 */ }
+  return undefined
+}
+
+/// 把追问卡片的选择合成为用户消息文本（走正常发送管线）。
+/// answers: question_id → 单选字符串 / 多选数组；未作答的问题跳过；全空时返回默认继续话术。
+export function buildClarificationReply(data: ClarificationData, answers: Record<string, string | string[]>): string {
+  const parts: string[] = []
+  data.questions.forEach((q, i) => {
+    const a = answers[q.question_id]
+    const text = (Array.isArray(a) ? a.join('、') : (a || '')).trim()
+    if (!text) return
+    parts.push(`${i + 1}.${q.prompt.replace(/[？?]\s*$/, '')}：${text}`)
+  })
+  if (!parts.length) return '暂不补充这些信息，请按最合理的默认假设继续，并在结果中括注说明采用的假设。'
+  return `已确认补充信息：${parts.join('；')}。请继续执行。`
+}
+
 // ─── Agent:done result type ─────────────────────────────────────
 export interface AgentDoneResult {
   success: boolean
@@ -141,6 +193,7 @@ export interface AgentDoneResult {
   sources?: any[]
   workspace?: string
   error?: string
+  clarification?: ClarificationData
 }
 
 // ─── Agent:done callback context ────────────────────────────────

@@ -4,9 +4,10 @@ import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { kbFabInitSession, kbFabLoadHistory } from '@/api/db-client'
-import { useAgentChat, type ChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata } from '@/composables/useAgentChat'
+import { useAgentChat, type ChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata, parseClarificationMetadata } from '@/composables/useAgentChat'
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
+import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
 
@@ -176,6 +177,7 @@ const hasMore = ref(true)
 
 function mapHistoryMessage(m: any) {
   const docs = parseDocumentsMetadata(m.metadata)
+  const clar = parseClarificationMetadata(m.metadata)
   return {
     id: 'hist-' + m.id,
     dbId: m.id,
@@ -183,6 +185,7 @@ function mapHistoryMessage(m: any) {
     content: m.content,
     timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
     ...(docs ? { documents: docs } : {}),
+    ...(clar ? { clarification: clar } : {}),
   }
 }
 
@@ -327,12 +330,22 @@ async function send() {
         aiMsg.toolCalls = result.tool_log || []
         const docs = extractDocumentsFromToolLog(result.tool_log)
         if (docs.length) aiMsg.documents = docs
+        // ★ 追问卡片：done 载荷携带结构化 clarification（正文已是文本版，双轨）
+        if (result.clarification && Array.isArray(result.clarification.questions) && result.clarification.questions.length) {
+          aiMsg.clarification = result.clarification
+        }
       }
     },
     onError: (error) => {
       aiMsg.content = error
     },
   })
+}
+
+/// 追问卡片提交：合成答复文本走正常发送管线（send 自带忙碌守卫）
+function submitClarification(text: string) {
+  inputText.value = text
+  send()
 }
 
 async function stopAgent() {
@@ -426,6 +439,13 @@ onUnmounted(() => {
             </div>
             <div v-if="m.role !== 'user' && !m.thinking && m.documents?.length" class="mt-1 flex flex-col gap-1.5">
               <DocumentObject v-for="d in m.documents" :key="d.file_id" :doc="d" />
+            </div>
+            <div v-if="m.role !== 'user' && !m.thinking && m.clarification" class="mt-1">
+              <ClarifyCard
+                :clarification="m.clarification"
+                :answered="m.id !== messages[messages.length - 1]?.id"
+                @submit="submitClarification"
+              />
             </div>
           </div>
         </div>
