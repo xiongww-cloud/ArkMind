@@ -16,6 +16,7 @@ import { useMultiSelect } from '@/composables/useMultiSelect'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { pasteShortcut } from '@/utils/platform'
+import { uploadPasteFile } from '@/utils/pasteUpload'
 import { formatDateTime } from '@/utils/time'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 
@@ -321,8 +322,8 @@ function onFullSpecsInput() {
 const materials = ref<any[]>([])
 const materialUploadOpen = ref(false)
 const materialPasteArea = ref<HTMLTextAreaElement | null>(null)
-// 待上传物料：name 不含扩展名，ext 单独存（编辑文件名不涉及后缀）
-const materialFiles = ref<Array<{ path: string; name: string; ext: string; _temp?: boolean }>>([])
+// 待上传物料：name 不含扩展名，ext 单独存（编辑文件名不涉及后缀）；粘贴上传中 path 为 ''，进度看 uploading/progress
+const materialFiles = ref<Array<{ id?: string; path: string; name: string; ext: string; _temp?: boolean; uploading?: boolean; progress?: number; _cancelled?: boolean }>>([])
 const materialDragOver = ref(false)
 const materialType = ref('彩页')
 const materialNote = ref('')
@@ -377,7 +378,44 @@ function onMaterialDrop(e: DragEvent) {
   // needs it to be true to capture the file path. It will be cleared by the listener.
 }
 
-/** 粘贴上传：剪贴板文件/截图 → 保存临时文件 → 加入待上传列表 */
+/** 分片上传一个粘贴文件：先占位（进度即时可见），完成后回填 path */
+async function uploadPastedMaterial(file: File, ext: string): Promise<boolean> {
+  const item = {
+    id: crypto.randomUUID(),
+    path: '',
+    name: file.name && file.name.includes('.') ? file.name.slice(0, file.name.lastIndexOf('.')) : (file.name || 'pasted'),
+    ext,
+    _temp: true,
+    uploading: true,
+    progress: 0,
+    _cancelled: false,
+  }
+  materialFiles.value.push(item)
+  try {
+    const r = await uploadPasteFile(file, ext, (pct) => { item.progress = pct }, () => !!item._cancelled)
+    if (!materialFiles.value.includes(item)) {
+      if (r?.path) removeTempFile(r.path).catch(() => {})
+      return false
+    }
+    item.path = r.path
+    item.uploading = false
+    const dn = splitNameExt(r.name || file.name || '')
+    if (dn.name) item.name = dn.name
+    if (dn.ext) item.ext = dn.ext
+    return true
+  } catch (err: any) {
+    const idx = materialFiles.value.indexOf(item)
+    if (idx >= 0) materialFiles.value.splice(idx, 1)
+    const msg = String(err?.message || err)
+    if (!item._cancelled && msg !== 'Error: 已取消') {
+      console.warn('[ProductCenter] paste save failed:', err)
+      if (msg.includes('上限') || msg.includes('超过')) toast({ message: msg, type: 'error' })
+    }
+    return false
+  }
+}
+
+/** 粘贴上传：剪贴板文件/截图 → 分片落临时文件 → 加入待上传列表（带进度） */
 async function onMaterialPaste(e: ClipboardEvent) {
   let added = 0
   const files = e.clipboardData?.files
@@ -386,16 +424,7 @@ async function onMaterialPaste(e: ClipboardEvent) {
     for (const file of Array.from(files)) {
       const rawName = file.name || 'pasted'
       const ext = (rawName.split('.').pop() || file.type.split('/')[1] || 'bin').toLowerCase()
-      try {
-        const buf = await file.arrayBuffer()
-        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: file.name || null })
-        if (r?.success && r.path) {
-          const displayName = r.name || rawName
-          const { name, ext: e } = splitNameExt(displayName)
-          materialFiles.value.push({ path: r.path, name: name || 'pasted', ext: e || ext, _temp: true })
-          added++
-        }
-      } catch (err) { console.warn('[ProductCenter] paste save failed:', err) }
+      if (await uploadPastedMaterial(file, ext)) added++
     }
   }
   // 回退：从 clipboardData.items 获取图片（截图等无文件名）
@@ -407,23 +436,15 @@ async function onMaterialPaste(e: ClipboardEvent) {
         e.preventDefault()
         const file = item.getAsFile()
         if (!file) continue
-        try {
-          const buf = await file.arrayBuffer()
-          const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : (item.type.split('/')[1] || 'png')
-          const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: null })
-          if (r?.success && r.path) {
-            const displayName = r.name || 'pasted'
-            const { name, ext: e } = splitNameExt(displayName)
-            materialFiles.value.push({ path: r.path, name: name || 'pasted', ext: e || ext, _temp: true })
-            added++
-          }
-        } catch (err) { console.warn('[ProductCenter] paste image failed:', err) }
+        const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : (item.type.split('/')[1] || 'png')
+        if (await uploadPastedMaterial(file, ext)) added++
       }
     }
   }
   // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
-  // 若浏览器侧未取到任何文件，回退从后端读取剪贴板文件列表
-  if (added === 0) {
+  // 本轮未取到任何文件且剪贴板确为文件列表，才回退从后端读取（纯文本粘贴不打后端）
+  const clipboardHasFiles = Array.from(e.clipboardData?.types || []).includes('Files')
+  if (added === 0 && clipboardHasFiles) {
     await readMaterialClipboard()
   }
   if (added > 0) toast({ message: `已粘贴 ${added} 个文件`, type: 'success' })
@@ -514,6 +535,7 @@ const { start: upStart, done: upDone, fail: upFail } = useUploadProgress()
 async function confirmUpload() {
   const productIds = materialAssoc.value.productIds.filter((id: string) => id)
   if (!materialFiles.value.length || productIds.length === 0) { toast({ message: '请选择文件和关联产品', type: 'error' }); return }
+  if (materialFiles.value.some(f => f.uploading)) { toast({ message: '粘贴的文件仍在上传，请稍候', type: 'error' }); return }
   const files = [...materialFiles.value]
   // 关闭弹窗，异步逐个上传
   materialUploadOpen.value = false
@@ -543,17 +565,21 @@ async function confirmUpload() {
   else toast({ message: '物料上传失败', type: 'error' })
 }
 
-/** 移除待上传物料项（粘贴产生的同步删除临时文件） */
+/** 移除待上传物料项（粘贴产生的同步删除临时文件；上传中则中断分片） */
 function removeMaterialFile(idx: number) {
   const f = materialFiles.value[idx]
-  if (f && f._temp && f.path) {
-    try { removeTempFile(f.path).catch(() => {}) } catch {}
+  if (f) {
+    if (f.uploading) f._cancelled = true
+    else if (f._temp && f.path) {
+      try { removeTempFile(f.path).catch(() => {}) } catch {}
+    }
   }
   materialFiles.value.splice(idx, 1)
 }
 function clearMaterialFiles() {
   for (const f of materialFiles.value) {
-    if (f._temp && f.path) {
+    if (f.uploading) f._cancelled = true
+    else if (f._temp && f.path) {
       try { removeTempFile(f.path).catch(() => {}) } catch {}
     }
   }
@@ -889,8 +915,8 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
               <span class="text-[11px] font-medium text-surface-500">已选择 {{ materialFiles.length }} 个文件</span>
               <button @click="clearMaterialFiles" class="text-[11px] text-surface-400 hover:text-red-500 transition-colors">清空</button>
             </div>
-            <div v-for="(f, idx) in materialFiles" :key="f.path" class="group flex items-center gap-2 px-3 py-1.5 rounded-lg border border-surface-200 bg-white hover:border-surface-300 transition-colors">
-              <div class="w-7 h-7 rounded-md bg-surface-50 border border-surface-100 flex items-center justify-center flex-shrink-0">
+            <div v-for="(f, idx) in materialFiles" :key="f.id || f.path" class="group relative flex items-center gap-2 px-3 py-1.5 rounded-lg border border-surface-200 bg-white hover:border-surface-300 transition-colors overflow-hidden">
+              <div class="w-7 h-7 rounded-md bg-surface-50 border border-surface-100 flex items-center justify-center flex-shrink-0" :class="f.uploading ? 'opacity-50' : ''">
                 <AppIcon name="file-doc" size="13" class="text-surface-500" />
               </div>
               <div class="flex-1 min-w-0 flex items-center gap-1">
@@ -898,12 +924,18 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                   v-model="f.name"
                   @focus="$event.target.select()"
                   @blur="() => materialPasteArea?.focus()"
+                  :disabled="f.uploading"
                   class="flex-1 min-w-0 text-[12px] font-medium text-surface-800 bg-transparent border border-transparent focus:border-brand-400 focus:bg-white rounded px-1 py-0.5 outline-none transition-colors"
                   v-tooltip="'编辑文件名'"
                 />
                 <span v-if="f.ext" class="text-[10px] text-surface-400 flex-shrink-0">.{{ f.ext }}</span>
+                <span v-if="f.uploading" class="text-[10px] text-brand-600 tabular-nums flex-shrink-0">{{ f.progress ?? 0 }}%</span>
               </div>
-              <button @click="removeMaterialFile(idx)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100" v-tooltip="'移除'"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M6 18L18 6"/></svg></button>
+              <button @click="removeMaterialFile(idx)" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100" v-tooltip="f.uploading ? '取消上传' : '移除'"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 6l12 12M6 18L18 6"/></svg></button>
+              <!-- 粘贴分片上传进度条 -->
+              <div v-if="f.uploading" class="absolute left-0 bottom-0 h-[2px] w-full bg-surface-100">
+                <div class="h-full bg-brand-500 transition-all duration-200" :style="{ width: (f.progress ?? 0) + '%' }"></div>
+              </div>
             </div>
           </div>
         </div>

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { toast } from '@/composables/useToast'
 import { previewFile, exportFile, copyFileToClipboard } from '@/api/db-client'
+import AppIcon from '@/components/common/AppIcon.vue'
 import type { GeneratedDocument } from '@/composables/useAgentChat'
 
 const props = defineProps<{ doc: GeneratedDocument }>()
@@ -44,7 +45,7 @@ async function onCopy() {
 
 <template>
   <div
-    class="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-[#e5e5ea] bg-[#f8f9fa] hover:bg-white transition-colors w-full max-w-[360px]"
+    class="group flex items-center gap-2.5 px-3 py-2 rounded-xl border border-[#e5e5ea] bg-[#f8f9fa] hover:bg-white transition-colors w-full max-w-[360px]"
   >
     <div
       class="w-9 h-9 rounded-lg flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0"
@@ -53,29 +54,31 @@ async function onCopy() {
       {{ isExcel ? 'XLS' : 'DOC' }}
     </div>
     <div class="min-w-0 flex-1">
-      <div class="text-[12px] font-medium text-[#1c1c1e] truncate" :title="doc.file_name">
+      <!-- 点击文件名预览（与资料库文件行一致） -->
+      <div
+        class="text-[12px] font-medium text-[#1c1c1e] truncate hover:text-blue-600 transition-colors cursor-pointer"
+        v-tooltip.auto="doc.file_name"
+        @click="onPreview"
+      >
         {{ doc.file_name }}
       </div>
       <div class="text-[10px] text-[#8e8e93]">{{ sizeText }} · {{ isExcel ? 'Excel' : 'Word' }}</div>
     </div>
-    <div class="flex items-center gap-0.5 flex-shrink-0">
+    <!-- 下载/复制纯 icon，hover 浮现（与资料库行内按钮一致） -->
+    <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
       <button
-        class="px-2 py-1 rounded-md text-[11px] text-[#2563eb] hover:bg-[#2563eb]/10 transition-colors"
-        @click="onPreview"
-      >
-        预览
-      </button>
-      <button
-        class="px-2 py-1 rounded-md text-[11px] text-[#2563eb] hover:bg-[#2563eb]/10 transition-colors"
+        class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors"
+        v-tooltip="'下载'"
         @click="onDownload"
       >
-        下载
+        <AppIcon name="download" size="13" />
       </button>
       <button
-        class="px-2 py-1 rounded-md text-[11px] text-[#2563eb] hover:bg-[#2563eb]/10 transition-colors"
+        class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors"
+        v-tooltip="'复制文件到剪贴板'"
         @click="onCopy"
       >
-        复制
+        <AppIcon name="copy" size="13" />
       </button>
     </div>
   </div>

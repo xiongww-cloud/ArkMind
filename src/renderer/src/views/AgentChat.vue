@@ -12,6 +12,7 @@ import { useAgentChat, type ChatMessage as AgentChatMessage, extractDocumentsFro
 import { pickRetrievalPhrase } from '@/utils/chat'
 import { ProjectCard, TodoCard, ObjectList } from '@/components/renderer'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
+import { uploadPasteFile } from '@/utils/pasteUpload'
 
 const agent = useAgentChat()
 
@@ -20,9 +21,17 @@ const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
 const DOC_EXTS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md', 'csv', 'json'])
 const ALL_EXTS = new Set([...IMG_EXTS, ...DOC_EXTS])
 const MAX_ATTACH = 5
-const MAX_SIZE = 20 * 1024 * 1024
 
-interface PendingAttachment { path: string; name: string; kind: 'image' | 'doc'; previewUrl?: string }
+interface PendingAttachment {
+  id: string
+  path: string            // 上传中为 ''（占位），完成才写入
+  name: string
+  kind: 'image' | 'doc'
+  previewUrl?: string
+  uploading?: boolean
+  progress?: number       // 0-100
+  _cancelled?: boolean
+}
 const pendingAttachments = ref<PendingAttachment[]>([])
 
 function extOf(name: string): string { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : '' }
@@ -39,13 +48,53 @@ async function openAttachmentDialog() {
     if (!ALL_EXTS.has(ext)) { toast({ message: `不支持的文件类型: ${ext}`, type: 'error' }); continue }
     if (pendingAttachments.value.some(a => a.path === p)) continue
     const kind: 'image' | 'doc' = IMG_EXTS.has(ext) ? 'image' : 'doc'
-    pendingAttachments.value.push({ path: p, name, kind })
+    pendingAttachments.value.push({ id: crypto.randomUUID(), path: p, name, kind })
   }
 }
 
 function removeAttachment(idx: number) {
   const removed = pendingAttachments.value.splice(idx, 1)[0]
-  if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+  if (!removed) return
+  // 上传中：标记中断，分片循环下一轮中止并由后端清理临时文件
+  if (removed.uploading) { removed._cancelled = true; return }
+  if (removed.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+}
+
+/** 分片上传一个粘贴文件：先占位（即时可见），再推进度 */
+async function uploadPastedFile(file: File, ext: string, nameFallback: string): Promise<boolean> {
+  const kind: 'image' | 'doc' = IMG_EXTS.has(ext) ? 'image' : 'doc'
+  const chip: PendingAttachment = {
+    id: crypto.randomUUID(),
+    path: '',
+    name: file.name || nameFallback,
+    kind,
+    previewUrl: kind === 'image' ? URL.createObjectURL(file) : undefined,
+    uploading: true,
+    progress: 0,
+  }
+  pendingAttachments.value.push(chip)
+  try {
+    const r = await uploadPasteFile(file, ext, (pct) => { chip.progress = pct }, () => !!chip._cancelled)
+    if (!pendingAttachments.value.includes(chip)) {
+      if (r?.path) invoke('file_remove_temp', { path: r.path }).catch(() => {})
+      if (chip.previewUrl) URL.revokeObjectURL(chip.previewUrl)
+      return false
+    }
+    chip.path = r.path
+    chip.name = r.name || chip.name
+    chip.uploading = false
+    return true
+  } catch (err: any) {
+    const idx = pendingAttachments.value.indexOf(chip)
+    if (idx >= 0) pendingAttachments.value.splice(idx, 1)
+    if (chip.previewUrl) URL.revokeObjectURL(chip.previewUrl)
+    const msg = String(err?.message || err)
+    if (!chip._cancelled && msg !== 'Error: 已取消') {
+      console.warn('[Chat] paste save failed:', err)
+      if (msg.includes('上限') || msg.includes('超过')) toast({ message: msg, type: 'error' })
+    }
+    return false
+  }
 }
 
 async function onPaste(e: ClipboardEvent) {
@@ -58,16 +107,7 @@ async function onPaste(e: ClipboardEvent) {
       if (pendingAttachments.value.length >= MAX_ATTACH) { toast({ message: `最多附加 ${MAX_ATTACH} 个文件`, type: 'error' }); break }
       const ext = extOf(file.name) || (file.type.split('/')[1] === 'jpeg' ? 'jpg' : file.type.split('/')[1] || 'bin')
       if (!ALL_EXTS.has(ext) && !IMG_EXTS.has(ext)) { continue }
-      try {
-        const buf = await file.arrayBuffer()
-        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: file.name || null })
-        if (r?.success && r.path) {
-          const kind: 'image' | 'doc' = IMG_EXTS.has(ext) ? 'image' : 'doc'
-          const previewUrl = kind === 'image' ? URL.createObjectURL(new Blob([buf], { type: file.type })) : undefined
-          pendingAttachments.value.push({ path: r.path, name: r.name || file.name, kind, previewUrl })
-          added++
-        }
-      } catch (err) { console.warn('[Chat] paste file save failed:', err) }
+      if (await uploadPastedFile(file, ext, `pasted.${ext}`)) added++
     }
     if (added > 0) toast({ message: `已粘贴 ${added} 个文件`, type: 'success' })
     else toast({ message: '粘贴失败：不支持的文件类型', type: 'error' })
@@ -76,33 +116,28 @@ async function onPaste(e: ClipboardEvent) {
   // 回退：从 clipboardData.items 获取图片
   const items = e.clipboardData?.items
   if (!items) return
+  let itemAdded = 0
   for (const item of items) {
     if (!item.type.startsWith('image/')) continue
     if (pendingAttachments.value.length >= MAX_ATTACH) { toast({ message: `最多附加 ${MAX_ATTACH} 个文件`, type: 'error' }); break }
     e.preventDefault()
     const file = item.getAsFile()
     if (!file) continue
-    try {
-      const buf = await file.arrayBuffer()
-      const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1]
-      const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: null })
-      if (r?.success && r.path) {
-        const blobUrl = URL.createObjectURL(new Blob([buf], { type: item.type }))
-        pendingAttachments.value.push({ path: r.path, name: r.name || `pasted.${ext}`, kind: 'image', previewUrl: blobUrl })
-        toast({ message: '已粘贴图片', type: 'success' })
-      }
-    } catch (err) { console.warn('[Chat] paste image save failed:', err); toast({ message: '粘贴图片失败', type: 'error' }) }
+    const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1]
+    if (await uploadPastedFile(file, ext, `pasted.${ext}`)) itemAdded++
   }
+  if (itemAdded > 0) toast({ message: '已粘贴图片', type: 'success' })
   // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
-  // 若未添加任何附件，回退从后端读取剪贴板文件列表
-  if (pendingAttachments.value.length < MAX_ATTACH) {
+  // 本轮未取到任何文件且剪贴板确为文件列表时，才回退从后端读取（纯文本/图片粘贴不打后端）
+  const clipboardHasFiles = Array.from(e.clipboardData?.types || []).includes('Files')
+  if (itemAdded === 0 && clipboardHasFiles && pendingAttachments.value.length < MAX_ATTACH) {
     try {
       const r: any = await invoke('chat_read_clipboard_files')
       if (r?.success && Array.isArray(r.files) && r.files.length) {
         let addedMac = 0
         for (const f of r.files) {
           if (pendingAttachments.value.length >= MAX_ATTACH) break
-          pendingAttachments.value.push({ path: f.path, name: f.name, kind: f.kind || 'doc' })
+          pendingAttachments.value.push({ id: crypto.randomUUID(), path: f.path, name: f.name, kind: f.kind || 'doc' })
           addedMac++
         }
         if (addedMac > 0) toast({ message: `已粘贴 ${addedMac} 个文件`, type: 'success' })
@@ -212,6 +247,7 @@ const editingSessionId = ref<string|null>(null)
 const sessionDirty = ref(false)  // 标记当前会话是否有变更
 let lastSavedContent = ''  // 上次保存时的内容快照
 let activeTokenTimer: ReturnType<typeof setInterval> | null = null  // 当前轮打字机定时器（done 丢失时由 deactivate/unmount 兜底清理）
+let activeTokenConsume: (() => void) | null = null  // 当前轮 token 消费 tick（页面切回时据此重启被 onDeactivated 清掉的定时器）
 
 function newSession() {
   stopAllTypewriters()
@@ -249,6 +285,11 @@ onMounted(async () => {
 onActivated(async () => {
   // 如果 AI 正在回复中，跳过重新加载以保留进行中的状态
   if (agent.isChatting.value) {
+    // ★ 切走时 onDeactivated 清掉了 token 消费定时器：切回必须重启，
+    //   否则文本永久冻结到 agent:done 才一次性蹦出全文（视觉上就是"流式中断"）
+    if (activeTokenConsume && !activeTokenTimer) {
+      activeTokenTimer = setInterval(activeTokenConsume, 15)
+    }
     initialScrollDone = false
     nextTick(() => scrollToBottomIfNear())
     return
@@ -453,6 +494,8 @@ const MAX_INPUT_LENGTH = 5000
 async function handleSendMessage() {
   const q = inputMessage.value.trim()
   if (!q || agent.isChatting.value) return
+  // 附件分片上传中：占位 chip 的 path 尚未就绪，直接发送会带上空路径
+  if (pendingAttachments.value.some(a => a.uploading)) { toast({ message: '附件仍在上传，请稍候', type: 'error' }); return }
   console.log('[FE] handleSendMessage BUILD=streamfix-0719')
   // ★ 防御：清理上一轮可能泄漏的 listener，防止旧 listener 把新 token 写进旧气泡
   try { unlistenProgress?.(); unlistenToken?.(); unlistenDone?.(); unlistenError?.() } catch {}
@@ -469,11 +512,6 @@ async function handleSendMessage() {
   nextTick(() => { const el = textareaRef.value; if (el) el.style.height = '' })
   agent.isChatting.value = true
   agent.setThinkingProgress('')
-  // ★ Real Cognitive Stream: 实时进度（优先展示后端 msg，如"已路由到「XX」"，否则随机话术）
-  unlistenProgress = await listen<{msg?:string}>('agent:progress', (ev) => {
-    agent.setThinkingProgress(ev.payload?.msg || pickRetrievalPhrase())
-    scrollToBottomIfNear()
-  })
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
   session.messages.push(aiMsg)
   // ★ 初始默认"思考中"，工具调用时才切换预设文本
@@ -485,12 +523,14 @@ async function handleSendMessage() {
   if (activeTokenTimer) { clearInterval(activeTokenTimer); activeTokenTimer = null }
   const flushTokenQueue = () => {
     if (tokenFlushed) return; tokenFlushed = true
+    // 清本轮定时器 + 可能被 onActivated 重启过的新 id（旧 id 已死，须按 activeTokenTimer 清）
     clearInterval(tokenTimer)
-    if (activeTokenTimer === tokenTimer) activeTokenTimer = null
+    if (activeTokenTimer) { clearInterval(activeTokenTimer); activeTokenTimer = null }
+    activeTokenConsume = null
     while (tokenIdx < tokenQueue.length) aiMsg.content += tokenQueue[tokenIdx++]
   }
   let lastRenderTime = 0
-  const tokenTimer = setInterval(() => {
+  const tokenTick = () => {
     if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) agent.setThinkingProgress(''); aiMsg.content += tokenQueue[tokenIdx++] }
     const now = Date.now()
     if (aiMsg.id && aiMsg.content && now - lastRenderTime > 200) {
@@ -498,13 +538,22 @@ async function handleSendMessage() {
       renderMessageContent(aiMsg.id, aiMsg.content)
     }
     scrollToBottomIfNear()
-  }, 15)
+  }
+  const tokenTimer = setInterval(tokenTick, 15)
   activeTokenTimer = tokenTimer
-  unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
-    tokenQueue.push(ev.payload.token)
-  })
-  nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
+  activeTokenConsume = tokenTick
+  // ★ listen 全部纳入 try：任一注册失败都会走 catch 复位 isChatting（此前 progress/token listen 在 try 外，
+  //   reject 后永久卡"思考中"且 invoke 永不发起）
   try {
+    // ★ Real Cognitive Stream: 实时进度（优先展示后端 msg，如"已路由到「XX」"，否则随机话术）
+    unlistenProgress = await listen<{msg?:string}>('agent:progress', (ev) => {
+      agent.setThinkingProgress(ev.payload?.msg || pickRetrievalPhrase())
+      scrollToBottomIfNear()
+    })
+    unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
+      tokenQueue.push(ev.payload.token)
+    })
+    nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
     // ★ 监听 agent:done 事件（后台任务完成时触发）
     unlistenDone = await listen<any>('agent:done', async (ev) => {
       console.log('[FE] done received')
@@ -529,7 +578,7 @@ async function handleSendMessage() {
       // ★ 保存会话到数据库（确保 AI 回复被持久化；显式存回提问时的会话）
       saveToStorage(session)
       
-      try { unlistenDone(); unlistenToken(); unlistenProgress() } catch (e) { console.error('[KB] unlisten failed:', e) }
+      try { unlistenDone(); unlistenToken(); unlistenProgress(); unlistenError() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
 
     // ★ 监听 agent:error 事件
@@ -581,6 +630,7 @@ async function stopAgent() {
     scrollToBottomIfNear()
   } catch (e) {
     console.error('[KB] 停止失败:', e)
+    agent.isChatting.value = false  // ★ agent_cancel 调用失败也复位状态，避免发送按钮永久红着
   }
 }
 
@@ -659,6 +709,7 @@ onDeactivated(() => {
 onUnmounted(() => {
   stopAllTypewriters()
   if (activeTokenTimer) { clearInterval(activeTokenTimer); activeTokenTimer = null }
+  activeTokenConsume = null
   unlistenProgress?.()
   unlistenToken?.()
   unlistenDone?.()

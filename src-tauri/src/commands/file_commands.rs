@@ -645,9 +645,11 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
 }
 
 /// 粘贴文件落临时文件（供 Chat 附件粘贴场景：图片、文档等）
+/// ⚠️ 大文件请改用 chat_save_temp_chunk 分片上传——bytes 走 IPC 会 JSON 序列化成数字数组，主线程开销 O(size)
 #[tauri::command]
 pub async fn chat_save_temp_image(bytes: Vec<u8>, ext: String, orig_name: Option<String>) -> Result<Value, String> {
     if bytes.is_empty() { return Err("文件数据为空".into()); }
+    if bytes.len() > PASTE_MAX_BYTES { return Err(format!("文件超过 {}MB 上限", PASTE_MAX_BYTES / (1024 * 1024))); }
     let ext_clean = ext.trim().trim_start_matches('.').to_lowercase();
     // 只允许字母数字扩展名，防止路径注入
     let safe_ext: String = ext_clean.chars().take(10).filter(|c| c.is_ascii_alphanumeric()).collect();
@@ -663,6 +665,96 @@ pub async fn chat_save_temp_image(bytes: Vec<u8>, ext: String, orig_name: Option
     let path = dir.join(&display_name);
     std::fs::write(&path, &bytes).map_err(|e| format!("写入临时文件失败: {}", e))?;
     Ok(json!({"success": true, "path": path.to_string_lossy(), "name": display_name}))
+}
+
+/// 粘贴上传大小上限（前端 pasteUpload.ts 的 MAX_PASTE_BYTES 与此保持一致）
+const PASTE_MAX_BYTES: usize = 20 * 1024 * 1024;
+
+/// 粘贴文件分片落临时文件——替代整文件 bytes IPC，单片 base64 传输让主线程不冻结，天然产生进度粒度
+/// 无状态：路径由 upload_id 派生；index=0 截断创建，其余追加；末片返回 {path, name}
+#[tauri::command]
+pub async fn chat_save_temp_chunk(
+    upload_id: String,
+    data_b64: String,
+    ext: String,
+    orig_name: Option<String>,
+    index: u32,
+    total: u32,
+) -> Result<Value, String> {
+    if total == 0 || index >= total { return Err("分片序号无效".into()); }
+    // upload_id 仅允许字母数字与连字符（uuid），防路径注入
+    let id_ok = !upload_id.is_empty()
+        && upload_id.len() <= 64
+        && upload_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !id_ok { return Err("无效的 upload_id".into()); }
+    let ext_clean = ext.trim().trim_start_matches('.').to_lowercase();
+    let safe_ext: String = ext_clean.chars().take(10).filter(|c| c.is_ascii_alphanumeric()).collect();
+    if safe_ext.is_empty() { return Err("无效的文件扩展名".into()); }
+
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_b64.as_bytes())
+        .map_err(|e| format!("分片解码失败: {}", e))?;
+
+    let dir = std::env::temp_dir().join("arkmind_attach");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+    let path = dir.join(format!("{}.{}", upload_id, safe_ext));
+
+    use std::io::Write;
+    if index == 0 {
+        // 首片：截断创建（显示名在末片统一返回）
+        let mut f = std::fs::File::create(&path).map_err(|e| format!("创建临时文件失败: {}", e))?;
+        f.write_all(&bytes).map_err(|e| format!("写入分片失败: {}", e))?;
+    } else {
+        // 追加前检查累计大小（写入前 len = 已写字节）
+        let existing = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if existing + bytes.len() as u64 > PASTE_MAX_BYTES as u64 {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("文件超过 {}MB 上限", PASTE_MAX_BYTES / (1024 * 1024)));
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("打开分片文件失败（首片未落盘？）: {}", e))?;
+        f.write_all(&bytes).map_err(|e| format!("写入分片失败: {}", e))?;
+    }
+
+    if index + 1 == total {
+        // 末片：返回最终路径与显示名
+        let display_name = orig_name
+            .filter(|n| !n.is_empty())
+            .and_then(|n| std::path::Path::new(&n).file_name().map(|f| f.to_string_lossy().to_string()))
+            .unwrap_or_else(|| format!("{}.{}", upload_id, safe_ext));
+        // 末片同样校验总大小
+        let final_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if final_size > PASTE_MAX_BYTES as u64 {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("文件超过 {}MB 上限", PASTE_MAX_BYTES / (1024 * 1024)));
+        }
+        Ok(json!({"success": true, "path": path.to_string_lossy(), "name": display_name}))
+    } else {
+        Ok(json!({"success": true, "done": false}))
+    }
+}
+
+/// 中断分片上传：删除已落盘的分片临时文件（按 upload_id 派生路径，仅限 arkmind_attach 目录）
+#[tauri::command]
+pub async fn chat_save_temp_abort(upload_id: String, ext: String) -> Result<Value, String> {
+    let id_ok = !upload_id.is_empty()
+        && upload_id.len() <= 64
+        && upload_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !id_ok { return Ok(json!({"success": false})); }
+    let ext_clean = ext.trim().trim_start_matches('.').to_lowercase();
+    let safe_ext: String = ext_clean.chars().take(10).filter(|c| c.is_ascii_alphanumeric()).collect();
+    if safe_ext.is_empty() { return Ok(json!({"success": false})); }
+    let dir = std::env::temp_dir().join("arkmind_attach");
+    let path = dir.join(format!("{}.{}", upload_id, safe_ext));
+    if let Ok(p) = path.canonicalize() {
+        if p.starts_with(dir.canonicalize().unwrap_or(dir)) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    Ok(json!({"success": true}))
 }
 
 /// 删除粘贴上传产生的临时文件（仅允许删除 arkmind_attach 目录内的文件，防路径穿越）

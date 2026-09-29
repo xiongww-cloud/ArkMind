@@ -7,6 +7,7 @@ import { kbFabInitSession, kbFabLoadHistory } from '@/api/db-client'
 import { useAgentChat, type ChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata } from '@/composables/useAgentChat'
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
+import { uploadPasteFile } from '@/utils/pasteUpload'
 
 const agent = useAgentChat()
 
@@ -14,7 +15,17 @@ const agent = useAgentChat()
 const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
 const DOC_EXTS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'txt', 'md', 'csv', 'json'])
 const ALL_EXTS = new Set([...IMG_EXTS, ...DOC_EXTS])
-interface PendingAttachment { path: string; name: string; kind: 'image' | 'doc'; previewUrl?: string }
+const MAX_ATTACH = 5
+interface PendingAttachment {
+  id: string
+  path: string            // 上传中为 ''（占位），完成才写入
+  name: string
+  kind: 'image' | 'doc'
+  previewUrl?: string
+  uploading?: boolean
+  progress?: number       // 0-100
+  _cancelled?: boolean
+}
 const pendingAttachments = ref<PendingAttachment[]>([])
 function extOf(name: string): string { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : '' }
 async function openAttachmentDialog() {
@@ -31,21 +42,66 @@ async function openAttachmentDialog() {
   const paths: string[] = Array.isArray(result) ? result : [result as string]
   let added = 0
   for (const p of paths) {
-    if (pendingAttachments.value.length >= 5) break
+    if (pendingAttachments.value.length >= MAX_ATTACH) break
     const name = p.replace(/^.*[\\\/]/, '')
     const ext = extOf(name)
     if (!ALL_EXTS.has(ext)) continue
     if (pendingAttachments.value.some(a => a.path === p)) continue
-    pendingAttachments.value.push({ path: p, name, kind: IMG_EXTS.has(ext) ? 'image' : 'doc' })
+    pendingAttachments.value.push({ id: crypto.randomUUID(), path: p, name, kind: IMG_EXTS.has(ext) ? 'image' : 'doc' })
     added++
   }
   // 收起态添加附件后自动展开，以便显示附件行
   if (added > 0 && !expanded.value) expandChat()
 }
 function removeAttachment(idx: number) {
-  // 仅手动移除时回收 blob（发送后消息气泡仍引用同一 URL，不可提前 revoke）
   const removed = pendingAttachments.value.splice(idx, 1)[0]
-  if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+  if (!removed) return
+  // 上传中：标记中断，分片循环下一轮中止并由后端清理临时文件
+  if (removed.uploading) { removed._cancelled = true; return }
+  // 仅手动移除时回收 blob（发送后消息气泡仍引用同一 URL，不可提前 revoke）
+  if (removed.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+}
+/** 分片上传一个粘贴文件：先占位（即时可见），再推进度 */
+async function uploadPastedFile(file: File, ext: string, nameFallback: string): Promise<boolean> {
+  const kind: 'image' | 'doc' = IMG_EXTS.has(ext) ? 'image' : 'doc'
+  const chip: PendingAttachment = {
+    id: crypto.randomUUID(),
+    path: '',
+    name: file.name || nameFallback,
+    kind,
+    // File 即 Blob，零拷贝秒出缩略图
+    previewUrl: kind === 'image' ? URL.createObjectURL(file) : undefined,
+    uploading: true,
+    progress: 0,
+  }
+  pendingAttachments.value.push(chip)
+  if (!expanded.value) expandChat()
+  try {
+    const r = await uploadPasteFile(file, ext, (pct) => { chip.progress = pct }, () => !!chip._cancelled)
+    // 期间可能已被取消/移除
+    if (!pendingAttachments.value.includes(chip)) {
+      if (r?.path) invoke('file_remove_temp', { path: r.path }).catch(() => {})
+      if (chip.previewUrl) URL.revokeObjectURL(chip.previewUrl)
+      return false
+    }
+    chip.path = r.path
+    chip.name = r.name || chip.name
+    chip.uploading = false
+    return true
+  } catch (err: any) {
+    const idx = pendingAttachments.value.indexOf(chip)
+    if (idx >= 0) pendingAttachments.value.splice(idx, 1)
+    if (chip.previewUrl) URL.revokeObjectURL(chip.previewUrl)
+    if (String(err) !== 'Error: 已取消' && !chip._cancelled) {
+      console.warn('[Chat] paste save failed:', err)
+      // 超限等明确错误提示用户
+      const msg = String(err?.message || err)
+      if (msg.includes('上限') || msg.includes('超过')) {
+        import('@/composables/useToast').then(m => m.toast({ message: msg, type: 'error' }))
+      }
+    }
+    return false
+  }
 }
 async function onPaste(e: ClipboardEvent) {
   let added = 0
@@ -53,57 +109,41 @@ async function onPaste(e: ClipboardEvent) {
   if (files && files.length > 0) {
     e.preventDefault()
     for (const file of Array.from(files)) {
-      if (pendingAttachments.value.length >= 5) break
+      if (pendingAttachments.value.length >= MAX_ATTACH) break
       const ext = extOf(file.name) || (file.type.split('/')[1] === 'jpeg' ? 'jpg' : file.type.split('/')[1] || 'bin')
       if (!ALL_EXTS.has(ext) && !IMG_EXTS.has(ext)) continue
-      try {
-        const buf = await file.arrayBuffer()
-        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: file.name || null })
-        if (r?.success && r.path) {
-          const kind: 'image' | 'doc' = IMG_EXTS.has(ext) ? 'image' : 'doc'
-          const previewUrl = kind === 'image' ? URL.createObjectURL(new Blob([buf], { type: file.type })) : undefined
-          pendingAttachments.value.push({ path: r.path, name: r.name || file.name, kind, previewUrl })
-          added++
-        }
-      } catch (err) { console.warn('[Chat] paste save failed:', err) }
+      if (await uploadPastedFile(file, ext, `pasted.${ext}`)) added++
     }
-    if (added > 0 && !expanded.value) expandChat()
     return
   }
   const items = e.clipboardData?.items
+  let itemAdded = 0
   if (items) {
     for (const item of items) {
       if (!item.type.startsWith('image/')) continue
-      if (pendingAttachments.value.length >= 5) break
+      if (pendingAttachments.value.length >= MAX_ATTACH) break
       e.preventDefault()
       const file = item.getAsFile(); if (!file) continue
-      try {
-        const buf = await file.arrayBuffer()
-        const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1]
-        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: null })
-        if (r?.success && r.path) {
-          const blobUrl = URL.createObjectURL(new Blob([buf], { type: item.type }))
-          pendingAttachments.value.push({ path: r.path, name: r.name || `pasted.${ext}`, kind: 'image', previewUrl: blobUrl })
-          added++
-        }
-      } catch (err) { console.warn('[Chat] paste image failed:', err) }
+      const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1]
+      if (await uploadPastedFile(file, ext, `pasted.${ext}`)) itemAdded++
     }
   }
+  added += itemAdded
   // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
-  // 若未添加任何附件，回退从后端读取剪贴板文件列表
-  if (added === 0) {
+  // 若本轮未取到任何文件且剪贴板确为文件列表，才回退从后端读取（纯文本粘贴不打后端）
+  const clipboardHasFiles = Array.from(e.clipboardData?.types || []).includes('Files')
+  if (added === 0 && clipboardHasFiles) {
     try {
       const r: any = await invoke('chat_read_clipboard_files')
       if (r?.success && Array.isArray(r.files) && r.files.length) {
         for (const f of r.files) {
-          if (pendingAttachments.value.length >= 5) break
-          pendingAttachments.value.push({ path: f.path, name: f.name, kind: f.kind || 'doc' })
+          if (pendingAttachments.value.length >= MAX_ATTACH) break
+          pendingAttachments.value.push({ id: crypto.randomUUID(), path: f.path, name: f.name, kind: f.kind || 'doc' })
           added++
         }
       }
     } catch (err) { console.warn('[Chat] clipboard read failed:', err) }
   }
-  if (added > 0 && !expanded.value) expandChat()
 }
 function displayContent(content: string): string { const i = content.indexOf('<<<ATTACHMENTS>>>'); return i >= 0 ? content.slice(0, i).trimEnd() : content }
 function extractAttachmentNames(content: string): string[] { const names: string[] = []; const re = /[\u3010]\u9644\u4ef6\uff1a(.+?)[\u3011]/g; let m; while ((m = re.exec(content)) !== null) names.push(m[1]); return names }
@@ -254,6 +294,11 @@ async function hideWindow() {
 async function send() {
   const q = inputText.value.trim()
   if (!q || agent.isChatting.value) return
+  // 附件分片上传中：等待完成（占位 chip 的 path 尚未就绪，直接发送会带上空路径）
+  if (pendingAttachments.value.some(a => a.uploading)) {
+    import('@/composables/useToast').then(m => m.toast({ message: '附件仍在上传，请稍候', type: 'error' }))
+    return
+  }
 
   // 未展开则并行展开（不 await）
   if (!expanded.value) expandChat()

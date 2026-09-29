@@ -22,6 +22,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from '@/composables/useToast'
 import { pasteShortcut } from '@/utils/platform'
+import { uploadPasteFile } from '@/utils/pasteUpload'
 
 const props = defineProps<{
   entityType: string
@@ -44,6 +45,9 @@ interface PendingUpload {
   ext: string
   isPath: boolean
   tempPath?: string
+  uploading?: boolean
+  progress?: number       // 0-100（粘贴分片上传进度）
+  _cancelled?: boolean
 }
 
 const show = ref(false)
@@ -109,6 +113,41 @@ async function pickFiles() {
   }
 }
 
+/** 分片上传一个粘贴文件：先占位（进度即时可见），完成后回填 tempPath */
+async function uploadPastedFile(file: File, ext: string, nameFallback: string): Promise<boolean> {
+  const base = (file.name || nameFallback).replace(/\.[^.]+$/, '')
+  const item: PendingUpload = {
+    file,
+    name: base,
+    ext,
+    isPath: false,
+    uploading: true,
+    progress: 0,
+  }
+  pendingUploads.value.push(item)
+  try {
+    const r = await uploadPasteFile(file, ext, (pct) => { item.progress = pct }, () => !!item._cancelled)
+    if (!pendingUploads.value.includes(item)) {
+      if (r?.path) removeTempFile(r.path).catch(() => {})
+      return false
+    }
+    item.tempPath = r.path
+    item.uploading = false
+    const dn = (r.name || file.name || '').replace(/\.[^.]+$/, '')
+    if (dn) item.name = dn
+    return true
+  } catch (err: any) {
+    const idx = pendingUploads.value.indexOf(item)
+    if (idx >= 0) pendingUploads.value.splice(idx, 1)
+    const msg = String(err?.message || err)
+    if (!item._cancelled && msg !== 'Error: 已取消') {
+      console.warn('[UploadModal] paste save failed:', err)
+      if (msg.includes('上限') || msg.includes('超过')) toast({ message: msg, type: 'error' })
+    }
+    return false
+  }
+}
+
 async function onUploadPaste(e: ClipboardEvent) {
   let added = 0
   const files = e.clipboardData?.files
@@ -116,15 +155,7 @@ async function onUploadPaste(e: ClipboardEvent) {
     e.preventDefault()
     for (const file of Array.from(files)) {
       const ext = extOf(file.name) || file.type.split('/')[1] || 'bin'
-      try {
-        const buf = await file.arrayBuffer()
-        const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: file.name || null })
-        if (r?.success && r.path) {
-          const base = (r.name || file.name || 'pasted').replace(/\.[^.]+$/, '')
-          pendingUploads.value.push({ file, name: base, ext, isPath: false, tempPath: r.path })
-          added++
-        }
-      } catch (err) { console.warn('[UploadModal] paste save failed:', err) }
+      if (await uploadPastedFile(file, ext, 'pasted')) added++
     }
   }
   // 回退：从 clipboardData.items 获取图片（截图等无文件名）
@@ -136,21 +167,15 @@ async function onUploadPaste(e: ClipboardEvent) {
         e.preventDefault()
         const file = item.getAsFile()
         if (!file) continue
-        try {
-          const buf = await file.arrayBuffer()
-          const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : (item.type.split('/')[1] || 'png')
-          const r: any = await invoke('chat_save_temp_image', { bytes: new Uint8Array(buf), ext, origName: null })
-          if (r?.success && r.path) {
-            pendingUploads.value.push({ file, name: r.name || 'pasted', ext, isPath: false, tempPath: r.path })
-            added++
-          }
-        } catch (err) { console.warn('[UploadModal] paste image failed:', err) }
+        const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : (item.type.split('/')[1] || 'png')
+        if (await uploadPastedFile(file, ext, 'pasted')) added++
       }
     }
   }
   // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
-  // 若浏览器侧未取到任何文件，回退从后端读取剪贴板文件列表
-  if (added === 0) {
+  // 若浏览器侧未取到任何文件且剪贴板确为文件列表，才回退从后端读取（纯文本粘贴不打后端）
+  const clipboardHasFiles = Array.from(e.clipboardData?.types || []).includes('Files')
+  if (added === 0 && clipboardHasFiles) {
     await readClipboardFiles()
   }
   // 处理完成后重新聚焦隐藏 textarea，保持后续粘贴可用
@@ -177,15 +202,20 @@ async function readClipboardFiles() {
 
 function removeUpload(idx: number) {
   const item = pendingUploads.value[idx]
-  if (item && !item.isPath && item.tempPath) {
-    try { removeTempFile(item.tempPath).catch(() => {}) } catch {}
+  if (item) {
+    // 上传中：标记中断（分片循环下一片检测到后中止并清理）
+    if (item.uploading) item._cancelled = true
+    else if (!item.isPath && item.tempPath) {
+      try { removeTempFile(item.tempPath).catch(() => {}) } catch {}
+    }
   }
   pendingUploads.value.splice(idx, 1)
 }
 
 function clearAll() {
   for (const item of pendingUploads.value) {
-    if (!item.isPath && item.tempPath) {
+    if (item.uploading) item._cancelled = true
+    else if (!item.isPath && item.tempPath) {
       try { removeTempFile(item.tempPath).catch(() => {}) } catch {}
     }
   }
@@ -194,6 +224,10 @@ function clearAll() {
 
 async function confirmUpload() {
   if (!pendingUploads.value.length || uploading.value) return
+  if (pendingUploads.value.some(u => u.uploading)) {
+    toast({ message: '粘贴的文件仍在上传，请稍候', type: 'error' })
+    return
+  }
   uploading.value = true
   let ok = 0
   let fail = 0
@@ -297,9 +331,9 @@ defineExpose({ open, close })
               <div
                 v-for="(item, idx) in pendingUploads"
                 :key="idx"
-                class="group flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg border border-surface-200 hover:border-surface-300 hover:bg-surface-50/50 transition-all duration-150"
+                class="group relative flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg border border-surface-200 hover:border-surface-300 hover:bg-surface-50/50 transition-all duration-150 overflow-hidden"
               >
-                <div class="w-7 h-7 rounded-md bg-surface-50 border border-surface-100 flex items-center justify-center flex-shrink-0">
+                <div class="w-7 h-7 rounded-md bg-surface-50 border border-surface-100 flex items-center justify-center flex-shrink-0" :class="item.uploading ? 'opacity-50' : ''">
                   <AppIcon name="file-doc" size="13" class="text-surface-500" />
                 </div>
                 <div class="flex-1 min-w-0 flex items-center gap-1">
@@ -307,18 +341,24 @@ defineExpose({ open, close })
                     v-model="item.name"
                     @focus="$event.target.select()"
                     @blur="() => pasteArea?.focus()"
+                    :disabled="item.uploading"
                     class="flex-1 min-w-0 text-[11px] text-surface-800 bg-transparent border border-transparent focus:border-brand-400 focus:bg-white rounded px-1 py-0.5 outline-none transition-colors"
                     v-tooltip="`编辑文件名（当前：${item.name}.${item.ext}）`"
                   />
                   <span class="text-[10px] text-surface-400 flex-shrink-0">.{{ item.ext }}</span>
+                  <span v-if="item.uploading" class="text-[10px] text-brand-600 tabular-nums flex-shrink-0">{{ item.progress ?? 0 }}%</span>
                 </div>
                 <button
                   @click="removeUpload(idx)"
                   class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 opacity-0 group-hover:opacity-100"
-                  v-tooltip="'移除'"
+                  v-tooltip="item.uploading ? '取消上传' : '移除'"
                 >
                   <AppIcon name="x" size="11" />
                 </button>
+                <!-- 粘贴分片上传进度条 -->
+                <div v-if="item.uploading" class="absolute left-0 bottom-0 h-[2px] w-full bg-surface-100">
+                  <div class="h-full bg-brand-500 transition-all duration-200" :style="{ width: (item.progress ?? 0) + '%' }"></div>
+                </div>
               </div>
             </div>
             <p v-else class="text-center py-5 text-[11px] text-surface-300">暂无待上传文件</p>
