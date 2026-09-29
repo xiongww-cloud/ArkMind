@@ -74,6 +74,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        // ★ 浮窗快呼全局快捷键：按下已注册热键 → toggle 聊天浮窗（键位可配，见 hotkey_commands）
+        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _shortcut, event| {
+            use tauri_plugin_global_shortcut::ShortcutState;
+            if event.state() == ShortcutState::Pressed {
+                commands::window_commands::toggle_chat_fire_and_forget(app);
+            }
+        }).build())
         .setup(|app| {
             // ★ 初始化防抖物化调度器（需 tokio runtime 就绪）
             once_cell::sync::Lazy::force(&services::debounced_sync::SCHEDULER);
@@ -260,6 +267,9 @@ pub fn run() {
             services::email_polling::init_app_handle(app.handle().clone());
             services::email_polling::start_email_loop();
 
+            // ★ 注册浮窗快呼全局快捷键（存储值优先，否则平台默认；失败仅告警，精灵仍可作为入口）
+            commands::hotkey_commands::init_chat_hotkey(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -353,7 +363,8 @@ pub fn run() {
             // Sprite Window
             commands::create_sprite_window, commands::toggle_sprite_window, commands::close_sprite_window, commands::set_sprite_position,
             // Chat Window
-            commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::expand_chat_window, commands::set_chat_dialog_mode,
+            commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::set_chat_dialog_mode,
+            commands::get_chat_hotkey, commands::set_chat_hotkey,
             // Export
             commands::export_data, commands::export_pick_save_path, commands::import_data, commands::backup_all, commands::restore_all, commands::export_write_buffer,
             commands::solution_download_excel,

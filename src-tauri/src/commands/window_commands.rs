@@ -195,34 +195,54 @@ pub async fn set_sprite_position(app: AppHandle, x: f64, y: f64) -> Result<(), S
     Ok(())
 }
 
-/// 创建聊天窗口（透明窗口，初始位于收起态：屏幕底部）
+// ─── 聊天浮窗：Spotlight 式快呼面板（固定尺寸顶部居中，窗口零位移，生长全在 webview 内 CSS）───
+
+/// 浮窗固定逻辑尺寸：宽 620；高 640 = 输入区 + 面板最大展开高度
+const CHAT_WIN_W: f64 = 620.0;
+const CHAT_WIN_H: f64 = 640.0;
+
+/// 定位到屏幕顶部居中（x 居中，y ≈ 屏高 14%，Spotlight 视觉位）
+fn position_chat_window(app: &AppHandle, win: &WebviewWindow) {
+    let (screen_w, screen_h) = app.get_webview_window("main")
+        .and_then(|m| m.primary_monitor().ok().flatten())
+        .map(|m| {
+            let sf = m.scale_factor();
+            (m.size().width as f64 / sf, m.size().height as f64 / sf)
+        })
+        .unwrap_or((1920.0, 1080.0));
+    let x = (screen_w - CHAT_WIN_W) / 2.0;
+    let y = (screen_h * 0.14).max(48.0);
+    let _ = win.set_size(tauri::LogicalSize::new(CHAT_WIN_W, CHAT_WIN_H));
+    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+}
+
+/// 创建（或复用）聊天窗口并唤起
 #[tauri::command]
-pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> Result<(), String> {
-    let win = if let Some(win) = app.get_webview_window("chat") {
-        win
-    } else {
-        // 代码创建聊天窗口（透明/浮窗层级，macOS 依赖 macos-private-api feature）
-        let win_w = width.unwrap_or(620.0);
-        let win_h = height.unwrap_or(700.0);
-        let win = WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
-            .inner_size(win_w, win_h)
-            .decorations(false)
-            .transparent(true)
-            .always_on_top(true)
-            .shadow(false)
-            .resizable(false)
-            .skip_taskbar(true)
-            .visible(true)
-            // macOS 隐藏窗口时禁用后台节流，避免 webview 挂起导致 chat:reset 未处理、
-            // 重新显示时以旧的展开态渲染（出现打开/收起动画）
-            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
-            .build()
-            .map_err(|e| e.to_string())?;
-        set_auxiliary_window(&app, "chat");
-        win
+pub async fn create_chat_window(app: AppHandle) -> Result<(), String> {
+    let win = match app.get_webview_window("chat") {
+        Some(win) => win,
+        None => {
+            // 代码创建聊天窗口（透明/浮窗层级，macOS 依赖 macos-private-api feature）
+            let win = WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("chat.html".into()))
+                .inner_size(CHAT_WIN_W, CHAT_WIN_H)
+                .decorations(false)
+                .transparent(true)
+                .always_on_top(true)
+                .shadow(false)
+                .resizable(false)
+                .skip_taskbar(true)
+                .visible(true)
+                // macOS 隐藏窗口时禁用后台节流，避免 webview 挂起导致 chat:reset 未处理、
+                // 重新显示时以旧状态渲染
+                .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+                .build()
+                .map_err(|e| e.to_string())?;
+            set_auxiliary_window(&app, "chat");
+            win
+        }
     };
 
-    position_chat_window_collapsed(&app, &win, width, height);
+    position_chat_window(&app, &win);
     setup_chat_window_events(&app);
     let _ = win.show();
     let _ = win.set_focus();
@@ -230,27 +250,7 @@ pub async fn create_chat_window(app: AppHandle, width: Option<f64>, height: Opti
     Ok(())
 }
 
-/// 设置聊天窗口收起态位置（屏幕底部居中）
-fn position_chat_window_collapsed(app: &AppHandle, win: &WebviewWindow, width: Option<f64>, height: Option<f64>) {
-    let win_w = width.unwrap_or(620.0);
-    let win_h = height.unwrap_or(700.0);
-
-    // 屏幕宽度（水平居中）
-    let screen_w = if let Some(main_win) = app.get_webview_window("main") {
-        main_win.primary_monitor().ok().flatten()
-            .map(|m| m.size().width as f64 / m.scale_factor())
-            .unwrap_or(1920.0)
-    } else { 1920.0 };
-
-    // 收起态：输入框在屏幕底部可见
-    let collapsed_y = collapsed_chat_y(app);
-    let x = (screen_w - win_w) / 2.0;
-
-    let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-    let _ = win.set_position(tauri::LogicalPosition::new(x, collapsed_y));
-}
-
-/// 绑定失焦自动隐藏监听器（只绑定一次，窗口由配置创建可能复用）
+/// 失焦自动隐藏：先通知前端重置会话态（收起/清焦点），再隐藏；不移动窗口
 fn setup_chat_window_events(app: &AppHandle) {
     if CHAT_EVENT_SETUP.swap(true, Ordering::Relaxed) { return; }
     let handle = app.clone();
@@ -259,14 +259,10 @@ fn setup_chat_window_events(app: &AppHandle) {
             if let tauri::WindowEvent::Focused(focused) = event {
                 if !focused && !CHAT_DIALOG_ACTIVE.load(Ordering::Relaxed) {
                     if let Some(chat_win) = handle.get_webview_window("chat") {
-                        // ★ 先重置前端展开状态，再隐藏窗口
-                        let _ = handle.emit("chat:reset", ());
-                        let _ = chat_win.hide();
-                        // ★ 关闭时位置重置回收起态
-                        let scale = chat_win.scale_factor().unwrap_or(1.0);
-                        let cur_x = chat_win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
-                        let collapsed_y = collapsed_chat_y(&handle);
-                        let _ = chat_win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
+                        if chat_win.is_visible().unwrap_or(false) {
+                            let _ = handle.emit("chat:reset", ());
+                            let _ = chat_win.hide();
+                        }
                     }
                 }
             }
@@ -274,63 +270,41 @@ fn setup_chat_window_events(app: &AppHandle) {
     }
 }
 
-/// 展开/收起聊天窗口（瞬时移动 Y 坐标，配合前端 CSS 动画同步）
-#[tauri::command]
-pub async fn expand_chat_window(app: AppHandle, expanded: bool) -> Result<(), String> {
-    let win = app.get_webview_window("chat").ok_or("chat window not found")?;
-    let scale = win.scale_factor().unwrap_or(1.0);
-
-    let collapsed_y = collapsed_chat_y(&app);
-    let delta = 564.0;  // = 窗口高 - 底部边距(68) - 输入栏高(48) - 顶部边距(20) + 修正 = 700-136
-    let expanded_y = collapsed_y - delta;
-
-    let target_y = if expanded { expanded_y } else { collapsed_y };
-
-    let cur_x = win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
-    win.set_position(tauri::LogicalPosition::new(cur_x, target_y))
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-/// 计算聊天窗口收起态的 Y 坐标（屏幕底 - 168）
-fn collapsed_chat_y(app: &AppHandle) -> f64 {
-    let screen_h = if let Some(main_win) = app.get_webview_window("main") {
-        main_win.primary_monitor().ok().flatten()
-            .map(|m| m.size().height as f64 / m.scale_factor())
-            .unwrap_or(1080.0)
-    } else { 1080.0 };
-    screen_h - 168.0
-}
-
-/// 切换聊天窗口显示/隐藏
-#[tauri::command]
-pub async fn toggle_chat_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> Result<(), String> {
+/// 共享切换逻辑：全局快捷键 / 精灵点击 / 命令三入口共用。
+/// 隐藏与显示都先 emit chat:reset（前端复位面板态并保持 no-animate 静默）。
+pub(crate) async fn toggle_chat(app: &AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("chat") {
         if win.is_visible().unwrap_or(false) {
-            // ★ 先重置前端展开状态，再隐藏窗口
             let _ = app.emit("chat:reset", ());
             let _ = win.hide();
-            // ★ 关闭时位置重置回收起态（不可见，无动画）
-            let scale = win.scale_factor().unwrap_or(1.0);
-            let cur_x = win.outer_position().map(|p| p.x as f64 / scale).unwrap_or(0.0);
-            let collapsed_y = collapsed_chat_y(&app);
-            let _ = win.set_position(tauri::LogicalPosition::new(cur_x, collapsed_y));
         } else {
-            // ★ 先重置前端展开状态，再显示窗口（前端 no-animate 禁用过渡，避免收起动画）
             let _ = app.emit("chat:reset", ());
-            position_chat_window_collapsed(&app, &win, width, height);
-            setup_chat_window_events(&app);
+            position_chat_window(app, &win);
+            setup_chat_window_events(app);
             let _ = win.show();
             let _ = win.set_focus();
         }
     } else {
-        create_chat_window(app, width, height).await?;
+        create_chat_window(app.clone()).await?;
     }
     Ok(())
 }
 
-/// 关闭聊天窗口
+/// 快捷键回调入口（插件 handler 非异步环境：fire-and-forget）
+pub(crate) fn toggle_chat_fire_and_forget(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = toggle_chat(&app).await { log::warn!("[Chat] 快捷键切换失败: {e}"); }
+    });
+}
+
+/// 切换聊天窗口显示/隐藏（精灵点击调用）
+#[tauri::command]
+pub async fn toggle_chat_window(app: AppHandle) -> Result<(), String> {
+    toggle_chat(&app).await
+}
+
+/// 关闭聊天窗口（销毁；当前前端用 toggle 隐藏，保留命令兼容）
 #[tauri::command]
 pub async fn close_chat_window(app: AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("chat") {
