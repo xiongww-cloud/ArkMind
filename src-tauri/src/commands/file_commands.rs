@@ -63,19 +63,36 @@ fn temp_dir() -> String {
         .to_string()
 }
 
-/// 清空应用 temp 目录（预览临时文件 ARK-*、剪贴板暂存等一次性文件）。
+/// 清空应用 temp 目录（预览临时文件 temp/preview/、剪贴板暂存等一次性文件）。
 /// 该目录只存放可抛弃的临时物，启动时整目录清空。
+/// 预览文件是只读硬链接，Windows 上 remove 对只读文件会失败，必须先清只读位。
 pub fn cleanup_preview_links() {
     let td = temp_dir();
     let _ = std::fs::create_dir_all(&td);
     if let Ok(entries) = std::fs::read_dir(&td) {
         for entry in entries.flatten() {
             let path = entry.path();
+            clear_readonly_recursive(&path);
             if path.is_dir() {
                 let _ = std::fs::remove_dir_all(&path);
             } else {
                 let _ = std::fs::remove_file(&path);
             }
+        }
+    }
+}
+
+/// 递归清除只读位（只读硬链接文件不先清位则 Windows remove 必失败）
+fn clear_readonly_recursive(path: &std::path::Path) {
+    if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for e in entries.flatten() { clear_readonly_recursive(&e.path()); }
+        }
+    } else if let Ok(md) = std::fs::metadata(path) {
+        let mut p = md.permissions();
+        if p.readonly() {
+            p.set_readonly(false);
+            let _ = std::fs::set_permissions(path, p);
         }
     }
 }
@@ -619,21 +636,19 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
 #[tauri::command] pub async fn file_preview(file_id: String) -> Result<Value, String> {
     match resolve_file_info(&file_id) {
         Some((src, name, ext)) => {
-            let base: String = if name.is_empty() { "ARK-unknown".to_string() } else {
+            let base: String = if name.is_empty() { "unknown".to_string() } else {
                 // 只取路径末段，防 custom_name 含 ../ 时硬链接逃逸临时目录
-                std::path::Path::new(&name).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "ARK-unknown".to_string())
+                std::path::Path::new(&name).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "unknown".to_string())
             };
             let tmp_name = if ext.is_empty() || base.to_lowercase().ends_with(&format!(".{}", ext.to_lowercase())) {
-                format!("ARK-{}", base)
-            } else { format!("ARK-{}.{}", base, ext) };
-            let td = temp_dir();
+                base
+            } else { format!("{}.{}", base, ext) };
+            // ★ 预览文件放独立子目录 temp/preview/：temp 根还住着剪贴板暂存（同名原始文件名），
+            //   目录隔离后预览文件名=纯原名，清理按目录整体删而不必按前缀识别，也不会误删/撞名
+            let td = std::path::Path::new(&temp_dir()).join("preview");
             std::fs::create_dir_all(&td).ok();
-            if let Ok(entries) = std::fs::read_dir(&td) {
-                for entry in entries.flatten() {
-                    if entry.file_name().to_string_lossy().starts_with("ARK-") { let _ = std::fs::remove_file(entry.path()); }
-                }
-            }
-            let tmp_path = std::path::Path::new(&td).join(&tmp_name);
+            clear_preview_dir(&td);
+            let tmp_path = td.join(&tmp_name);
             std::fs::hard_link(&src, &tmp_path).map_err(|e| format!("创建硬链接失败: {}", e))?;
             let mut perms = std::fs::metadata(&tmp_path).map_err(|e| format!("读取权限失败: {}", e))?.permissions();
             perms.set_readonly(true); std::fs::set_permissions(&tmp_path, perms).ok();
@@ -641,6 +656,25 @@ fn resolve_file_info(file_id: &str) -> Option<(String, String, String)> {
             Ok(json!({"success":true}))
         }
         None => Ok(json!({"success":false,"error":"文件不存在"}))
+    }
+}
+
+/// 清空预览子目录（预览前删掉上一轮链接）。上轮文件是只读硬链接，
+/// 需先清只读位；仍被占用（杀软扫描/上次打开进程未退）时短重试。
+fn clear_preview_dir(dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            clear_readonly_recursive(&path);
+            for attempt in 0..3 {
+                if attempt > 0 { std::thread::sleep(std::time::Duration::from_millis(100)); }
+                match std::fs::remove_file(&path) {
+                    Ok(()) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(_) => continue,
+                }
+            }
+        }
     }
 }
 
@@ -1046,6 +1080,20 @@ mod tests {
         assert_eq!(filename_for_clipboard("", "xlsx"), "download");
         assert_eq!(filename_for_clipboard("", ""), "download");
         assert_eq!(filename_for_clipboard("名字", ""), "名字");
+    }
+
+    #[test]
+    fn test_clear_preview_dir_removes_readonly_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("报价单.docx");
+        std::fs::write(&f, b"x").unwrap();
+        let mut p = std::fs::metadata(&f).unwrap().permissions();
+        p.set_readonly(true);
+        std::fs::set_permissions(&f, p).unwrap();
+        clear_preview_dir(dir.path());
+        assert!(!f.exists(), "只读的上一轮预览链接应被清除");
+        // 空目录再跑一次不报错
+        clear_preview_dir(dir.path());
     }
 
     #[test]
