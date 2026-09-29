@@ -178,6 +178,11 @@ const hasMore = ref(true)
 function mapHistoryMessage(m: any) {
   const docs = parseDocumentsMetadata(m.metadata)
   const clar = parseClarificationMetadata(m.metadata)
+  let assistants: string[] | undefined
+  try {
+    const arr = JSON.parse(m.metadata)?.assistants
+    if (Array.isArray(arr) && arr.length) assistants = arr.filter((x: any) => typeof x === 'string' && x)
+  } catch { /* 非 JSON 忽略 */ }
   return {
     id: 'hist-' + m.id,
     dbId: m.id,
@@ -186,6 +191,7 @@ function mapHistoryMessage(m: any) {
     timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
     ...(docs ? { documents: docs } : {}),
     ...(clar ? { clarification: clar } : {}),
+    ...(assistants ? { assistants } : {}),
   }
 }
 
@@ -309,6 +315,7 @@ async function send() {
   if (!expanded.value) expandChat()
 
   agent.stopAllTypewriters(messages.value)
+  agentRun.resetParticipants()
   const atts = [...pendingAttachments.value]
   inputText.value = ''; pendingAttachments.value = []
 
@@ -334,6 +341,8 @@ async function send() {
         if (result.clarification && Array.isArray(result.clarification.questions) && result.clarification.questions.length) {
           aiMsg.clarification = result.clarification
         }
+        // ★ via 署名：本轮参与过的子 Agent
+        if (agentRun.participants.length) aiMsg.assistants = [...agentRun.participants]
       }
     },
     onError: (error) => {
@@ -425,7 +434,10 @@ onUnmounted(() => {
           <div v-if="m.role === 'user'" class="avatar avatar--user">我</div>
           <div v-else class="avatar avatar--ai">AI</div>
           <div class="msg-content" :class="m.role === 'user' ? 'max-w-[70%]' : 'max-w-[85%]'">
-            <div class="msg-time" :class="m.role === 'user' ? 'text-right' : ''">{{ fmtTime(m.timestamp) }}</div>
+            <div class="msg-time flex items-center gap-1.5" :class="m.role === 'user' ? 'justify-end' : ''">
+              <span>{{ fmtTime(m.timestamp) }}</span>
+              <span v-if="m.role !== 'user' && !m.thinking && m.assistants?.length" class="px-1.5 py-[1px] rounded-full bg-[#f2f2f7] text-[#8e8e93] text-[9px] leading-none">via {{ m.assistants.join(' · ') }}</span>
+            </div>
             <div v-if="m.role === 'user'" class="bubble-user">
               <pre class="bubble-user__text">{{ displayContent(m.content) }}</pre>
               <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1" />
@@ -435,6 +447,12 @@ onUnmounted(() => {
             </div>
             <div v-else class="bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
               <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
+              <!-- 委托轨迹行：子 Agent 执行中且正文尚未流出时，顶替"思考中"占位 -->
+              <div v-else-if="m.thinking && !agent.rendered.value[m.id || ''] && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
+                <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
+                <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
+                <span class="text-[12px] text-[#8e8e93]">· 处理中</span>
+              </div>
               <div v-else class="markdown-body chat-md" v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
             </div>
             <div v-if="m.role !== 'user' && !m.thinking && m.documents?.length" class="mt-1 flex flex-col gap-1.5">
@@ -455,15 +473,6 @@ onUnmounted(() => {
     <!-- 附件行（独立于输入栏，显示在消息区与输入栏之间） -->
     <div v-if="pendingAttachments.length" class="chat-attachments">
       <AttachmentChips :files="pendingAttachments" removable @remove="removeAttachment" />
-    </div>
-
-    <!-- 委托状态条：显示当前干活的子 Agent（agent:status 结构化身份驱动） -->
-    <div v-if="agent.isChatting.value && agentRun.currentAgent" class="chat-attachments !py-1 !px-2">
-      <div class="flex items-center gap-2 px-2 py-1 rounded-lg bg-brand-50/70 border border-brand-100 text-[11px] text-brand-700">
-        <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
-        <span class="font-medium">{{ agentRun.currentAgent.name }}</span>
-        <span class="text-brand-500">处理中...</span>
-      </div>
     </div>
 
     <!-- 输入栏（始终可见，面板底部） -->

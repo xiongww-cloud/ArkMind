@@ -166,13 +166,17 @@ function displayContent(content: string): string {
 interface ChatMessage extends AgentChatMessage { id?: string; role: 'user'|'assistant'; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; contextDocs?: any[]; workspace?: string; attachments?: Array<{path:string;name:string;kind:'image'|'doc'}>; documents?: import('@/composables/useAgentChat').GeneratedDocument[] }
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
 
-/// 历史消息恢复：从 chat_messages.metadata 还原文档卡片与追问卡片（重启后 tool_log 不在，靠 metadata）
-function docFieldsFromMeta(m: any): { documents?: GeneratedDocument[]; clarification?: ClarificationData } {
-  const out: { documents?: GeneratedDocument[]; clarification?: ClarificationData } = {}
+/// 历史消息恢复：从 chat_messages.metadata 还原文档卡片、追问卡片与 via 署名（重启后 tool_log 不在，靠 metadata）
+function docFieldsFromMeta(m: any): { documents?: GeneratedDocument[]; clarification?: ClarificationData; assistants?: string[] } {
+  const out: { documents?: GeneratedDocument[]; clarification?: ClarificationData; assistants?: string[] } = {}
   const docs = parseDocumentsMetadata(m.metadata)
   if (docs) out.documents = docs
   const clar = parseClarificationMetadata(m.metadata)
   if (clar) out.clarification = clar
+  try {
+    const arr = JSON.parse(m.metadata)?.assistants
+    if (Array.isArray(arr) && arr.length) out.assistants = arr.filter((x: any) => typeof x === 'string' && x)
+  } catch { /* 非 JSON 忽略 */ }
   return out
 }
 
@@ -519,6 +523,7 @@ async function handleSendMessage() {
   nextTick(() => { const el = textareaRef.value; if (el) el.style.height = '' })
   agent.isChatting.value = true
   agent.setThinkingProgress('')
+  agentRun.resetParticipants()
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
   session.messages.push(aiMsg)
   // ★ 初始默认"思考中"，工具调用时才切换预设文本
@@ -572,10 +577,12 @@ async function handleSendMessage() {
         // ★ 提取 AI 生成的文档对象（预览/下载/复制卡片）
         const docs = extractDocumentsFromToolLog(result.tool_log)
         if (docs.length) aiMsg.documents = docs
-        // ★ 追问卡片：done 载荷携带结构化 clarification（正文已是文本版，双轨）
+        // ★ 追问卡片结构化数据（text+card 双轨：正文已是文本版）
         if (result.clarification && Array.isArray(result.clarification.questions) && result.clarification.questions.length) {
           aiMsg.clarification = result.clarification
         }
+        // ★ via 署名：本轮参与过的子 Agent（done 处理器先于下轮 reset 读取，全局监听只清 currentAgent）
+        if (agentRun.participants.length) aiMsg.assistants = [...agentRun.participants]
         // ★ 权威答案覆盖已流出的片段（委托/多轮场景下 content 可能是委托前的开场白）；取消时保留已流出的部分内容
         if (finalAnswer && !result.cancelled) {
           aiMsg.content = finalAnswer
@@ -774,7 +781,10 @@ onUnmounted(() => {
           <div v-if="msg.role === 'user'" class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>
           <div v-else class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
             <div class="min-w-0" :class="msg.role === 'user' ? 'max-w-[65%]' : (msg.isThinking ? '' : 'max-w-[85%]')">
-            <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1" :class="msg.role === 'user' ? 'text-right' : ''">{{ msg.timestamp ? formatChatTime(msg.timestamp) : '' }}</div>
+            <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1 flex items-center gap-1.5" :class="msg.role === 'user' ? 'justify-end' : ''">
+              <span>{{ msg.timestamp ? formatChatTime(msg.timestamp) : '' }}</span>
+              <span v-if="!msg.isThinking && msg.assistants?.length" class="px-1.5 py-[1px] rounded-full bg-[#f2f2f7] text-[#8e8e93] text-[9px] leading-none">via {{ msg.assistants.join(' · ') }}</span>
+            </div>
             <div v-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
             <div v-else-if="msg.role === 'user'" class="bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-2">
               <pre class="text-[12px] leading-relaxed whitespace-pre-wrap font-sans">{{ displayContent(msg.content) }}</pre>
@@ -787,7 +797,13 @@ onUnmounted(() => {
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
               <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm w-full" :class="{ 'thinking-bubble': msg.isThinking }">
-                <div v-if="agent.isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
+                <!-- 委托轨迹行：子 Agent 执行中且正文尚未流出时，顶替"思考中"占位（气泡内唯一状态位） -->
+                <div v-if="msg.isThinking && !renderedContent(msg.id || '') && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
+                  <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
+                  <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
+                  <span class="text-[12px] text-[#8e8e93]">· 处理中</span>
+                </div>
+                <div v-else-if="agent.isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
               </div>
               <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
@@ -811,15 +827,6 @@ onUnmounted(() => {
           </div>
         </div>
       </template>
-    </div>
-
-    <!-- 委托状态条：显示当前干活的子 Agent（agent:status 结构化身份驱动） -->
-    <div v-if="agent.isChatting.value && agentRun.currentAgent" class="flex-shrink-0 px-4 pt-2">
-      <div class="max-w-3xl mx-auto flex items-center gap-2 px-3 py-1.5 rounded-lg bg-brand-50/70 border border-brand-100 text-[11px] text-brand-700">
-        <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
-        <span class="font-medium">{{ agentRun.currentAgent.name }}</span>
-        <span class="text-brand-500">处理中...</span>
-      </div>
     </div>
 
     <!-- Input Bar -->

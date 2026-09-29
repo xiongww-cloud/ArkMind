@@ -78,6 +78,8 @@ export interface ChatMessage {
   timestamp?: number
   documents?: GeneratedDocument[]
   clarification?: ClarificationData
+  /** 本轮参与过的子 Agent 显示名（via 署名，来自 agentRun.participants / metadata.assistants） */
+  assistants?: string[]
 }
 
 /// 从 tool_log 提取 ext_tool_write_document 成功生成的文档对象列表。

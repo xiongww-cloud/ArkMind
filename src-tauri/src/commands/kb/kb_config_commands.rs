@@ -68,6 +68,24 @@ fn convert_tool_log(tool_log: &[Value]) -> (Vec<Value>, Vec<Value>) {
     (all_tool_calls, all_tool_results)
 }
 
+/// 从 tool_log 提取本轮参与过的子 Agent 显示名（delegate 信封 data.agent_id，去重保序）。
+/// 供消息 metadata.assistants 持久化，前端历史回放渲染 "via XX" 署名。纯函数，可单测。
+pub(crate) fn extract_assistants(tool_log: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for round in tool_log.as_array().into_iter().flatten() {
+        for t in round["tools"].as_array().into_iter().flatten() {
+            if t["tool"].as_str() != Some("ext_tool_delegate_agent") { continue; }
+            let Ok(env) = serde_json::from_str::<Value>(t["result"].as_str().unwrap_or("")) else { continue };
+            if env["result_type"].as_str() != Some("delegate_agent_result") { continue; }
+            if let Some(n) = env["data"]["agent_id"].as_str().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let n = n.to_string();
+                if !out.contains(&n) { out.push(n); }
+            }
+        }
+    }
+    out
+}
+
 /// 主 Agent 认知协调工具集（不含 CRUD 与通知管理——通知产出归分析师与用户主动指令场景，
 /// 主 Agent 对话在场即通知，其 schema 最重，移除以省每轮上下文；
 /// 文档生成(write_document, 2508 字符全场最重)同样剥离：生成文件一律委托文档助手 document_writer）。
@@ -116,9 +134,12 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                     );
                     // ★ 追问卡片结构化数据（text+card 双轨：正文存文本版，metadata 存结构化版）
                     let clarification = v.get("clarification").filter(|c| c.is_object()).cloned();
+                    // ★ via 署名：本轮参与过的子 Agent（历史回放用）
+                    let assistants: Vec<String> = v.get("tool_log").map(extract_assistants).unwrap_or_default();
                     let mut meta_map = serde_json::Map::new();
                     if !docs.is_empty() { meta_map.insert("documents".to_string(), json!(docs)); }
                     if let Some(c) = clarification { meta_map.insert("clarification".to_string(), c); }
+                    if !assistants.is_empty() { meta_map.insert("assistants".to_string(), json!(assistants)); }
                     let metadata = if meta_map.is_empty() { Value::Null } else { Value::Object(meta_map) };
                     let _ = crate::database::run(
                         "INSERT INTO chat_messages(session_id, role, content, metadata) VALUES(?1, 'assistant', ?2, ?3)",
@@ -176,4 +197,31 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
 #[tauri::command] pub async fn agent_cancel() -> Result<Value, String> {
     crate::services::agent_workflow::cancel_agent();
     Ok(json!({"success": true}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_assistants;
+    use serde_json::json;
+
+    /// via 署名提取：多轮 delegate 去重保序；非 delegate/失败信封（无 agent_id）忽略
+    #[test]
+    fn extract_assistants_dedups_and_orders() {
+        let log = json!([
+            {"round":1,"tools":[
+                {"tool":"ext_tool_search","result":"whatever"},
+                {"tool":"ext_tool_delegate_agent","result": json!({"result_type":"delegate_agent_result","data":{"status":"completed","agent_id":"业务助手"}}).to_string()},
+                {"tool":"ext_tool_delegate_agent","result":"not-json"}
+            ]},
+            {"round":2,"tools":[
+                {"tool":"ext_tool_delegate_agent","result": json!({"result_type":"delegate_agent_result","data":{"status":"partial","agent_id":"业务助手"}}).to_string()},
+                {"tool":"ext_tool_delegate_agent","result": json!({"result_type":"delegate_agent_result","data":{"status":"failed","result":"路由未命中"}}).to_string()},
+                {"tool":"ext_tool_delegate_agent","result": json!({"result_type":"delegate_agent_result","data":{"status":"completed","agent_id":"文档助手"}}).to_string()},
+                {"tool":"ext_tool_object","result": json!({"result_type":"delegate_agent_result","data":{"agent_id":"不该出现"}}).to_string()}
+            ]}
+        ]);
+        assert_eq!(extract_assistants(&log), vec!["业务助手".to_string(), "文档助手".to_string()]);
+        assert!(extract_assistants(&json!([])).is_empty());
+        assert!(extract_assistants(&json!(null)).is_empty());
+    }
 }
