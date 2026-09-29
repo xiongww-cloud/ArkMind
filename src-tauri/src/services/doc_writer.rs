@@ -309,6 +309,19 @@ fn running_run(text: &str, field: Option<&str>) -> rwml::Run {
     b.build()
 }
 
+/// 是否存在 footer 块（递归扫 group/未知容器）——决定是否兜底注入页码页脚
+fn has_footer_block(children: &[Value]) -> bool {
+    children.iter().any(|c| {
+        if !c.is_object() {
+            return false;
+        }
+        if c["type"].as_str().unwrap_or("").trim().eq_ignore_ascii_case("footer") {
+            return true;
+        }
+        c["children"].as_array().map_or(false, |nested| has_footer_block(nested))
+    })
+}
+
 /// header/footer 文本占位符分段（纯函数，可单测）：
 /// 返回 (文本段, Some(域指令) | None)；{PAGE}→PAGE、{NUMPAGES}→NUMPAGES，其余原样成段。
 fn split_running_placeholders(text: &str) -> Vec<(String, Option<&'static str>)> {
@@ -356,6 +369,11 @@ fn build_docx(content: &Value, metadata: Option<&Value>) -> Result<Vec<u8>, Stri
         if let Some(v) = str_field(meta, "category") { builder = builder.category(v); }
     }
 
+    // 兜底页码页脚判定（footer 块常位于顶层，group/未知容器递归穿透）
+    let has_footer = content["children"]
+        .as_array()
+        .map_or(false, |ch| has_footer_block(ch));
+
     if let Some(children) = content["children"].as_array() {
         if children.is_empty() {
             return Err("content.children 为空，没有可写入的内容".to_string());
@@ -378,6 +396,20 @@ fn build_docx(content: &Value, metadata: Option<&Value>) -> Result<Vec<u8>, Stri
                 builder = body_paragraph(builder, line.trim_end());
             }
         }
+    }
+
+    // 兜底页码页脚（方案A）：AI 未提供 footer 块时自动注入右对齐"第 X 页 共 Y 页"
+    // （{PAGE}/{NUMPAGES} 域 + 小五宋体预设；注入发生在渲染期，不进 content 快照，
+    //  多轮 read→create 每次都会自动补齐，AI 读回结构也不会出现页脚块）
+    if !has_footer {
+        let runs: Vec<rwml::Run> = split_running_placeholders("第 {PAGE} 页 共 {NUMPAGES} 页")
+            .into_iter()
+            .map(|(t, f)| running_run(&t, f))
+            .collect();
+        let pb = rwml::ParagraphBuilder::new()
+            .runs(runs)
+            .align(rwml::Align::Right);
+        builder = builder.push_footer_block(rwml::Block::Paragraph(pb.build()));
     }
 
     let model = builder.build();
@@ -2221,6 +2253,28 @@ mod tests {
         assert!(xml.contains("PAGE"), "应含 PAGE 域指令");
         assert!(xml.contains("NUMPAGES"), "应含 NUMPAGES 域指令");
         assert!(!xml.contains("{PAGE}"), "不得残留字面 {{PAGE}}");
+    }
+
+    /// 兜底页码页脚：无 footer 块时自动注入右对齐"第 X 页 共 Y 页"（域 + 小五宋体预设）
+    #[test]
+    fn docx_default_page_footer_when_absent() {
+        let xml = docx_part(&json!({"children": [{"type": "paragraph", "text": "正文"}]}), "footer");
+        assert!(xml.contains("fldSimple"), "应含页码域: {}", &xml[..xml.len().min(700)]);
+        assert!(xml.contains("PAGE") && xml.contains("NUMPAGES"), "应含 PAGE 与 NUMPAGES 域");
+        assert!(xml.contains(r#"<w:jc w:val="right"/>"#), "页码页脚应右对齐");
+        assert!(xml.contains(r#"w:sz w:val="18""#) && xml.contains("宋体"), "应为小五宋体预设");
+        assert!(xml.contains("第") && xml.contains("页"), "应含固定文案");
+    }
+
+    /// AI 已提供自定义页脚 → 不叠加兜底页码（单一页脚、无域）
+    #[test]
+    fn docx_ai_footer_suppresses_default() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "paragraph", "text": "正文"},
+            {"type": "footer", "text": "内部资料·禁止外发"},
+        ]}), "footer");
+        assert!(xml.contains("内部资料·禁止外发"), "应保留自定义页脚");
+        assert!(!xml.contains("fldSimple"), "不得叠加兜底页码页脚");
     }
 
     // ── 字体字号预设（方案A：缺省补齐，显式覆盖） ──
