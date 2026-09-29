@@ -170,6 +170,24 @@ export function parseClarificationMetadata(metadata: unknown): ClarificationData
   return undefined
 }
 
+/// 选择题自定义答案与点选结果的合并（单选：自定义覆盖点选——动手打字即表明选项都不满意；
+/// 多选：自定义作为附加项并入；text 题：自定义即答案。纯函数，可单测）。
+export function mergeClarificationAnswer(
+  q: ClarificationQuestion,
+  selected: string | string[] | undefined,
+  custom: string | undefined,
+): string | string[] {
+  const c = (custom || '').trim()
+  if (q.type === 'multiple_choice') {
+    const arr = Array.isArray(selected) ? selected.filter(Boolean) : selected ? [selected] : []
+    return c ? [...arr, c] : arr
+  }
+  if (q.type === 'single_choice') {
+    return c || (typeof selected === 'string' ? selected : '')
+  }
+  return c || (typeof selected === 'string' ? selected : '')
+}
+
 /// 把追问卡片的选择合成为用户消息文本（走正常发送管线）。
 /// answers: question_id → 单选字符串 / 多选数组；未作答的问题跳过；全空时返回默认继续话术。
 export function buildClarificationReply(data: ClarificationData, answers: Record<string, string | string[]>): string {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseClarificationMetadata, buildClarificationReply } from '../composables/useAgentChat'
+import { parseClarificationMetadata, buildClarificationReply, mergeClarificationAnswer } from '../composables/useAgentChat'
 import type { ClarificationData } from '../composables/useAgentChat'
 
 const data: ClarificationData = {
@@ -69,5 +69,38 @@ describe('buildClarificationReply', () => {
     const text = buildClarificationReply(data, { q3: '一体机交付' })
     expect(text).toContain('3.部署模式：一体机交付')
     expect(text).not.toContain('部署模式？')
+  })
+})
+
+describe('mergeClarificationAnswer', () => {
+  const single = data.questions[0]
+  const multi = data.questions[1]
+  const free = data.questions[2]
+
+  it('单选：自定义覆盖已选项；空自定义回退选择', () => {
+    expect(mergeClarificationAnswer(single, '医院核心HIS/PACS', ' 混合场景 ')).toBe('混合场景')
+    expect(mergeClarificationAnswer(single, '医院核心HIS/PACS', '  ')).toBe('医院核心HIS/PACS')
+    expect(mergeClarificationAnswer(single, '', '')).toBe('')
+  })
+
+  it('多选：自定义作为附加项并入；空自定义保持原列表', () => {
+    expect(mergeClarificationAnswer(multi, ['纯国产信创'], '含少量X86存量'))
+      .toEqual(['纯国产信创', '含少量X86存量'])
+    expect(mergeClarificationAnswer(multi, [], '  ')).toEqual([])
+  })
+
+  it('text 题：自定义即答案（与点选通道兼容）', () => {
+    expect(mergeClarificationAnswer(free, undefined, '原厂一体机')).toBe('原厂一体机')
+    expect(mergeClarificationAnswer(free, '旧值', '')).toBe('旧值')
+  })
+
+  it('自定义参与合成答复文本', () => {
+    const merged: Record<string, string | string[]> = {
+      q1: mergeClarificationAnswer(single, '医院核心HIS/PACS', 'HIS+影像双活'),
+      q2: mergeClarificationAnswer(multi, ['纯国产信创'], '保留X86出口'),
+    }
+    const text = buildClarificationReply(data, merged)
+    expect(text).toContain('1.业务场景偏好：HIS+影像双活')
+    expect(text).toContain('2.信创与架构约束：纯国产信创、保留X86出口')
   })
 })

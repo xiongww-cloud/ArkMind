@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { reactive, computed } from 'vue'
 import type { ClarificationData, ClarificationQuestion } from '@/composables/useAgentChat'
-import { buildClarificationReply } from '@/composables/useAgentChat'
+import { buildClarificationReply, mergeClarificationAnswer } from '@/composables/useAgentChat'
 
 const props = defineProps<{
   clarification: ClarificationData
@@ -11,8 +11,11 @@ const props = defineProps<{
 const emit = defineEmits<{ submit: [text: string] }>()
 
 const answers = reactive<Record<string, string | string[]>>({})
+/** 每道题的自定义答案文本（选择题可选补充；单选提交时覆盖点选，多选作为附加项） */
+const custom = reactive<Record<string, string>>({})
 for (const q of props.clarification.questions) {
   answers[q.question_id] = q.type === 'multiple_choice' ? [] : ''
+  custom[q.question_id] = ''
 }
 
 const disabled = computed(() => !!props.answered)
@@ -42,13 +45,19 @@ function setText(q: ClarificationQuestion, v: string) {
 }
 
 const canSubmit = computed(() => props.clarification.questions.some((q) => {
-  const a = answers[q.question_id]
-  return Array.isArray(a) ? a.length > 0 : String(a || '').trim().length > 0
+  const a = merged(q)
+  return Array.isArray(a) ? a.length > 0 : a.trim().length > 0
 }))
+
+function merged(q: ClarificationQuestion): string | string[] {
+  return mergeClarificationAnswer(q, answers[q.question_id], custom[q.question_id])
+}
 
 function submit() {
   if (disabled.value || !canSubmit.value) return
-  emit('submit', buildClarificationReply(props.clarification, { ...answers }))
+  const finalAnswers: Record<string, string | string[]> = {}
+  for (const q of props.clarification.questions) finalAnswers[q.question_id] = merged(q)
+  emit('submit', buildClarificationReply(props.clarification, finalAnswers))
 }
 function skipWithDefaults() {
   if (disabled.value) return
@@ -68,17 +77,29 @@ function skipWithDefaults() {
       <p v-if="clarification.reason" class="text-[11px] text-surface-500 leading-relaxed">{{ clarification.reason }}</p>
       <div v-for="(q, i) in clarification.questions" :key="q.question_id">
         <p class="text-[12px] font-medium text-surface-700 mb-1.5 leading-snug">{{ i + 1 }}. {{ q.prompt }}</p>
-        <div v-if="q.type !== 'text'" class="flex flex-wrap gap-1.5">
-          <button
-            v-for="opt in q.options" :key="opt"
-            type="button"
-            @click="toggle(q, opt)"
+        <div v-if="q.type !== 'text'">
+          <div
+            class="flex flex-wrap gap-1.5 transition-opacity"
+            :class="q.type === 'single_choice' && custom[q.question_id].trim() ? 'opacity-40' : ''"
+          >
+            <button
+              v-for="opt in q.options" :key="opt"
+              type="button"
+              @click="toggle(q, opt)"
+              :disabled="disabled"
+              class="px-2.5 py-1 rounded-lg text-[11px] border transition-colors"
+              :class="isPicked(q, opt)
+                ? 'border-brand-500 bg-brand-600 text-white'
+                : 'border-surface-200 bg-white text-surface-600' + (disabled ? '' : ' hover:border-brand-300 hover:bg-brand-50/40')"
+            >{{ opt }}</button>
+          </div>
+          <input
+            v-model="custom[q.question_id]"
             :disabled="disabled"
-            class="px-2.5 py-1 rounded-lg text-[11px] border transition-colors"
-            :class="isPicked(q, opt)
-              ? 'border-brand-500 bg-brand-600 text-white'
-              : 'border-surface-200 bg-white text-surface-600' + (disabled ? '' : ' hover:border-brand-300 hover:bg-brand-50/40')"
-          >{{ opt }}</button>
+            type="text"
+            class="mt-1.5 w-full border border-surface-200 rounded-lg px-2.5 py-1 text-[11px] outline-none focus:border-brand-400 disabled:bg-surface-50"
+            :placeholder="q.type === 'multiple_choice' ? '补充其他答案（将并入已选项）...' : '或输入自定义答案（将覆盖上方选择）...'"
+          />
         </div>
         <input
           v-else
