@@ -8,8 +8,10 @@ import { useAgentChat, type ChatMessage, extractDocumentsFromToolLog, parseDocum
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
 import { uploadPasteFile } from '@/utils/pasteUpload'
+import { useAgentRunStore } from '@/stores/agentRun'
 
 const agent = useAgentChat()
+const agentRun = useAgentRunStore()
 
 // --- Attachments ---
 const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
@@ -433,6 +435,15 @@ onUnmounted(() => {
     <!-- 附件行（独立于输入栏，显示在消息区与输入栏之间） -->
     <div v-if="pendingAttachments.length" class="chat-attachments">
       <AttachmentChips :files="pendingAttachments" removable @remove="removeAttachment" />
+    </div>
+
+    <!-- 委托状态条：显示当前干活的子 Agent（agent:status 结构化身份驱动） -->
+    <div v-if="agent.isChatting.value && agentRun.currentAgent" class="chat-attachments !py-1 !px-2">
+      <div class="flex items-center gap-2 px-2 py-1 rounded-lg bg-brand-50/70 border border-brand-100 text-[11px] text-brand-700">
+        <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
+        <span class="font-medium">{{ agentRun.currentAgent.name }}</span>
+        <span class="text-brand-500">处理中...</span>
+      </div>
     </div>
 
     <!-- 输入栏（始终可见，面板底部） -->

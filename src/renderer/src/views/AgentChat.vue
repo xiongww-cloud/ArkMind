@@ -13,8 +13,10 @@ import { pickRetrievalPhrase } from '@/utils/chat'
 import { ProjectCard, TodoCard, ObjectList } from '@/components/renderer'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
 import { uploadPasteFile } from '@/utils/pasteUpload'
+import { useAgentRunStore } from '@/stores/agentRun'
 
 const agent = useAgentChat()
+const agentRun = useAgentRunStore()
 
 // ─── Attachments ─────────────────────────────────────────────────
 const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'])
@@ -787,6 +789,15 @@ onUnmounted(() => {
           </div>
         </div>
       </template>
+    </div>
+
+    <!-- 委托状态条：显示当前干活的子 Agent（agent:status 结构化身份驱动） -->
+    <div v-if="agent.isChatting.value && agentRun.currentAgent" class="flex-shrink-0 px-4 pt-2">
+      <div class="max-w-3xl mx-auto flex items-center gap-2 px-3 py-1.5 rounded-lg bg-brand-50/70 border border-brand-100 text-[11px] text-brand-700">
+        <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
+        <span class="font-medium">{{ agentRun.currentAgent.name }}</span>
+        <span class="text-brand-500">处理中...</span>
+      </div>
     </div>
 
     <!-- Input Bar -->

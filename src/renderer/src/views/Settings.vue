@@ -734,16 +734,17 @@ import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession, fetchUserProfile, 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
 const notifyIntervalOpen = ref(false)
-// ─── 分析师配置（附加要求=单主体弹窗编辑；核心规则与观察池=只读透明）───
+// ─── 分析师配置（附加要求=单主体弹窗编辑；核心规则与观察池=弹窗只读）───
 const focusText = ref('')                 // analysis_focus 正文（整体一段提示词）
 const focusModalOpen = ref(false)         // 编辑弹窗
 const focusDraft = ref('')                // 弹窗草稿
 const focusSaving = ref(false)
 const FOCUS_MAX = 2000
 const coreRulesText = ref('')             // 后端下发的内核提示词（只读）
-const coreRulesOpen = ref(false)
+const coreRulesModalOpen = ref(false)     // 核心规则查看弹窗
 const watchText = ref('')                 // 当前观察池（只读）
-const watchOpen = ref(false)
+const watchModalOpen = ref(false)         // 观察池查看弹窗
+const watchCount = computed(() => watchText.value ? watchText.value.split('\n').filter(l => l.trim()).length : 0)
 const loopStatus = ref<LoopStatus>({ success: true, running: false, last_check_at: '', next_check_at: '' })
 let loopStatusTimer: ReturnType<typeof setInterval> | null = null
 
@@ -978,6 +979,8 @@ const agentForm = ref({
   routing_hint: '',
   system_prompt: '',
   max_iterations: 20,
+  model: '',
+  temperature: null as number | null,
   tools: [] as string[],
   presetTools: [] as string[],
 })
@@ -1003,6 +1006,8 @@ function openAddAgent() {
     routing_hint: '',
     system_prompt: '',
     max_iterations: 20,
+    model: '',
+    temperature: null,
     tools: [],
     presetTools: [],
   }
@@ -1019,6 +1024,8 @@ function editAgent(agent: AgentProfile) {
     routing_hint: agent.routing_hint || '',
     system_prompt: agent.system_prompt || '',
     max_iterations: agent.max_iterations || 20,
+    model: (agent.model as string) || '',
+    temperature: (agent.temperature as number | null) ?? null,
     tools: agent.tools || [],
     presetTools: presetTools,
   }
@@ -1095,6 +1102,13 @@ async function saveAgent() {
   try {
     // 确保预设工具始终包含在内
     const allTools = [...new Set([...f.tools, ...f.presetTools])]
+    // LLM 覆盖：空串/空值 = 跟随全局（temperature 归一为 null 以清除已有覆盖；
+    // v-model.number 空输入产生 ""、非法输入产生原串，统一收敛）
+    const tempNum = typeof f.temperature === 'number' && Number.isFinite(f.temperature) ? f.temperature : null
+    const llmOverrides = {
+      model: (f.model || '').trim(),
+      temperature: tempNum,
+    }
     if (editingAgentId.value) {
       await updateAgentProfile(editingAgentId.value, {
         name: f.name,
@@ -1102,6 +1116,7 @@ async function saveAgent() {
         routing_hint: f.routing_hint,
         system_prompt: f.system_prompt,
         max_iterations: f.max_iterations,
+        ...llmOverrides,
         tools: allTools,
       })
       toast({ message: 'Agent 已更新', type: 'success' })
@@ -1112,6 +1127,7 @@ async function saveAgent() {
         routing_hint: f.routing_hint,
         system_prompt: f.system_prompt,
         max_iterations: f.max_iterations,
+        ...llmOverrides,
         tools: allTools,
       })
       toast({ message: 'Agent 已创建并启用——主 Agent 下次对话即可按「委托说明/路由提示」派活；记得为其分配工具', type: 'success' })
@@ -1860,7 +1876,7 @@ async function saveProfileEditor() {
                 </div>
               </div>
               </div>
-              <!-- 附加分析要求：单主体弹窗编辑；核心规则/观察池为行内只读查看 -->
+              <!-- 附加分析要求：单主体弹窗编辑；核心规则/观察池均为弹窗只读查看 -->
               <div class="border-t border-surface-100 pt-3">
                 <div class="flex items-center justify-between gap-2">
                   <div class="min-w-0">
@@ -1868,8 +1884,8 @@ async function saveProfileEditor() {
                     <p class="text-[10px] text-surface-400">
                       <span v-if="focusText">已添加 · 下次分析生效</span>
                       <span v-else>可选：给分析师添加定制要求，核心规则不变</span>
-                      <button v-if="coreRulesText" @click="coreRulesOpen = !coreRulesOpen" class="ml-2 text-brand-600 hover:underline">{{ coreRulesOpen ? '收起核心规则' : '查看核心规则' }}</button>
-                      <button v-if="watchText" @click="watchOpen = !watchOpen" class="ml-2 text-brand-600 hover:underline">{{ watchOpen ? '收起观察池' : '查看观察池' }}</button>
+                      <button v-if="coreRulesText" @click="coreRulesModalOpen = true" class="ml-2 text-brand-600 hover:underline">查看核心规则</button>
+                      <button v-if="watchText" @click="watchModalOpen = true" class="ml-2 text-brand-600 hover:underline">查看观察池</button>
                     </p>
                   </div>
                   <div class="flex items-center gap-2 flex-shrink-0">
@@ -1877,8 +1893,6 @@ async function saveProfileEditor() {
                     <button @click="openFocusModal" class="btn-primary text-xs"><AppIcon name="edit" size="12"/>{{ focusText ? '编辑' : '添加要求' }}</button>
                   </div>
                 </div>
-                <pre v-if="coreRulesOpen" class="mt-2 w-full max-h-56 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ coreRulesText }}</pre>
-                <pre v-if="watchOpen && watchText" class="mt-2 w-full max-h-40 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed bg-amber-50/50 border border-amber-100 rounded-lg px-2.5 py-2 text-surface-600">{{ watchText }}</pre>
               </div>
               <!-- 附加要求编辑弹窗（整体一段提示词） -->
               <Teleport to="body">
@@ -1900,6 +1914,46 @@ async function saveProfileEditor() {
                       <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
                         <button @click="closeFocusModal" class="btn-secondary text-xs">取消</button>
                         <button @click="saveFocusModal" :disabled="focusSaving" class="btn-primary text-xs">{{ focusSaving ? '保存中...' : '保存' }}</button>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+              </Teleport>
+
+              <!-- 观察池查看弹窗（只读） -->
+              <Teleport to="body">
+                <Transition name="modal-fade">
+                  <div v-if="watchModalOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="watchModalOpen = false">
+                    <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] flex flex-col">
+                      <div class="px-5 pt-4 pb-2 border-b border-surface-100 flex items-center justify-between gap-2">
+                        <h3 class="text-[14px] font-semibold text-surface-800">观察池</h3>
+                        <span class="text-[10px] text-surface-400">{{ watchCount }} 条 · 每条保留 30 天，未升级为通知自动过期</span>
+                      </div>
+                      <div class="px-5 py-3 max-h-[60vh] overflow-y-auto">
+                        <pre class="w-full whitespace-pre-wrap text-[11px] leading-relaxed bg-amber-50/50 border border-amber-100 rounded-lg px-2.5 py-2 text-surface-600">{{ watchText }}</pre>
+                      </div>
+                      <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end">
+                        <button @click="watchModalOpen = false" class="btn-secondary text-xs">关闭</button>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+              </Teleport>
+
+              <!-- 核心规则查看弹窗（只读） -->
+              <Teleport to="body">
+                <Transition name="modal-fade">
+                  <div v-if="coreRulesModalOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="coreRulesModalOpen = false">
+                    <div class="bg-white rounded-2xl shadow-2xl w-[640px] max-w-[90vw] flex flex-col">
+                      <div class="px-5 pt-4 pb-2 border-b border-surface-100 flex items-center justify-between gap-2">
+                        <h3 class="text-[14px] font-semibold text-surface-800">分析师核心规则</h3>
+                        <span class="text-[10px] text-surface-400">系统内置硬规则，不可修改；「附加分析要求」仅可调整关注面与语气</span>
+                      </div>
+                      <div class="px-5 py-3 max-h-[65vh] overflow-y-auto">
+                        <pre class="w-full whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ coreRulesText }}</pre>
+                      </div>
+                      <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end">
+                        <button @click="coreRulesModalOpen = false" class="btn-secondary text-xs">关闭</button>
                       </div>
                     </div>
                   </div>
@@ -2213,6 +2267,17 @@ async function saveProfileEditor() {
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">最大迭代次数</label>
                       <input v-model.number="agentForm.max_iterations" type="number" min="1" max="50" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
+                    </div>
+                    <!-- LLM 覆盖：模型 / 温度（留空 = 跟随全局配置） -->
+                    <div class="grid grid-cols-2 gap-3">
+                      <div>
+                        <label class="block text-[10px] font-medium text-surface-400 mb-1">模型覆盖</label>
+                        <input v-model="agentForm.model" type="text" placeholder="留空使用全局模型" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
+                      </div>
+                      <div>
+                        <label class="block text-[10px] font-medium text-surface-400 mb-1">温度覆盖</label>
+                        <input v-model.number="agentForm.temperature" type="number" min="0" max="2" step="0.1" placeholder="留空用全局 0.3" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
+                      </div>
                     </div>
                     <!-- 工具分配 -->
                     <div>

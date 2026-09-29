@@ -110,6 +110,8 @@ onMounted(async () => {
     if (stage === 'thinking') mascotState.value = 'thinking'
     else if (stage === 'answer') mascotState.value = 'speaking'
     else if (stage === 'tool_start') mascotState.value = 'thinking'
+    // ★ 委托生命周期：delegating=已路由到子 Agent（仍在工作）；delegate-done=交回主 Agent（继续思考，不回 idle）
+    else if (stage === 'delegating' || stage === 'delegate-done') mascotState.value = 'thinking'
   })
   unlistenAgentDone = await listen<any>('agent:done', () => {
     mascotState.value = 'idle'

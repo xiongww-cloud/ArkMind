@@ -1640,6 +1640,10 @@ export interface AgentProfile {
   is_builtin: number
   preset_tools: string | string[]
   tools: string[]
+  /** LLM 覆盖：空串 = 跟随全局模型 */
+  model?: string
+  /** LLM 覆盖：null/缺席 = 跟随全局温度（0.3） */
+  temperature?: number | null
   created_at: string
   updated_at: string
   [key: string]: unknown
@@ -1668,6 +1672,8 @@ export async function createAgentProfile(data: {
   system_prompt?: string
   max_iterations?: number
   output_format?: string
+  model?: string
+  temperature?: number | null
   tools?: string[]
 }): Promise<AgentProfile> {
   return invoke('agent_profile_create', { data })
@@ -1684,6 +1690,8 @@ export async function updateAgentProfile(
     max_iterations?: number
     output_format?: string
     status?: string
+    model?: string
+    temperature?: number | null
     tools?: string[]
   }
 ): Promise<void> {
