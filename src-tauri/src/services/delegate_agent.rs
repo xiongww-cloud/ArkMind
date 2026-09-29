@@ -4,7 +4,7 @@
 
 use serde_json::{json, Value};
 use crate::database;
-use crate::services::agent_workflow::{ChatMessage, MessageRole};
+use crate::services::agent_workflow::{ChatMessage, MessageRole, SessionMemory};
 use tauri::Emitter;
 
 /// 安全截断字符串（尊重 UTF-8 字符边界）
@@ -44,6 +44,8 @@ pub(crate) fn is_sub_agent_forbidden_tool(name: &str) -> bool {
 /// 从数据库加载 Agent Profile，以共享上下文模式调用 agent_chat_workflow 执行任务，返回结果
 /// delegate_depth: 委托深度（0=主Agent直接委托，≥1=已嵌套，拒绝再委托）
 /// history: 主会话 messages 快照（调用点 clone，入口截尾防御后作为子 Agent 初始上下文）
+/// main_session: 主会话工作记忆——子 Agent 写穿共享（visited/tool_history/token 累计直接回写），
+///   顺序 await 无竞态，返回后主会话天然持有子 Agent 的全部状态增量
 pub async fn execute_delegate_agent(
     agent_id: &str,
     task: &str,
@@ -52,6 +54,7 @@ pub async fn execute_delegate_agent(
     app_handle: Option<tauri::AppHandle>,
     delegate_depth: u8,
     history: Vec<ChatMessage>,
+    main_session: &mut SessionMemory,
 ) -> String {
     // 参数校验
     if agent_id.is_empty() {
@@ -65,9 +68,9 @@ pub async fn execute_delegate_agent(
         return make_error("已达到最大委托深度（仅支持主 Agent 直接委托）。");
     }
 
-    // ★ 一次 JOIN 查询加载 Agent Profile + 工具分配（含 name 用于状态展示）
+    // ★ 一次 JOIN 查询加载 Agent Profile + 工具分配（含 name 用于状态展示；model/temperature 用于 per-agent LLM 覆盖）
     let rows = match database::all(
-        "SELECT p.name, p.system_prompt, p.max_iterations, a.tool_name FROM agent_profiles p LEFT JOIN agent_tool_assignments a ON a.agent_id=p.id WHERE p.id=?1 AND p.status='active'",
+        "SELECT p.name, p.system_prompt, p.max_iterations, p.model, p.temperature, a.tool_name FROM agent_profiles p LEFT JOIN agent_tool_assignments a ON a.agent_id=p.id WHERE p.id=?1 AND p.status='active'",
         &[json!(agent_id)],
     ) {
         Ok(r) => r,
@@ -99,12 +102,17 @@ pub async fn execute_delegate_agent(
     // system_prompt 直接用 Agent 配置的提示词（工具说明已由 API tools schema 提供，不再重复注入）
     let system_prompt = first["system_prompt"].as_str().unwrap_or("").to_string();
     let max_iterations = first["max_iterations"].as_i64().unwrap_or(20) as i32;
-    let agent_name = first["name"].as_str().unwrap_or(agent_id);
+    let agent_name = first["name"].as_str().unwrap_or(agent_id).to_string();
+    // ★ per-agent 模型/温度：空串/NULL = 跟随全局配置
+    let llm = crate::services::agent_workflow::LlmOverrides {
+        model: first["model"].as_str().filter(|m| !m.is_empty()).map(String::from),
+        temperature: first["temperature"].as_f64(),
+    };
 
     // 构建共享上下文快照：截尾防御（剥未闭合 tool_calls）+ 尾部注入执行体指令
     let mut sub_messages = truncate_dangling_tool_calls(history);
     let history_len = sub_messages.len();
-    let directive = build_directive(agent_id, agent_name, &system_prompt, task, context, expected_output, &allowed_tools);
+    let directive = build_directive(agent_id, &agent_name, &system_prompt, task, context, expected_output, &allowed_tools);
     sub_messages.push(ChatMessage {
         role: MessageRole::User,
         content: Some(directive),
@@ -115,20 +123,23 @@ pub async fn execute_delegate_agent(
     });
 
     log::info!(
-        "[DelegateAgent] 委托 Agent「{}」，任务: {}，工具数: {}，共享历史 {} 条（截尾后，尾部注入执行体指令）",
+        "[DelegateAgent] 委托 Agent「{}」，任务: {}，工具数: {}，共享历史 {} 条（截尾后，尾部注入执行体指令），model={:?}, temperature={:?}",
         agent_name,
         truncate_str(task, 50),
         allowed_tools.len(),
-        history_len
+        history_len,
+        llm.model,
+        llm.temperature
     );
 
-    // ★ 委托可见性：通知前端委托开始（status + progress 双通道，聊天页只监听 progress）
-    if let Some(ref h) = app_handle {
-        let _ = h.emit("agent:status", json!({"stage":"delegating","msg":format!("委托「{}」处理中...", agent_name)}));
+    // ★ 委托可见性：status 携带结构化身份（agent_id/agent_name），前端状态条显示当前干活的子 Agent
+    let emit_handle = app_handle.clone();
+    if let Some(ref h) = emit_handle {
+        let _ = h.emit("agent:status", json!({"stage":"delegating","agent_id":agent_id,"agent_name":agent_name,"msg":format!("委托「{}」处理中...", agent_name)}));
         let _ = h.emit("agent:progress", json!({"msg":format!("已路由到「{}」，处理中...", agent_name)}));
     }
 
-    // 使用 Box::pin 解决递归 async 调用（无独立 session，避免无用DB操作）
+    // 使用 Box::pin 解决递归 async 调用（session 写穿共享：无独立 load/save，状态直接回写主会话）
     let result = Box::pin(super::agent_workflow::agent_chat_workflow_internal(
         task.to_string(),
         vec![],
@@ -144,8 +155,26 @@ pub async fn execute_delegate_agent(
         false,            // ★ 子Agent保留完整动态上下文（工作记忆/预算对其有价值）
         Some(sub_messages), // ★ 共享历史模式：截尾快照 + 尾部执行体指令
         true,             // ★ canonical tools：与主 Agent同一份全量清单（tools 计入前缀缓存，字节不一致则共享历史段全灭）
+        Some(super::agent_workflow::DelegateRun {
+            session: main_session,
+            agent_id: agent_id.to_string(),
+            agent_name: agent_name.clone(),
+            llm,
+        }),
     ))
     .await;
+
+    // ★ 委托结束：广播 delegate-done（前端据此清除"当前子 Agent"状态条；
+    //   精确的 completed/partial/failed 语义在 make_success 信封里，此处仅取粗状态供 UI）
+    let rough_status = match &result {
+        Ok(v) if v["cancelled"].as_bool() == Some(true) => "cancelled",
+        Ok(v) if !v["answer"].as_str().unwrap_or("").is_empty() => "completed",
+        Ok(_) => "failed",
+        Err(_) => "failed",
+    };
+    if let Some(ref h) = emit_handle {
+        let _ = h.emit("agent:status", json!({"stage":"delegate-done","agent_id":agent_id,"agent_name":agent_name,"delegate_status":rough_status}));
+    }
 
     match result {
         Ok(v) => {
@@ -164,10 +193,10 @@ pub async fn execute_delegate_agent(
 
             // ★ 取消透传：子Agent被取消时，向主Agent传播取消状态
             if cancelled {
-                return make_cancelled(agent_name, answer, iterations);
+                return make_cancelled(&agent_name, answer, iterations);
             }
 
-            make_success(agent_name, answer, iterations, tool_log)
+            make_success(&agent_name, answer, iterations, tool_log)
         }
         Err(e) => {
             log::error!("[DelegateAgent] Agent「{}」执行失败: {}", agent_name, e);

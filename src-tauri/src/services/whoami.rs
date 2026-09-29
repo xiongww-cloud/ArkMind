@@ -294,6 +294,7 @@ pub async fn auto_update_identity(app: &tauri::AppHandle) {
         &Some(app.clone()),
         true,
         false,
+        &crate::services::agent_workflow::llm::LlmOverrides::default(),
     )
     .await
     {

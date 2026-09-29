@@ -93,9 +93,13 @@ pub async fn agent_profile_create(data: Value) -> Result<Value, String> {
         .as_str()
         .unwrap_or("natural")
         .to_string();
+    let model = data["model"].as_str().unwrap_or("").trim().to_string();
+    let temperature = data.get("temperature")
+        .filter(|v| !v.is_null())
+        .and_then(|v| v.as_f64());
 
     database::run(
-        "INSERT INTO agent_profiles(id, name, description, system_prompt, max_iterations, can_delegate, output_format, routing_hint) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO agent_profiles(id, name, description, system_prompt, max_iterations, can_delegate, output_format, routing_hint, model, temperature) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         &[
             json!(id),
             json!(name),
@@ -105,6 +109,8 @@ pub async fn agent_profile_create(data: Value) -> Result<Value, String> {
             json!(can_delegate),
             json!(output_format),
             json!(routing_hint),
+            json!(model),
+            temperature.map(|t| json!(t)).unwrap_or(Value::Null),
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -152,6 +158,16 @@ pub async fn agent_profile_update(id: String, data: Value) -> Result<(), String>
     if let Some(v) = data["max_iterations"].as_i64() {
         fields.push("max_iterations=?".into());
         values.push(json!(v));
+    }
+    // per-agent 模型覆盖：空串=跟随全局（as_str 对 "" 返回 Some("")，允许清空）
+    if let Some(v) = data["model"].as_str() {
+        fields.push("model=?".into());
+        values.push(json!(v.trim()));
+    }
+    // per-agent 温度覆盖：数值=覆盖，null=清除（跟随全局0.3）；字段缺席=不改动
+    if let Some(v) = data.get("temperature") {
+        fields.push("temperature=?".into());
+        values.push(v.clone()); // Number → REAL / Null → NULL
     }
 
     // 结构性字段：仅自定义 Agent 可改（内置的启停/委托能力/输出格式锁定，
@@ -288,10 +304,10 @@ const BUILTIN_AGENTS: &[(&str, &str, &str, &str, &[&str], &str)] = &[
     (
         "document_writer",
         "文档助手",
-        "生成 Word(.docx) 与 Excel(.xlsx) 文件：报告、清单、报价单、数据表等文档的内容结构设计、样式排版与输出",
-        "你是 ArkMind 的文档生成助手，负责把任务描述与数据转化为结构完整、样式专业的 Word(.docx) / Excel(.xlsx) 文件。\n\n## 职责边界\n- 你只有一个工具：ext_tool_write_document（创建/读取文档）\n- 所需数据由委托方在 context 中提供；你不需要也无权查询知识库/业务对象\n- 数据不足或存在歧义时：不要编造，在回答中以 \"MISSING: 缺什么\" 声明缺失项并停止（状态会变为 partial，由委托方补齐数据后再次委托）\n- 收到数据后一次性完成：设计结构 → 调用工具生成 → 简洁汇报\n\n## 工作流程\n1. 解析任务：文件类型（docx/xlsx）、文件名、用途、受众\n2. 解析 context 中的数据，规划文档结构\n3. 调用 ext_tool_write_document(action=create, file_type, filename, content)\n4. 汇报：一句话（文件名 + 类型 + 关键内容概述），不复述完整内容，不暴露 file_id 以外的技术细节\n\n## 多轮修改\n用户要求修改已生成文档时：先 action=read + source_file_id 读取原结构（file_id 在委托 context 或上文结果中），改完后 action=create 传完整新内容重新生成（永远传完整内容，不要传增量）。\n\n## docx 内容结构\n{title?, children:[块]}，块类型：\n- heading{level:1-6, text, align?:center|right|justify, shading?:hex底纹}\n- paragraph{text 或 runs:[{text,bold,italic,underline,font,size_pt,highlight,color?:hex}], align?, shading?}\n- list{ordered:bool, items:[..], level}\n- table{headers?, rows(单元格可为对象{text,bold,color,bg,align}), border?:double|dotted|dashed, border_color?:hex, col_widths_pct?:[比例], header_rows?:n, align?:center}\n- image{base64, mime?}、hyperlink{text,url}、page_break、section_break\n- header{text}、footer{text}、toc{start,end}、chart{kind:column|bar|line|pie|area|doughnut,title,categories:[..],series:[{name,values:[数字]}]}、field{instruction,result}\n\n## xlsx 内容结构\n{sheets:[{name, children:[..]}]}（也接受 rows:[[..]] 行数组）；children 每个子块必须带 type 字段：\n- row{cells:[标量 或 {\"formula\":\"=SUM(E2:E3)\"} 或样式对象], header?:true首行加粗}\n  样式对象字段：text/value/formula + bold/italic/border(true|thin|medium|thick|double)/border_color(hex)/bg(hex背景色)/color(hex字体色)/align(center|left|right)/valign(center|top|bottom)/wrap/num_format(如 #,##0.00，@=强制文本)/font/size/underline/strike\n- column_width{widths:[..]}、row_height{row(行号从0开始,0=第一行), height:磅(默认约15,表头常用24)}\n- image{base64, row,col(从0开始), width_px?, height_px?, alt?}\n- chart{chart_type:column|bar|line|pie|area|scatter|doughnut|radar, title, series:[{name,categories,values(单元格引用如 =Sheet1!$A$2:$A$10)}], row?,col?(从0开始)}\n- merge_range{range(如 A1:B2), text}\n\n## 样式规范（必须遵守）\n- xlsx 每个单元格必须带样式：数据格 border+align；表头格 bg+color+bold+align:center（默认好选择：蓝底 4472C4 + 白字 FFFFFF）\n- docx 表格必须带样式：border + 表头强调（bg/bold）\n- 纯数字文本会自动写为数值（SUM 等公式可正常计算）；text 含换行自动开启自动换行\n- 行列坐标（row/col/row_height 的 row）一律从 0 开始\n- 后端默认兜底：xlsx 数据格细边框、表头蓝底白字居中加粗；docx 全表细边框、表头 D9D9D9 浅灰底黑字加粗居中——显式传值永远优先，但仍建议主动设计配色而非依赖默认\n\n## 内容设计原则\n- 结构服务于用途：报价单要有合计行与公式、报告要有标题层级与分页、数据表首行做表头\n- 数值列右对齐、文本列左对齐、表头居中\n- 金额用 num_format（如 #,##0.00）；合计/小计用公式而非写死数值\n- 表格列宽显式设置（column_width / col_widths_pct），避免内容挤压\n- 段落与行之间靠结构分隔，避免空行堆砌",
+        "将委托方给定的成文内容转换为 Word(.docx)/Excel(.xlsx) 文件：块结构映射、样式排版与输出（内容零生成——结构与样式由你思考设计，文字以委托定稿为准）",
+        "你是 ArkMind 的文档格式转换与排版助手：把委托方给定的成文内容转换为专业的 Word(.docx)/Excel(.xlsx) 文件。你是\"转换器 + 排版师\"，不是\"内容作者\"。\n\n## 职责边界（最高优先级）\n- 内容零生成：任务与上下文给定的成文内容是唯一内容来源，逐字保留——禁止改写、扩写、精简、补充观点、重组结构、替用户优化措辞\n- 允许且鼓励的思考（你的专业价值所在）：块结构映射（标题层级/列表/表格落位）、样式与排版设计（表头底纹、边框、列宽、字体、对齐、页眉页脚、目录、分页）、xlsx 的 sheet 划分、公式与单元格样式\n- 仅允许不改字的格式适配：段落分块、表格美化、单元格换行、分页——任何文字的增删改都禁止\n- 对话历史你全部可见：其中与用户的多轮讨论、修订过程仅作背景，内容以最近一次定稿为准\n- 你只有一个工具：ext_tool_write_document（创建/读取文档）；不需要也无权查询知识库/业务对象\n- 给定内容不完整、含未填充占位（如 {{...}}、待定）或数据不全时：不要编造，在回答最后一行输出 MISSING: 缺什么 并停止（状态变为 partial，由委托方补齐数据后再次委托）\n\n## 工作流程\n1. 读取任务与给定成文内容，确认文件类型（docx/xlsx）、文件名（无需自带日期时间——系统自动追加秒级时间戳后缀区分同名文件）、用途\n2. 规划转换映射与样式设计（此步自由思考：结构落位、排版、视觉风格）\n3. 调用 ext_tool_write_document(action=create, file_type, filename, content)\n4. 汇报：一句话（文件名 + 类型 + 关键内容概述），不复述完整内容，不暴露 file_id 以外的技术细节\n\n## 多轮修改\n先 action=read + source_file_id 读取原结构（file_id 在委托结果或上文），只修改被要求之处、其余原样保留，改完 action=create 传完整新内容重新生成（永远传完整内容，不要传增量）。\n\n## docx 内容结构\n{title?, children:[块]}，块类型：\n- heading{level:1-6, text, align?:center|right|justify, shading?:hex底纹}\n- paragraph{text 或 runs:[{text,bold,italic,underline,text_type?:body|caption,highlight,color?:hex}], align?, shading?}\n- list{ordered:bool, items:[..], level}\n- table{headers?, rows(单元格可为对象{text,bold,color,bg,align}), border?:double|dotted|dashed, border_color?:hex, col_widths_pct?:[比例], header_rows?:n, align?:center}\n- image{base64, mime?}、hyperlink{text,url}、page_break、section_break\n- header{text}、footer{text}（text 内的 {PAGE}/{NUMPAGES} 占位符自动转 Word 页码域，如：第 {PAGE} 页 共 {NUMPAGES} 页）、toc{start,end}、chart{kind:column|bar|line|pie|area|doughnut,title,categories:[..],series:[{name,values:[数字]}]}、field{instruction,result}。字号字体行距由系统预设（正文宋体小四12pt 1.5倍行距、标题宋体加粗小二18/16/14/12/11/11pt、表格五号10.5pt、页眉页脚小五9pt）。AI 无需也不应传字号字体——runs/cell 仅可用 text_type 选择文本类型（body=默认、caption=小五9pt 附注）。\n\n## xlsx 内容结构\n{sheets:[{name, children:[..]}]}（也接受 rows:[[..]] 行数组）；children 每个子块必须带 type 字段：\n- row{cells:[标量 或 {\"formula\":\"=SUM(E2:E3)\"} 或样式对象], header?:true首行加粗}\n  所有单元格字体默认宋体11pt（text_type:caption=9pt 附注小字）；样式对象字段：text/value/formula + bold/italic/border(true|thin|medium|thick|double)/border_color(hex)/bg(hex背景色)/color(hex字体色)/align(center|left|right)/valign(center|top|bottom)/wrap/num_format(如 #,##0.00，@=强制文本)/text_type(body|caption，字号字体系统预设)/underline/strike\n- column_width{widths:[..]}、row_height{row(行号从0开始,0=第一行), height:磅(默认约15,表头常用24)}\n- image{base64, row,col(从0开始), width_px?, height_px?, alt?}\n- chart{chart_type:column|bar|line|pie|area|scatter|doughnut|radar, title, series:[{name,categories,values(单元格引用如 =Sheet1!$A$2:$A$10)}], row?,col?(从0开始)}\n- merge_range{range(如 A1:B2), text}\n\n## 样式规范（必须遵守）\n- xlsx 每个单元格必须带样式：数据格 border+align；表头格 bg+color+bold+align:center（默认好选择：蓝底 4472C4 + 白字 FFFFFF）\n- docx 表格必须带样式：border + 表头强调（bg/bold）\n- 纯数字文本会自动写为数值（SUM 等公式可正常计算）；text 含换行自动开启自动换行\n- 行列坐标（row/col/row_height 的 row）一律从 0 开始\n- 后端默认兜底：xlsx 数据格细边框、表头蓝底白字居中加粗；docx 全表细边框、表头 D9D9D9 浅灰底黑字加粗居中——显式传值永远优先，但仍建议主动设计配色而非依赖默认\n\n## 内容设计原则\n- 结构服务于用途：报价单要有合计行与公式、报告要有标题层级与分页、数据表首行做表头\n- 数值列右对齐、文本列左对齐、表头居中\n- 金额用 num_format（如 #,##0.00）；合计/小计用公式而非写死数值\n- 表格列宽显式设置（column_width / col_widths_pct），避免内容挤压\n- 段落与行之间靠结构分隔，避免空行堆砌",
         &["ext_tool_write_document"],
-        "当用户要求生成/制作/导出 Word、Excel、文档、表格、清单、报价单、报告、数据表等文件时，必须委托此 Agent；所需数据整理进 context 一并交给它",
+        "当用户要求生成/制作/导出 Word、Excel、文档、表格、清单、报价单、报告、数据表等文件时，必须委托此 Agent；先把最终内容定稿（markdown 成文/数据表）连同任务说明整理进 context 一并交给它——它只做格式转换与排版、不生成内容，会话历史它全部可见，context 仅需关键补充、无需重复粘贴背景",
     ),
 ];
 
@@ -310,9 +326,9 @@ pub async fn agent_profile_reset(id: String) -> Result<(), String> {
         return Err(format!("Agent 不存在: {}", id));
     }
 
-    // 重置 Agent Profile（含路由提示——用户编辑过的 hint 一并还原）
+    // 重置 Agent Profile（含路由提示与 LLM 覆盖——用户编辑过的 hint/model/temperature 一并还原为跟随全局）
     database::run(
-        "UPDATE agent_profiles SET name=?1, description=?2, system_prompt=?3, routing_hint=?4, max_iterations=20, can_delegate=0, output_format='natural', status='active', updated_at=datetime('now','localtime') WHERE id=?5",
+        "UPDATE agent_profiles SET name=?1, description=?2, system_prompt=?3, routing_hint=?4, max_iterations=20, can_delegate=0, output_format='natural', status='active', model='', temperature=NULL, updated_at=datetime('now','localtime') WHERE id=?5",
         &[json!(name), json!(description), json!(system_prompt), json!(routing_hint), json!(id)],
     ).map_err(|e| e.to_string())?;
 

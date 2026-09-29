@@ -130,7 +130,19 @@ pub(crate) fn build_delegate_snapshot(
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, allowed_tools: Option<Vec<String>>) -> Result<Value, String> {
-    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true).await
+    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true, None).await
+}
+
+/// 委托运行上下文（共享历史模式专用）：
+/// - session: 直接借用主会话（写穿共享——子 Agent 的 visited/tool_history/token 累计
+///   无需合并即回写主会话；顺序 await 无并发竞态），工作记忆不再每次清零
+/// - agent_id/agent_name: 结构化可观测性（agent:status 事件携带，前端展示当前干活的子 Agent）
+/// - llm: per-agent 模型/温度覆盖（NULL/空 = 跟随全局配置）
+pub struct DelegateRun<'a> {
+    pub session: &'a mut SessionMemory,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub llm: LlmOverrides,
 }
 
 /// 历史消息 metadata.documents → 附加到 content 尾部。
@@ -168,6 +180,7 @@ pub(crate) fn append_documents_note(content: &mut String, metadata: Option<&str>
 /// canonical_tools: true=主聊天/共享历史子Agent——请求级 tools 用同一份全量清单
 ///   （端点把 tools 计入前缀缓存，字节不一致则共享历史段全灭；能力隔离由 allowed_tools
 ///   运行时守卫执行）；false=独立后台运行体，按 allowed_tools 收敛 tools 可见性
+/// delegate_run: Some=委托子 Agent——session 写穿共享主会话 + agent 身份 + 模型/温度覆盖；None=常规路径
 pub async fn agent_chat_workflow_internal(
     user_query: String,
     attachments: Vec<Value>,
@@ -183,6 +196,7 @@ pub async fn agent_chat_workflow_internal(
     time_only_context: bool,
     shared_history: Option<Vec<ChatMessage>>,
     canonical_tools: bool,
+    delegate_run: Option<DelegateRun<'_>>,
 ) -> Result<Value, String> {
     let effective_prompt = system_prompt.unwrap_or(AGENT_SYSTEM_PROMPT);
     // ★ 加载可用专业 Agent 列表，注入系统提示词（仅当有委托能力时）
@@ -252,18 +266,33 @@ pub async fn agent_chat_workflow_internal(
     //   保证 tools 字段字节级一致（前缀缓存把 tools 计入前缀，不一致则共享历史段全灭）；
     //   能力隔离由 allowed_tools 运行时守卫执行（见下方工具集守卫）
     let tools = request_tools_definitions(canonical_tools, allowed_tools.as_deref());
-    // ★ Session 缓存：从 chat_sessions.session_state 恢复（始终遍历所有历史）
-    let mut session = if let Some(ref sid) = session_id {
-        load_session_state(sid).unwrap_or_else(|| {
-            log::info!("[Session] 无缓存，从头创建");
-            SessionMemory::new()
-        })
-    } else {
-        SessionMemory::new()
+    // ★ 委托上下文解构：先取出身份/模型覆盖，再把 session 引用接出（之后不再触碰 delegate_run）
+    let is_delegate_run = delegate_run.is_some();
+    let delegate_label: Option<(String, String)> = delegate_run.as_ref().map(|d| (d.agent_id.clone(), d.agent_name.clone()));
+    let llm_overrides: LlmOverrides = delegate_run.as_ref().map(|d| d.llm.clone()).unwrap_or_default();
+    let delegate_session: Option<&mut SessionMemory> = delegate_run.map(|d| d.session);
+    // ★ Session 来源：委托运行写穿共享主会话（visited/tool_history/token 无需合并即回写，
+    //   顺序 await 无竞态）；否则按 session_id 加载/新建
+    let mut owned_session: Option<SessionMemory> = None;
+    let session: &mut SessionMemory = match delegate_session {
+        Some(s) => s,
+        None => {
+            owned_session = Some(if let Some(ref sid) = session_id {
+                load_session_state(sid).unwrap_or_else(|| {
+                    log::info!("[Session] 无缓存，从头创建");
+                    SessionMemory::new()
+                })
+            } else {
+                SessionMemory::new()
+            });
+            owned_session.as_mut().expect("owned_session just set")
+        }
     };
-    // ★ 记录加载时的快照，save 时只保存本次提问新增的 visited（差集）
-    session.prev_visited_chunks = session.visited_chunks.clone();
-    session.prev_visited_sources = session.visited_sources.clone();
+    // ★ prev 快照仅自有 session 时建立（委托运行时是主会话的问题中快照，覆盖会破坏 save 差集）
+    if !is_delegate_run {
+        session.prev_visited_chunks = session.visited_chunks.clone();
+        session.prev_visited_sources = session.visited_sources.clone();
+    }
 
     // ★ 从 DB 加载历史消息
     // 读取 session 的压缩摘要（如果有）
@@ -613,8 +642,13 @@ pub async fn agent_chat_workflow_internal(
             return Ok(json!({"success":true,"result_type":"answer","answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
         }
         
-        log::info!("预算: {}/150 cost={}", budget, search_cost);
-        if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"thinking","msg":"思考中..."})); let _ = h.emit("agent:progress", json!({"msg":"思考中..."})); } }
+        log::info!("预算: {}/300 cost={}", budget, search_cost);
+        // ★ 状态事件携带子 Agent 身份（delegate_label=Some 时），前端状态条据此显示"谁在干活"
+        let thinking_status = match &delegate_label {
+            Some((aid, aname)) => json!({"stage":"thinking","agent_id":aid,"agent_name":aname,"msg":format!("{} · 思考中...", aname)}),
+            None => json!({"stage":"thinking","msg":"思考中..."}),
+        };
+        if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", thinking_status); let _ = h.emit("agent:progress", json!({"msg":"思考中..."})); } }
         // ★ 每轮注意力衰减（Residual 方式：new_score = old_score * 0.95 + gain）
         // gain 在 update_from_tool_result / UpdateObject effect 中通过 EMA 完成
         // 这里只做衰减，不做加分
@@ -665,7 +699,7 @@ pub async fn agent_chat_workflow_internal(
 
         // ★ 单请求流式：content 逐 token 输出到前端，同时累积 tool_calls delta
         log::info!("[Agent] 调用 call_llm_streaming，messages 长度: {}", messages.len());
-        let (ac_owned, reasoning, tcs_streamed, usage) = match call_llm_streaming_inner(&messages, Some(&tools), &app_handle, silent, respond_cancel).await {
+        let (ac_owned, reasoning, tcs_streamed, usage) = match call_llm_streaming_inner(&messages, Some(&tools), &app_handle, silent, respond_cancel, &llm_overrides).await {
             Ok(r) => {
                 log::info!("[Agent] call_llm_streaming 成功: content_len={}, tool_calls={}", r.0.len(), r.2.len());
                 r
@@ -754,7 +788,7 @@ pub async fn agent_chat_workflow_internal(
                 log::info!("[Agent] 处理答案前: len={}, preview={}", answer.len(), answer.chars().take(100).collect::<String>());
                 if answer.trim().is_empty() {
                     log::info!("[Agent] 流式内容为空，回退补生成");
-                    answer = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel).await.unwrap_or_else(|e| { log::warn!("[Agent] 流式补生成失败，降级为纯文本回答: {e}"); format!("未能生成有效回答: {e}") });
+                    answer = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel, &llm_overrides).await.unwrap_or_else(|e| { log::warn!("[Agent] 流式补生成失败，降级为纯文本回答: {e}"); format!("未能生成有效回答: {e}") });
                 }
                 answer = answer.trim().to_string();
 
@@ -786,7 +820,7 @@ pub async fn agent_chat_workflow_internal(
                         let _ = h.emit("agent:budget-low", json!({"remaining":budget,"cost":search_cost,"next_query":kw}));
                     } }
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("预算不足，请直接总结已获取的信息。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel).await.unwrap_or_else(|e| { log::warn!("[Agent] 预算不足总结失败: {e}"); format!("总结失败: {e}") });
+                    let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel, &llm_overrides).await.unwrap_or_else(|e| { log::warn!("[Agent] 预算不足总结失败: {e}"); format!("总结失败: {e}") });
                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                     let ws = session.generate_scratchpad();
                     if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": &ans})); } }
@@ -794,7 +828,7 @@ pub async fn agent_chat_workflow_internal(
                 }
                 if iters >= max_iters {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel).await.unwrap_or_else(|e| { log::warn!("[Agent] 迭代上限总结失败: {e}"); format!("总结失败: {e}") });
+                    let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel, &llm_overrides).await.unwrap_or_else(|e| { log::warn!("[Agent] 迭代上限总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); } }
                     return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
@@ -1247,7 +1281,7 @@ pub async fn agent_chat_workflow_internal(
                             let snapshot = build_delegate_snapshot(&messages, &completed_round);
                             let res = crate::services::delegate_agent::execute_delegate_agent(
                                 agent_id, task, Some(&ctx), expected_output, app_handle.clone(), delegate_depth,
-                                snapshot,
+                                snapshot, session,
                             ).await;
                             // ★ 取消透传 + 委托扣费（合并解析；解析失败也扣基础额度，防绕过）
                             match serde_json::from_str::<Value>(&res) {
@@ -1407,7 +1441,7 @@ pub async fn agent_chat_workflow_internal(
 
                 if !circuit_break_reason.is_empty() {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
-                    let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel).await.unwrap_or_else(|e| { log::warn!("[Agent] 熔断总结失败: {e}"); format!("总结失败: {e}") });
+                    let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel, &llm_overrides).await.unwrap_or_else(|e| { log::warn!("[Agent] 熔断总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
                     if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); } }
                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }

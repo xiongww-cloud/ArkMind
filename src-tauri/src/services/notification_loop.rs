@@ -295,6 +295,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
             true,             // ★ 动态上下文仅注入当前时间（工作记忆/预算文案对分析无价值）
             None,             // ★ 独立后台运行体：走新会话构造，无共享历史
             false,            // ★ 非 canonical：按 ANALYSIS_TOOLS 收敛 tools 可见性（分析师只读，不共享前缀）
+            None,             // ★ 非委托：自有 session，无身份/模型覆盖
         ).await;
 
         match result {

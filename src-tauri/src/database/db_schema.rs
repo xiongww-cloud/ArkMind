@@ -125,6 +125,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             FOREIGN KEY (folder_id) REFERENCES library_folders(id) ON DELETE SET NULL
         );
         CREATE INDEX IF NOT EXISTS idx_file_rel_entity ON file_relations(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_file_rel_file ON file_relations(file_id);
         -- ★ AI 生成文档：原始 content 快照（多轮 read 回读）+ 保留期清理锚点
         CREATE TABLE IF NOT EXISTS generated_docs (
             file_id TEXT PRIMARY KEY,
@@ -450,6 +451,9 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             is_builtin INTEGER DEFAULT 0,
             preset_tools TEXT DEFAULT '[]',
             routing_hint TEXT DEFAULT '',
+            -- per-agent LLM 覆盖：model 空串=跟随全局；temperature NULL=跟随全局（默认0.3）
+            model TEXT DEFAULT '',
+            temperature REAL DEFAULT NULL,
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
