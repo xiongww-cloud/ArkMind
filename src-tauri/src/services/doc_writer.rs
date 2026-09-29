@@ -478,18 +478,18 @@ fn apply_docx_blocks(
                 }
             }
             "list" | "bullet_list" | "numbered_list" => {
-                let items: Vec<String> = child["items"]
-                    .as_array()
-                    .map(|a| a.iter().map(value_to_plain_string).collect())
-                    .unwrap_or_default();
-                if items.is_empty() {
-                    continue;
-                }
                 let ordered = child["ordered"]
                     .as_bool()
                     .unwrap_or(kind == "numbered_list");
                 let level = child["level"].as_u64().unwrap_or(0).min(8) as u8;
-                builder = builder.list_level(items, ordered, level);
+                let items: Vec<Value> = child["items"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                if items.is_empty() {
+                    continue;
+                }
+                builder = render_list_paragraphs(builder, &items, ordered, level);
             }
             "table" => {
                 let has_headers = child["headers"].is_array();
@@ -686,6 +686,105 @@ fn heading_run(text: &str, level: u8) -> rwml::Run {
         .font(DOC_PRESET_FONT)
         .size_half_pt(DOC_PRESET_HEADING_HALF_PT[idx])
         .build()
+}
+
+/// Word 列表渲染：**字面编号**（每组每级独立计数，不跨组延续）+ 预设样式
+/// （宋体小四 run + 1.5 倍行距 + 层级左缩进与悬挂）。rwml 合成 numbering 用固定 numId
+/// 导致有序列表跨块编号延续、level 基准混乱——生成即终稿的场景字面前缀显示 100% 可控。
+fn render_list_paragraphs(
+    mut builder: rwml::DocBuilder,
+    items: &[Value],
+    ordered: bool,
+    base_level: u8,
+) -> rwml::DocBuilder {
+    let mut flat: Vec<(u8, bool, String)> = Vec::new();
+    collect_list_items(items, base_level, ordered, &mut flat);
+    // AI 混用 0/1 基：以组内最小 level 作为顶层基准归一
+    let min_level = flat.iter().map(|(l, _, _)| *l).min().unwrap_or(0);
+    let mut counters: std::collections::BTreeMap<u8, u32> = Default::default();
+    for (lvl, item_ordered, text) in flat {
+        let lvl = lvl.saturating_sub(min_level);
+        let bare = strip_list_prefix(&text);
+        let prefix = if item_ordered {
+            let n = counters.entry(lvl).or_insert(0);
+            *n += 1;
+            format!("{}. ", n)
+        } else {
+            match lvl % 3 { 0 => "• ", 1 => "◦ ", _ => "▪ " }.to_string()
+        };
+        let pb = rwml::ParagraphBuilder::new()
+            .runs(vec![body_run(&format!("{}{}", prefix, bare))])
+            .line_pct(DOC_PRESET_LINE_PCT)
+            .indent_left_pt(21.0 * (lvl as f32 + 1.0))
+            .hanging_pt(21.0);
+        builder = builder.rich_paragraph(pb.build());
+    }
+    builder
+}
+
+/// 展平列表项：字符串 → 本级；对象 {text|label, ordered?, children|items?} → 子级自动 +1 层；
+/// items 内嵌数组 → 子级列表 +1 层。子级默认无序（一级编号、二级圆点的行文惯例）。
+fn collect_list_items(items: &[Value], level: u8, ordered: bool, out: &mut Vec<(u8, bool, String)>) {
+    for it in items {
+        match it {
+            Value::String(s) => {
+                let t = s.trim();
+                if !t.is_empty() {
+                    out.push((level, ordered, t.to_string()));
+                }
+            }
+            Value::Object(o) => {
+                // 注意：o 是 Map（缺失键索引会 panic），一律 get
+                let text = o.get("text").and_then(|v| v.as_str())
+                    .or_else(|| o.get("label").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let item_ordered = o.get("ordered").and_then(|v| v.as_bool()).unwrap_or(ordered);
+                if !text.is_empty() {
+                    out.push((level, item_ordered, text));
+                }
+                let nested = o.get("children").and_then(|v| v.as_array())
+                    .or_else(|| o.get("items").and_then(|v| v.as_array()));
+                if let Some(kids) = nested {
+                    let kid_ordered = o.get("children_ordered").and_then(|v| v.as_bool()).unwrap_or(false);
+                    collect_list_items(kids, level.saturating_add(1), kid_ordered, out);
+                }
+            }
+            Value::Array(nested) => {
+                collect_list_items(nested, level.saturating_add(1), false, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 剥除 AI 常自带的序号/项目符号前缀（"1. "/"2、"/"3）"/"- "/"• "），返回纯文本
+/// （系统统一重新编号，避免 "1. 1. 文本" 双重前缀）
+fn strip_list_prefix(text: &str) -> String {
+    if let Some(pos) = text.find(|c: char| !c.is_ascii_digit()) {
+        if pos > 0 && pos <= 3 {
+            let rest = &text[pos..];
+            if let Some(r) = rest.strip_prefix(". ") {
+                return r.trim_start().to_string();
+            }
+            if let Some(r) = rest.strip_prefix("、") {
+                return r.trim_start().to_string();
+            }
+            if let Some(r) = rest.strip_prefix('.') {
+                return r.trim_start().to_string();
+            }
+            if let Some(r) = rest.strip_prefix('）').or_else(|| rest.strip_prefix(')')) {
+                return r.trim_start().to_string();
+            }
+        }
+    }
+    for b in ["- ", "• ", "· ", "* ", "◦ "] {
+        if let Some(r) = text.strip_prefix(b) {
+            return r.trim_start().to_string();
+        }
+    }
+    text.to_string()
 }
 
 /// 表格单元格字号：text_type=caption→小五9pt，缺省五号10.5pt（字体恒宋体——预设唯一真相源）
@@ -1296,7 +1395,8 @@ fn parse_numeric_text(s: &str) -> Option<f64> {
     t.parse::<f64>().ok()
 }
 
-/// 从单元格 JSON 构建样式 Format；无样式字段且非 header 行时返回 None
+/// 从单元格 JSON 构建样式 Format；恒返回 Some（预设字体/字号/垂直居中无条件生效，
+/// 仅显式 valign: top|bottom 可覆盖垂直居中）
 /// 支持：bold/italic/border/border_color/bg/color/align/valign/wrap/num_format/font/size/underline/strike
 fn build_cell_format(cell: &Value, is_header: bool) -> Option<rust_xlsxwriter::Format> {
     use rust_xlsxwriter::{Format, FormatAlign, FormatBorder, FormatUnderline};
@@ -1306,16 +1406,13 @@ fn build_cell_format(cell: &Value, is_header: bool) -> Option<rust_xlsxwriter::F
     const DEFAULT_HEADER_COLOR: &str = "FFFFFF";
 
     let mut fmt = Format::new();
-    let mut has = false;
 
     // bold：显式字段优先，header 行默认加粗
     if cell["bold"].as_bool().unwrap_or(is_header) {
         fmt = fmt.set_bold();
-        has = true;
     }
     if cell["italic"].as_bool().unwrap_or(false) {
         fmt = fmt.set_italic();
-        has = true;
     }
 
     // border：显式 false 尊重（无边框）；显式 true/字符串用其值；未传 → 默认全表细边框
@@ -1323,7 +1420,6 @@ fn build_cell_format(cell: &Value, is_header: bool) -> Option<rust_xlsxwriter::F
         Some(Value::Bool(false)) => { /* 尊重显式关闭 */ }
         Some(Value::Bool(true)) => {
             fmt = fmt.set_border(FormatBorder::Thin);
-            has = true;
         }
         Some(Value::String(s)) => {
             let b = match s.to_ascii_lowercase().as_str() {
@@ -1335,17 +1431,14 @@ fn build_cell_format(cell: &Value, is_header: bool) -> Option<rust_xlsxwriter::F
                 _ => FormatBorder::Thin,
             };
             fmt = fmt.set_border(b);
-            has = true;
         }
         // 未传（含标量 cell）→ 默认细线边框，保证表格网格完整
         _ => {
             fmt = fmt.set_border(FormatBorder::Thin);
-            has = true;
         }
     }
     if let Some(c) = cell["border_color"].as_str().and_then(norm_hex) {
         fmt = fmt.set_border_color(c.as_str());
-        has = true;
     }
 
     // 背景色：显式优先；header 行未传 → 默认 Office 蓝
@@ -1355,20 +1448,16 @@ fn build_cell_format(cell: &Value, is_header: bool) -> Option<rust_xlsxwriter::F
     if let Some(raw) = bg_explicit {
         if let Some(c) = norm_hex(raw) {
             fmt = fmt.set_background_color(c.as_str());
-            has = true;
         }
     } else if is_header {
         fmt = fmt.set_background_color(DEFAULT_HEADER_BG);
-        has = true;
     }
 
     // 字体颜色：显式优先；header 行未传 → 默认白字（配表头底色）
     if let Some(c) = cell["color"].as_str().and_then(norm_hex) {
         fmt = fmt.set_font_color(c.as_str());
-        has = true;
     } else if is_header {
         fmt = fmt.set_font_color(DEFAULT_HEADER_COLOR);
-        has = true;
     }
 
     // 水平对齐：显式优先；header 行未传 → 居中
@@ -1381,70 +1470,48 @@ fn build_cell_format(cell: &Value, is_header: bool) -> Option<rust_xlsxwriter::F
         };
         if let Some(fa) = fa {
             fmt = fmt.set_align(fa);
-            has = true;
         }
     } else if is_header {
         fmt = fmt.set_align(FormatAlign::Center);
-        has = true;
     }
-    // 垂直对齐
-    if let Some(v) = cell["valign"].as_str() {
-        let fa = match v.to_ascii_lowercase().as_str() {
-            "center" | "middle" | "vertical-center" => Some(FormatAlign::VerticalCenter),
-            "top" => Some(FormatAlign::Top),
-            "bottom" => Some(FormatAlign::Bottom),
-            _ => None,
-        };
-        if let Some(fa) = fa {
-            fmt = fmt.set_align(fa);
-            has = true;
-        }
-    }
+    // 垂直对齐统一在尾部预设处理（默认垂直居中，显式 top/bottom 覆盖）
 
     // 自动换行：显式 wrap 或文本含换行符
     if cell["wrap"].as_bool().unwrap_or(false) {
         fmt = fmt.set_text_wrap();
-        has = true;
     } else if cell["text"].as_str().map_or(false, |t| t.contains('\n')) {
         fmt = fmt.set_text_wrap();
-        has = true;
     }
 
     // 数字格式
     if let Some(nf) = str_field(cell, "num_format") {
         fmt = fmt.set_num_format(nf);
-        has = true;
     }
-    // 字号字体：系统预设唯一真相源（text_type 选择类型：caption=小五9pt；自由 font/size 字段已废除，传了忽略）
-    // 注：text_type 是样式意图，计入 has（保证 border:false + caption 的零格式格也拿到预设）
-    if cell["text_type"].as_str().is_some() {
-        has = true;
-    }
-    if has {
-        fmt = fmt.set_font_name(XLSX_PRESET_FONT);
-        let sz = if cell["text_type"].as_str() == Some("caption") {
-            XLSX_CAPTION_SIZE_PT
-        } else {
-            XLSX_PRESET_SIZE_PT
-        };
-        fmt = fmt.set_font_size(sz);
+    // 字号字体：系统预设唯一真相源（text_type=caption 小五9pt，否则 11pt；自由 font/size 已废除）
+    // 注：set_align 的水平/垂直是独立槽位（rust_xlsxwriter 按值分派），与表头水平 center 共存
+    fmt = fmt.set_font_name(XLSX_PRESET_FONT);
+    let sz = if cell["text_type"].as_str() == Some("caption") {
+        XLSX_CAPTION_SIZE_PT
+    } else {
+        XLSX_PRESET_SIZE_PT
+    };
+    fmt = fmt.set_font_size(sz);
+    // 垂直对齐：默认居中（更易读），显式 valign: top|bottom 覆盖
+    match cell["valign"].as_str().unwrap_or("").to_ascii_lowercase().as_str() {
+        "top" => { fmt = fmt.set_align(FormatAlign::Top); }
+        "bottom" => { fmt = fmt.set_align(FormatAlign::Bottom); }
+        _ => { fmt = fmt.set_align(FormatAlign::VerticalCenter); }
     }
     if cell["underline"].as_bool().unwrap_or(false) {
         fmt = fmt.set_underline(FormatUnderline::Single);
-        has = true;
     }
     if cell["strike"].as_bool().unwrap_or(false)
         || cell["strikethrough"].as_bool().unwrap_or(false)
     {
         fmt = fmt.set_font_strikethrough();
-        has = true;
     }
 
-    if has {
-        Some(fmt)
-    } else {
-        None
-    }
+    Some(fmt)
 }
 
 /// 归一化 hex 颜色：去 # 前缀，校验 6 位十六进制
@@ -1818,13 +1885,14 @@ mod tests {
         assert!(styles.contains("<b/>") || styles.contains("<b></b>"), "表头默认应加粗");
     }
 
-    /// 显式 border:false 且无其他样式 → 不套默认边框（尊重 AI 显式关闭）
+    /// 显式 border:false 不套默认边框；垂直居中预设使函数恒返回 Some
+    /// （"无默认边框"由 border match 分支保证，Format 无公开 getter 故不深检）
     #[test]
     fn test_xlsx_explicit_border_false_respected() {
         let cell = json!({"text": "无边框", "border": false});
         assert!(
-            build_cell_format(&cell, false).is_none(),
-            "border:false 且无其他样式时不应套默认边框"
+            build_cell_format(&cell, false).is_some(),
+            "预设垂直居中/字体使任何 cell 均带格式（显式 border:false 不再产生默认边框）"
         );
         // header 零字段 → 应有默认样式（bold+center+bg+color）
         assert!(
@@ -2263,5 +2331,28 @@ mod tests {
         assert!(xml.contains("宋体"), "xlsx 样式表应含宋体: {}", &xml[..xml.len().min(600)]);
         assert!(xml.contains(r#"val="11""#), "xlsx 默认字号应含 11pt");
         assert!(xml.contains(r#"val="9""#), "caption 应为 9pt");
+        assert!(xml.contains(r#"vertical="center""#), "所有单元格应垂直居中");
+    }
+
+    /// Word 列表：预设样式（宋体小四 + 1.5倍行距）+ 字面编号
+    /// （组间独立计数、嵌套自动二级圆点、剥 AI 自带前缀防双重编号、层级缩进）
+    #[test]
+    fn docx_list_preset_style_and_numbering() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "list", "ordered": true, "items": ["第一步", "1. 自带序号第二步"]},
+            {"type": "list", "ordered": true, "items": ["新组应从1开始"]},
+            {"type": "list", "items": [{"text": "父项", "children": ["子项甲"]}]},
+        ]}), "document.xml");
+        assert!(xml.contains(r#"w:sz w:val="24""#), "列表应宋体小四");
+        assert!(xml.contains(r#"w:line="360""#), "列表应 1.5 倍行距");
+        assert!(
+            xml.contains("2. 自带序号第二步"),
+            "自带前缀应被剥除并统一重编号: {}",
+            &xml[..xml.len().min(1600)]
+        );
+        assert!(xml.contains("1. 新组应从1开始"), "有序组间编号应独立重置");
+        assert!(!xml.contains("1. 1."), "不得双重前缀");
+        assert!(xml.contains("◦ 子项甲"), "嵌套子级应为二级圆点");
+        assert!(xml.contains("w:left"), "列表应有层级缩进");
     }
 }
