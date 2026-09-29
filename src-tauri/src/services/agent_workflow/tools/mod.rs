@@ -7,6 +7,7 @@
 pub(crate) const MAIN_AGENT_ONLY: &[&str] = &[
     "ext_tool_delegate_agent",
     "ext_tool_memory",
+    "ext_tool_ask_user",
 ];
 
 pub(crate) mod common;

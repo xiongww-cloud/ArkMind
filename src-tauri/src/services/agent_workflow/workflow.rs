@@ -65,21 +65,93 @@ async fn summarize_large_attachment(
 }
 
 /// 委托直出判定（纯函数，可单测）。
-/// 输入：本轮全部可解析结果的 (result_type, status, answer) 三元组。
+/// 输入：本轮全部可解析结果的 (result_type, status, answer, has_missing) 四元组。
 /// 仅当其中恰好 1 个委托信封（delegate_agent_result）且回答合格时返回 Some：
 /// - ≥2 个委托：多份回答必须交回主 LLM 综合，否则第二个及之后的回答文本被丢弃
+/// - partial 且 missing 非空：MISSING 声明已从正文剥离，直出会把缺口藏起来——
+///   交回主 LLM，由它决定补齐/追问（衔接 ext_tool_ask_user）
 /// - 0 个委托 / failed / 空回答：None，走常规主 LLM 路径
-pub(crate) fn pick_direct_out(results: &[(String, String, String)]) -> Option<String> {
-    let delegates: Vec<&(String, String, String)> = results.iter()
-        .filter(|(rt, _, _)| rt == "delegate_agent_result")
+pub(crate) fn pick_direct_out(results: &[(String, String, String, bool)]) -> Option<String> {
+    let delegates: Vec<&(String, String, String, bool)> = results.iter()
+        .filter(|(rt, _, _, _)| rt == "delegate_agent_result")
         .collect();
     if delegates.len() != 1 { return None; }
-    let (_, status, answer) = delegates[0];
-    if (status == "completed" || status == "partial") && !answer.is_empty() {
-        Some(answer.clone())
-    } else {
-        None
+    let (_, status, answer, has_missing) = delegates[0];
+    let qualified = (status == "completed" || (status == "partial" && !has_missing)) && !answer.is_empty();
+    if qualified { Some(answer.clone()) } else { None }
+}
+
+/// ext_tool_ask_user 参数归一化（纯函数，可单测）：
+/// - 问题截到 ≤3（超出丢弃并置 truncated）、每题选项截到 ≤6、剔除空 prompt/空选项
+/// - type 非 single_choice/multiple_choice 一律降级为 text
+/// - question_id 缺失时自动补 qN
+/// - 无合格问题 → 失败信封（提示 LLM 正确用法）
+pub(crate) fn normalize_ask_args(a: &Value) -> String {
+    let reason = a["reason"].as_str().unwrap_or("").trim().to_string();
+    let raw_qs = a["questions"].as_array().cloned().unwrap_or_default();
+    let mut questions: Vec<Value> = Vec::new();
+    let mut truncated = false;
+    for q in raw_qs {
+        let prompt = q["prompt"].as_str().unwrap_or("").trim().to_string();
+        if prompt.is_empty() { continue; }
+        if questions.len() >= 3 { truncated = true; break; }
+        let qtype = match q["type"].as_str() {
+            Some("single_choice") | Some("multiple_choice") => q["type"].as_str().unwrap(),
+            _ => "text",
+        };
+        let options: Vec<String> = q["options"].as_array()
+            .map(|arr| arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .take(6)
+                .collect())
+            .unwrap_or_default();
+        let qid = q["question_id"].as_str()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("q{}", questions.len() + 1));
+        questions.push(json!({"question_id": qid, "prompt": prompt, "type": qtype, "options": options}));
     }
+    if questions.is_empty() {
+        let envelope = ToolResultEnvelope {
+            result_type: "ask_user_result".to_string(),
+            data: json!({"status": "invalid", "error": "questions 中没有任何含 prompt 的有效问题"}),
+            summary: Some("追问无效：至少需要一个包含 prompt 的问题。常规可默认的信息不要追问。".to_string()),
+        };
+        return envelope.to_json();
+    }
+    ToolResultEnvelope {
+        result_type: "ask_user_result".to_string(),
+        data: json!({"status": "pending", "reason": reason, "questions": questions, "truncated": truncated}),
+        summary: Some(format!("已向用户发出 {} 个追问（本轮结束，等待用户答复）", questions.len())),
+    }.to_json()
+}
+
+/// 追问文本版答案（纯函数，可单测）：写入历史/流式兜底，结构化卡片另走 clarification 字段
+pub(crate) fn format_clarification_answer(reason: &str, questions: &[Value]) -> String {
+    let mut s = String::from("【需要确认】");
+    if !reason.is_empty() { s.push_str(&format!(" {}", reason)); }
+    for (i, q) in questions.iter().enumerate() {
+        s.push_str(&format!("\n{}. {}", i + 1, q["prompt"].as_str().unwrap_or("")));
+        if let Some(opts) = q["options"].as_array() {
+            let joined = opts.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" / ");
+            if !joined.is_empty() { s.push_str(&format!("\n   {}", joined)); }
+        }
+    }
+    s.push_str("\n\n请在上方卡片选择或直接回复补充信息，我将继续推进。");
+    s
+}
+
+/// 追问早退判定（纯函数，可单测）：本轮存在合格 ask_user_result（status=pending 且含问题）
+/// → 返回第一个的 data。追问语义是"本轮立即结束等待用户"，优先级高于委托直出。
+pub(crate) fn pick_clarification_out(parsed: &[Value]) -> Option<Value> {
+    parsed.iter().find_map(|v| {
+        if v["result_type"].as_str()? != "ask_user_result" { return None; }
+        let data = v.get("data")?;
+        if data["status"].as_str()? != "pending" { return None; }
+        data["questions"].as_array().filter(|a| !a.is_empty())?;
+        Some(data.clone())
+    })
 }
 
 /// 构建委托执行快照（纯函数，可单测）：在共享历史基础上让子 Agent 看到本轮已完成的工具结果。
@@ -1296,6 +1368,11 @@ pub async fn agent_chat_workflow_internal(
                             }
                             (res, vec![])
                         }
+                        "ext_tool_ask_user" => {
+                            // ★ 结构化追问：归一化（≤3题/≤6选项/降级text）后由本轮末尾早退等用户答复
+                            log::info!("[AskUser] 主 Agent 发起追问: {:.80}", a["reason"].as_str().unwrap_or(""));
+                            (normalize_ask_args(&a), vec![])
+                        }
                         _ => (format!("未知工具: {}", name), vec![]),
                     };
                     completed_round.push((*idx, result.clone()));
@@ -1355,18 +1432,43 @@ pub async fn agent_chat_workflow_internal(
                     let tool_name = t["tool"].as_str().unwrap_or("");
                     session.update_from_tool_result(tool_name, &result_str);
                 }
-                // ★ 委托直出：恰好一个合格委托才直出（多委托的回答必须交回主 LLM 综合，否则其余答案被丢弃）
-                let direct_candidates: Vec<(String, String, String)> = all_results.iter()
-                    .filter_map(|(_, result, _)| {
-                        let v = serde_json::from_str::<Value>(result).ok()?;
-                        Some((
-                            v["result_type"].as_str().unwrap_or("").to_string(),
-                            v["data"]["status"].as_str().unwrap_or("").to_string(),
-                            v["data"]["answer"].as_str()
-                                .or_else(|| v["data"]["result"].as_str())
-                                .unwrap_or("").to_string(),
-                        ))
-                    })
+                // ★ 本轮早退判定（信封一次性解析）：追问优先 > 委托直出
+                let parsed_envelopes: Vec<Value> = all_results.iter()
+                    .filter_map(|(_, result, _)| serde_json::from_str::<Value>(result).ok())
+                    .collect();
+                // ★ 追问早退：本轮存在 ask_user pending → 立即结束等用户答复。
+                //   同轮若还有合格委托，追问优先（委托结果已入历史，下轮主 LLM 一并综合）
+                if let Some(ask_data) = pick_clarification_out(&parsed_envelopes) {
+                    let questions = ask_data["questions"].as_array().cloned().unwrap_or_default();
+                    let answer = format_clarification_answer(ask_data["reason"].as_str().unwrap_or(""), &questions);
+                    log::info!("[追问] 本轮挂起等待用户: {} 个问题", questions.len());
+                    if !silent { if let Some(ref h) = app_handle {
+                        let _ = h.emit("agent:status", json!({"stage":"answer"}));
+                        let _ = h.emit("agent:final-answer", json!({"answer": answer}));
+                    } }
+                    if let Some(ref sid) = session_id { save_session_state(sid, &session); }
+                    let ws = session.generate_scratchpad();
+                    return Ok(json!({
+                        "success": true, "result_type": "clarification", "answer": answer,
+                        "clarification": ask_data,
+                        "workspace": ws,
+                        "iterations": iters,
+                        "promptTokens": session.prompt_tokens,
+                        "completionTokens": session.completion_tokens,
+                        "cachedTokens": session.cached_tokens,
+                        "tool_log": tool_log
+                    }));
+                }
+                // ★ 委托直出：恰好一个合格委托才直出（多委托交回主 LLM 综合；partial+missing 同样交回）
+                let direct_candidates: Vec<(String, String, String, bool)> = parsed_envelopes.iter()
+                    .map(|v| (
+                        v["result_type"].as_str().unwrap_or("").to_string(),
+                        v["data"]["status"].as_str().unwrap_or("").to_string(),
+                        v["data"]["answer"].as_str()
+                            .or_else(|| v["data"]["result"].as_str())
+                            .unwrap_or("").to_string(),
+                        v["data"]["missing"].as_array().map_or(false, |m| !m.is_empty()),
+                    ))
                     .collect();
                 if let Some(answer) = pick_direct_out(&direct_candidates) {
                     log::info!("[委托直出] 命中：单委托直出, answer_len={}", answer.len());
@@ -1497,11 +1599,15 @@ pub async fn agent_chat_workflow_internal(
 #[cfg(test)]
 mod tests {
     use super::append_documents_note;
-    use super::{pick_direct_out, build_delegate_snapshot};
+    use super::{pick_direct_out, build_delegate_snapshot, normalize_ask_args, format_clarification_answer, pick_clarification_out};
     use crate::services::agent_workflow::{ChatMessage, FunctionCall, MessageRole, ToolCall};
+    use serde_json::json;
 
-    fn env(rt: &str, status: &str, answer: &str) -> (String, String, String) {
-        (rt.to_string(), status.to_string(), answer.to_string())
+    fn env(rt: &str, status: &str, answer: &str) -> (String, String, String, bool) {
+        (rt.to_string(), status.to_string(), answer.to_string(), false)
+    }
+    fn env_missing(rt: &str, status: &str, answer: &str, has_missing: bool) -> (String, String, String, bool) {
+        (rt.to_string(), status.to_string(), answer.to_string(), has_missing)
     }
 
     /// P0 回归：单委托合格才直出
@@ -1541,6 +1647,81 @@ mod tests {
         assert_eq!(pick_direct_out(&failed), None);
         let empty = vec![env("delegate_agent_result", "completed", "")];
         assert_eq!(pick_direct_out(&empty), None);
+    }
+
+    /// partial+missing 非空 → 不直出（MISSING 已从正文剥离，直出会藏缺口令）
+    #[test]
+    fn direct_out_rejected_for_partial_with_missing() {
+        let with_missing = vec![env_missing("delegate_agent_result", "partial", "已完成部分", true)];
+        assert_eq!(pick_direct_out(&with_missing), None);
+        let without = vec![env_missing("delegate_agent_result", "partial", "已完成", false)];
+        assert_eq!(pick_direct_out(&without).as_deref(), Some("已完成"));
+    }
+
+    /// 追问归一化：截断≤3题/≤6选项、type降级、question_id补全、全非法→invalid
+    #[test]
+    fn normalize_ask_args_truncates_and_sanitizes() {
+        // 正常化
+        let a = json!({
+            "reason": "为了精准选型",
+            "questions": [
+                {"question_id": "q1", "prompt": " 架构路线？", "type": "single_choice", "options": (1..=9).map(|i| format!("选项{}", i)).collect::<Vec<_>>()},
+                {"prompt": "", "type": "text"},
+                {"question_id": "q3", "prompt": "预算范围？", "type": "weird_type"},
+                {"question_id": "q4", "prompt": "交付形态？", "type": "multiple_choice", "options": []},
+                {"question_id": "q5", "prompt": "第四题应被截断", "type": "text"},
+            ]
+        });
+        let v: serde_json::Value = serde_json::from_str(&normalize_ask_args(&a)).unwrap();
+        assert_eq!(v["result_type"], "ask_user_result");
+        assert_eq!(v["data"]["status"], "pending");
+        let qs = v["data"]["questions"].as_array().unwrap();
+        // 空 prompt 剔除 + ≤3 截断（q1 + q3 + q4）
+        assert_eq!(qs.len(), 3);
+        assert_eq!(qs[0]["options"].as_array().unwrap().len(), 6); // ≤6 选项
+        assert_eq!(qs[1]["type"], "text"); // 非法 type 降级
+        assert_eq!(qs[2]["question_id"], "q4");
+        assert_eq!(v["data"]["truncated"], true);
+
+        // 无合格问题 → invalid
+        let bad = json!({"reason": "r", "questions": [{"prompt": "  ", "type": "text"}]});
+        let v2: serde_json::Value = serde_json::from_str(&normalize_ask_args(&bad)).unwrap();
+        assert_eq!(v2["data"]["status"], "invalid");
+    }
+
+    /// 追问文本版答案：含 reason 与每题 prompt/options
+    #[test]
+    fn clarification_answer_formats_questions_as_text() {
+        let qs = vec![
+            json!({"question_id":"q1","prompt":"业务场景？","type":"single_choice","options":["HIS/PACS","通用办公"]}),
+            json!({"question_id":"q2","prompt":"补充说明","type":"text","options":[]}),
+        ];
+        let text = format_clarification_answer("为了精准编制参数", &qs);
+        assert!(text.starts_with("【需要确认】"));
+        assert!(text.contains("为了精准编制参数"));
+        assert!(text.contains("1. 业务场景？"));
+        assert!(text.contains("HIS/PACS / 通用办公"));
+        assert!(text.contains("2. 补充说明"));
+        assert!(!text.contains("\n   \n"), "text 题无选项不应留空行尾巴");
+    }
+
+    /// 早退判定：pending 且有问题的 ask_user_result → Some(data)；invalid/普通工具 → None
+    #[test]
+    fn clarification_out_picks_pending_ask_envelope() {
+        let parsed: Vec<serde_json::Value> = vec![
+            json!({"result_type":"object_create_result","data":{"success":true}}),
+            json!({"result_type":"ask_user_result","data":{"status":"invalid"}}),
+            json!({"result_type":"ask_user_result","data":{"status":"pending","reason":"r","questions":[{"question_id":"q1","prompt":"p","type":"text","options":[]}]}}),
+        ];
+        let got = pick_clarification_out(&parsed).expect("should pick first pending ask");
+        assert_eq!(got["reason"], "r");
+        assert_eq!(got["questions"].as_array().unwrap().len(), 1);
+
+        let none: Vec<serde_json::Value> = vec![
+            json!({"result_type":"ask_user_result","data":{"status":"pending","questions":[]}}),
+        ];
+        assert!(pick_clarification_out(&none).is_none());
+        assert!(pick_clarification_out(&[]).is_none());
     }
 
     fn tc(id: &str, name: &str) -> ToolCall {

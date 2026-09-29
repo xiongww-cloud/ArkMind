@@ -80,6 +80,7 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
         "ext_tool_relations".to_string(),
         "ext_tool_memory".to_string(),
         "ext_tool_delegate_agent".to_string(),
+        "ext_tool_ask_user".to_string(),
     ];
     if crate::services::web_search::is_configured() {
         base.into_iter().chain(crate::services::web_search::WEB_TOOL_NAMES.iter().map(|s| s.to_string())).collect()
@@ -113,11 +114,12 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                     let docs = crate::services::agent_workflow::tools::write_document::extract_created_documents(
                         v.get("tool_log"),
                     );
-                    let metadata = if docs.is_empty() {
-                        Value::Null
-                    } else {
-                        json!({"documents": docs})
-                    };
+                    // ★ 追问卡片结构化数据（text+card 双轨：正文存文本版，metadata 存结构化版）
+                    let clarification = v.get("clarification").filter(|c| c.is_object()).cloned();
+                    let mut meta_map = serde_json::Map::new();
+                    if !docs.is_empty() { meta_map.insert("documents".to_string(), json!(docs)); }
+                    if let Some(c) = clarification { meta_map.insert("clarification".to_string(), c); }
+                    let metadata = if meta_map.is_empty() { Value::Null } else { Value::Object(meta_map) };
                     let _ = crate::database::run(
                         "INSERT INTO chat_messages(session_id, role, content, metadata) VALUES(?1, 'assistant', ?2, ?3)",
                         &[json!(sid), json!(answer), metadata],

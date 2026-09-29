@@ -566,6 +566,7 @@ mod tests {
     fn hard_masking_forbids_delegate_and_main_only_tools() {
         assert!(is_sub_agent_forbidden_tool("ext_tool_delegate_agent"));
         assert!(is_sub_agent_forbidden_tool("ext_tool_memory"));
+        assert!(is_sub_agent_forbidden_tool("ext_tool_ask_user"));
         assert!(!is_sub_agent_forbidden_tool("ext_tool_write_document"));
         assert!(!is_sub_agent_forbidden_tool("ext_tool_search"));
     }
