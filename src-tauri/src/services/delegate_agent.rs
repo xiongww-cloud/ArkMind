@@ -263,7 +263,7 @@ fn build_directive(
     }
 
     // 6. 执行协议（运行时统一注入，对所有子Agent生效，与agent档案prompt无关）
-    parts.push("## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用 ext_tool_object 按名称检索同类对象，存在相似项则先向用户确认\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务，不要输出 MISSING\n- 若信息不足以完成部分任务，不要编造，在回复的最后一行输出：MISSING: <缺少什么信息或哪个操作未执行>\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID".to_string());
+    parts.push("## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用 ext_tool_object 按名称检索同类对象：完全同名由工具层自动复用；存在相似项且不确定是否同一目标时，不要猜测创建，输出 MISSING 列出候选请确认\n- 拿不准的判断点不要中途停摆、不要编造：独立操作照常完成，在回复的最后一行输出 MISSING 向主 Agent 提问（它会作答或转问用户）；有可枚举候选时附带：MISSING: <问题> | <选项A> / <选项B>\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务，不要输出 MISSING\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID".to_string());
 
     parts.join("\n\n")
 }
@@ -545,6 +545,11 @@ mod tests {
         assert!(d.contains("【期望输出格式】review"));
         assert!(d.contains("MISSING"));
         assert!(d.contains("没有委托能力"));
+        // MISSING=向主 Agent 提问 语义 + 选项格式 + 相似项工具层复用（禁止"先向用户确认"死路表述）
+        assert!(d.contains("向主 Agent 提问"));
+        assert!(d.contains("<问题> | <选项A> / <选项B>"));
+        assert!(d.contains("完全同名由工具层自动复用"));
+        assert!(!d.contains("先向用户确认"), "子 Agent 无提问用户通道，不应再出现该指令");
         // 无工具提示路径
         let d2 = build_directive("x", "y", "p", "t", None, "", &[]);
         assert!(d2.contains("未配置任何工具"));
