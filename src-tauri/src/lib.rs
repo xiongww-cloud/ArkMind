@@ -91,15 +91,15 @@ pub fn run() {
                     let _ = window.set_focus();
                 }
             }
-            // ★ 初始化日志系统
-            let log_state = services::log_collector::init_logger(1000)
+            // ★ 初始化日志系统（磁盘落盘 logs/app.log：10MB 轮转，重启不丢——中断类问题取证靠它）
+            let data_dir = app_data_dir(&app.handle());
+            let log_state = services::log_collector::init_logger(1000, &data_dir.join("logs"))
                 .unwrap_or_else(|e| {
                     eprintln!("Logger init failed: {}", e);
                     services::log_collector::LogState::new()
                 });
             app.manage(log_state);
 
-            let data_dir = app_data_dir(&app.handle());
             let db_file = db_path(&data_dir);
             if let Err(e) = database::init_database(&db_file) { eprintln!("DB init failed: {}", e); return Err(Box::new(e)); }
             log::info!("DB initialized: {:?}", db_file);
