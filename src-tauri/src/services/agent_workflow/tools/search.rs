@@ -65,7 +65,8 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
         if let Ok(rows) = database::all("SELECT id,name FROM products WHERE name LIKE ?1 ESCAPE '\\' ORDER BY LENGTH(name) ASC LIMIT 3",&[json!(&like)]) {
             for r in &rows { let id = r["id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("PRODUCT".into(), id.clone())); obj_head.push_str(&format!("[Object] Product: {} | source_id: PRODUCT-{}\n",r["name"].as_str().unwrap_or(""),id)); }
         }
-        if let Ok(rows) = database::all("SELECT source_id, title FROM source_data WHERE source_type='FILE' AND title LIKE ?1 ESCAPE '\\' ORDER BY LENGTH(title) ASC LIMIT 3",&[json!(&like)]) {
+        // ★ 方案C：知识检索标题命中也排除 AI 生成文档（被动投喂隔离；按名找历史文件走 ext_tool_object）
+        if let Ok(rows) = database::all("SELECT source_id, title FROM source_data WHERE source_type='FILE' AND title LIKE ?1 ESCAPE '\\' AND NOT EXISTS (SELECT 1 FROM file_relations fr WHERE fr.file_id=source_data.source_id AND fr.entity_type='generated') ORDER BY LENGTH(title) ASC LIMIT 3",&[json!(&like)]) {
             for r in &rows { let id = r["source_id"].as_str().unwrap_or("").to_string(); matched_sources.insert(("FILE".into(), id.clone())); obj_head.push_str(&format!("[Object] File: {} | source_id: FILE-{}\n",r["title"].as_str().unwrap_or(""),id)); }
         }
         if let Ok(rows) = database::all("SELECT note_id,title FROM notes WHERE title LIKE ?1 ESCAPE '\\' ORDER BY LENGTH(title) ASC LIMIT 3",&[json!(&like)]) {
@@ -119,12 +120,27 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
     let mut disc_sources: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut found_sources: Vec<String> = Vec::new();
     let mut candidates: Vec<(f64, i64, String, String, String, String, String, i64, i64, bool, bool)> = Vec::new();
+    // ★ 方案C：FTS5/Vector 双路候选统一排除 AI 生成文档（被动投喂隔离——防自我引用循环与策略内容被深挖；
+    //   主动按名查找历史文件走 ext_tool_object(FILE) 或 write_document action=read）
+    let mut generated_cache: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (rowid_str, rrf) in fused.iter() {
         let Ok(cr) = rowid_str.parse::<i64>() else { continue; };
         if let Ok(Some(r)) = database::get("SELECT p.content,p.content_hash,p.doc_title,p.chunk_index,p.chunk_id,p.source_data_id as parent_sdid,sd.source_type,sd.source_id,sd.id as source_data_id FROM knowledge_chunks c JOIN knowledge_chunks p ON p.chunk_id=c.parent_id LEFT JOIN source_data sd ON sd.id=p.source_data_id WHERE c.rowid=?1",&[json!(cr)]) {
             let st = r["source_type"].as_str().unwrap_or("").to_string();
             let sid = r["source_id"].as_str().unwrap_or("").to_string();
+            // 生成文档排除（按 source 缓存，避免同文件多 chunk 重复查库）
+            if st == "FILE" && !generated_cache.contains(&sid) {
+                let gen = database::get("SELECT 1 FROM file_relations WHERE file_id=?1 AND entity_type='generated'", &[json!(&sid)])
+                    .ok().flatten().is_some();
+                if gen {
+                    generated_cache.insert(sid.clone());
+                    continue;
+                }
+                generated_cache.insert(sid.clone());
+            } else if st == "FILE" && generated_cache.contains(&sid) {
+                continue;
+            }
             let dedup = format!("{}-{}", st, sid);
             let h = r["content_hash"].as_str().unwrap_or("").to_string();
             let content = r["content"].as_str().unwrap_or("").to_string();

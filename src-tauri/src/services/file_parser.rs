@@ -258,12 +258,6 @@ fn file_to_data_uri(path: &str, mime: &str) -> Option<String> {
     Some(format!("data:{};base64,{}", mime, b64))
 }
 
-/// 将内存中的字节转为 base64 编码的 data URI
-fn bytes_to_data_uri(bytes: &[u8], mime: &str) -> String {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("data:{};base64,{}", mime, b64)
-}
-
 /// 调用视觉模型 API 进行 OCR（异步）
 async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     let cfg = get_vision_config().ok_or("未配置视觉模型，请在设置页配置视觉模型")?;
@@ -861,6 +855,25 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
         acc
     })
 }
+/// zip 容器细分：OOXML（docx/xlsx/pptx）本质是 zip，infer 对 PK 魔数一律给 "zip"——
+/// 不细分会导致 file_ext 自愈把 docx 降级成 zip（预览打开资源管理器、下载变 .zip）。
+/// 按容器内目录判定：word/ → docx，xl/ → xlsx，ppt/ → pptx；纯 zip/损坏 → None。
+pub fn refine_zip_container_ext(bytes: &[u8]) -> Option<&'static str> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+    let mut has_word = false;
+    let mut has_xl = false;
+    let mut has_ppt = false;
+    for i in 0..archive.len() {
+        let name = match archive.by_index(i) { Ok(f) => f.name().to_string(), Err(_) => continue };
+        if name.starts_with("word/") { has_word = true; }
+        else if name.starts_with("xl/") { has_xl = true; }
+        else if name.starts_with("ppt/") { has_ppt = true; }
+        if has_word || has_xl || has_ppt { break; }
+    }
+    if has_word { Some("docx") } else if has_xl { Some("xlsx") } else if has_ppt { Some("pptx") } else { None }
+}
+
 /// ★ 内容权威嗅探：读文件头 4KB 用 infer 识别真实类型。
 /// 命中返回真实扩展名；未命中回退文件名扩展（自动剥离 Outlook CID 尾巴如 `image.jpg@hex.hash`）；再无则空。
 pub fn sniff_file_ext(path: &str, file_name: &str) -> String {
@@ -872,7 +885,16 @@ pub fn sniff_file_ext(path: &str, file_name: &str) -> String {
         Ok(buf)
     }) {
         if let Some(kind) = infer::get(&bytes) {
-            return kind.extension().to_string();
+            let ext = kind.extension().to_string();
+            // ★ zip 容器细分：OOXML 不得降级为 zip（central directory 在文件尾部，需读全文件）
+            if ext == "zip" {
+                if let Ok(all) = std::fs::read(path) {
+                    if let Some(r) = refine_zip_container_ext(&all) {
+                        return r.to_string();
+                    }
+                }
+            }
+            return ext;
         }
     }
     // 回退：文件名扩展；若扩展呈十六进制长尾（疑似 CID 垃圾后缀），取 '@' 前主名的扩展
@@ -897,7 +919,13 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     let probe = &head[..head.len().min(4096)];
     let inferred = infer::get(probe);
     // ★ 内容权威：魔数命中即记录真实类型扩展名（文件名后缀不可信）
-    let magic_ext: Option<String> = inferred.map(|k| k.extension().to_string());
+    let mut magic_ext: Option<String> = inferred.map(|k| k.extension().to_string());
+    // ★ zip 容器细分：OOXML 的 PK 魔数被 infer 判为 zip——不细分会让 file_ext 自愈降级 docx → zip
+    if magic_ext.as_deref() == Some("zip") {
+        if let Some(r) = refine_zip_container_ext(&head) {
+            magic_ext = Some(r.to_string());
+        }
+    }
     let mk = |text: String, error: String| { let success = !text.is_empty(); ParseResult { text, success, error, inferred_ext: magic_ext.clone() } };
 
     // ── 嗅探命中：直接路由 ──
@@ -1358,7 +1386,8 @@ fn read_pptx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// DOCX → Markdown：rwml 解析出文档模型后由 `word_markdown` 渲染 GFM
-/// （标题、粗斜体、删除线、表格、列表、超链接等），并对嵌入图片注入 OCR 文本。
+/// （标题、粗斜体、删除线、表格、列表、超链接等），图片以轻量注记标记（不做 OCR——
+/// 内嵌图片多为截图/装饰，OCR 碎片价值低且污染检索）
 fn read_docx_to_markdown(p: &str) -> Result<String, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(p)?;
     word_bytes_to_markdown(&bytes)
@@ -1369,8 +1398,11 @@ fn read_docx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
     read_docx_to_markdown(p)
 }
 
-/// Word（.doc/.docx）字节流 → Markdown。rwml 建模 + word_markdown 渲染，
-/// 并按渲染顺序对图片占位符注入 OCR 文本（失败则退化为图片注记）。
+/// Word（.doc/.docx）字节流 → Markdown。rwml 建模 + word_markdown 渲染。
+/// 图片占位符替换为轻量注记（含 alt 文本）：不调视觉模型 OCR——
+/// Word 内嵌图片以截图/装饰为主，OCR 产出脱离上下文的碎片，
+/// 写入知识库反而稀释检索质量；且每图一次视觉调用（含重试）成本高、拖慢解析。
+/// 需要图片文字的场景：用户直接发图片（独立 OCR 路径）或 PDF 扫描件（整页 OCR）。
 fn word_bytes_to_markdown(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
     use crate::services::word_markdown;
 
@@ -1379,31 +1411,9 @@ fn word_bytes_to_markdown(bytes: &[u8]) -> Result<String, Box<dyn std::error::Er
     let rendered = word_markdown::render(&model);
     let mut markdown = rendered.markdown;
 
-    // OCR 增强：占位符与图片按渲染顺序一一对应，可精确替换
-    for (i, img) in rendered.images.iter().enumerate() {
-        let replacement = match &img.bytes {
-            Some(img_bytes) => {
-                let mime = img.mime.as_deref().unwrap_or("image/png");
-                let data_uri = bytes_to_data_uri(img_bytes, mime);
-                match ocr_image_sync_result(&data_uri) {
-                    OcrOutcome::Ok(text) if !text.trim().is_empty() => {
-                        log::info!("[文件解析] Word 图片 {} OCR 成功: {} 字符", i, text.len());
-                        word_markdown::image_note(&text)
-                    }
-                    OcrOutcome::Blank => {
-                        log::info!("[文件解析] Word 图片 {} OCR 空白", i);
-                        word_markdown::image_note_fallback(img.alt.as_deref())
-                    }
-                    OcrOutcome::Failed(e) => {
-                        log::info!("[文件解析] Word 图片 {} OCR 失败: {}", i, e);
-                        word_markdown::image_note_fallback(img.alt.as_deref())
-                    }
-                    _ => word_markdown::image_note_fallback(img.alt.as_deref()),
-                }
-            }
-            None => word_markdown::image_note_fallback(img.alt.as_deref()),
-        };
-        markdown = markdown.replace(&img.placeholder, &replacement);
+    // 图片注记：保留"此处有图"的结构信息（alt 常含图题），零 API 成本
+    for img in &rendered.images {
+        markdown = markdown.replace(&img.placeholder, &word_markdown::image_note_fallback(img.alt.as_deref()));
     }
 
     Ok(markdown)
@@ -1590,6 +1600,25 @@ fn read_pdf(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// zip 容器细分：OOXML（docx/xlsx/pptx）不得被当纯 zip——否则 file_ext 自愈降级 → 预览/下载变 .zip
+    #[test]
+    fn refine_zip_distinguishes_ooxml_from_plain_zip() {
+        use std::io::Write as _;
+        let make_zip = |entries: &[&str]| -> Vec<u8> {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for name in entries {
+                w.start_file(*name, zip::write::FileOptions::default()).unwrap();
+                w.write_all(b"x").unwrap();
+            }
+            w.finish().unwrap().into_inner()
+        };
+        assert_eq!(refine_zip_container_ext(&make_zip(&["word/document.xml"])), Some("docx"));
+        assert_eq!(refine_zip_container_ext(&make_zip(&["xl/workbook.xml", "xl/styles.xml"])), Some("xlsx"));
+        assert_eq!(refine_zip_container_ext(&make_zip(&["ppt/presentation.xml"])), Some("pptx"));
+        assert_eq!(refine_zip_container_ext(&make_zip(&["readme.txt"])), None, "纯 zip 不归类");
+        assert_eq!(refine_zip_container_ext(b"not a zip at all"), None, "非 zip 字节 → None");
+    }
 
     #[test]
     fn test_has_real_text() {

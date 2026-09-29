@@ -128,12 +128,14 @@ fn ingestion_loop() {
 }
 
 /// FILE 补漏：file_assets 存在、但 source_data 无文本且队列无任何在途/终态记录 → 重新入队解析
-/// 排除 AI 生成文档（entity_type='generated'）：生成物是输出而非知识输入，不进知识库
+/// （含 AI 生成文档——生成物同样入知识库，检索侧由 search 工具按需过滤；存量生成文件由本兜底自动补解析）
+/// operation 必须是 'file_upload'（走 process_file_upload 解析磁盘文件正文）——
+/// 历史 bug：曾入队 'change'（走 extract_file 只取文件名当 content），写入假 source_data
+/// 后反而永久堵死正确解析路径（项目导入的文件因此不进知识库）
 fn backfill_missing_file_sources() {
     let missing = match crate::database::all(
         "SELECT f.id FROM file_assets f \
          WHERE f.created_at < datetime('now','localtime','-2 minutes') \
-           AND NOT EXISTS (SELECT 1 FROM file_relations fr WHERE fr.file_id=f.id AND fr.entity_type='generated') \
            AND NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type='FILE' AND sd.source_id=f.id) \
            AND NOT EXISTS (SELECT 1 FROM knowledge_push_queue q \
                WHERE q.source_type='FILE' AND q.source_id=f.id \
@@ -149,7 +151,7 @@ fn backfill_missing_file_sources() {
             &[json!(fid)],
         );
         let _ = crate::database::run(
-            "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) VALUES('FILE', ?1, 'change', 'pending')",
+            "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) VALUES('FILE', ?1, 'file_upload', 'pending')",
             &[json!(fid)],
         );
     }
@@ -734,8 +736,11 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
         ));
     }
     // ★ 魔数识别出的真实类型与库中后缀不符 → 自愈 file_assets.file_ext（内容权威）
+    // ★ 例外：泛型 zip 不得覆盖 OOXML 特异后缀——docx/xlsx/pptx 本质是 zip 容器（PK 魔数），
+    //   降级会让预览打开资源管理器（ARK-xxx.docx.zip）、下载变 .zip（refine 漏网时的双保险）
     if let Some(ie) = &parse_result.inferred_ext {
-        if !ie.is_empty() && *ie != ext {
+        let ooxml_demote = *ie == "zip" && matches!(ext.as_str(), "docx" | "xlsx" | "pptx");
+        if !ie.is_empty() && *ie != ext && !ooxml_demote {
             let _ = crate::database::run(
                 "UPDATE file_assets SET file_ext=?1 WHERE id=?2",
                 &[json!(ie), json!(&file_id)],

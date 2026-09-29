@@ -7,7 +7,7 @@
 //!
 //!   - 合并相邻同样式 run 后再包强调（字体/字号等未渲染元数据差异不再打断加粗）
 //!   - 列表项之间单换行紧凑排列；有序列表保留 Word 编号（`ListInfo.label`）
-//!   - 页/分节符 → `---`；图表 → `【图表：…】`；图片 → 占位符（由调用方注入 OCR 后替换）
+//!   - 页/分节符 → `---`；图表 → `【图表：…】`；图片 → 占位符（由调用方替换为注记）
 //!   - 表格恒输出 HTML `<table>`（与 Excel 输出及下游 `html_table_to_kv` 主链路统一）：
 //!     colspan/rowspan 无损；按 `header_rows` / `is_header` / 首行加粗判定 `<th>` 与 `<thead>`；
 //!     单元格内多段落/列表以 `<br>` 压平（列表符号保留为文本）
@@ -15,16 +15,12 @@
 
 use rwml::{Block, Cell, Chart, DocModel, FieldRole, Image, ListInfo, Paragraph, Run, Table};
 
-/// 待注入 OCR 文本的图片占位信息（按渲染顺序登记）。
+/// 图片占位信息（按渲染顺序登记，由调用方替换为注记）。
 #[derive(Debug, Clone)]
 pub struct PendingImage {
     /// Markdown 中的占位符（如 `@@IMG0@@`），调用方按此精确替换。
     pub placeholder: String,
-    /// 图片原始字节（存在才登记 OCR）。
-    pub bytes: Option<Vec<u8>>,
-    /// MIME 类型。
-    pub mime: Option<String>,
-    /// 原始 alt 文本，OCR 失败时作为兜底说明。
+    /// 原始 alt 文本，注记兜底说明用。
     pub alt: Option<String>,
 }
 
@@ -46,12 +42,6 @@ pub fn render(model: &DocModel) -> RenderedWord {
         markdown: r.finish(),
         images,
     }
-}
-
-/// OCR 文本 → 图内文本注记（单行化，`|` 全角化以免破坏管道表）。
-pub fn image_note(ocr_text: &str) -> String {
-    let one_line = ocr_text.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!("【图片：{}】", one_line.replace('|', "丨"))
 }
 
 /// 无 OCR 结果时的图片注记（有实质 alt 则带上）。
@@ -325,8 +315,6 @@ impl Renderer {
         self.img_seq += 1;
         self.images.push(PendingImage {
             placeholder: placeholder.clone(),
-            bytes: img.bytes.clone(),
-            mime: img.mime.clone(),
             alt: img.alt.clone(),
         });
         placeholder
@@ -1070,7 +1058,6 @@ mod tests {
         assert_eq!(out.images.len(), 2);
         assert_eq!(out.images[0].placeholder, "@@IMG0@@");
         assert_eq!(out.images[1].placeholder, "@@IMG1@@");
-        assert_eq!(image_note("第一行\n第二行"), "【图片：第一行 第二行】");
         assert_eq!(image_note_fallback(Some("图一")), "【图片：图一】");
         assert_eq!(image_note_fallback(Some("image")), "【图片】");
     }

@@ -955,6 +955,7 @@ fn import_todos(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
 }
 
 fn import_files(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
+    let mut imported_ids: Vec<String> = Vec::new();
     if let Some(assets) = data["file_assets"].as_array() {
         for a in assets {
             let id = a["id"].as_str().unwrap_or("");
@@ -963,6 +964,7 @@ fn import_files(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
                 json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
                 json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
             ]).ok();
+            imported_ids.push(id.to_string());
         }
     }
     if let Some(rels) = data["file_relations"].as_array() {
@@ -989,6 +991,10 @@ fn import_files(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
                 }
             }
         }
+    }
+    // 入队解析正文（与上传路径一致；必须在文件复制完成后入队）：否则导入的文件只落盘不进知识库
+    for fid in &imported_ids {
+        crate::services::knowledge_lifecycle::notify_file_upload(fid);
     }
     Ok(())
 }

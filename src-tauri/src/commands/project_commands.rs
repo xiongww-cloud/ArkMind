@@ -914,6 +914,10 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
                 database::run("INSERT OR REPLACE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator,description,folder_id,created_at) VALUES(?1,?2,'project',?3,?4,?5,?6,?7,?8)",&[
                     fr["id"].clone(),json!(fid),json!(&pid),fr["custom_name"].clone(),fr["creator"].clone(),fr["description"].clone(),fr["folder_id"].clone(),fr["created_at"].clone()
                 ]).ok();
+                // 入队解析正文（与上传路径一致）：否则文件只落盘不进知识库
+                if !fid.is_empty() && !hash.is_empty() {
+                    crate::services::knowledge_lifecycle::notify_file_upload(fid);
+                }
             }
         }
         // Folders

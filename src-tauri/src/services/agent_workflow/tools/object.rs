@@ -479,7 +479,9 @@ pub(crate) fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize
             "id": sid,
             "name": name,
             "preview": preview,
-            "updated_at": ts
+            "updated_at": ts,
+            // AI 生成物标注：主动查找通道保留内容可见性，但模型须知这是 AI 输出而非一手资料
+            "is_generated": st == "FILE" && is_generated_file(sid)
         });
         if let Some(extra_obj) = extra {
             item["extra"] = extra_obj;
@@ -515,6 +517,15 @@ pub(crate) fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize
         summary: Some(summary),
     };
     envelope.to_json()
+}
+
+/// 文件是否为 AI 生成物（file_relations.entity_type='generated'）。
+/// object 查找通道不过滤生成物（主动按名/按 id 查找是明确意图），但结果带 is_generated 标注，
+/// 让模型知道"这是 AI 输出而非一手资料"。
+fn is_generated_file(fid: &str) -> bool {
+    if fid.is_empty() { return false; }
+    database::get("SELECT 1 FROM file_relations WHERE file_id=?1 AND entity_type='generated'", &[json!(fid)])
+        .ok().flatten().is_some()
 }
 
 pub(crate) fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end: &str, limit: usize, offset: usize) -> String {
@@ -624,7 +635,9 @@ pub(crate) fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end:
             "id": sid,
             "name": name,
             "preview": preview,
-            "updated_at": ts
+            "updated_at": ts,
+            // AI 生成物标注：主动查找通道保留内容可见性，但模型须知这是 AI 输出而非一手资料
+            "is_generated": st == "FILE" && is_generated_file(sid)
         });
         if let Some(extra_obj) = extra {
             item["extra"] = extra_obj;
@@ -724,8 +737,9 @@ pub(crate) fn recall_mode(obj_type: &str, start: &str, end: &str, limit: usize, 
                 }
             }
             
-            // 输出主对象
-            out.push_str(&format!("{} [{}] {} | source_id: {}-{}\n", marker, st, name, st, sid));
+            // 输出主对象（AI 生成文件带标注，与搜索结果的 is_generated 字段口径一致）
+            let gen_tag = if st == "FILE" && is_generated_file(sid) { "（AI生成）" } else { "" };
+            out.push_str(&format!("{} [{}] {}{} | source_id: {}-{}\n", marker, st, name, gen_tag, st, sid));
         }
         out.push('\n');
         
