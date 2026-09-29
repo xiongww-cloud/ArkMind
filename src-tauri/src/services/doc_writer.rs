@@ -782,6 +782,16 @@ fn build_styled_docx_table(
     Ok(builder)
 }
 
+/// 表格单元格垂直对齐：默认 center（上下居中）；AI 可传 valign: top|center|bottom 覆盖。
+/// 标量 cell（非对象）无该字段 → 恒居中。
+fn parse_cell_valign(v: &Value) -> rwml::VCell {
+    match v["valign"].as_str().unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "top" => rwml::VCell::Top,
+        "bottom" => rwml::VCell::Bottom,
+        _ => rwml::VCell::Center,
+    }
+}
+
 /// 构建 Word 表格单元格：标量 → 纯文本；对象 → text + 样式字段
 /// 表头行默认样式：浅灰底(D9D9D9) + 加粗 + 段落居中（黑字为 Word 默认，无需显式）；
 /// 对象 cell 显式传值永远优先。
@@ -872,6 +882,8 @@ fn build_docx_cell(v: &Value, is_header: bool) -> rwml::Cell {
         blocks,
         is_header: cell_header,
         shading,
+        // 默认上下居中（方案B）：表头与数据格统一；valign 显式值覆盖
+        valign: parse_cell_valign(v),
         ..Default::default()
     }
 }
@@ -2211,6 +2223,22 @@ mod tests {
         ]}), "footer");
         assert!(xml.contains(r#"w:sz w:val="18""#), "页脚应为小五 18half");
         assert!(xml.contains("宋体"), "页脚应为宋体");
+    }
+
+    /// 表格单元格垂直对齐：默认上下居中（center）；valign 显式值覆盖
+    /// （rwml 对 Top 不输出 vAlign——Word 默认即顶对齐，显式 top = 清除居中标记）
+    #[test]
+    fn docx_table_cell_valign_defaults_center() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "table", "headers": ["列"], "rows": [
+                ["默认居中"],
+                [{"text": "顶对齐", "valign": "top"}]
+            ]},
+        ]}), "document.xml");
+        // 3 格：表头 + 默认行 → center（2 个）；显式 top 行不输出 vAlign（不被强制居中）
+        let center_count = xml.matches(r#"<w:vAlign w:val="center"/>"#).count();
+        assert_eq!(center_count, 2, "表头与默认格应上下居中、top 格不强制: {}", &xml[..xml.len().min(900)]);
+        assert!(!xml.contains(r#"<w:vAlign w:val="top"/>"#), "Top 由 rwml 省略输出（Word 默认顶对齐）");
     }
 
     /// xlsx：styles.xml 含宋体 + 11pt（build_cell_format 缺省补齐 + 调用侧零格式归一）；
