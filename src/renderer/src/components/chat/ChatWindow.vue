@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -53,8 +53,8 @@ async function openAttachmentDialog() {
     pendingAttachments.value.push({ id: crypto.randomUUID(), path: p, name, kind: IMG_EXTS.has(ext) ? 'image' : 'doc' })
     added++
   }
-  // 收起态添加附件后自动展开，以便显示附件行
-  if (added > 0 && !expanded.value) expandChat()
+  // 添加附件即展开全历史，便于结合上下文提问
+  if (added > 0) revealOlder.value = true
 }
 function removeAttachment(idx: number) {
   const removed = pendingAttachments.value.splice(idx, 1)[0]
@@ -78,7 +78,7 @@ async function uploadPastedFile(file: File, ext: string, nameFallback: string): 
     progress: 0,
   }
   pendingAttachments.value.push(chip)
-  if (!expanded.value) expandChat()
+  revealOlder.value = true
   try {
     const r = await uploadPasteFile(file, ext, (pct) => { chip.progress = pct }, () => !!chip._cancelled)
     // 期间可能已被取消/移除
@@ -156,20 +156,54 @@ const isMac = typeof navigator !== 'undefined' && (
   navigator.platform.toUpperCase().indexOf('MAC') >= 0 ||
   navigator.userAgent.toUpperCase().indexOf('MAC') >= 0
 )
-const expanded = ref(false)
-const inputAtBottom = ref(false)
-const animating = ref(false)
-const noAnimate = ref(false)
 const inputText = ref('')
 const chatListRef = ref<HTMLElement | null>(null)
+const composerRef = ref<HTMLTextAreaElement | null>(null)
 const historyLoaded = ref(false)
 const messages = ref<ChatMessage[]>([])
 
-const speechTexts = ['准备聊点什么？', '有什么可以帮你的？', '想了解什么？', '问我点什么吧', '知识库就绪，尽管问！']
-const currentSpeechText = ref(speechTexts[0])
+// ─── 快呼语义：召唤只淡显上一轮问答，新问题/主动展开才见全历史 ───
+const revealOlder = ref(false)
+const fadedIds = ref<Set<string>>(new Set())
+const lastRoundCount = ref(0)
 
-// ─── 工具函数 ──────────────────────────────────────────────
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+/// 载入/复位时快照"最后一轮"（尾 assistant + 其前 user，或尾 user 单条）作淡显对象
+function applyLastRoundFaint() {
+  const ms = messages.value
+  const ids = new Set<string>()
+  let count = 0
+  if (ms.length) {
+    const last = ms[ms.length - 1]
+    if (last.role === 'assistant' && last.id) { ids.add(last.id); count = 1 }
+    const back = ms[ms.length - 1 - count]
+    if (count && back?.role === 'user' && back.id) { ids.add(back.id); count++ }
+    if (!count && last.id) { ids.add(last.id); count = 1 }
+  }
+  fadedIds.value = ids
+  lastRoundCount.value = count
+}
+
+const visibleMessages = computed(() => {
+  if (revealOlder.value || !lastRoundCount.value) return messages.value
+  return messages.value.slice(Math.max(0, messages.value.length - lastRoundCount.value))
+})
+const hasStream = computed(() => visibleMessages.value.length > 0 || agent.isChatting.value)
+function isFaded(m: ChatMessage): boolean { return !revealOlder.value && !!m.id && fadedIds.value.has(m.id) }
+
+function expandToOlder() {
+  revealOlder.value = true
+  nextTick(() => loadOlderMessages())
+}
+
+function autoGrow(e: Event) {
+  const el = e.target as HTMLTextAreaElement
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 84) + 'px'
+}
+
+function focusComposer() {
+  nextTick(() => { composerRef.value?.focus() })
+}
 
 // ─── History ────────────────────────────────────────────────
 const loadingMore = ref(false)
@@ -203,6 +237,7 @@ async function loadHistory() {
       messages.value = result.messages.map(mapHistoryMessage)
       historyLoaded.value = true
       hasMore.value = result.messages.length >= 10
+      applyLastRoundFaint()
       for (const msg of messages.value) {
         if (msg.role === 'assistant' && msg.content) {
           agent.renderMd(msg.content).then(h => { if (h && msg.id) agent.rendered.value[msg.id] = h })
@@ -266,32 +301,6 @@ function fmtTime(ts?: number) {
   return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
-// ─── 展开/收起 ────────────────────────────────────────────
-async function expandChat() {
-  if (expanded.value || animating.value) return
-  animating.value = true
-  // 1. 输入框移到窗口底部 + 窗口瞬时上移（同步）
-  inputAtBottom.value = true
-  expanded.value = true
-  invoke('expand_chat_window', { expanded: true }).catch(() => {})
-  // 2. 等消息区展开完成
-  if (!historyLoaded.value) await loadHistory()
-  nextTick(() => scrollChat())
-  await sleep(500)
-  animating.value = false
-}
-
-async function collapseChat() {
-  if (!expanded.value || animating.value) return
-  animating.value = true
-  expanded.value = false
-  await sleep(500)   // 等消息区收起
-  await sleep(300)  // 延迟 0.3 秒再下移窗口
-  inputAtBottom.value = false
-  invoke('expand_chat_window', { expanded: false }).catch(() => {})
-  animating.value = false
-}
-
 // ─── 窗口控制 ──────────────────────────────────────────────
 async function hideWindow() {
   try {
@@ -311,13 +320,15 @@ async function send() {
     return
   }
 
-  // 未展开则并行展开（不 await）
-  if (!expanded.value) expandChat()
+  // 新问题即展开全历史并解除淡显
+  revealOlder.value = true
+  fadedIds.value = new Set()
 
   agent.stopAllTypewriters(messages.value)
   agentRun.resetParticipants()
   const atts = [...pendingAttachments.value]
   inputText.value = ''; pendingAttachments.value = []
+  nextTick(() => { if (composerRef.value) composerRef.value.style.height = 'auto' })
 
   const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: q, attachments: atts.length ? atts as any : undefined, timestamp: Date.now() }
   messages.value.push(userMsg)
@@ -357,95 +368,90 @@ function submitClarification(text: string) {
   send()
 }
 
+/// 输入框键盘契约：⏎ 发送 / ⇧⏎ 换行（textarea 默认）/ Esc 收起窗口
+function onComposerKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') { e.preventDefault(); hideWindow(); return }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+}
+
 async function stopAgent() {
   await agent.stopAgent(() => messages.value)
   scrollChat()
 }
 
-// ─── 拖拽（仅收起态可用）───────────────────────────────────
-let pressed = false
-let hasMoved = false
-let startX = 0
-let startY = 0
-const MOVE_THRESHOLD = 8
-
-function onPointerDown(e: PointerEvent) {
-  if (expanded.value || animating.value) return
-  if (e.button !== 0) return
-  const target = e.target as HTMLElement
-  if (target.closest('button') || target.closest('input') || target.closest('textarea')) return
-  pressed = true
-  hasMoved = false
-  startX = e.clientX
-  startY = e.clientY
-  ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-}
-
-async function onPointerMove(e: PointerEvent) {
-  if (!pressed || hasMoved) return
-  const dx = e.clientX - startX
-  const dy = e.clientY - startY
-  if (Math.abs(dx) > MOVE_THRESHOLD || Math.abs(dy) > MOVE_THRESHOLD) {
-    hasMoved = true
-    try { await getCurrentWebviewWindow().startDragging() } catch {}
-  }
-}
-
-function onPointerUp() { pressed = false }
-
 // ─── Lifecycle ──────────────────────────────────────────────
 let unlistenReset: (() => void) | null = null
+let unlistenFocus: (() => void) | null = null
 
 onMounted(async () => {
   await loadHistory()
-  currentSpeechText.value = speechTexts[Math.floor(Math.random() * speechTexts.length)]
 
+  // 召唤/收起复位（Rust 在 show/hide 前发）：回到"淡显最近一轮"态并聚焦输入框
   unlistenReset = await listen('chat:reset', async () => {
-    // 关闭/重新显示时禁用过渡，避免展开→收起动画（macOS 隐藏窗口时 transition 不推进，重新显示会播放）
-    noAnimate.value = true
-    expanded.value = false
-    inputAtBottom.value = false
-    animating.value = false
+    revealOlder.value = false
+    applyLastRoundFaint()
     await nextTick()
-    noAnimate.value = false
+    focusComposer()
   })
+  // 窗口获得焦点（热键/点击唤回）即聚焦输入框——桌面 agent 的核心手感
+  try {
+    unlistenFocus = await getCurrentWebviewWindow().onFocusChanged(({ payload }) => {
+      if (payload) focusComposer()
+    })
+  } catch {}
 })
 
 onUnmounted(() => {
   unlistenReset?.()
+  unlistenFocus?.()
 })
 </script>
 
 <template>
 <!-- 全窗口透明覆盖层，点击空白处关闭（保留输入文本） -->
 <div class="chat-overlay" @click.self="hideWindow">
-  <!-- 聊天面板（消息区+输入栏合一，flex 布局） -->
-  <div class="chat-body" :class="{ expanded: expanded, 'input-at-bottom': inputAtBottom, 'no-animate': noAnimate }">
-    <!-- 消息区（展开时高度动画） -->
-    <div class="chat-messages">
-      <div ref="chatListRef" class="messages-scroll" @scroll="onChatScroll">
-        <div v-if="loadingMore" class="text-center py-1">
-          <span class="text-[10px] text-[#94a3b8]">加载中...</span>
+  <div class="chat-panel">
+    <!-- 输入卡（恒在顶部，Spotlight 式） -->
+    <div class="composer">
+      <div v-if="pendingAttachments.length" class="composer-attach">
+        <AttachmentChips :files="pendingAttachments" removable @remove="removeAttachment" />
+      </div>
+      <textarea ref="composerRef" v-model="inputText" rows="1" class="composer-input"
+        placeholder="问点什么…"
+        @input="autoGrow" @keydown="onComposerKey" @paste="onPaste"></textarea>
+      <div class="composer-bar">
+        <span class="composer-hint">⏎ 发送 · ⇧⏎ 换行 · Esc 关闭</span>
+        <div class="flex items-center gap-1">
+          <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" v-tooltip="'附加文件'">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+          </button>
+          <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" v-tooltip="'停止'">
+            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+          <button v-else @click.stop="send" :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
+          </button>
         </div>
-        <div v-else-if="!hasMore && messages.length > 0" class="text-center py-1">
-          <span class="text-[10px] text-[#c7c7cc]">没有更早的消息了</span>
-        </div>
-        <div v-for="m in messages" :key="m.id" class="msg-row" :class="m.role === 'user' ? 'msg-row--user' : ''">
-          <div v-if="m.role === 'user'" class="avatar avatar--user">我</div>
-          <div v-else class="avatar avatar--ai">AI</div>
-          <div class="msg-content" :class="m.role === 'user' ? 'max-w-[70%]' : 'max-w-[85%]'">
-            <div class="msg-time flex items-center gap-1.5" :class="m.role === 'user' ? 'justify-end' : ''">
-              <span>{{ fmtTime(m.timestamp) }}</span>
-              <span v-if="m.role !== 'user' && !m.thinking && m.assistants?.length" class="px-1.5 py-[1px] rounded-full bg-[#f2f2f7] text-[#8e8e93] text-[9px] leading-none">via {{ m.assistants.join(' · ') }}</span>
-            </div>
-            <div v-if="m.role === 'user'" class="bubble-user">
-              <pre class="bubble-user__text">{{ displayContent(m.content) }}</pre>
+      </div>
+    </div>
+
+    <!-- 答案流：就地向下生长（高度动画全在 CSS，窗口零位移） -->
+    <transition name="stream">
+      <div v-if="hasStream" class="chat-stream">
+        <button v-if="!revealOlder && hasMore" class="older-btn" @click="expandToOlder">↑ 查看更早的对话</button>
+        <div ref="chatListRef" class="messages-scroll" @scroll="onChatScroll">
+          <div v-if="loadingMore" class="text-center py-1">
+            <span class="text-[10px] text-[#94a3b8]">加载中...</span>
+          </div>
+          <div v-for="(m, mi) in visibleMessages" :key="m.id || mi" class="msg-block">
+            <div v-if="m.role === 'user'" class="msg-q" :class="{ faded: isFaded(m) }">
+              <span class="msg-q__who">问</span><span class="msg-q__text">{{ displayContent(m.content) }}</span>
               <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1" />
               <div v-else-if="m.content?.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1">
-                <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-white/20 text-white/90">{{ name }}</span>
+                <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="px-1.5 py-0.5 rounded text-[10px] bg-[#f1f5f9] text-[#64748b]">{{ name }}</span>
               </div>
             </div>
-            <div v-else class="bubble-ai" :class="{ 'thinking-bubble': m.thinking }">
+            <div v-else class="msg-a" :class="{ faded: isFaded(m) }">
               <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
               <!-- 委托轨迹行：子 Agent 执行中且正文尚未流出时，顶替"思考中"占位 -->
               <div v-else-if="m.thinking && !agent.rendered.value[m.id || ''] && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
@@ -453,134 +459,72 @@ onUnmounted(() => {
                 <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
                 <span class="text-[12px] text-[#8e8e93]">· 处理中</span>
               </div>
-              <div v-else class="markdown-body chat-md" v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
-            </div>
-            <div v-if="m.role !== 'user' && !m.thinking && m.documents?.length" class="mt-1 flex flex-col gap-1.5">
-              <DocumentObject v-for="d in m.documents" :key="d.file_id" :doc="d" />
-            </div>
-            <div v-if="m.role !== 'user' && !m.thinking && m.clarification" class="mt-1">
-              <ClarifyCard
-                :clarification="m.clarification"
-                :answered="m.id !== messages[messages.length - 1]?.id"
-                @submit="submitClarification"
-              />
+              <div v-else class="msg-a__body" :class="{ 'thinking-bubble': m.thinking }"
+                v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
+              <div v-if="!m.thinking" class="msg-a__meta">
+                <span>{{ fmtTime(m.timestamp) }}</span>
+                <span v-if="m.assistants?.length" class="via-chip">via {{ m.assistants.join(' · ') }}</span>
+              </div>
+              <div v-if="!m.thinking && m.documents?.length" class="mt-1 flex flex-col gap-1.5">
+                <DocumentObject v-for="d in m.documents" :key="d.file_id" :doc="d" />
+              </div>
+              <div v-if="!m.thinking && m.clarification" class="mt-1">
+                <ClarifyCard
+                  :clarification="m.clarification"
+                  :answered="m.id !== messages[messages.length - 1]?.id"
+                  @submit="submitClarification"
+                />
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
-
-    <!-- 附件行（独立于输入栏，显示在消息区与输入栏之间） -->
-    <div v-if="pendingAttachments.length" class="chat-attachments">
-      <AttachmentChips :files="pendingAttachments" removable @remove="removeAttachment" />
-    </div>
-
-    <!-- 输入栏（始终可见，面板底部） -->
-    <div class="chat-input-bar"
-      @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp">
-      <div class="flex items-center gap-1 flex-1 min-w-0">
-        <button @click.stop="expanded ? collapseChat() : expandChat()" class="icon-btn" v-tooltip="expanded ? '收起' : '展开'">
-          <svg class="w-3.5 h-3.5 transition-transform" :class="{ 'rotate-180': expanded }" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
-        </button>
-        <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" v-tooltip="'附加文件'">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
-        </button>
-        <input v-model="inputText" :placeholder="expanded ? '...' : currentSpeechText" class="chat-input"
-          v-tooltip="isMac ? '支持 Cmd+V 粘贴图片/文件' : ''"
-          @keydown.enter.exact.prevent="send" @paste="onPaste" />
-        <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" v-tooltip="'停止'">
-          <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-        </button>
-        <button v-else @click.stop="send" :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
-        </button>
-      </div>
-    </div>
+    </transition>
   </div>
 </div>
 </template>
 
 <style scoped>
-/* ═══ 全窗口透明覆盖层 ═══ */
+/* ═══ 全窗口透明覆盖层（面板外的透明区点击即收起） ═══ */
 .chat-overlay {
   width: 100vw;
   height: 100vh;
   background: transparent;
 }
 
-/* ═══ 聊天面板（消息区+输入栏合一） ═══ */
-.chat-body {
+/* ═══ 快呼面板：固定顶部居中（窗口零位移，生长全在 CSS） ═══ */
+.chat-panel {
   position: absolute;
   left: 50%; transform: translateX(-50%);
-  top: 20px;  /* 收起态：顶部 */
+  top: 12px;
   width: 580px;
+  max-height: 616px;
   display: flex; flex-direction: column;
-  background: rgba(255,255,255,0.92);
-  backdrop-filter: blur(20px);
-  border-radius: 12px;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.15), 0 1px 4px rgba(0,0,0,0.08);
+  background: rgba(255,255,255,0.94);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-radius: 18px;
+  border: 1px solid rgba(15,23,42,0.06);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08);
   overflow: hidden;
   user-select: none;
 }
-.chat-body.input-at-bottom {
-  top: auto;
-  bottom: 68px;
-}
-.chat-body.fading {
-  opacity: 0;
-}
 
-/* ═══ 消息区（展开时高度动画） ═══ */
-.chat-messages {
-  height: 0;
-  overflow: hidden;
-  opacity: 0;
-  transition: height 500ms cubic-bezier(0.33, 1, 0.68, 1),
-              opacity 300ms ease 50ms;
+/* ═══ 输入卡（恒在顶部） ═══ */
+.composer { flex: 0 0 auto; }
+.composer-attach { padding: 10px 14px 0; }
+.composer-input {
+  width: 100%; border: none; outline: none; resize: none;
+  font-size: 13.5px; line-height: 1.55; color: #1f2937;
+  padding: 14px 16px 2px; min-height: 26px; max-height: 84px;
+  background: transparent; font-family: inherit; user-select: text;
 }
-.chat-body.expanded .chat-messages {
-  height: 500px;
-  opacity: 1;
+.composer-input::placeholder { color: #b6bcc7; font-size: 13px; }
+.composer-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px 10px 14px;
 }
-
-/* 重置/重开时禁用过渡（避免收起动画） */
-.chat-body.no-animate .chat-messages {
-  transition: none !important;
-}
-
-.messages-scroll {
-  height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 12px;
-  padding-bottom: 44px;  /* 预留附件行空间，避免最后一条消息被附件行遮挡 */
-  user-select: text;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(37, 99, 235, 0.2) transparent;
-}
-.messages-scroll::-webkit-scrollbar { width: 4px; }
-.messages-scroll::-webkit-scrollbar-track { background: transparent; }
-.messages-scroll::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #06b6d4, #6366f1); border-radius: 4px; }
-
-/* ═══ 附件行（绝对定位，悬浮于输入栏上方，不参与 flex 撑高） ═══ */
-.chat-attachments {
-  position: absolute;
-  left: 0; right: 0;
-  bottom: 48px;          /* 输入栏高度之上 */
-  display: flex;
-  padding: 6px 8px;
-  border-top: 1px solid rgba(0,0,0,0.04);
-  background: rgba(255,255,255,0.95);
-}
-
-/* ═══ 输入栏（面板底部，flex 子元素） ═══ */
-.chat-input-bar {
-  flex: 0 0 auto;
-  width: 580px; min-height: 48px;
-  display: flex; align-items: center; gap: 4px;
-  padding: 6px 8px;
-  border-top: 1px solid rgba(0,0,0,0.04);
-}
+.composer-hint { font-size: 10px; color: #c3c7ce; letter-spacing: 0.02em; }
 
 /* ═══ 按钮 ═══ */
 .icon-btn {
@@ -593,12 +537,6 @@ onUnmounted(() => {
 .icon-btn--stop { background: rgba(239, 68, 68, 0.9); color: white; }
 .icon-btn--stop:hover { background: #ef4444; }
 
-.chat-input {
-  flex: 1; height: 28px; border: none; resize: none; outline: none;
-  font-size: 12px; color: #3a3a3c; background: transparent; line-height: 28px; font-family: inherit;
-}
-.chat-input::placeholder { color: #94a3b8; }
-
 .send-btn {
   width: 28px; height: 28px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
@@ -608,23 +546,53 @@ onUnmounted(() => {
 .send-btn--on { background: linear-gradient(135deg, #06b6d4, #2563eb); color: white; box-shadow: 0 1px 8px rgba(37, 99, 235, 0.3); }
 .send-btn--on:hover { box-shadow: 0 2px 12px rgba(37, 99, 235, 0.45); transform: scale(1.05); }
 
-/* ═══ 消息 ═══ */
-.msg-row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px; animation: fadeIn 0.25s ease-out; }
-.msg-row--user { flex-direction: row-reverse; }
+/* ═══ 答案流（就地生长） ═══ */
+.chat-stream {
+  display: flex; flex-direction: column;
+  max-height: 516px;
+  border-top: 1px solid rgba(15,23,42,0.05);
+}
+.older-btn {
+  margin: 8px 14px 0; padding: 4px 10px; flex-shrink: 0;
+  font-size: 10px; color: #8e8e93; cursor: pointer;
+  background: rgba(241,245,249,0.8); border: none; border-radius: 8px;
+  transition: all 0.15s;
+}
+.older-btn:hover { background: #eef2f7; color: #2563eb; }
 
-.avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-.avatar--user { background: #2563eb; color: white; }
-.avatar--ai { background: linear-gradient(135deg, #2563eb, #93c5fd); color: white; }
+.messages-scroll {
+  overflow-y: auto; overflow-x: hidden;
+  padding: 6px 14px 14px;
+  user-select: text;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(37, 99, 235, 0.2) transparent;
+}
+.messages-scroll::-webkit-scrollbar { width: 4px; }
+.messages-scroll::-webkit-scrollbar-track { background: transparent; }
+.messages-scroll::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #06b6d4, #6366f1); border-radius: 4px; }
 
-.msg-content { min-width: 0; }
-.msg-time { font-size: 9px; color: #c7c7cc; margin-bottom: 4px; padding: 0 2px; }
+/* ═══ 紧凑问答排版（无头像无气泡） ═══ */
+.msg-block { margin-bottom: 14px; animation: fadeIn 0.25s ease-out; }
+.msg-block:last-child { margin-bottom: 2px; }
 
-.bubble-user { background: #2563eb; color: white; border-radius: 16px 4px 16px 16px; padding: 6px 12px; }
-.bubble-user__text { font-size: 12px; line-height: 1.6; white-space: pre-wrap; font-family: inherit; margin: 0; }
-.bubble-ai { background: rgba(255,255,255,0.9); border: 1px solid #e5e5ea; border-radius: 4px 16px 16px 16px; padding: 6px 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.msg-q { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 0; font-size: 12px; color: #64748b; line-height: 1.55; word-break: break-word; }
+.msg-q__who { font-size: 10px; color: #a5adb8; background: #f1f5f9; border-radius: 4px; padding: 0 5px; margin-right: 7px; flex-shrink: 0; }
+.msg-q__text { white-space: pre-wrap; font-family: inherit; }
+
+.msg-a { color: #1f2937; }
+.msg-a__body { font-size: 12.5px; line-height: 1.55; }
+.msg-a__meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 9px; color: #c7c7cc; }
+.via-chip { padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #8e8e93; line-height: 1.4; }
+
+.faded { opacity: 0.42; }
+
+/* ═══ 面板生长/淡入 ═══ */
+.stream-enter-active { transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.33, 1, 0.68, 1); }
+.stream-enter-from { opacity: 0; transform: translateY(-6px); }
+.stream-leave-active { transition: none; }
 
 /* ═══ Markdown ═══ */
-.chat-md { font-size: 12px; line-height: 1.5; }
+.chat-md { font-size: 12.5px; line-height: 1.5; }
 .chat-md :deep(p) { margin: 0.15em 0; }
 
 /* ═══ 动画 ═══ */

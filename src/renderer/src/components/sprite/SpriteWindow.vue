@@ -41,13 +41,10 @@ async function onPointerMove(e: PointerEvent) {
   }
 }
 
-// 聊天窗口尺寸（调试用，改这里不用重编译 Rust）
-const CHAT_W = 620
-const CHAT_H = 700
-
 function onPointerUp() {
   if (!dragging && !moved) {
-    invoke('toggle_chat_window', { width: CHAT_W, height: CHAT_H }).catch(err => {
+    // 浮窗尺寸/位置由 Rust 侧固定（顶部居中），无需再传宽高
+    invoke('toggle_chat_window').catch(err => {
       console.error('[Sprite] 打开聊天窗口失败:', err)
     })
   }
