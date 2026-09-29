@@ -3,15 +3,70 @@
 //! 生成的文档通过 file_assets + file_relations(entity_type='generated') 入库：
 //! - 复用现有 file_preview / file_export / file_copy_to_clipboard（预览/下载/复制）
 //! - entity_type='generated' 不出现在资料库/项目文件列表（相关查询均带类型过滤）
-//! - generated_docs 表保存原始 content JSON：多轮修改时 action=read 回读 + 30 天清理锚点
+//! - generated_docs 表保存原始 content JSON：多轮修改时 action=read 回读
+//! - 生命周期由用户驱动：kb_delete_session 删会话时联动删除（含跨会话引用检查），
+//!   无自动过期——文件与会话同生命周期，聊天中的文档卡片永不失效
+//! - 生成后经 notify_file_upload 与上传文件同管道解析入知识库（检索侧按需隔离）
 
 use crate::commands::file_commands::flat_disk_path;
 use crate::database;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-/// 生成文档保留天数：启动时清理超过该天数的文档
-const GENERATED_DOC_RETENTION_DAYS: i64 = 30;
+// ── docx 预设样式（唯一真相源：字号字体行距全部由系统预设，AI 只选 text_type） ──
+/// 正文/表格/页眉页脚统一字体（rwml rFonts 四体同设，中英文一致）
+const DOC_PRESET_FONT: &str = "宋体";
+/// 正文小四 12pt（half-pt=24）
+const DOC_PRESET_BODY_HALF_PT: u16 = 24;
+/// 附注/图注 text_type=caption 小五 9pt（half-pt=18）
+const DOC_PRESET_CAPTION_HALF_PT: u16 = 18;
+/// 表格五号 10.5pt（half-pt=21）
+const DOC_PRESET_TABLE_HALF_PT: u16 = 21;
+/// 页眉页脚小五 9pt（half-pt=18）
+const DOC_PRESET_RUNNING_HALF_PT: u16 = 18;
+/// 正文行距 1.5 倍（rwml line_pct ×240 → w:line=360 lineRule=auto）
+const DOC_PRESET_LINE_PCT: f32 = 1.5;
+/// 标题 1-6 级字号（half-pt）：小二18/三号16/四号14/12/11/11 pt，字体同宋体
+/// （覆盖 rwml 内置西文惯例 32/28/…；标题行距保持单倍）
+const DOC_PRESET_HEADING_HALF_PT: [u16; 6] = [36, 32, 28, 24, 22, 22];
+
+// ── xlsx 预设 ──
+const XLSX_PRESET_FONT: &str = "宋体";
+const XLSX_PRESET_SIZE_PT: f64 = 11.0;
+const XLSX_CAPTION_SIZE_PT: f64 = 9.0;
+
+/// text_type → 字号（half-pt）：caption=小五9pt，body/缺省=按作用域默认
+fn text_type_size_half_pt(r: &Value, body_half_pt: u16) -> u16 {
+    if r["text_type"].as_str() == Some("caption") {
+        DOC_PRESET_CAPTION_HALF_PT
+    } else {
+        body_half_pt
+    }
+}
+
+/// 正文 run（预设宋体小四；text_type=caption → 小五）
+fn body_run(text: &str) -> rwml::Run {
+    body_run_from(text, None)
+}
+fn body_run_from(text: &str, r: Option<&Value>) -> rwml::Run {
+    let size = r.map(|v| text_type_size_half_pt(v, DOC_PRESET_BODY_HALF_PT))
+        .unwrap_or(DOC_PRESET_BODY_HALF_PT);
+    rwml::RunBuilder::new(text)
+        .font(DOC_PRESET_FONT)
+        .size_half_pt(size)
+        .build()
+}
+
+/// 正文段落（预设 run + 1.5 倍行距），替代 builder.paragraph 使预设生效
+fn body_paragraph(builder: rwml::DocBuilder, text: &str) -> rwml::DocBuilder {
+    body_paragraph_from(builder, text, None)
+}
+fn body_paragraph_from(builder: rwml::DocBuilder, text: &str, r: Option<&Value>) -> rwml::DocBuilder {
+    let pb = rwml::ParagraphBuilder::new()
+        .runs(vec![body_run_from(text, r)])
+        .line_pct(DOC_PRESET_LINE_PCT);
+    builder.rich_paragraph(pb.build())
+}
 
 pub struct GeneratedDoc {
     pub file_id: String,
@@ -72,39 +127,16 @@ pub fn read_content(file_id: &str) -> Result<Value, String> {
     }))
 }
 
-/// 启动清理：删除超过保留期的生成文档（记录 + 关系 + CAS 物理文件）
+/// 启动清理：仅回收孤儿快照（资产已被别处删除的残留记录）。
+/// 不再按时间自动过期——生命周期由用户驱动：kb_delete_session 删会话时联动删除关联文档。
 pub fn cleanup_generated_docs() {
-    // 1. 孤儿清理：资产已被别处删除的残留记录
-    let _ = database::run(
+    let n = database::run(
         "DELETE FROM generated_docs WHERE file_id NOT IN (SELECT id FROM file_assets)",
         &[],
-    );
-
-    // 2. 超期清理
-    let sql = format!(
-        "SELECT gd.file_id FROM generated_docs gd \
-         WHERE gd.created_at < datetime('now','localtime','-{} days')",
-        GENERATED_DOC_RETENTION_DAYS
-    );
-    let rows = database::all(&sql, &[]).unwrap_or_default();
-    if rows.is_empty() {
-        return;
+    ).map(|r| r.changes).unwrap_or(0);
+    if n > 0 {
+        log::info!("[文档清理] 回收孤儿生成文档快照 {} 条（资产已不存在）", n);
     }
-    let total = rows.len();
-    for r in &rows {
-        let fid = r["file_id"].as_str().unwrap_or("");
-        if fid.is_empty() {
-            continue;
-        }
-        let _ = database::run("DELETE FROM generated_docs WHERE file_id=?1", &[json!(fid)]);
-        let _ = database::run(
-            "DELETE FROM file_relations WHERE file_id=?1 AND entity_type='generated'",
-            &[json!(fid)],
-        );
-        // 零引用释放：清知识库索引（若曾被补漏捞入）+ 物理文件 + 资产行；仍被引用时 no-op
-        crate::commands::file_commands::release_asset_if_orphan(fid);
-    }
-    log::info!("[文档清理] 已清理 {} 个超过 {} 天的生成文档", total, GENERATED_DOC_RETENTION_DAYS);
 }
 
 /// 删除单个生成文档（删除会话时联动调用）：
@@ -130,7 +162,21 @@ fn save_bytes(bytes: &[u8], filename: &str, ext: &str, content: &Value) -> Resul
     if bytes.is_empty() {
         return Err("生成的文件内容为空".to_string());
     }
-    let file_name = build_file_name(filename, ext);
+    let file_name_base = build_file_name(filename, ext);
+    // 同秒撞名兜底：目标名已被占用（同秒双生成不同内容）→ 扩展名前追加序号
+    let dotted = format!(".{}", ext);
+    let mut file_name = file_name_base.clone();
+    let mut seq = 1u32;
+    while seq <= 99 {
+        let taken = database::get("SELECT 1 FROM file_assets WHERE original_name=?1", &[json!(&file_name)])
+            .ok().flatten().is_some();
+        if !taken { break; }
+        let core = if file_name_base.to_lowercase().ends_with(&dotted) {
+            file_name_base[..file_name_base.len() - dotted.len()].to_string()
+        } else { file_name_base.clone() };
+        file_name = format!("{}_{}.{}", core, seq, ext);
+        seq += 1;
+    }
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let hash = hex::encode(&hasher.finalize()[..32]);
@@ -183,13 +229,17 @@ fn save_bytes(bytes: &[u8], filename: &str, ext: &str, content: &Value) -> Resul
     )
     .ok();
 
-    // 原始 content 快照：多轮 read 回读 + 30 天清理锚点（OR REPLACE 刷新保留期）
+    // 原始 content 快照：多轮 read 回读（OR REPLACE 刷新）
     database::run(
         "INSERT OR REPLACE INTO generated_docs(file_id, content, created_at) \
          VALUES(?1,?2,datetime('now','localtime'))",
         &[json!(&file_id), json!(content.to_string())],
     )
     .map_err(|e| e.to_string())?;
+
+    // 进知识库（管理架构统一）：与上传文件同一条解析管道（解析正文 → source_data → 物化）；
+    // enqueue_push 先删同实体 pending 再插，重复生成同内容幂等无害
+    crate::services::knowledge_lifecycle::notify_file_upload(&file_id);
 
     log::info!("[文档生成] {} 已保存 file_id={} size={}B", file_name, file_id, size);
     Ok(GeneratedDoc {
@@ -200,7 +250,9 @@ fn save_bytes(bytes: &[u8], filename: &str, ext: &str, content: &Value) -> Resul
     })
 }
 
-/// 文件名消毒：去路径分隔符与非法字符，保证非空并带扩展名
+/// 文件名消毒：去路径分隔符与非法字符，保证非空并带扩展名。
+/// 秒级时间戳后缀区分会话内同名文件：设备清单 → 设备清单_20260929_143052.docx；
+/// 输入已带扩展名时在扩展名前插时间戳（不双拼）。AI 无需自带日期（prompt 已声明）。
 fn build_file_name(filename: &str, ext: &str) -> String {
     const ILLEGAL: [char; 9] = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
     let base: String = filename
@@ -209,18 +261,87 @@ fn build_file_name(filename: &str, ext: &str) -> String {
         .map(|c| if ILLEGAL.contains(&c) || (c as u32) < 0x20 { '_' } else { c })
         .collect();
     let base = base.trim().trim_matches('.');
-    let base: String = base.chars().take(100).collect();
+    // 截断预算：core ≤78 + '_' + 15位时间戳 + '.' + ext(≤4) ≤ 100
+    let base: String = base.chars().take(78).collect();
     let base = if base.is_empty() { "文档".to_string() } else { base };
-    if base.to_lowercase().ends_with(&format!(".{}", ext)) {
-        base
+    let dotted = format!(".{}", ext);
+    let core = if base.to_lowercase().ends_with(&dotted) {
+        base[..base.len() - dotted.len()].to_string()
     } else {
-        format!("{}.{}", base, ext)
-    }
+        base
+    };
+    let core = core.trim_end_matches(['.', '_']);
+    let core = if core.is_empty() { "文档" } else { core };
+    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    format!("{}_{}.{}", core, ts, ext)
 }
 
 // ═══════════════════════════════════════════════════════════════
 // Word (.docx) 构建 — rwml DocBuilder
 // ═══════════════════════════════════════════════════════════════
+
+/// header/footer 文本中的 {PAGE}/{NUMPAGES} 占位符 → Word 页码域（fldSimple）。
+/// 不转换时 Word 把 {PAGE} 当字面文本显示（AI 生成页脚的常见模板写法）。
+/// 无占位 → 原 plain 路径；有占位 → 按段拆成 文本run + 域run 混排（footer_runs/header_runs）。
+fn apply_running_text(builder: rwml::DocBuilder, text: String, is_header: bool) -> rwml::DocBuilder {
+    let segments = split_running_placeholders(&text);
+    if segments.iter().all(|(_, instr)| instr.is_none()) {
+        // 无占位：仍走 runs 以套页眉页脚预设（宋体小五 9pt）
+        let run = running_run(&text, None);
+        return if is_header { builder.header_runs(vec![run]) } else { builder.footer_runs(vec![run]) };
+    }
+    // 域 run 的 cached 文本给 "1"（与 rwml 自带 page_numbers 段一致），Word 打开时按域指令刷新为真实页码
+    let runs: Vec<rwml::Run> = segments
+        .into_iter()
+        .map(|(seg_text, instr)| running_run(&seg_text, instr))
+        .collect();
+    if is_header { builder.header_runs(runs) } else { builder.footer_runs(runs) }
+}
+
+/// 页眉页脚 run：宋体小五 9pt 预设（域 run 的 cached 文本同此样式）
+fn running_run(text: &str, field: Option<&str>) -> rwml::Run {
+    let mut b = rwml::RunBuilder::new(text)
+        .font(DOC_PRESET_FONT)
+        .size_half_pt(DOC_PRESET_RUNNING_HALF_PT);
+    if let Some(ins) = field {
+        b = b.field(ins);
+    }
+    b.build()
+}
+
+/// header/footer 文本占位符分段（纯函数，可单测）：
+/// 返回 (文本段, Some(域指令) | None)；{PAGE}→PAGE、{NUMPAGES}→NUMPAGES，其余原样成段。
+fn split_running_placeholders(text: &str) -> Vec<(String, Option<&'static str>)> {
+    const PLACEHOLDERS: [(&str, &str); 2] = [("{PAGE}", "PAGE"), ("{NUMPAGES}", "NUMPAGES")];
+    let mut out: Vec<(String, Option<&'static str>)> = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        // 找最早出现的占位符
+        let mut earliest: Option<(usize, usize, &'static str)> = None;
+        for (pat, instr) in PLACEHOLDERS {
+            if let Some(pos) = rest.find(pat) {
+                if earliest.map_or(true, |(ep, _, _)| pos < ep) {
+                    earliest = Some((pos, pat.len(), instr));
+                }
+            }
+        }
+        match earliest {
+            Some((pos, len, instr)) => {
+                if pos > 0 {
+                    out.push((rest[..pos].to_string(), None));
+                }
+                // 域段：cached result 文本 "1"（与 rwml 自带 page_numbers 段一致），Word 打开按域指令刷新真值
+                out.push(("1".to_string(), Some(instr)));
+                rest = &rest[pos + len..];
+            }
+            None => {
+                out.push((rest.to_string(), None));
+                break;
+            }
+        }
+    }
+    out
+}
 
 fn build_docx(content: &Value, metadata: Option<&Value>) -> Result<Vec<u8>, String> {
     log::info!("[文档生成] build_docx 输入 content: {}", content);
@@ -250,11 +371,11 @@ fn build_docx(content: &Value, metadata: Option<&Value>) -> Result<Vec<u8>, Stri
             return Err("content 缺少 children 数组（或 title/text 兜底字段）".to_string());
         }
         if let Some(t) = title {
-            builder = builder.heading(1, t);
+            builder = builder.heading_runs(1, vec![heading_run(t.as_str(), 1)]);
         }
         for line in text.split('\n') {
             if !line.trim().is_empty() {
-                builder = builder.paragraph(line.trim_end());
+                builder = body_paragraph(builder, line.trim_end());
             }
         }
     }
@@ -277,7 +398,7 @@ fn apply_docx_blocks(
         // 容错1：纯字符串子块 → 视为段落（不再静默丢弃）
         if let Some(s) = child.as_str() {
             if !s.trim().is_empty() {
-                builder = builder.paragraph(s.trim_end());
+                builder = body_paragraph(builder, s.trim_end());
             }
             continue;
         }
@@ -301,9 +422,11 @@ fn apply_docx_blocks(
                 }
                 let align = parse_docx_align(child);
                 let shading = docx_shading_color(child);
+                // 标题预设：宋体 + 级别字号（预设表唯一真相源，不接受外部字号字段）；heading_level 保留大纲/目录能力
+                let hrun = heading_run(&text, level);
                 if align.is_some() || shading.is_some() {
                     // 带样式 → ParagraphBuilder（对齐/底纹）
-                    let mut pb = rwml::ParagraphBuilder::text(text).heading_level(level);
+                    let mut pb = rwml::ParagraphBuilder::new().runs(vec![hrun]).heading_level(level);
                     if let Some(a) = align {
                         pb = pb.align(a);
                     }
@@ -312,7 +435,7 @@ fn apply_docx_blocks(
                     }
                     builder = builder.rich_paragraph(pb.build());
                 } else {
-                    builder = builder.heading(level, text);
+                    builder = builder.heading_runs(level, vec![hrun]);
                 }
             }
             "paragraph" | "p" => {
@@ -322,18 +445,14 @@ fn apply_docx_blocks(
                 if let Some(runs) = child["runs"].as_array() {
                     let built: Vec<rwml::Run> = runs.iter().filter_map(build_run).collect();
                     if !built.is_empty() {
-                        if styled {
-                            let mut pb = rwml::ParagraphBuilder::new().runs(built);
-                            if let Some(a) = align {
-                                pb = pb.align(a);
-                            }
-                            if let Some((r, g, b)) = shading {
-                                pb = pb.shading(rwml::Color::rgb(r, g, b));
-                            }
-                            builder = builder.rich_paragraph(pb.build());
-                        } else {
-                            builder = builder.paragraph_runs(built);
+                        let mut pb = rwml::ParagraphBuilder::new().runs(built).line_pct(DOC_PRESET_LINE_PCT);
+                        if let Some(a) = align {
+                            pb = pb.align(a);
                         }
+                        if let Some((r, g, b)) = shading {
+                            pb = pb.shading(rwml::Color::rgb(r, g, b));
+                        }
+                        builder = builder.rich_paragraph(pb.build());
                     }
                 } else {
                     let text = child["text"].as_str().unwrap_or("");
@@ -342,7 +461,9 @@ fn apply_docx_blocks(
                             continue;
                         }
                         if styled {
-                            let mut pb = rwml::ParagraphBuilder::text(line.trim_end());
+                            let mut pb = rwml::ParagraphBuilder::new()
+                                .runs(vec![body_run_from(line.trim_end(), Some(child))])
+                                .line_pct(DOC_PRESET_LINE_PCT);
                             if let Some(a) = align {
                                 pb = pb.align(a);
                             }
@@ -351,7 +472,7 @@ fn apply_docx_blocks(
                             }
                             builder = builder.rich_paragraph(pb.build());
                         } else {
-                            builder = builder.paragraph(line.trim_end());
+                            builder = body_paragraph_from(builder, line.trim_end(), Some(child));
                         }
                     }
                 }
@@ -410,12 +531,12 @@ fn apply_docx_blocks(
             "section_break" => builder = builder.section_break(),
             "header" => {
                 if let Some(v) = str_field(child, "text") {
-                    builder = builder.header(v);
+                    builder = apply_running_text(builder, v, true);
                 }
             }
             "footer" => {
                 if let Some(v) = str_field(child, "text") {
-                    builder = builder.footer(v);
+                    builder = apply_running_text(builder, v, false);
                 }
             }
             "page_numbers" => builder = builder.page_numbers(),
@@ -432,7 +553,7 @@ fn apply_docx_blocks(
             // 容器块：先输出自身文本（若有），再递归展开 children
             "group" => {
                 if let Some(t) = str_field(child, "text") {
-                    builder = builder.paragraph(t);
+                    builder = body_paragraph(builder, &t);
                 }
                 if let Some(nested) = child["children"].as_array() {
                     builder = apply_docx_blocks(builder, nested, headings)?;
@@ -448,7 +569,7 @@ fn apply_docx_blocks(
                 } else {
                     for (level, text) in headings {
                         let indent = "  ".repeat((*level).saturating_sub(1) as usize);
-                        builder = builder.paragraph(format!("{}{}", indent, text));
+                        builder = body_paragraph(builder, &format!("{}{}", indent, text));
                     }
                 }
             }
@@ -456,7 +577,7 @@ fn apply_docx_blocks(
                 // 未知 type：有 children 则递归展开（内容不丢，模型常编造 section/article 等容器名）
                 if let Some(nested) = child["children"].as_array() {
                     if let Some(t) = str_field(child, "text") {
-                        builder = builder.paragraph(t);
+                        builder = body_paragraph(builder, &t);
                     }
                     builder = apply_docx_blocks(builder, nested, headings)?;
                 } else {
@@ -546,12 +667,9 @@ fn build_run(r: &Value) -> Option<rwml::Run> {
     if r["italic"].as_bool().unwrap_or(false) { b = b.italic(); }
     if r["underline"].as_bool().unwrap_or(false) { b = b.underline(); }
     if r["small_caps"].as_bool().unwrap_or(false) { b = b.small_caps(); }
-    if let Some(f) = str_field(r, "font") { b = b.font(f); }
-    if let Some(sz) = r["size_half_pt"].as_u64() {
-        b = b.size_half_pt(sz.min(u16::MAX as u64) as u16);
-    } else if let Some(pt) = r["size_pt"].as_u64() {
-        b = b.size_half_pt((pt.saturating_mul(2)).min(u16::MAX as u64) as u16);
-    }
+    // 字号字体由系统预设（text_type 选择类型：body/caption）——自由 font/size 字段已废除，传了忽略
+    b = b.font(DOC_PRESET_FONT);
+    b = b.size_half_pt(text_type_size_half_pt(r, DOC_PRESET_BODY_HALF_PT));
     if let Some(hl) = str_field(r, "highlight") { b = b.highlight(hl); }
     if let Some(url) = str_field(r, "hyperlink") { b = b.hyperlink(url); }
     // 文字颜色（hex 如 "FF0000" / "#FF0000"）
@@ -559,6 +677,20 @@ fn build_run(r: &Value) -> Option<rwml::Run> {
         b = b.color(rwml::Color::rgb(cr, cg, cb));
     }
     Some(b.build())
+}
+
+/// 标题 run：宋体 + 级别字号（预设表唯一真相源；heading_level 保留大纲/目录能力）
+fn heading_run(text: &str, level: u8) -> rwml::Run {
+    let idx = (level.clamp(1, 6) - 1) as usize;
+    rwml::RunBuilder::new(text)
+        .font(DOC_PRESET_FONT)
+        .size_half_pt(DOC_PRESET_HEADING_HALF_PT[idx])
+        .build()
+}
+
+/// 表格单元格字号：text_type=caption→小五9pt，缺省五号10.5pt（字体恒宋体——预设唯一真相源）
+fn table_run_size(v: &Value) -> u16 {
+    text_type_size_half_pt(v, DOC_PRESET_TABLE_HALF_PT)
 }
 
 /// 解析段落对齐字段（align: center/right/justify/left → rwml::Align）
@@ -710,7 +842,9 @@ fn build_docx_cell(v: &Value, is_header: bool) -> rwml::Cell {
     let blocks = if text.is_empty() {
         vec![]
     } else if bold || color.is_some() {
-        let mut rb = rwml::RunBuilder::new(text.as_str());
+        let mut rb = rwml::RunBuilder::new(text.as_str())
+            .font(DOC_PRESET_FONT)
+            .size_half_pt(table_run_size(v));
         if bold {
             rb = rb.bold();
         }
@@ -723,7 +857,11 @@ fn build_docx_cell(v: &Value, is_header: bool) -> rwml::Cell {
         }
         vec![rwml::Block::Paragraph(pb.build())]
     } else {
-        let mut pb = rwml::ParagraphBuilder::text(text.as_str());
+        let run = rwml::RunBuilder::new(text.as_str())
+            .font(DOC_PRESET_FONT)
+            .size_half_pt(table_run_size(v))
+            .build();
+        let mut pb = rwml::ParagraphBuilder::new().runs(vec![run]);
         if let Some(a) = align {
             pb = pb.align(a);
         }
@@ -873,7 +1011,7 @@ fn apply_xlsx_children(
     ws: &mut rust_xlsxwriter::Worksheet,
     children: &[Value],
 ) -> Result<(), String> {
-    use rust_xlsxwriter::{Chart, ChartType, Format, Image};
+    use rust_xlsxwriter::{Chart, ChartType, Image};
 
     let mut row_cursor: u32 = 0;
 
@@ -988,7 +1126,10 @@ fn apply_xlsx_children(
                     let text = child["text"].as_str().unwrap_or("");
                     match parse_a1_range(&range) {
                         Some((r1, c1, r2, c2)) => {
-                            if let Err(e) = ws.merge_range(r1, c1, r2, c2, text, &Format::new()) {
+                            let merge_fmt = rust_xlsxwriter::Format::new()
+                                .set_font_name(XLSX_PRESET_FONT)
+                                .set_font_size(XLSX_PRESET_SIZE_PT);
+                            if let Err(e) = ws.merge_range(r1, c1, r2, c2, text, &merge_fmt) {
                                 log::warn!("[文档生成] Excel 合并单元格失败（{}），已跳过: {}", range, e);
                             }
                         }
@@ -1019,7 +1160,13 @@ fn write_xlsx_row(
             continue;
         }
         let col = ci as u16;
-        let fmt = build_cell_format(cell, is_header);
+        // 归一预设字体（宋体11pt）：build_cell_format 内已对有格式单元格补齐；
+        // "零格式"单元格（如显式 border:false）在调用侧补齐——所有 xlsx 文字统一宋体11
+        let fmt = Some(build_cell_format(cell, is_header).unwrap_or_else(|| {
+            rust_xlsxwriter::Format::new()
+                .set_font_name(XLSX_PRESET_FONT)
+                .set_font_size(XLSX_PRESET_SIZE_PT)
+        }));
 
         // 公式：带样式写入
         if let Some(formula) = cell.get("formula").and_then(|f| f.as_str()) {
@@ -1259,14 +1406,19 @@ fn build_cell_format(cell: &Value, is_header: bool) -> Option<rust_xlsxwriter::F
         fmt = fmt.set_num_format(nf);
         has = true;
     }
-    // 字体
-    if let Some(name) = str_field(cell, "font") {
-        fmt = fmt.set_font_name(name);
+    // 字号字体：系统预设唯一真相源（text_type 选择类型：caption=小五9pt；自由 font/size 字段已废除，传了忽略）
+    // 注：text_type 是样式意图，计入 has（保证 border:false + caption 的零格式格也拿到预设）
+    if cell["text_type"].as_str().is_some() {
         has = true;
     }
-    if let Some(sz) = cell["size"].as_f64() {
+    if has {
+        fmt = fmt.set_font_name(XLSX_PRESET_FONT);
+        let sz = if cell["text_type"].as_str() == Some("caption") {
+            XLSX_CAPTION_SIZE_PT
+        } else {
+            XLSX_PRESET_SIZE_PT
+        };
         fmt = fmt.set_font_size(sz);
-        has = true;
     }
     if cell["underline"].as_bool().unwrap_or(false) {
         fmt = fmt.set_underline(FormatUnderline::Single);
@@ -1903,5 +2055,178 @@ mod tests {
         assert!(has_center_para, "段落对齐(center)应进入文档模型");
         assert!(has_red_run, "run 颜色(FF0000)应进入文档模型");
         assert!(has_table, "带样式的表格应生成");
+    }
+
+    // ── F: 秒级时间戳文件名（区分会话内同名文件）──
+
+    /// 时间戳后缀：设备清单 → 设备清单_YYYYMMDD_HHMMSS.docx（精确到秒）
+    #[test]
+    fn file_name_gets_second_precision_timestamp() {
+        let n = build_file_name("设备清单", "docx");
+        let re = regex::Regex::new(r"^设备清单_\d{8}_\d{6}\.docx$").unwrap();
+        assert!(re.is_match(&n), "实际: {}", n);
+        // 截断预算：总长 ≤100
+        assert!(n.chars().count() <= 100, "过长: {}", n.chars().count());
+    }
+
+    /// 非法字符清洗 + 已带扩展名不双拼 + 空输入兜底
+    #[test]
+    fn file_name_sanitizes_and_avoids_double_ext() {
+        // 已带扩展名：时间戳插在扩展名前，不出现 .docx.docx
+        let n = build_file_name("报告.docx", "docx");
+        let re = regex::Regex::new(r"^报告_\d{8}_\d{6}\.docx$").unwrap();
+        assert!(re.is_match(&n), "实际: {}", n);
+        // 非法字符 → 下划线
+        let n2 = build_file_name("a/b:c", "xlsx");
+        assert!(n2.starts_with("a_b_c_"), "实际: {}", n2);
+        assert!(n2.ends_with(".xlsx"));
+        assert!(!n2.contains(':'));
+        // 空输入 → 文档兜底
+        let n3 = build_file_name("   ", "docx");
+        assert!(n3.starts_with("文档_"), "实际: {}", n3);
+    }
+
+    // ── header/footer 的 {PAGE}/{NUMPAGES} 占位 → Word 页码域 ──
+
+    /// 占位符分段纯逻辑
+    #[test]
+    fn split_running_placeholders_segments_fields() {
+        let segs = split_running_placeholders("第 {PAGE} 页 共 {NUMPAGES} 页");
+        assert_eq!(segs.len(), 5, "{:?}", segs);
+        assert_eq!(segs[0].0, "第 ");
+        assert!(segs[0].1.is_none());
+        assert_eq!(segs[1].1, Some("PAGE"));
+        assert_eq!(segs[2].0, " 页 共 ");
+        assert_eq!(segs[3].1, Some("NUMPAGES"));
+        assert_eq!(segs[4].0, " 页");
+        assert!(segs[4].1.is_none());
+
+        // 无占位 → 单段纯文本
+        let s2 = split_running_placeholders("公司内部文件");
+        assert_eq!(s2.len(), 1);
+        assert!(s2[0].1.is_none());
+
+        // 占位开头 + 连续占位
+        let s3 = split_running_placeholders("{PAGE}/{NUMPAGES}");
+        assert_eq!(s3.len(), 3, "{:?}", s3);
+        assert_eq!(s3[0].1, Some("PAGE"));
+        assert_eq!(s3[1].0, "/");
+        assert_eq!(s3[2].1, Some("NUMPAGES"));
+    }
+
+    /// 集成：生成的 docx footer part 必须含 fldSimple 域指令，不得残留字面 {PAGE}
+    #[test]
+    fn footer_page_placeholder_becomes_field() {
+        use std::io::Read as _;
+        let content = json!({"children": [
+            {"type": "paragraph", "text": "正文"},
+            {"type": "footer", "text": "第 {PAGE} 页 共 {NUMPAGES} 页"},
+        ]});
+        let bytes = build_docx(&content, None).expect("build_docx");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("open docx zip");
+        let names: Vec<String> = (0..zip.len())
+            .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        let footer_name = names.iter().find(|n| n.contains("footer")).expect("应有 footer part");
+        let mut xml = String::new();
+        zip.by_name(footer_name).unwrap().read_to_string(&mut xml).unwrap();
+        assert!(xml.contains("fldSimple"), "footer 应含 fldSimple 域: {}", &xml[..xml.len().min(500)]);
+        assert!(xml.contains("PAGE"), "应含 PAGE 域指令");
+        assert!(xml.contains("NUMPAGES"), "应含 NUMPAGES 域指令");
+        assert!(!xml.contains("{PAGE}"), "不得残留字面 {{PAGE}}");
+    }
+
+    // ── 字体字号预设（方案A：缺省补齐，显式覆盖） ──
+
+    /// 解压 docx 取 part 文本（测试 helper）
+    fn docx_part(content: &Value, name_contains: &str) -> String {
+        use std::io::Read as _;
+        let bytes = build_docx(content, None).expect("build_docx");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("open zip");
+        let names: Vec<String> = (0..zip.len())
+            .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        let name = names.iter().find(|n| n.contains(name_contains) && !n.contains("_rels"))
+            .unwrap_or_else(|| panic!("无匹配 part: {}（现有 {:?}）", name_contains, names));
+        let mut xml = String::new();
+        zip.by_name(name).unwrap().read_to_string(&mut xml).unwrap();
+        xml
+    }
+
+    /// 正文纯文本段落缺省 → 宋体小四（w:sz 24）+ 1.5 倍行距（w:line=360）
+    #[test]
+    fn docx_body_preset_font_size() {
+        let xml = docx_part(&json!({"children": [{"type": "paragraph", "text": "默认正文"}]}), "document.xml");
+        assert!(xml.contains(r#"w:sz w:val="24""#), "正文应为小四 24half: {}", &xml[..xml.len().min(600)]);
+        assert!(xml.contains("宋体"), "正文应为宋体");
+        assert!(xml.contains(r#"w:line="360""#), "正文应为 1.5 倍行距(w:line=360): {}", &xml[..xml.len().min(600)]);
+    }
+
+    /// 标题：级别字号预设（H1=小二 36half/18pt）且保留 Heading 样式引用（大纲/目录能力）；标题行距单倍
+    #[test]
+    fn docx_heading_preset_size_keeps_style() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "heading", "level": 1, "text": "一级标题"},
+            {"type": "heading", "level": 2, "text": "二级标题"},
+        ]}), "document.xml");
+        assert!(xml.contains(r#"w:sz w:val="36""#), "H1 应为小二 36half(18pt)");
+        assert!(xml.contains(r#"w:sz w:val="32""#), "H2 应为 32half(16pt)");
+        assert!(xml.contains("Heading1") || xml.contains("outlineLvl"), "标题应保留样式/大纲引用");
+        assert!(xml.contains("宋体"), "标题字体应为宋体");
+    }
+
+    /// text_type 选择文本类型（caption=小五）；自由 font/size 字段已废除（传了忽略）
+    #[test]
+    fn docx_text_type_selects_size_and_free_fields_ignored() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "paragraph", "runs": [
+                {"text": "附注说明", "text_type": "caption"},
+                {"text": "默认正文"},
+                {"text": "试图覆盖", "size_pt": 99, "font": "Comic Sans"}
+            ]},
+        ]}), "document.xml");
+        assert!(xml.contains(r#"w:sz w:val="18""#), "caption 应为小五 18half");
+        assert!(xml.contains(r#"w:sz w:val="24""#), "body 应为小四 24half");
+        assert!(xml.contains("宋体"), "字体恒宋体");
+        assert!(!xml.contains("Comic Sans"), "自由 font 字段应被忽略");
+        assert!(!xml.contains(r#"w:val="198""#), "自由 size_pt=99(198half) 应被忽略");
+    }
+
+    /// 表格单元格缺省 → 宋体五号（21half=10.5pt）
+    #[test]
+    fn docx_table_cell_preset() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "table", "headers": ["列"], "rows": [["值"]]},
+        ]}), "document.xml");
+        assert!(xml.contains(r#"w:sz w:val="21""#), "表格单元格应为五号 21half");
+        assert!(xml.contains("宋体"), "表格单元格应为宋体");
+    }
+
+    /// 页眉页脚缺省 → 宋体小五（18half=9pt）
+    #[test]
+    fn docx_footer_plain_preset() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "paragraph", "text": "正文"},
+            {"type": "footer", "text": "公司内部资料"},
+        ]}), "footer");
+        assert!(xml.contains(r#"w:sz w:val="18""#), "页脚应为小五 18half");
+        assert!(xml.contains("宋体"), "页脚应为宋体");
+    }
+
+    /// xlsx：styles.xml 含宋体 + 11pt（build_cell_format 缺省补齐 + 调用侧零格式归一）；
+    /// text_type=caption → 9pt
+    #[test]
+    fn xlsx_preset_font_in_styles() {
+        use std::io::Read as _;
+        let content = json!({"sheets": [{"name": "S1", "rows": [
+            ["表头"], ["数据"], [{"text": "无边框", "border": false}], [{"text": "附注", "text_type": "caption"}]
+        ]}]});
+        let bytes = build_xlsx(&content).expect("build_xlsx");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("open xlsx zip");
+        let mut xml = String::new();
+        zip.by_name("xl/styles.xml").unwrap().read_to_string(&mut xml).unwrap();
+        assert!(xml.contains("宋体"), "xlsx 样式表应含宋体: {}", &xml[..xml.len().min(600)]);
+        assert!(xml.contains(r#"val="11""#), "xlsx 默认字号应含 11pt");
+        assert!(xml.contains(r#"val="9""#), "caption 应为 9pt");
     }
 }
