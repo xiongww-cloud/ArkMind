@@ -1,8 +1,10 @@
 //! delegate_agent — 子 Agent 委托执行模块
-//! 将任务委托给专业 Agent 处理，子 Agent 拥有独立会话和工具集
+//! 共享上下文模式：子 Agent 直接复用主会话 messages 快照（截尾防御 + 尾部指令注入），
+//! 头部 system 与主 Agent 字节级一致以保前缀缓存；工具集硬白名单隔离
 
 use serde_json::{json, Value};
 use crate::database;
+use crate::services::agent_workflow::{ChatMessage, MessageRole};
 use tauri::Emitter;
 
 /// 安全截断字符串（尊重 UTF-8 字符边界）
@@ -13,9 +15,35 @@ fn truncate_str(s: &str, max_chars: usize) -> &str {
     }
 }
 
+/// 快照截尾（协议 400 防御）：剥离尾部未闭合的 Assistant(tool_calls)。
+/// 委托发生在工具执行期间——对应的 Tool 响应尚未写入历史，直接把这种"开口"序列
+/// 发给 OpenAI 兼容端点会触发 400（tool_calls 后必须紧跟同 id 的 tool 消息）。
+/// 纯函数，可单测。
+pub(crate) fn truncate_dangling_tool_calls(mut msgs: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    while let Some(last) = msgs.last() {
+        let dangling = last.role == MessageRole::Assistant
+            && last.tool_calls.as_ref().is_some_and(|v| !v.is_empty());
+        if dangling {
+            msgs.pop();
+        } else {
+            break;
+        }
+    }
+    msgs
+}
+
+/// Hard Masking：子 Agent 工具白名单硬剔除判定（纯函数，可单测）。
+/// delegate（递归委托死循环风险）与 MAIN_AGENT_ONLY（delegate/memory 主 Agent 专属）
+/// 对子 Agent 物理不可见——即使 agent_tool_assignments 出现脏数据分配也会被过滤。
+pub(crate) fn is_sub_agent_forbidden_tool(name: &str) -> bool {
+    name == "ext_tool_delegate_agent"
+        || crate::services::agent_workflow::tools::MAIN_AGENT_ONLY.contains(&name)
+}
+
 /// 执行 delegate_agent 工具
-/// 从数据库加载 Agent Profile，调用 agent_chat_workflow 执行任务，返回结果
+/// 从数据库加载 Agent Profile，以共享上下文模式调用 agent_chat_workflow 执行任务，返回结果
 /// delegate_depth: 委托深度（0=主Agent直接委托，≥1=已嵌套，拒绝再委托）
+/// history: 主会话 messages 快照（调用点 clone，入口截尾防御后作为子 Agent 初始上下文）
 pub async fn execute_delegate_agent(
     agent_id: &str,
     task: &str,
@@ -23,6 +51,7 @@ pub async fn execute_delegate_agent(
     expected_output: &str,
     app_handle: Option<tauri::AppHandle>,
     delegate_depth: u8,
+    history: Vec<ChatMessage>,
 ) -> String {
     // 参数校验
     if agent_id.is_empty() {
@@ -56,10 +85,15 @@ pub async fn execute_delegate_agent(
     }
 
     let first = &rows[0];
-    // ★ 主 Agent 专属工具清单：agent_workflow::tools::MAIN_AGENT_ONLY（唯一数据源）
+    // ★ Hard Masking：子 Agent 工具白名单硬剔除——delegate（防递归死循环）与 MAIN_AGENT_ONLY
+    //   （delegate/memory 主 Agent 专属）物理不可见，即使 agent_tool_assignments 有脏数据分配也被过滤
+    if rows.iter().any(|r| r["tool_name"].as_str() == Some("ext_tool_delegate_agent")) {
+        log::warn!("[DelegateAgent] 检测到为子 Agent 分配 delegate 工具（已硬剔除）: agent_id={}", agent_id);
+    }
+    // ★ 主 Agent 专属工具清单：以 is_sub_agent_forbidden_tool 为唯一数据源（MAIN_AGENT_ONLY + delegate）
     let allowed_tools: Vec<String> = rows.iter()
         .filter_map(|r| r["tool_name"].as_str().map(|s| s.to_string()))
-        .filter(|t| !crate::services::agent_workflow::tools::MAIN_AGENT_ONLY.contains(&t.as_str()))
+        .filter(|t| !is_sub_agent_forbidden_tool(t))
         .collect();
 
     // system_prompt 直接用 Agent 配置的提示词（工具说明已由 API tools schema 提供，不再重复注入）
@@ -67,15 +101,25 @@ pub async fn execute_delegate_agent(
     let max_iterations = first["max_iterations"].as_i64().unwrap_or(20) as i32;
     let agent_name = first["name"].as_str().unwrap_or(agent_id);
 
-    // 构建子 Agent 的任务描述
-    let has_tools = !allowed_tools.is_empty();
-    let sub_query = build_sub_query(task, context, expected_output, has_tools);
+    // 构建共享上下文快照：截尾防御（剥未闭合 tool_calls）+ 尾部注入执行体指令
+    let mut sub_messages = truncate_dangling_tool_calls(history);
+    let history_len = sub_messages.len();
+    let directive = build_directive(agent_id, agent_name, &system_prompt, task, context, expected_output, &allowed_tools);
+    sub_messages.push(ChatMessage {
+        role: MessageRole::User,
+        content: Some(directive),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        reasoning_content: None,
+    });
 
     log::info!(
-        "[DelegateAgent] 委托任务给 Agent「{}」，任务: {}，工具数: {}",
+        "[DelegateAgent] 委托 Agent「{}」，任务: {}，工具数: {}，共享历史 {} 条（截尾后，尾部注入执行体指令）",
         agent_name,
         truncate_str(task, 50),
-        allowed_tools.len()
+        allowed_tools.len(),
+        history_len
     );
 
     // ★ 委托可见性：通知前端委托开始（status + progress 双通道，聊天页只监听 progress）
@@ -86,18 +130,20 @@ pub async fn execute_delegate_agent(
 
     // 使用 Box::pin 解决递归 async 调用（无独立 session，避免无用DB操作）
     let result = Box::pin(super::agent_workflow::agent_chat_workflow_internal(
-        sub_query,
+        task.to_string(),
         vec![],
         Some(max_iterations),
         app_handle,
         false, // ★ silent=false：子 Agent 的 token/进度直连前端流式输出（回复不再只在刷新后可见）
         None, // ★ 无独立 session：load/save 有守卫，避免4次无用DB操作
         Some(allowed_tools),
-        Some(system_prompt.as_str()),
+        None,            // ★ system_prompt=None：头部保主 Agent 完整 system（前缀缓存），职责经尾部指令注入
         false,            // ★ is_root=false：不重置/不清除 AGENT_CANCEL
         delegate_depth + 1, // ★ 深度+1
         true,             // ★ cancel_aware=true：委托链响应聊天"停止"，取消向上传播
         false,            // ★ 子Agent保留完整动态上下文（工作记忆/预算对其有价值）
+        Some(sub_messages), // ★ 共享历史模式：截尾快照 + 尾部执行体指令
+        true,             // ★ canonical tools：与主 Agent同一份全量清单（tools 计入前缀缓存，字节不一致则共享历史段全灭）
     ))
     .await;
 
@@ -130,27 +176,31 @@ pub async fn execute_delegate_agent(
     }
 }
 
-/// 构建子 Agent 的任务描述
-fn build_sub_query(task: &str, context: Option<&Value>, expected_output: &str, has_tools: bool) -> String {
+/// 构建尾部执行体指令（角色覆盖声明 + 职责 + 任务 + 协议，合成一条 User 消息追加在历史尾部）。
+/// 头部 system 保持主 Agent 原样（前缀缓存），子 Agent 的身份与职责在此声明并覆盖冲突部分。
+fn build_directive(
+    agent_id: &str,
+    agent_name: &str,
+    system_prompt: &str,
+    task: &str,
+    context: Option<&Value>,
+    expected_output: &str,
+    allowed_tools: &[String],
+) -> String {
     let mut parts = Vec::new();
 
-    // 优先使用用户原始输入，主 Agent 的 task 作为补充
-    if let Some(ctx) = context {
-        if let Some(user_query) = ctx["user_query"].as_str().filter(|s| !s.is_empty()) {
-            parts.push(format!("用户问题：{}", user_query));
-        } else {
-            parts.push(format!("任务：{}", task));
-        }
-    } else {
-        parts.push(format!("任务：{}", task));
-    }
+    // 1. 角色覆盖声明（历史已全量共享：无需再摘要 recent_messages/user_query）
+    parts.push(format!(
+        "[系统指令：专精执行体模式 - 角色覆盖声明]\n\
+        你当前处于专精执行体（Sub-Agent: {}（{}））模式接管此任务。\n\
+        【上下文政策】前序对话历史均为客观事实背景与已定稿内容，不得推翻或违背；历史中被后续修订的中间讨论以最终定稿为准。\n\
+        【职责与边界】{}\n\
+        【覆盖约束】system 提示词中与上述职责冲突的部分（委托其他 Agent、任务规划、输出规范等）一律以本指令为准；你的工具以可用清单为准，没有委托能力。",
+        agent_name, agent_id, system_prompt
+    ));
 
-    if !has_tools {
-        parts.push("注意：你当前没有分配任何工具，无法执行任何操作。不要编造信息，直接回复最后一行：MISSING: 当前 Agent 未配置任何工具".to_string());
-    }
-
+    // 2. context 结构化补充（主 Agent 显式给出的关键引用——历史可见的内容无需重复）
     if let Some(ctx) = context {
-        // 注入 context（去掉 user_query 避免重复）
         if !ctx.is_null() {
             if let Some(obj) = ctx.as_object() {
                 let filtered: Vec<(&String, &Value)> = obj.iter()
@@ -159,33 +209,31 @@ fn build_sub_query(task: &str, context: Option<&Value>, expected_output: &str, h
                 if !filtered.is_empty() {
                     let mut ctx_obj = serde_json::Map::new();
                     for (k, v) in filtered { ctx_obj.insert(k.clone(), v.clone()); }
-                    parts.push(format!("上下文：{}", Value::Object(ctx_obj)));
+                    parts.push(format!("【补充上下文】{}", Value::Object(ctx_obj)));
                 }
-            }
-        }
-        // recent_messages 单独注入（更清晰）
-        if let Some(recent) = ctx["recent_messages"].as_array().filter(|a| !a.is_empty()) {
-            let mut lines = Vec::new();
-            for msg in recent {
-                let role = msg["role"].as_str().unwrap_or("");
-                let content = msg["content"].as_str().unwrap_or("");
-                if !content.is_empty() {
-                    let label = if role == "user" { "用户" } else { "助手" };
-                    let preview: String = content.chars().take(200).collect();
-                    lines.push(format!("{}：{}", label, preview));
-                }
-            }
-            if !lines.is_empty() {
-                parts.push(format!("最近对话：\n{}", lines.join("\n")));
             }
         }
     }
 
+    // 3. 可用工具清单（canonical tools 下 schema 为全量清单，此处收敛本 Agent 实际可调用子集）
+    if allowed_tools.is_empty() {
+        parts.push("注意：你当前没有分配任何工具，无法执行任何操作。不要编造信息，直接回复最后一行：MISSING: 当前 Agent 未配置任何工具".to_string());
+    } else {
+        parts.push(format!(
+            "【可用工具清单】你只能调用：{}。tools schema 中出现的其他工具对你不可用（调用会返回\"未授权\"），跳过即可，不要重试。",
+            allowed_tools.join("、")
+        ));
+    }
+
+    // 4. 任务本体
+    parts.push(format!("【执行任务】{}", task));
+
+    // 5. 期望输出格式
     if !expected_output.is_empty() {
-        parts.push(format!("期望输出格式：{}", expected_output));
+        parts.push(format!("【期望输出格式】{}", expected_output));
     }
 
-    // ★ 执行协议：委托运行时统一注入，对所有子Agent（内置/自定义）生效，与agent档案prompt无关
+    // 6. 执行协议（运行时统一注入，对所有子Agent生效，与agent档案prompt无关）
     parts.push("## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用 ext_tool_object 按名称检索同类对象，存在相似项则先向用户确认\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务，不要输出 MISSING\n- 若信息不足以完成部分任务，不要编造，在回复的最后一行输出：MISSING: <缺少什么信息或哪个操作未执行>\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID".to_string());
 
     parts.join("\n\n")
@@ -373,4 +421,123 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
         summary: Some(format!("Agent「{}」{}。{}", agent_id, status_label, preview)),
     };
     envelope.to_json()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::agent_workflow::{FunctionCall, ToolCall};
+
+    fn user_msg(s: &str) -> ChatMessage {
+        ChatMessage { role: MessageRole::User, content: Some(s.into()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None }
+    }
+    fn tool_msg(id: &str) -> ChatMessage {
+        ChatMessage { role: MessageRole::Tool, content: Some("ok".into()), tool_calls: None, tool_call_id: Some(id.into()), name: None, reasoning_content: None }
+    }
+    fn assistant_with_tcs(id: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: id.into(),
+                call_type: "function".into(),
+                function: FunctionCall { name: "ext_tool_search".into(), arguments: "{}".into() },
+            }]),
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+        }
+    }
+    fn assistant_plain(s: &str) -> ChatMessage {
+        ChatMessage { role: MessageRole::Assistant, content: Some(s.into()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None }
+    }
+
+    /// 验收1：尾部未闭合 Assistant(tool_calls) 必须被精准剥离，最后一条消息闭合
+    #[test]
+    fn truncates_dangling_assistant_tool_calls_at_tail() {
+        let msgs = vec![
+            user_msg("问题"),
+            assistant_with_tcs("call_1"),
+            tool_msg("call_1"),
+            assistant_with_tcs("call_2"), // 委托发生时：本轮 tool_calls 已入史、Tool 结果未入史
+        ];
+        let out = truncate_dangling_tool_calls(msgs);
+        assert_eq!(out.len(), 3);
+        assert!(out.last().unwrap().role == MessageRole::Tool);
+    }
+
+    #[test]
+    fn truncates_consecutive_dangling_assistant_messages() {
+        let msgs = vec![
+            user_msg("问题"),
+            assistant_with_tcs("call_a"),
+            assistant_with_tcs("call_b"),
+        ];
+        let out = truncate_dangling_tool_calls(msgs);
+        assert_eq!(out.len(), 1);
+        assert!(out.last().unwrap().role == MessageRole::User);
+    }
+
+    /// 已闭合/普通尾部不得误删
+    #[test]
+    fn keeps_closed_and_plain_tails() {
+        // 尾部 User → 保留
+        let out = truncate_dangling_tool_calls(vec![assistant_with_tcs("c"), user_msg("q")]);
+        assert_eq!(out.len(), 2);
+        // 尾部 Tool（闭合）→ 保留
+        let out = truncate_dangling_tool_calls(vec![assistant_with_tcs("c"), tool_msg("c")]);
+        assert_eq!(out.len(), 2);
+        // 尾部 assistant 无 tool_calls → 保留
+        let out = truncate_dangling_tool_calls(vec![user_msg("q"), assistant_plain("答案")]);
+        assert_eq!(out.len(), 2);
+        // 空数组 → 空
+        assert!(truncate_dangling_tool_calls(vec![]).is_empty());
+    }
+
+    /// tool_calls 为空数组的 assistant 不算 dangling（防御可选语义）
+    #[test]
+    fn empty_tool_calls_vector_is_not_dangling() {
+        let mut m = assistant_plain("x");
+        m.tool_calls = Some(vec![]);
+        let out = truncate_dangling_tool_calls(vec![user_msg("q"), m]);
+        assert_eq!(out.len(), 2);
+    }
+
+    /// build_directive：必须包含角色覆盖、职责、任务、协议、MISSING 约定
+    #[test]
+    fn directive_contains_required_sections() {
+        let ctx = json!({"product_ids": ["P-1"]});
+        let allowed = vec!["ext_tool_write_document".to_string()];
+        let d = build_directive("document_writer", "文档助手", "你是转换器", "把定稿转为 Word", Some(&ctx), "review", &allowed);
+        assert!(d.contains("专精执行体"));
+        assert!(d.contains("【职责与边界】你是转换器"));
+        assert!(d.contains("【执行任务】把定稿转为 Word"));
+        assert!(d.contains("【补充上下文】"));
+        assert!(d.contains("【期望输出格式】review"));
+        assert!(d.contains("MISSING"));
+        assert!(d.contains("没有委托能力"));
+        // 无工具提示路径
+        let d2 = build_directive("x", "y", "p", "t", None, "", &[]);
+        assert!(d2.contains("未配置任何工具"));
+    }
+
+    /// canonical tools 下 schema 为全量清单，指令必须显式收敛本 Agent 实际可调用子集
+    #[test]
+    fn directive_lists_allowed_tools_explicitly() {
+        let allowed = vec!["ext_tool_object".to_string(), "ext_tool_manage_todo".to_string()];
+        let d = build_directive("business", "业务助手", "p", "t", None, "", &allowed);
+        assert!(d.contains("【可用工具清单】"));
+        assert!(d.contains("ext_tool_object、ext_tool_manage_todo"));
+        assert!(!d.contains("ext_tool_delegate_agent"));
+        assert!(!d.contains("ext_tool_write_document"));
+    }
+
+    /// Hard Masking：delegate 与 MAIN_AGENT_ONLY 对子 Agent 物理不可见
+    #[test]
+    fn hard_masking_forbids_delegate_and_main_only_tools() {
+        assert!(is_sub_agent_forbidden_tool("ext_tool_delegate_agent"));
+        assert!(is_sub_agent_forbidden_tool("ext_tool_memory"));
+        assert!(!is_sub_agent_forbidden_tool("ext_tool_write_document"));
+        assert!(!is_sub_agent_forbidden_tool("ext_tool_search"));
+    }
 }

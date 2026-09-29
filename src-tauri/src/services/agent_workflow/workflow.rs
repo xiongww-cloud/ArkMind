@@ -66,13 +66,19 @@ async fn summarize_large_attachment(
 
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, allowed_tools: Option<Vec<String>>) -> Result<Value, String> {
-    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false).await
+    agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true).await
 }
 
 /// 内部工作流函数，支持自定义 system_prompt
 /// is_root: true=顶层工作流（控制 AGENT_CANCEL 生命周期），false=子Agent（保留取消信号向上传播）
 /// delegate_depth: 当前委托深度（0=主Agent，≥1=子Agent）
 /// respond_cancel: false=独立后台运行体，完全无视全局 AGENT_CANCEL（与聊天"停止"互不干扰）
+/// shared_history: Some=共享上下文模式（委托子Agent）：直接以主会话消息快照起步，
+///   跳过新会话构造/本轮 query 追加/system 重写——messages[0] 保持主 Agent 完整 system，
+///   与主会话形成字节级一致前缀，最大化端点 Prefix Caching 命中
+/// canonical_tools: true=主聊天/共享历史子Agent——请求级 tools 用同一份全量清单
+///   （端点把 tools 计入前缀缓存，字节不一致则共享历史段全灭；能力隔离由 allowed_tools
+///   运行时守卫执行）；false=独立后台运行体，按 allowed_tools 收敛 tools 可见性
 pub async fn agent_chat_workflow_internal(
     user_query: String,
     attachments: Vec<Value>,
@@ -86,6 +92,8 @@ pub async fn agent_chat_workflow_internal(
     delegate_depth: u8,
     respond_cancel: bool,
     time_only_context: bool,
+    shared_history: Option<Vec<ChatMessage>>,
+    canonical_tools: bool,
 ) -> Result<Value, String> {
     let effective_prompt = system_prompt.unwrap_or(AGENT_SYSTEM_PROMPT);
     // ★ 加载可用专业 Agent 列表，注入系统提示词（仅当有委托能力时）
@@ -151,7 +159,10 @@ pub async fn agent_chat_workflow_internal(
     let (_, api_key, _model) = get_api_endpoint();
     if api_key.is_empty() { return Ok(json!({"success":true,"result_type":"answer","answer":"请先在系统设置中配置 Chat API 密钥。"})); }
 
-    let tools = build_tools_definitions(allowed_tools.as_deref());
+    // ★ 请求级 tools：canonical 模式下与白名单解耦——主/子 Agent 同一份全量清单，
+    //   保证 tools 字段字节级一致（前缀缓存把 tools 计入前缀，不一致则共享历史段全灭）；
+    //   能力隔离由 allowed_tools 运行时守卫执行（见下方工具集守卫）
+    let tools = request_tools_definitions(canonical_tools, allowed_tools.as_deref());
     // ★ Session 缓存：从 chat_sessions.session_state 恢复（始终遍历所有历史）
     let mut session = if let Some(ref sid) = session_id {
         load_session_state(sid).unwrap_or_else(|| {
@@ -203,9 +214,17 @@ pub async fn agent_chat_workflow_internal(
         vec![]
     };
 
-    let mut messages: Vec<ChatMessage> = vec![
-        ChatMessage{role:MessageRole::System,content:Some(effective_prompt.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
-    ];
+    // ★ 共享上下文模式（委托子Agent）：直接以主会话快照起步，跳过新会话构造
+    let has_shared_history = shared_history.is_some();
+    let mut messages: Vec<ChatMessage> = match shared_history {
+        Some(h) => {
+            log::info!("[AgentWorkflow] 共享历史模式: {} 条消息（跳过新会话构造）", h.len());
+            h
+        }
+        None => vec![
+            ChatMessage{role:MessageRole::System,content:Some(effective_prompt.to_string()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None},
+        ],
+    };
 
     // ★ 注入压缩摘要（如果有）
     if let Some(ref summary) = compressed_summary {
@@ -327,8 +346,10 @@ pub async fn agent_chat_workflow_internal(
         );
     }
 
-    // ★ 追加本轮新问题
-    messages.push(ChatMessage{role:MessageRole::User,content:Some(augmented_query),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+    // ★ 追加本轮新问题（共享历史模式：任务已由委托方以尾部指令注入，不重复 push）
+    if !has_shared_history {
+        messages.push(ChatMessage{role:MessageRole::User,content:Some(augmented_query),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+    }
 
     // ★ 上下文压缩：复用会话上下文，LLM 返回 JSON 摘要
     // 单个会话上下文长度 256k，自动压缩阈值 80%（204,800 tokens）
@@ -482,7 +503,11 @@ pub async fn agent_chat_workflow_internal(
     } else {
         String::new()
     };
-    messages[0].content = Some(format!("{}{}{}{}", effective_prompt, agent_section, whoami_section, web_section));
+    // ★ system 重写仅限新会话模式：共享历史模式的 messages[0] 是主 Agent 完整 system
+    //   （含 agent/whoami/web 段），重写会改变前缀字节 → 分叉点提前 → 历史段缓存全灭
+    if !has_shared_history {
+        messages[0].content = Some(format!("{}{}{}{}", effective_prompt, agent_section, whoami_section, web_section));
+    }
     let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
     let mut retry_count = 0u32; // ToolCall 清理后重试计数器
 
@@ -1115,35 +1140,14 @@ pub async fn agent_chat_workflow_internal(
                             let expected_output = a["expected_output"].as_str().unwrap_or("");
                             // ★ 路由决策日志：记录 LLM 选中的目标（未命中时与注入清单对照）
                             log::info!("[Route] 选择委托 agent_id={} task={:.80}", agent_id, task);
-                            // ★ 注入最近对话历史到 context，让子 Agent 能看到主 Agent 的对话脉络
-                            let mut ctx = a.get("context").cloned()
+                            // ★ 共享完整上下文：全量 messages 快照直传（废除 recent_messages 20条×200字摘要）；
+                            //   context 仅保留主 Agent 显式补充的结构化引用
+                            let ctx = a.get("context").cloned()
                                 .filter(|v| v.is_object())
                                 .unwrap_or(json!({}));
-                            let recent: Vec<Value> = messages.iter()
-                                .filter(|m| {
-                                    let role_ok = m.role == MessageRole::User || m.role == MessageRole::Assistant;
-                                    let not_dynamic = m.content.as_deref().map_or(true, |c| !c.starts_with("[DYNAMIC_CONTEXT]"));
-                                    role_ok && not_dynamic
-                                })
-                                .rev()
-                                .take(20)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .filter_map(|m| {
-                                    let role = match m.role { MessageRole::User => "user", MessageRole::Assistant => "assistant", _ => return None };
-                                    let content = m.content.as_deref().unwrap_or("");
-                                    if content.is_empty() { return None; }
-                                    Some(json!({"role": role, "content": content}))
-                                })
-                                .collect();
-                            if !recent.is_empty() {
-                                ctx["recent_messages"] = json!(recent);
-                            }
-                            // ★ 注入用户原始输入，让子 Agent 看到未经主 Agent 改写的问题
-                            ctx["user_query"] = json!(query);
                             let res = crate::services::delegate_agent::execute_delegate_agent(
                                 agent_id, task, Some(&ctx), expected_output, app_handle.clone(), delegate_depth,
+                                messages.clone(),
                             ).await;
                             // ★ 取消透传 + 委托扣费（合并解析；解析失败也扣基础额度，防绕过）
                             match serde_json::from_str::<Value>(&res) {
