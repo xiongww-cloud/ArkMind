@@ -64,9 +64,98 @@ async fn summarize_large_attachment(
     if summary.trim().is_empty() { "（大附件提炼结果为空）".to_string() } else { summary }
 }
 
+/// 委托直出判定（纯函数，可单测）。
+/// 输入：本轮全部可解析结果的 (result_type, status, answer) 三元组。
+/// 仅当其中恰好 1 个委托信封（delegate_agent_result）且回答合格时返回 Some：
+/// - ≥2 个委托：多份回答必须交回主 LLM 综合，否则第二个及之后的回答文本被丢弃
+/// - 0 个委托 / failed / 空回答：None，走常规主 LLM 路径
+pub(crate) fn pick_direct_out(results: &[(String, String, String)]) -> Option<String> {
+    let delegates: Vec<&(String, String, String)> = results.iter()
+        .filter(|(rt, _, _)| rt == "delegate_agent_result")
+        .collect();
+    if delegates.len() != 1 { return None; }
+    let (_, status, answer) = delegates[0];
+    if (status == "completed" || status == "partial") && !answer.is_empty() {
+        Some(answer.clone())
+    } else {
+        None
+    }
+}
+
+/// 构建委托执行快照（纯函数，可单测）：在共享历史基础上让子 Agent 看到本轮已完成的工具结果。
+/// 消息尾部必然是本轮 assistant(tool_calls)（结果尚未回写）。此处将其裁剪为
+/// "仅含已完成调用的 assistant + 对应 tool 响应"——序列对端点合法（每个 tool_call 都有响应），
+/// 后一个委托因此能看到前一个委托/检索的结果；无已完成结果时退化为仅截尾（原行为）。
+pub(crate) fn build_delegate_snapshot(
+    messages: &[ChatMessage],
+    completed: &[(usize, String)],
+) -> Vec<ChatMessage> {
+    let mut snap: Vec<ChatMessage> = messages.to_vec();
+    let tail_is_assistant = snap.last().map(|m| {
+        m.role == MessageRole::Assistant && m.tool_calls.as_ref().map_or(false, |v| !v.is_empty())
+    }).unwrap_or(false);
+    if !tail_is_assistant { return snap; }
+    let tail = snap.pop().expect("tail checked above");
+    let all_tcs = tail.tool_calls.unwrap_or_default();
+    if completed.is_empty() { return snap; }
+    // 按原始调用顺序取已完成者
+    let mut done: Vec<(usize, &String)> = completed.iter().map(|(i, r)| (*i, r)).collect();
+    done.sort_by_key(|(i, _)| *i);
+    let mut kept: Vec<ToolCall> = Vec::new();
+    let mut replies: Vec<ChatMessage> = Vec::new();
+    for (idx, result) in done {
+        let Some(tc) = all_tcs.get(idx) else { continue };
+        kept.push(tc.clone());
+        replies.push(ChatMessage {
+            role: MessageRole::Tool,
+            content: Some(result.clone()),
+            tool_calls: None,
+            tool_call_id: Some(tc.id.clone()),
+            name: Some(tc.function.name.clone()),
+            reasoning_content: None,
+        });
+    }
+    if kept.is_empty() { return snap; }
+    snap.push(ChatMessage {
+        role: MessageRole::Assistant,
+        content: None,
+        tool_calls: Some(kept),
+        tool_call_id: None,
+        name: None,
+        reasoning_content: tail.reasoning_content,
+    });
+    snap.extend(replies);
+    snap
+}
+
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, allowed_tools: Option<Vec<String>>) -> Result<Value, String> {
     agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true).await
+}
+
+/// 历史消息 metadata.documents → 附加到 content 尾部。
+/// 与前端文档卡片一致：用户在回答后看到的文件，AI 在上下文里也看到（文件名 + file_id，可 read 回读/告知下载）。
+/// 不限数量；无 documents 或解析失败时 no-op。纯函数，可单测。
+pub(crate) fn append_documents_note(content: &mut String, metadata: Option<&str>) {
+    let Some(meta) = metadata.filter(|m| !m.is_empty()) else { return };
+    let Ok(v) = serde_json::from_str::<Value>(meta) else { return };
+    let Some(docs) = v["documents"].as_array().filter(|a| !a.is_empty()) else { return };
+    let mut any = false;
+    let mut note = String::from("\n\n[本条回复生成的文档]");
+    for d in docs {
+        let name = d["file_name"].as_str().unwrap_or("");
+        let fid = d["file_id"].as_str().unwrap_or("");
+        if name.is_empty() && fid.is_empty() { continue; }
+        any = true;
+        if fid.is_empty() {
+            note.push_str(&format!("\n- {}", name));
+        } else {
+            note.push_str(&format!("\n- {}（file_id: {}）", name, fid));
+        }
+    }
+    if any {
+        content.push_str(&note);
+    }
 }
 
 /// 内部工作流函数，支持自定义 system_prompt
@@ -192,7 +281,7 @@ pub async fn agent_chat_workflow_internal(
 
     let history: Vec<Value> = if let Some(ref sid) = session_id {
         let rows = crate::database::all(
-            "SELECT role, content, created_at FROM chat_messages WHERE session_id=?1 AND status='active' ORDER BY id",
+            "SELECT role, content, metadata, created_at FROM chat_messages WHERE session_id=?1 AND status='active' ORDER BY id",
             &[json!(sid)],
         ).unwrap_or_default();
 
@@ -237,7 +326,9 @@ pub async fn agent_chat_workflow_internal(
         let role = h["role"].as_str().unwrap_or("");
         match role {
             "assistant" => {
-                let content = h["content"].as_str().map(|s| s.to_string());
+                let mut content = h["content"].as_str().map(|s| s.to_string());
+                // ★ 生成文档文件名随回答注入（与前端卡片一致：AI 看到的 = 用户看到的）
+                if let Some(ref mut c) = content { append_documents_note(c, h["metadata"].as_str()); }
                 if let Some(ref text) = content { session.record_observation(text); }
                 messages.push(ChatMessage{role:MessageRole::Assistant,content,tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
             }
@@ -394,7 +485,7 @@ pub async fn agent_chat_workflow_internal(
                     // 从 DB 重新加载近期消息（只加载 active 状态）
                     let recent_history: Vec<Value> = {
                         let rows = crate::database::all(
-                            "SELECT role, content, created_at FROM chat_messages WHERE session_id=?1 AND status='active' ORDER BY id",
+                            "SELECT role, content, metadata, created_at FROM chat_messages WHERE session_id=?1 AND status='active' ORDER BY id",
                             &[json!(sid)],
                         ).unwrap_or_default();
                         log::info!("[ContextCompressor] 从 DB 加载 {} 条 active 消息", rows.len());
@@ -414,7 +505,9 @@ pub async fn agent_chat_workflow_internal(
                         let role = h["role"].as_str().unwrap_or("");
                         match role {
                             "assistant" => {
-                                let content = h["content"].as_str().map(|s| s.to_string());
+                                let mut content = h["content"].as_str().map(|s| s.to_string());
+                                // ★ 生成文档文件名随回答注入（与前端卡片一致，压缩重建后同样可见）
+                                if let Some(ref mut c) = content { append_documents_note(c, h["metadata"].as_str()); }
                                 messages.push(ChatMessage{role:MessageRole::Assistant,content,tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                             }
                             _ => {
@@ -906,6 +999,11 @@ pub async fn agent_chat_workflow_internal(
 
                 // 顺序执行 sync 工具
                 let mut sync_results: Vec<(usize, String, Vec<SessionEffect>)> = Vec::new();
+                // ★ 同轮已完成结果（缓存命中 + async 已返回 + 已执行完的 sync）：
+                //   委托快照据此构建，后一个委托能看到前一个委托/检索的结果（一轮内依赖链）
+                let mut completed_round: Vec<(usize, String)> = cached_results_map.iter()
+                    .map(|(i, r)| (*i, r.clone())).collect();
+                completed_round.extend(async_results.iter().map(|(i, r, _)| (*i, r.clone())));
                 for (idx, name, args_str) in &sync_tasks {
                     let a: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
                     let (result, effects) = match name.as_str() {
@@ -1145,9 +1243,11 @@ pub async fn agent_chat_workflow_internal(
                             let ctx = a.get("context").cloned()
                                 .filter(|v| v.is_object())
                                 .unwrap_or(json!({}));
+                            // ★ 同轮可见：快照含本轮已完成工具结果（前序委托/检索），依赖链一轮完成
+                            let snapshot = build_delegate_snapshot(&messages, &completed_round);
                             let res = crate::services::delegate_agent::execute_delegate_agent(
                                 agent_id, task, Some(&ctx), expected_output, app_handle.clone(), delegate_depth,
-                                messages.clone(),
+                                snapshot,
                             ).await;
                             // ★ 取消透传 + 委托扣费（合并解析；解析失败也扣基础额度，防绕过）
                             match serde_json::from_str::<Value>(&res) {
@@ -1164,6 +1264,7 @@ pub async fn agent_chat_workflow_internal(
                         }
                         _ => (format!("未知工具: {}", name), vec![]),
                     };
+                    completed_round.push((*idx, result.clone()));
                     sync_results.push((*idx, result, effects));
                 }
 
@@ -1197,35 +1298,7 @@ pub async fn agent_chat_workflow_internal(
                 }
                 current_round["tools"] = json!(round_tools);
                 tool_log.push(current_round);
-                // ★ 委托直出：本轮有 completed 的委托，直接输出子 Agent 回答，跳过主 Agent 的 LLM 再加工
-                for (_, result, _) in &all_results {
-                    if let Ok(v) = serde_json::from_str::<Value>(result) {
-                        let status = v["data"]["status"].as_str().unwrap_or("");
-                        let answer = v["data"]["answer"].as_str()
-                            .or_else(|| v["data"]["result"].as_str())
-                            .unwrap_or("");
-                        log::info!("[委托直出] 检查: result_type={}, status={}, answer_len={}", v["result_type"].as_str().unwrap_or(""), status, answer.len());
-                        if (status == "completed" || status == "partial") && !answer.is_empty() {
-                            // ★ 与正常回答路径对齐：委托直出同样向前端广播最终答案
-                            if !silent { if let Some(ref h) = app_handle {
-                                let _ = h.emit("agent:status", json!({"stage":"answer"}));
-                                let _ = h.emit("agent:final-answer", json!({"answer": answer}));
-                            } }
-                            if let Some(ref sid) = session_id { save_session_state(sid, &session); }
-                            let ws = session.generate_scratchpad();
-                            return Ok(json!({
-                                "success": true, "result_type": "answer", "answer": answer,
-                                "delegated_completion": true, "workspace": ws,
-                                "iterations": iters,
-                                "promptTokens": session.prompt_tokens,
-                                "completionTokens": session.completion_tokens,
-                                "cachedTokens": session.cached_tokens,
-                                "tool_log": tool_log
-                            }));
-                        }
-                    }
-                }
-                // ★ 同时记录工具调用历史到检索计划
+                // ★ 同时记录工具调用历史到检索计划（必须先于直出判定：直出 return 路径同样要落账本轮 session 更新）
                 for t in &round_tools {
                     let result_str = t["result"].as_str().unwrap_or("");
                     let mut step_desc = t["tool"].as_str().unwrap_or("").to_string();
@@ -1247,6 +1320,38 @@ pub async fn agent_chat_workflow_internal(
                     session.tool_history.push(step_desc);
                     let tool_name = t["tool"].as_str().unwrap_or("");
                     session.update_from_tool_result(tool_name, &result_str);
+                }
+                // ★ 委托直出：恰好一个合格委托才直出（多委托的回答必须交回主 LLM 综合，否则其余答案被丢弃）
+                let direct_candidates: Vec<(String, String, String)> = all_results.iter()
+                    .filter_map(|(_, result, _)| {
+                        let v = serde_json::from_str::<Value>(result).ok()?;
+                        Some((
+                            v["result_type"].as_str().unwrap_or("").to_string(),
+                            v["data"]["status"].as_str().unwrap_or("").to_string(),
+                            v["data"]["answer"].as_str()
+                                .or_else(|| v["data"]["result"].as_str())
+                                .unwrap_or("").to_string(),
+                        ))
+                    })
+                    .collect();
+                if let Some(answer) = pick_direct_out(&direct_candidates) {
+                    log::info!("[委托直出] 命中：单委托直出, answer_len={}", answer.len());
+                    // ★ 与正常回答路径对齐：委托直出同样向前端广播最终答案
+                    if !silent { if let Some(ref h) = app_handle {
+                        let _ = h.emit("agent:status", json!({"stage":"answer"}));
+                        let _ = h.emit("agent:final-answer", json!({"answer": answer}));
+                    } }
+                    if let Some(ref sid) = session_id { save_session_state(sid, &session); }
+                    let ws = session.generate_scratchpad();
+                    return Ok(json!({
+                        "success": true, "result_type": "answer", "answer": answer,
+                        "delegated_completion": true, "workspace": ws,
+                        "iterations": iters,
+                        "promptTokens": session.prompt_tokens,
+                        "completionTokens": session.completion_tokens,
+                        "cachedTokens": session.cached_tokens,
+                        "tool_log": tool_log
+                    }));
                 }
 
                 // ★ 状态驱动熔断检查
@@ -1351,6 +1456,143 @@ pub async fn agent_chat_workflow_internal(
                 }
             }
             _ => { if let Some(ref sid) = session_id { save_session_state(sid, &session); } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"result_type":"answer","answer":format!("根据当前信息：\n\n{}",effective_ac),"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log})); }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_documents_note;
+    use super::{pick_direct_out, build_delegate_snapshot};
+    use crate::services::agent_workflow::{ChatMessage, FunctionCall, MessageRole, ToolCall};
+
+    fn env(rt: &str, status: &str, answer: &str) -> (String, String, String) {
+        (rt.to_string(), status.to_string(), answer.to_string())
+    }
+
+    /// P0 回归：单委托合格才直出
+    #[test]
+    fn direct_out_only_for_single_qualified_delegate() {
+        let one = vec![env("delegate_agent_result", "completed", "答案A")];
+        assert_eq!(pick_direct_out(&one).as_deref(), Some("答案A"));
+
+        let partial = vec![env("delegate_agent_result", "partial", "部分答案")];
+        assert_eq!(pick_direct_out(&partial).as_deref(), Some("部分答案"));
+    }
+
+    /// P0 回归：同轮多个委托禁止直出（否则第二份及之后的回答被丢弃，交回主 LLM 综合）
+    #[test]
+    fn direct_out_rejected_when_multiple_delegates() {
+        let two = vec![
+            env("delegate_agent_result", "completed", "答案A"),
+            env("delegate_agent_result", "completed", "答案B"),
+        ];
+        assert_eq!(pick_direct_out(&two), None);
+
+        let mixed = vec![
+            env("object_create_result", "success", ""),
+            env("delegate_agent_result", "completed", "答案A"),
+            env("delegate_agent_result", "failed", ""),
+        ];
+        assert_eq!(pick_direct_out(&mixed), None);
+    }
+
+    /// 无委托 / 失败 / 空回答 → 不直出（走主 LLM）
+    #[test]
+    fn direct_out_rejected_for_no_delegate_or_bad_answer() {
+        assert_eq!(pick_direct_out(&[]), None);
+        let no_delegate = vec![env("object_create_result", "completed", "x")];
+        assert_eq!(pick_direct_out(&no_delegate), None);
+        let failed = vec![env("delegate_agent_result", "failed", "错误")];
+        assert_eq!(pick_direct_out(&failed), None);
+        let empty = vec![env("delegate_agent_result", "completed", "")];
+        assert_eq!(pick_direct_out(&empty), None);
+    }
+
+    fn tc(id: &str, name: &str) -> ToolCall {
+        ToolCall { id: id.into(), call_type: "function".into(), function: FunctionCall { name: name.into(), arguments: "{}".into() } }
+    }
+    fn user_msg(s: &str) -> ChatMessage {
+        ChatMessage { role: MessageRole::User, content: Some(s.into()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None }
+    }
+    fn assistant_with(calls: Vec<ToolCall>) -> ChatMessage {
+        ChatMessage { role: MessageRole::Assistant, content: None, tool_calls: Some(calls), tool_call_id: None, name: None, reasoning_content: None }
+    }
+
+    /// 即时可见：快照必须是合法序列——assistant 只保留已完成子集，且每个都带 tool 响应
+    #[test]
+    fn snapshot_shows_completed_results_and_stays_valid() {
+        let msgs = vec![
+            user_msg("查参数并出表格"),
+            assistant_with(vec![tc("c1", "ext_tool_delegate_agent"), tc("c2", "ext_tool_delegate_agent")]),
+        ];
+        let snap = build_delegate_snapshot(&msgs, &[(0, "委托A结果".into())]);
+        // assistant 仅含已完成的 c1，紧跟其 tool 响应
+        assert_eq!(snap.len(), 3);
+        let a = &snap[1];
+        assert_eq!(a.role, MessageRole::Assistant);
+        let calls = a.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "c1");
+        let t = &snap[2];
+        assert_eq!(t.role, MessageRole::Tool);
+        assert_eq!(t.tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(t.content.as_deref(), Some("委托A结果"));
+    }
+
+    /// 无已完成结果 → 退化为仅截尾（原 truncate 行为，不携带 assistant）
+    #[test]
+    fn snapshot_without_completed_strips_dangling_assistant() {
+        let msgs = vec![
+            user_msg("q"),
+            assistant_with(vec![tc("c1", "ext_tool_search")]),
+        ];
+        let snap = build_delegate_snapshot(&msgs, &[]);
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].role, MessageRole::User);
+    }
+
+    /// 多个已完成按原始调用顺序排列
+    #[test]
+    fn snapshot_orders_completed_by_original_index() {
+        let msgs = vec![
+            user_msg("q"),
+            assistant_with(vec![tc("c1", "ext_tool_search"), tc("c2", "ext_tool_delegate_agent")]),
+        ];
+        // 故意乱序传入
+        let snap = build_delegate_snapshot(&msgs, &[(1, "B".into()), (0, "A".into())]);
+        assert_eq!(snap.len(), 4);
+        let calls = snap[1].tool_calls.as_ref().unwrap();
+        assert_eq!(calls[0].id, "c1");
+        assert_eq!(calls[1].id, "c2");
+        assert_eq!(snap[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(snap[3].tool_call_id.as_deref(), Some("c2"));
+    }
+
+    /// 历史回答的 metadata.documents → 文件名注记（与前端文档卡片一致）
+    #[test]
+    fn documents_note_appended_for_assistant_history() {
+        let mut content = "回答正文".to_string();
+        let meta = r#"{"documents":[{"file_id":"F1","file_name":"设备清单_20260929_143052.docx","file_type":"docx","file_size":100}]}"#;
+        append_documents_note(&mut content, Some(meta));
+        assert!(content.starts_with("回答正文"));
+        assert!(content.contains("[本条回复生成的文档]"));
+        assert!(content.contains("设备清单_20260929_143052.docx"));
+        assert!(content.contains("file_id: F1"));
+    }
+
+    /// 多文件全列出（不限数量）；无 documents 的各类形态 → no-op
+    #[test]
+    fn documents_note_multiple_and_noop() {
+        let mut c = "x".to_string();
+        let meta = r#"{"documents":[{"file_id":"F1","file_name":"a.docx"},{"file_id":"F2","file_name":"b.xlsx"}]}"#;
+        append_documents_note(&mut c, Some(meta));
+        assert!(c.contains("a.docx") && c.contains("b.xlsx"));
+
+        for meta in [None, Some(""), Some("not-json"), Some("{}"), Some(r#"{"documents":[]}"#)] {
+            let mut c2 = "原文".to_string();
+            append_documents_note(&mut c2, meta);
+            assert_eq!(c2, "原文", "meta={:?}", meta);
         }
     }
 }
