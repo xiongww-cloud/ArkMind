@@ -378,6 +378,7 @@ async function loadAiConfig() {
     webSearchKey.value = config.webSearch?.apiKey || ''
     loadNotifyConfig()
     loadSpriteConfig()
+  loadHotkeyConfig()
   } catch (e) {
     console.warn('Failed to load AI config:', e)
   }
@@ -729,7 +730,7 @@ const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
 import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, profileFactSave, type LoopStatus, type ProfileFact } from '@/api/notification-client'
-import { getSpriteEnabled, setSpriteEnabled, kbDeleteSession, fetchUserProfile, updateUserProfile } from '@/api/db-client'
+import { getSpriteEnabled, setSpriteEnabled, getChatHotkey, setChatHotkey, kbDeleteSession, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
@@ -772,6 +773,90 @@ async function toggleSprite() {
   } catch {
     spriteEnabled.value = !spriteEnabled.value
     toast({ message: '精灵开关保存失败', type: 'error' })
+  }
+}
+
+// ─── 浮窗快呼快捷键 ─────────────────────────────────────────
+const isMacPlatform = typeof navigator !== 'undefined' && (
+  navigator.platform.toUpperCase().indexOf('MAC') >= 0 ||
+  navigator.userAgent.toUpperCase().indexOf('MAC') >= 0
+)
+const hotkey = ref('Alt+Space')
+const hotkeyDefault = ref('Alt+Space')
+const hotkeyRegistered = ref(true)
+const hotkeyRecording = ref(false)
+const hotkeyInputEl = ref<HTMLElement | null>(null)
+
+async function loadHotkeyConfig() {
+  try {
+    const r = await getChatHotkey()
+    hotkey.value = r.key; hotkeyDefault.value = r.defaultKey; hotkeyRegistered.value = r.registered
+  } catch {}
+}
+
+/// "Ctrl+Alt+K" → 平台展示形式（mac 用符号）
+function hotkeyLabel(key: string): string {
+  if (!isMacPlatform) return key
+  return key
+    .replace(/\bCtrl\b/g, '⌃').replace(/\bAlt\b/g, '⌥')
+    .replace(/\bShift\b/g, '⇧').replace(/\bCmd\b/g, '⌘')
+    .replace(/\+/g, '')
+}
+
+function startHotkeyRecord() {
+  hotkeyRecording.value = true
+  nextTick(() => hotkeyInputEl.value?.focus())
+}
+function cancelHotkeyRecord() {
+  hotkeyRecording.value = false
+}
+
+function comboFromEvent(e: KeyboardEvent): string | null {
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return null
+  let key: string | null = null
+  if (e.key === ' ') key = 'Space'
+  else if (e.key === 'Escape') key = 'Escape'
+  else if (e.key === 'Enter') key = 'Enter'
+  else if (e.key === 'Tab') key = 'Tab'
+  else if (e.key.length === 1) key = e.key.toUpperCase()
+  else if (/^F([1-9]|1[0-2])$/.test(e.key)) key = e.key
+  if (!key) return null
+  const mods: string[] = []
+  if (e.ctrlKey) mods.push('Ctrl')
+  if (e.altKey) mods.push('Alt')
+  if (e.shiftKey) mods.push('Shift')
+  if (e.metaKey) mods.push('Cmd')
+  if (!mods.length) return null
+  return mods.join('+') + '+' + key
+}
+
+async function onHotkeyRecordKey(e: KeyboardEvent) {
+  e.preventDefault(); e.stopPropagation()
+  if (e.key === 'Escape') { cancelHotkeyRecord(); return }
+  const combo = comboFromEvent(e)
+  if (!combo) return // 纯修饰键/不支持键：继续等待
+  await applyHotkey(combo)
+}
+
+async function applyHotkey(combo: string) {
+  try {
+    const r = await setChatHotkey(combo)
+    hotkey.value = r.key; hotkeyRegistered.value = r.registered
+    toast({ message: `快捷键已更新为 ${hotkeyLabel(r.key)}`, type: 'success' })
+  } catch (err: any) {
+    toast({ message: String(err?.message || err || '设置失败'), type: 'error' })
+  } finally {
+    hotkeyRecording.value = false
+  }
+}
+
+async function resetHotkeyDefault() {
+  try {
+    const r = await setChatHotkey(null)
+    hotkey.value = r.key; hotkeyRegistered.value = r.registered
+    toast({ message: `已恢复默认 ${hotkeyLabel(r.key)}`, type: 'success' })
+  } catch (err: any) {
+    toast({ message: String(err?.message || err || '恢复失败'), type: 'error' })
   }
 }
 
@@ -1975,19 +2060,35 @@ async function saveProfileEditor() {
             </div>
           </div>
 
-          <!-- 桌面精灵 -->
+           <!-- 快速唤起：快捷键 + 桌面精灵 + 浮窗历史 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="flex items-center justify-between px-5 pt-5 pb-0">
-              <h2 class="text-[13px] font-semibold text-surface-700">桌面精灵</h2>
+              <h2 class="text-[13px] font-semibold text-surface-700">快速唤起</h2>
               <div class="flex items-center gap-1.5">
-                <span class="text-[10px]" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-400'">{{ spriteEnabled ? '已启用' : '已关闭' }}</span>
+                <span class="text-[10px]" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-400'">{{ spriteEnabled ? '精灵已启用' : '精灵已关闭' }}</span>
               </div>
             </div>
             <div class="p-5 space-y-4">
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700">全局快捷键</p>
+                  <p class="text-[10px] text-surface-400">任意应用中唤起/收起 AI 浮窗{{ !hotkeyRegistered ? '（当前注册失败，可能被其他应用占用）' : '' }}</p>
+                </div>
+                <div v-if="hotkeyRecording"
+                  ref="hotkeyInputEl"
+                  tabindex="0"
+                  class="flex-shrink-0 px-3 py-1.5 rounded-lg border border-brand-400 ring-2 ring-brand-100 text-[11px] text-brand-600 bg-brand-50/60 outline-none animate-pulse"
+                  @keydown="onHotkeyRecordKey" @blur="cancelHotkeyRecord">{{ isMacPlatform ? '按下新快捷键（⌃⌥⇧⌘+键）' : '按下新快捷键（Ctrl/Alt/Shift+键）' }} · Esc 取消</div>
+                <div v-else class="flex items-center gap-1.5 flex-shrink-0">
+                  <kbd class="px-2 py-1 rounded-md bg-surface-50 border border-surface-200 text-[11px] font-mono text-surface-600">{{ hotkeyLabel(hotkey) }}</kbd>
+                  <button class="text-[10px] text-brand-600 hover:underline" @click="startHotkeyRecord">修改</button>
+                  <button v-if="hotkey !== hotkeyDefault" class="text-[10px] text-surface-400 hover:text-surface-600" @click="resetHotkeyDefault">默认</button>
+                </div>
+              </div>
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-[12px] font-medium text-surface-700">启用桌面精灵</p>
-                  <p class="text-[10px] text-surface-400">桌面上显示悬浮精灵图标，快速唤起 AI 对话</p>
+                  <p class="text-[10px] text-surface-400">桌面上显示悬浮精灵图标，点击同样可唤起 AI 浮窗；关闭不影响快捷键</p>
                 </div>
                 <label class="relative inline-flex items-center cursor-pointer">
                   <input type="checkbox" v-model="spriteEnabled" class="sr-only peer" @change="toggleSprite">
@@ -1997,7 +2098,7 @@ async function saveProfileEditor() {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-[12px] font-medium text-surface-700">清空对话记录</p>
-                  <p class="text-[10px] text-surface-400">删除精灵的所有聊天历史</p>
+                  <p class="text-[10px] text-surface-400">删除浮窗快聊的全部聊天历史</p>
                 </div>
                 <button class="btn-secondary text-xs !text-red-500 !border-red-300 hover:!bg-red-50" @click="clearSpriteChat"><AppIcon name="trash" size="12"/>清空</button>
               </div>

@@ -1300,6 +1300,21 @@ export async function setSpriteEnabled(enabled: boolean): Promise<{ success: boo
   return invoke('set_sprite_enabled', { enabled })
 }
 
+// ─── 浮窗快呼快捷键 API ─────────────────────────────────────────
+export interface ChatHotkeyInfo {
+  key: string
+  defaultKey: string
+  registered: boolean
+  usingDefault: boolean
+}
+export async function getChatHotkey(): Promise<ChatHotkeyInfo> {
+  return invoke('get_chat_hotkey')
+}
+/** key=null → 恢复平台默认；失败抛错（后端已回滚旧绑定） */
+export async function setChatHotkey(key: string | null): Promise<{ key: string; registered: boolean }> {
+  return invoke('set_chat_hotkey', { key })
+}
+
 // ── Memory Explorer API ──
 export async function kbMemoryObjects(
   query: string
