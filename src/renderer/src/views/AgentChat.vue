@@ -15,7 +15,6 @@ import DocumentObject from '@/components/chat/DocumentObject.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
-import { parseClarificationMetadata } from '@/composables/useAgentChat'
 
 const agent = useAgentChat()
 const agentRun = useAgentRunStore()
