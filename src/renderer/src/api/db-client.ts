@@ -1284,7 +1284,7 @@ export async function kbFabLoadHistory(
   sessionId?: string | null,
   limit?: number,
   beforeId?: number
-): Promise<{ success: boolean; messages?: ChatMessage[] }> {
+): Promise<{ success: boolean; sessionId?: string | null; messages?: ChatMessage[] }> {
   return invoke('kb_fab_load_history', { sessionId: sessionId || null, limit: limit || null, beforeId: beforeId || null })
 }
 export async function kbFabSaveMessage(data: {
