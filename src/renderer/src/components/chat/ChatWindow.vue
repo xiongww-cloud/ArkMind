@@ -426,31 +426,7 @@ onUnmounted(() => {
 <!-- 全窗口透明覆盖层，点击空白处关闭（保留输入文本） -->
 <div class="chat-overlay" @click.self="hideWindow">
   <div class="chat-panel">
-    <!-- 输入卡（恒在顶部，Spotlight 式） -->
-    <div class="composer">
-      <div v-if="pendingAttachments.length" class="composer-attach">
-        <AttachmentChips :files="pendingAttachments" removable @remove="removeAttachment" />
-      </div>
-      <textarea ref="composerRef" v-model="inputText" rows="1" class="composer-input"
-        placeholder="问点什么…"
-        @input="autoGrow" @keydown="onComposerKey" @paste="onPaste"></textarea>
-      <div class="composer-bar">
-        <span class="composer-hint">⏎ 发送 · ⇧⏎ 换行 · Esc 关闭</span>
-        <div class="flex items-center gap-1">
-          <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" v-tooltip="'附加文件'">
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
-          </button>
-          <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" v-tooltip="'停止'">
-            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-          </button>
-          <button v-else @click.stop="send" :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 答案流：就地向下生长（高度动画全在 CSS，窗口零位移） -->
+    <!-- 对话记录（输入上方，就地向上生长；高度动画全在 CSS，窗口零位移） -->
     <transition name="stream">
       <div v-if="hasStream" class="chat-stream">
         <button v-if="!revealOlder && hasMore" class="older-btn" @click="expandToOlder">↑ 查看更早的对话</button>
@@ -495,6 +471,30 @@ onUnmounted(() => {
         </div>
       </div>
     </transition>
+
+    <!-- 输入卡（底部常驻） -->
+    <div class="composer">
+      <div v-if="pendingAttachments.length" class="composer-attach">
+        <AttachmentChips :files="pendingAttachments" removable @remove="removeAttachment" />
+      </div>
+      <textarea ref="composerRef" v-model="inputText" rows="1" class="composer-input"
+        placeholder="问点什么…"
+        @input="autoGrow" @keydown="onComposerKey" @paste="onPaste"></textarea>
+      <div class="composer-bar">
+        <span class="composer-hint">⏎ 发送 · ⇧⏎ 换行 · Esc 关闭</span>
+        <div class="flex items-center gap-1">
+          <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" v-tooltip="'附加文件'">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+          </button>
+          <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" v-tooltip="'停止'">
+            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+          <button v-else @click.stop="send" :disabled="!inputText.trim()" class="send-btn" :class="{ 'send-btn--on': inputText.trim() }">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 </template>
@@ -525,7 +525,7 @@ onUnmounted(() => {
   user-select: none;
 }
 
-/* ═══ 输入卡（恒在顶部） ═══ */
+/* ═══ 输入卡（底部常驻） ═══ */
 .composer { flex: 0 0 auto; }
 .composer-attach { padding: 10px 14px 0; }
 .composer-input {
@@ -561,11 +561,11 @@ onUnmounted(() => {
 .send-btn--on { background: linear-gradient(135deg, #06b6d4, #2563eb); color: white; box-shadow: 0 1px 8px rgba(37, 99, 235, 0.3); }
 .send-btn--on:hover { box-shadow: 0 2px 12px rgba(37, 99, 235, 0.45); transform: scale(1.05); }
 
-/* ═══ 答案流（就地生长） ═══ */
+/* ═══ 对话区（输入上方，就地向上生长） ═══ */
 .chat-stream {
   display: flex; flex-direction: column;
   max-height: 516px;
-  border-top: 1px solid rgba(15,23,42,0.05);
+  border-bottom: 1px solid rgba(15,23,42,0.05);
 }
 .older-btn {
   margin: 8px 14px 0; padding: 4px 10px; flex-shrink: 0;
