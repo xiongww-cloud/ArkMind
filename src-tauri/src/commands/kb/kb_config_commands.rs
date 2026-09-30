@@ -113,6 +113,11 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
     let session_id = data["sessionId"].as_str().map(String::from);
     let attachments: Vec<Value> = data["attachments"].as_array().cloned().unwrap_or_default();
 
+    // ★ B 单流指针：任一窗口（浮窗/主窗）发送即更新"当前对话"——浮窗唤开续上次聊到的地方
+    if let Some(ref sid) = session_id {
+        super::write_fab_state(sid, chrono::Local::now().timestamp());
+    }
+
     let main_agent_tools = main_agent_tool_list();
 
     tauri::async_runtime::spawn(async move {

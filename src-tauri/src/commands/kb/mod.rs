@@ -30,7 +30,7 @@ pub use kb_memory_commands::*;
           FROM chat_messages m \
           WHERE m.id IN (SELECT id FROM chat_messages WHERE session_id=s.id ORDER BY id DESC LIMIT 10) \
           ORDER BY m.id ASC) as messages \
-         FROM chat_sessions s WHERE s.id NOT LIKE 'fab-%' ORDER BY s.updated_at DESC LIMIT 100",
+         FROM chat_sessions s ORDER BY s.updated_at DESC LIMIT 100",
         &[],
     ).unwrap_or_default();
     for row in &mut rows {
@@ -112,18 +112,19 @@ fn collect_session_document_ids(session_id: &str) -> Vec<String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// FAB Session — 快呼浮窗会话：30 分钟活跃窗口轮转（Spotlight 语义）
-//   · 距最后活跃 ≤30min：维持会话（追问/连续对话不断线）
-//   · 有未答复追问卡片：轮转冻结至多 24h，保 ask_user 闭环
-//   · 其余：新建 fab-<uuid> 会话，浮窗回到干净面板
-//   状态存 system_settings KV（key=fab_session_state，零迁移）；历史列表按
-//   'fab-%' 前缀排除；被换下的旧会话 7 天后 GC。
+// 快呼浮窗会话 — 30 分钟提问窗口轮转 + Gemini 式统一当前对话
+//   · 全局指针 KV（fab_session_state={id,last}）单一写入者 = kb_agent_chat
+//     每次发送（任一窗口）→ 浮窗唤开即续"上次聊到的地方"
+//   · 轮转仅在浮窗发送时判定：距上次提问 ≤30min 续；追问卡片冻结 ≤24h；
+//     当前会话已被列表删除 / 首次无状态 → 新建 fab-<uuid>（决定不写状态）
+//   · 打开面板永不轮转：始终淡显当前会话上一轮，提问才切换
+//   · 会话在智能问答列表全量可见（无前缀排除、不 GC），标题=首问 30 字
 // ═══════════════════════════════════════════════════════════════════
 const FAB_SESSION_PREFIX: &str = "fab-";
 const FAB_LEGACY_SESSION: &str = "fab-main-session";
 const FAB_SESSION_WINDOW_SECS: i64 = 30 * 60;
 const FAB_CLARIFICATION_GRACE_SECS: i64 = 24 * 3600;
-const FAB_GC_DAYS: i64 = 7;
+const FAB_TITLE_PLACEHOLDER: &str = "快速唤起";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum FabAction { Keep, Rotate }
@@ -153,6 +154,11 @@ fn write_fab_state(id: &str, last: i64) {
     ).ok();
 }
 
+/// 会话行是否存在（列表删除防御）
+fn session_row_exists(id: &str) -> bool {
+    database::get("SELECT id FROM chat_sessions WHERE id=?1", &[json!(id)]).ok().flatten().is_some()
+}
+
 /// 遗留固定会话是否仍有消息（升级接管判据）
 fn legacy_fab_session_exists() -> bool {
     database::get(
@@ -175,46 +181,63 @@ fn fab_has_pending_clarification(session_id: &str) -> bool {
     })
 }
 
-/// 新建浮窗会话（标题"快速唤起"，主窗列表按前缀排除）
+/// 新建快呼会话（占位标题，首条消息落库时由 workflow 改为首问 30 字）
 fn create_fab_session() -> String {
     let id = format!("{}{}", FAB_SESSION_PREFIX, uuid::Uuid::new_v4());
     database::run(
-        "INSERT INTO chat_sessions(id, title, created_at, updated_at) VALUES(?1, '快速唤起', datetime('now','localtime'), datetime('now','localtime'))",
-        &[json!(&id)],
+        "INSERT INTO chat_sessions(id, title, created_at, updated_at) VALUES(?1, ?2, datetime('now','localtime'), datetime('now','localtime'))",
+        &[json!(&id), json!(FAB_TITLE_PLACEHOLDER)],
     ).ok();
     id
 }
 
-/// 轮换时顺路 GC：删除 7 天未活跃的 fab 会话及其消息
-fn gc_fab_sessions() {
-    database::run(
-        "DELETE FROM chat_messages WHERE session_id IN (
-            SELECT id FROM chat_sessions WHERE id LIKE 'fab-%'
-              AND updated_at < datetime('now','localtime', ?1)
-        )",
-        &[json!(format!("-{} days", FAB_GC_DAYS))],
-    ).ok();
-    database::run(
-        "DELETE FROM chat_sessions WHERE id LIKE 'fab-%'
-           AND updated_at < datetime('now','localtime', ?1)",
-        &[json!(format!("-{} days", FAB_GC_DAYS))],
-    ).ok();
+/// 会话标题：首问正文截 30 字（剥离附件标记块、压空白），对齐 AgentChat 的首问命名惯例
+pub(crate) fn fab_title_from_content(content: &str) -> String {
+    let body = match content.find("<<<ATTACHMENTS>>>") {
+        Some(i) => &content[..i],
+        None => content,
+    };
+    let truncated: String = body.trim().chars().take(30).collect();
+    truncated.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// 解析当前浮窗会话：判定维持/轮转，刷新活跃时间。
-/// 前端在挂载、每次发送前、窗口获得焦点（唤起）时调用——获得焦点即视为活跃
+/// 幂等回填：占位标题"快速唤起"的快呼会话 → 首条用户消息前 30 字
+fn backfill_fab_titles() {
+    let rows = database::all(
+        "SELECT s.id, (SELECT m.content FROM chat_messages m WHERE m.session_id=s.id AND m.role='user' ORDER BY m.id LIMIT 1) as first_q \
+         FROM chat_sessions s WHERE s.id LIKE 'fab-%' AND s.title=?1",
+        &[json!(FAB_TITLE_PLACEHOLDER)],
+    ).unwrap_or_default();
+    for r in &rows {
+        let (Some(id), Some(q)) = (r["id"].as_str(), r["first_q"].as_str()) else { continue };
+        let title = fab_title_from_content(q);
+        if !title.is_empty() {
+            database::run("UPDATE chat_sessions SET title=?1 WHERE id=?2", &[json!(title), json!(id)]).ok();
+        }
+    }
+}
+
+/// 浮窗发送前的轮转判定（唯一调用点 = ChatWindow.send）。
+/// 只读决定不写状态——KV 由 kb_agent_chat 每次发送落（单写者 = B 单流指针）
 #[tauri::command]
 pub async fn fab_resolve_session() -> Result<Value, String> {
     let now = chrono::Local::now().timestamp();
     let (mut cur_id, mut last) = read_fab_state();
-    // 升级迁移：无 KV 状态但存在遗留固定会话 → 接管（视为刚活跃，历史不丢）
+    // 升级迁移：无 KV 状态但存在遗留固定会话 → 接管（历史不丢）
     if cur_id.is_none() && legacy_fab_session_exists() {
         database::run(
-            "INSERT OR IGNORE INTO chat_sessions(id, title) VALUES(?1, '快速唤起')",
+            "INSERT OR IGNORE INTO chat_sessions(id, title) VALUES(?1, '小精灵对话')",
             &[json!(FAB_LEGACY_SESSION)],
         ).ok();
         cur_id = Some(FAB_LEGACY_SESSION.to_string());
         last = None;
+    }
+    // 当前会话已被智能问答页删除 → 视同无状态（防御）
+    if let Some(id) = cur_id.as_deref() {
+        if !session_row_exists(id) {
+            cur_id = None;
+            last = None;
+        }
     }
     let pending = cur_id.as_deref().map_or(false, |id| fab_has_pending_clarification(id));
     let action = match (cur_id.as_ref(), last) {
@@ -224,18 +247,18 @@ pub async fn fab_resolve_session() -> Result<Value, String> {
     };
     let (id, rotated) = match action {
         FabAction::Keep => (cur_id.unwrap(), false),
-        FabAction::Rotate => {
-            gc_fab_sessions();
-            (create_fab_session(), true)
-        }
+        FabAction::Rotate => (create_fab_session(), true),
     };
-    write_fab_state(&id, now);
     Ok(json!({"success": true, "sessionId": id, "rotated": rotated}))
 }
 
-/// 当前浮窗会话 id（不判定、不 touch，历史回放兜底用）
+/// 当前对话 id（只读；历史回放兜底——无状态时先看遗留固定会话）
 fn current_fab_session_id() -> Option<String> {
-    read_fab_state().0
+    match read_fab_state().0 {
+        Some(id) => Some(id),
+        None if legacy_fab_session_exists() => Some(FAB_LEGACY_SESSION.to_string()),
+        None => None,
+    }
 }
 
 /// 清空全部快呼会话（含轮换前的旧会话与遗留 fab-main-session）
@@ -247,11 +270,11 @@ pub async fn kb_clear_fab_sessions() -> Result<Value, String> {
     Ok(json!({"success": true}))
 }
 
-/// 加载 FAB 会话的历史消息（支持 before_id 游标分页）；缺省用当前浮窗会话
+/// 加载当前对话的历史消息（支持 before_id 游标分页）；session_id 缺省走全局指针
 #[tauri::command]
 pub async fn kb_fab_load_history(session_id: Option<String>, limit: Option<usize>, before_id: Option<i64>) -> Result<Value, String> {
     let Some(sid) = session_id.or_else(current_fab_session_id) else {
-        return Ok(json!({"success": true, "messages": []}));
+        return Ok(json!({"success": true, "sessionId": Value::Null, "messages": []}));
     };
     let limit = limit.unwrap_or(50);
     let rows = match before_id {
@@ -269,7 +292,7 @@ pub async fn kb_fab_load_history(session_id: Option<String>, limit: Option<usize
     let messages: Vec<Value> = rows.into_iter().rev().map(|m| {
         json!({"id": m["id"], "role": m["role"], "content": m["content"], "metadata": m["metadata"], "created_at": m["created_at"]})
     }).collect();
-    Ok(json!({"success": true, "messages": messages}))
+    Ok(json!({"success": true, "sessionId": sid, "messages": messages}))
 }
 
 /// 保存单条消息到 FAB 会话（增量保存）；缺省用当前浮窗会话
@@ -310,16 +333,18 @@ pub fn cleanup_chat_messages(max_compressed_per_session: i64) {
         )",
         &[json!(max_compressed_per_session)],
     ).ok();
-    // 清理没有任何消息的空 session（fab 空会话由 resolve 的 7 天 GC 负责）
+    // 清理没有任何消息的空 session（含快呼会话：召唤未提问产生的空条目）
     database::run(
-        "DELETE FROM chat_sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM chat_messages) AND id NOT LIKE 'fab-%'",
+        "DELETE FROM chat_sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM chat_messages)",
         &[]
     ).ok();
+    // 存量快呼会话标题回填（占位 → 首问 30 字，幂等；会话已进列表须可辨识）
+    backfill_fab_titles();
 }
 
 #[cfg(test)]
 mod fab_rotation_tests {
-    use super::{decide_fab_rotation, FabAction};
+    use super::{decide_fab_rotation, fab_title_from_content, FabAction};
 
     const MIN: i64 = 60;
 
@@ -348,5 +373,28 @@ mod fab_rotation_tests {
     #[test]
     fn clock_skew_last_in_future_keeps() {
         assert_eq!(decide_fab_rotation(1000, 1200, false), FabAction::Keep);
+    }
+
+    #[test]
+    fn title_strips_attachments_marker() {
+        assert_eq!(fab_title_from_content("帮我看下这份合同\n<<<ATTACHMENTS>>>\n[附件：a.pdf]"), "帮我看下这份合同");
+    }
+
+    #[test]
+    fn title_truncates_to_30_chars() {
+        let long = "问".repeat(40);
+        let t = fab_title_from_content(&long);
+        assert_eq!(t.chars().count(), 30);
+    }
+
+    #[test]
+    fn title_collapses_whitespace() {
+        assert_eq!(fab_title_from_content("  a\n\n b\tc  "), "a b c");
+    }
+
+    #[test]
+    fn title_blank_is_empty() {
+        assert_eq!(fab_title_from_content("   \n  "), "");
+        assert_eq!(fab_title_from_content("\n<<<ATTACHMENTS>>>\nx"), "");
     }
 }

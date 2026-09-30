@@ -536,6 +536,16 @@ pub async fn agent_chat_workflow_internal(
             "INSERT INTO chat_messages(session_id, role, content) VALUES(?1, 'user', ?2)",
             &[json!(sid), json!(&augmented_query)],
         );
+        // ★ 快呼会话首条消息回填标题（占位"快速唤起" → 首问 30 字，列表可辨识）
+        if sid.starts_with("fab-") {
+            let title = crate::commands::fab_title_from_content(&augmented_query);
+            if !title.is_empty() {
+                let _ = crate::database::run(
+                    "UPDATE chat_sessions SET title=?1 WHERE id=?2 AND title=?3",
+                    &[json!(title), json!(sid), json!("快速唤起")],
+                );
+            }
+        }
     }
 
     // ★ 追加本轮新问题（共享历史模式：任务已由委托方以尾部指令注入，不重复 push）
