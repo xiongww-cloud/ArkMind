@@ -70,7 +70,7 @@ pub async fn execute_delegate_agent(
 
     // ★ 一次 JOIN 查询加载 Agent Profile + 工具分配（含 name 用于状态展示；model/temperature 用于 per-agent LLM 覆盖）
     let rows = match database::all(
-        "SELECT p.name, p.system_prompt, p.max_iterations, p.model, p.temperature, a.tool_name FROM agent_profiles p LEFT JOIN agent_tool_assignments a ON a.agent_id=p.id WHERE p.id=?1 AND p.status='active'",
+        "SELECT p.name, p.system_prompt, p.max_iterations, p.model, p.temperature, COALESCE(p.output_format,'natural') AS output_format, a.tool_name FROM agent_profiles p LEFT JOIN agent_tool_assignments a ON a.agent_id=p.id WHERE p.id=?1 AND p.status='active'",
         &[json!(agent_id)],
     ) {
         Ok(r) => r,
@@ -103,6 +103,8 @@ pub async fn execute_delegate_agent(
     let system_prompt = first["system_prompt"].as_str().unwrap_or("").to_string();
     let max_iterations = first["max_iterations"].as_i64().unwrap_or(20) as i32;
     let agent_name = first["name"].as_str().unwrap_or(agent_id).to_string();
+    // ★ 产出方式类别：deliverable=交付型（回答即终稿、协议与直出口径随之切换），其余=执行型
+    let is_deliverable = first["output_format"].as_str() == Some("deliverable");
     // ★ per-agent 模型/温度：空串/NULL = 跟随全局配置
     let llm = crate::services::agent_workflow::LlmOverrides {
         model: first["model"].as_str().filter(|m| !m.is_empty()).map(String::from),
@@ -112,7 +114,7 @@ pub async fn execute_delegate_agent(
     // 构建共享上下文快照：截尾防御（剥未闭合 tool_calls）+ 尾部注入执行体指令
     let mut sub_messages = truncate_dangling_tool_calls(history);
     let history_len = sub_messages.len();
-    let directive = build_directive(agent_id, &agent_name, &system_prompt, task, context, expected_output, &allowed_tools);
+    let directive = build_directive(agent_id, &agent_name, &system_prompt, task, context, expected_output, &allowed_tools, is_deliverable);
     sub_messages.push(ChatMessage {
         role: MessageRole::User,
         content: Some(directive),
@@ -196,7 +198,7 @@ pub async fn execute_delegate_agent(
                 return make_cancelled(&agent_name, answer, iterations);
             }
 
-            make_success(&agent_name, answer, iterations, tool_log)
+            make_success(&agent_name, answer, iterations, tool_log, is_deliverable)
         }
         Err(e) => {
             log::error!("[DelegateAgent] Agent「{}」执行失败: {}", agent_name, e);
@@ -215,6 +217,7 @@ fn build_directive(
     context: Option<&Value>,
     expected_output: &str,
     allowed_tools: &[String],
+    is_deliverable: bool,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -262,8 +265,12 @@ fn build_directive(
         parts.push(format!("【期望输出格式】{}", expected_output));
     }
 
-    // 6. 执行协议（运行时统一注入，对所有子Agent生效，与agent档案prompt无关）
-    parts.push("## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用 ext_tool_object 按名称检索同类对象：完全同名由工具层自动复用；存在相似项且不确定是否同一目标时，不要猜测创建，输出 MISSING 列出候选请确认\n- 拿不准的判断点不要中途停摆、不要编造：独立操作照常完成，在回复的最后一行输出 MISSING 向主 Agent 提问（它会作答或转问用户）；有可枚举候选时附带：MISSING: <问题> | <选项A> / <选项B>\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务，不要输出 MISSING\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID".to_string());
+    // 6. 执行协议（运行时统一注入；按产出方式类别分流：交付型禁用 MISSING 通道、缺口内联成文）
+    if is_deliverable {
+        parts.push("## 执行协议（交付型产出）\n- 你的回答就是最终交付文档，将原样、完整地呈现给用户（主 Agent 不复述、你也没有向用户提问的工具），请按角色提示词的结构、篇幅与风格直接成文；本协议优先于角色提示词中的 MISSING/追问类规则\n- 不要使用 MISSING: 行（会使结果降级并被交回转述、破坏文档）；信息缺口直接写进正文：在相应处内联标注（待补：xxx），或在文末集中列「【待补/需确认】」清单\n- 同一任务的多个独立工具调用必须在一次回复中并发发起；查询结果全程复用，需要补充信息时换角度查询，不要原样重查\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有信息继续完成任务\n- 按照 system_prompt 中的「回答规范」输出，不要输出内部 ID".to_string());
+    } else {
+        parts.push("## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用 ext_tool_object 按名称检索同类对象：完全同名由工具层自动复用；存在相似项且不确定是否同一目标时，不要猜测创建，输出 MISSING 列出候选请确认\n- 拿不准的判断点不要中途停摆、不要编造：独立操作照常完成，在回复的最后一行输出 MISSING 向主 Agent 提问（它会作答或转问用户）；有可枚举候选时附带：MISSING: <问题> | <选项A> / <选项B>\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务，不要输出 MISSING\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID".to_string());
+    }
 
     parts.join("\n\n")
 }
@@ -384,7 +391,33 @@ fn extract_artifacts(tool_log: &[Value]) -> Vec<Value> {
     artifacts
 }
 
-fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value]) -> String {
+/// 委托结果终裁（纯函数，可单测）。
+/// 交付型（deliverable）：MISSING 声明不再降级 partial，而是回贴为正文末「【待补/需确认】」块
+///   并保持 completed——保住委托直出（缺口对用户仍可见，无需经主 Agent 转述）；
+///   全部操作失败且无任何产出时仍判 failed。
+/// 执行型（natural）：维持原三态语义 missing→partial（交主 Agent 自答补齐/转问用户）。
+pub(crate) fn finalize_delegate_status(
+    is_deliverable: bool,
+    mut text: String,
+    missing: &[String],
+    any_failed: bool,
+    has_artifacts: bool,
+) -> (String, &'static str) {
+    if is_deliverable && !missing.is_empty() {
+        if any_failed && !has_artifacts {
+            return (text, "failed");
+        }
+        let block = missing.iter().map(|m| format!("- {}", m)).collect::<Vec<_>>().join("\n");
+        text.push_str(&format!("\n\n【待补/需确认】\n{}", block));
+        return (text, "completed");
+    }
+    let status = if !missing.is_empty() { "partial" }
+        else if any_failed && !has_artifacts { "failed" }
+        else { "completed" };
+    (text, status)
+}
+
+fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value], is_deliverable: bool) -> String {
     let artifacts = extract_artifacts(tool_log);
 
     // ★ warnings：收集失败的工具结果
@@ -429,10 +462,8 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
         kept.join("\n").trim().to_string()
     };
 
-    // ★ 三态判定：partial（有MISSING声明）> failed（有失败且无任何成功写入）> completed
-    let status = if !missing.is_empty() { "partial" }
-        else if any_failed && artifacts.is_empty() { "failed" }
-        else { "completed" };
+    // ★ 三态判定（交付型特殊处理：缺口回贴正文、保住直出；执行型语义原样）
+    let (result_text, status) = finalize_delegate_status(is_deliverable, result_text, &missing, any_failed, !artifacts.is_empty());
 
     let preview: String = result_text.chars().take(200).collect();
     let status_label = match status { "partial" => "部分完成", "failed" => "执行失败", _ => "已完成任务" };
@@ -537,7 +568,7 @@ mod tests {
     fn directive_contains_required_sections() {
         let ctx = json!({"product_ids": ["P-1"]});
         let allowed = vec!["ext_tool_write_document".to_string()];
-        let d = build_directive("document_writer", "文档助手", "你是转换器", "把定稿转为 Word", Some(&ctx), "review", &allowed);
+        let d = build_directive("document_writer", "文档助手", "你是转换器", "把定稿转为 Word", Some(&ctx), "review", &allowed, false);
         assert!(d.contains("专精执行体"));
         assert!(d.contains("【职责与边界】你是转换器"));
         assert!(d.contains("【执行任务】把定稿转为 Word"));
@@ -551,15 +582,43 @@ mod tests {
         assert!(d.contains("完全同名由工具层自动复用"));
         assert!(!d.contains("先向用户确认"), "子 Agent 无提问用户通道，不应再出现该指令");
         // 无工具提示路径
-        let d2 = build_directive("x", "y", "p", "t", None, "", &[]);
+        let d2 = build_directive("x", "y", "p", "t", None, "", &[], false);
         assert!(d2.contains("未配置任何工具"));
+    }
+
+    /// 交付型指令：回答即交付文档、禁 MISSING 通道、协议优先于角色提示词
+    #[test]
+    fn directive_deliverable_protocol() {
+        let allowed = vec!["ext_tool_object".to_string()];
+        let d = build_directive("solution", "解决方案助手", "p", "t", None, "", &allowed, true);
+        assert!(d.contains("执行协议（交付型产出）"));
+        assert!(d.contains("你的回答就是最终交付文档"));
+        assert!(d.contains("不要使用 MISSING: 行"));
+        assert!(d.contains("本协议优先于角色提示词"));
+        assert!(!d.contains("在回复的最后一行输出 MISSING"), "交付型不得注入执行型 MISSING 协议");
+    }
+
+    /// 终裁：交付型 MISSING 回贴正文并保持 completed；执行型维持 partial；全失败仍 failed
+    #[test]
+    fn finalize_status_by_class() {
+        let miss = vec!["缺预算".to_string()];
+        let (t, s) = finalize_delegate_status(true, "正文".to_string(), &miss, false, false);
+        assert_eq!(s, "completed");
+        assert!(t.contains("正文") && t.contains("【待补/需确认】") && t.contains("- 缺预算"));
+        let (t2, s2) = finalize_delegate_status(false, "正文".to_string(), &miss, false, true);
+        assert_eq!(s2, "partial");
+        assert_eq!(t2, "正文");
+        let (_, s3) = finalize_delegate_status(true, "x".to_string(), &miss, true, false);
+        assert_eq!(s3, "failed");
+        let (_, s4) = finalize_delegate_status(true, "x".to_string(), &[], false, false);
+        assert_eq!(s4, "completed");
     }
 
     /// canonical tools 下 schema 为全量清单，指令必须显式收敛本 Agent 实际可调用子集
     #[test]
     fn directive_lists_allowed_tools_explicitly() {
         let allowed = vec!["ext_tool_object".to_string(), "ext_tool_manage_todo".to_string()];
-        let d = build_directive("business", "业务助手", "p", "t", None, "", &allowed);
+        let d = build_directive("business", "业务助手", "p", "t", None, "", &allowed, false);
         assert!(d.contains("【可用工具清单】"));
         assert!(d.contains("ext_tool_object、ext_tool_manage_todo"));
         assert!(!d.contains("ext_tool_delegate_agent"));

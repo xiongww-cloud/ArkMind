@@ -242,6 +242,24 @@ pub(crate) fn append_documents_note(content: &mut String, metadata: Option<&str>
     }
 }
 
+/// 历史消息 metadata.assistants（委托产出的子 Agent 署名）→ 给 LLM 上下文追加"直出交付"运行期标注。
+/// 委托直出后，该正文以主 Agent 的 assistant 消息身份进入历史；无标注时主 LLM 会把交付稿
+/// 当成自己写的，用户一句"继续/修改"就自行代笔续写（继任漂移）。标注只存在于重建的 LLM
+/// 消息中，不污染 DB 与用户可见文本。纯函数，可单测。
+pub(crate) fn append_delegated_note(content: &mut String, metadata: Option<&str>) {
+    let Some(meta) = metadata.filter(|m| !m.is_empty()) else { return };
+    let Ok(v) = serde_json::from_str::<Value>(meta) else { return };
+    let names: Vec<&str> = match v["assistants"].as_array() {
+        Some(arr) => arr.iter().filter_map(|x| x.as_str()).filter(|s| !s.is_empty()).collect(),
+        None => return,
+    };
+    if names.is_empty() { return; }
+    content.push_str(&format!(
+        "\n\n（本条正文由「{}」直出交付，未经改写；用户对该交付稿的任何修改/续写/补充章节请求，必须再次委托该 Agent 完成，不得代笔续写）",
+        names.join("、")
+    ));
+}
+
 /// 内部工作流函数，支持自定义 system_prompt
 /// is_root: true=顶层工作流（控制 AGENT_CANCEL 生命周期），false=子Agent（保留取消信号向上传播）
 /// delegate_depth: 当前委托深度（0=主Agent，≥1=子Agent）
@@ -275,7 +293,7 @@ pub async fn agent_chat_workflow_internal(
     let has_delegate = allowed_tools.as_ref().map_or(true, |t| t.iter().any(|x| x == "ext_tool_delegate_agent"));
     let agent_section = if has_delegate {
         let agents: Vec<Value> = database::all(
-            "SELECT id, name, description, COALESCE(routing_hint,'') AS routing_hint FROM agent_profiles WHERE status='active'",
+            "SELECT id, name, description, COALESCE(routing_hint,'') AS routing_hint, COALESCE(output_format,'natural') AS output_format FROM agent_profiles WHERE status='active'",
             &[],
         ).unwrap_or_default();
         if agents.is_empty() {
@@ -309,10 +327,12 @@ pub async fn agent_chat_workflow_internal(
                     }.to_string()))
                     .collect();
                 let tools_str = if tools.is_empty() { String::new() } else { format!("\n  工具：{}", tools.join("、")) };
+                // ★ 交付型标记：其回答即终稿、原样交付用户（协议见 prompt.rs §6 交付型保真规则）
+                let deliver_tag = if a["output_format"].as_str() == Some("deliverable") { "\n  ⚑ 交付型：正文即终稿，直出交付用户，不得改写、不得代笔续写" } else { "" };
                 if hint.is_empty() {
-                    Some(format!("- {}: {} (agent_id: \"{}\"){}", name, desc, id, tools_str))
+                    Some(format!("- {}: {} (agent_id: \"{}\"){}{}", name, desc, id, tools_str, deliver_tag))
                 } else {
-                    Some(format!("- {}: {} (agent_id: \"{}\")\n  → {}{}", name, desc, id, hint, tools_str))
+                    Some(format!("- {}: {} (agent_id: \"{}\")\n  → {}{}{}", name, desc, id, hint, tools_str, deliver_tag))
                 }
             }).collect();
             // ★ 路由决策日志：记录本次注入主 Agent 的可用清单（路由未命中时的第一排查点）
@@ -429,7 +449,11 @@ pub async fn agent_chat_workflow_internal(
             "assistant" => {
                 let mut content = h["content"].as_str().map(|s| s.to_string());
                 // ★ 生成文档文件名随回答注入（与前端卡片一致：AI 看到的 = 用户看到的）
-                if let Some(ref mut c) = content { append_documents_note(c, h["metadata"].as_str()); }
+                // ★ 委托直出的交付稿加"直出交付"标注，防主 LLM 把子 Agent 的稿子当自己的代笔续写
+                if let Some(ref mut c) = content {
+                    append_documents_note(c, h["metadata"].as_str());
+                    append_delegated_note(c, h["metadata"].as_str());
+                }
                 if let Some(ref text) = content { session.record_observation(text); }
                 messages.push(ChatMessage{role:MessageRole::Assistant,content,tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
             }
@@ -1609,7 +1633,7 @@ pub async fn agent_chat_workflow_internal(
 #[cfg(test)]
 mod tests {
     use super::append_documents_note;
-    use super::{pick_direct_out, build_delegate_snapshot, normalize_ask_args, format_clarification_answer, pick_clarification_out};
+    use super::{pick_direct_out, build_delegate_snapshot, normalize_ask_args, format_clarification_answer, pick_clarification_out, append_delegated_note};
     use crate::services::agent_workflow::{ChatMessage, FunctionCall, MessageRole, ToolCall};
     use serde_json::json;
 
@@ -1666,6 +1690,22 @@ mod tests {
         assert_eq!(pick_direct_out(&with_missing), None);
         let without = vec![env_missing("delegate_agent_result", "partial", "已完成", false)];
         assert_eq!(pick_direct_out(&without).as_deref(), Some("已完成"));
+    }
+
+    /// 交付稿直出标注：metadata.assistants 非空才追加，正文原样在前
+    #[test]
+    fn delegated_note_marks_direct_output_provenance() {
+        let mut c = "方案框架……".to_string();
+        append_delegated_note(&mut c, Some(r#"{"assistants":["解决方案助手"]}"#));
+        assert!(c.starts_with("方案框架……"));
+        assert!(c.contains("直出交付") && c.contains("解决方案助手") && c.contains("不得代笔续写"));
+        // 无 assistants / 非法 metadata / 空数组 → no-op
+        let mut d = "正文".to_string();
+        append_delegated_note(&mut d, Some(r#"{"documents":[]}"#));
+        append_delegated_note(&mut d, None);
+        append_delegated_note(&mut d, Some("not-json"));
+        append_delegated_note(&mut d, Some(r#"{"assistants":[]}"#));
+        assert_eq!(d, "正文");
     }
 
     /// 追问归一化：截断≤5题/≤6选项、type降级、question_id补全、全非法→invalid
