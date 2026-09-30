@@ -1047,6 +1047,9 @@ const agentForm = ref({
   presetTools: [] as string[],
   output_format: 'natural' as 'natural' | 'deliverable',
 })
+/// 专属模型候选：来自「AI 模型配置」已配置的各家模型名（datalist 联想，仍可手输任意名）
+const agentModelOptions = computed(() =>
+  [...new Set((aiProviders.value as Array<{ modelName?: string }>).map(p => (p.modelName || '').trim()).filter(Boolean))])
 const agentFormError = ref('')
 
 async function loadAgentProfiles() {
@@ -2316,16 +2319,16 @@ async function saveProfileEditor() {
                       <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">写「何时必须委托」的关键词触发条件，会以「→」行追加在委托说明后注入主 Agent；内置 Agent 的强路由就靠它</p>
                       <input v-model="agentForm.routing_hint" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="如：当用户提到「会议纪要」「周报整理」时，必须委托此 Agent" />
                     </div>
-                    <!-- 产出方式（自定义 Agent 可选；内置由预设/迁移管理，UI 锁定） -->
-                    <div v-if="!editingAgentIsBuiltin">
-                      <label class="block text-[10px] font-medium text-surface-400 mb-1">产出方式</label>
-                      <div class="grid grid-cols-2 gap-2">
-                        <label class="flex items-start gap-1.5 p-2 rounded-lg border cursor-pointer transition-colors" :class="agentForm.output_format === 'natural' ? 'border-brand-400 bg-brand-50' : 'border-surface-200'">
-                          <input type="radio" value="natural" v-model="agentForm.output_format" class="accent-brand-600 mt-0.5" />
+                    <!-- 产出方式（自定义可选；内置只读展示，由预设与迁移管理） -->
+                    <div>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">产出方式<span v-if="editingAgentIsBuiltin" class="ml-1.5 text-[9px] text-surface-300 font-normal">系统预设 · 锁定</span></label>
+                      <div class="grid grid-cols-2 gap-2" :class="editingAgentIsBuiltin ? 'opacity-60' : ''">
+                        <label class="flex items-start gap-1.5 p-2 rounded-lg border transition-colors" :class="[agentForm.output_format === 'natural' ? 'border-brand-400 bg-brand-50' : 'border-surface-200', editingAgentIsBuiltin ? 'cursor-default' : 'cursor-pointer']">
+                          <input type="radio" value="natural" v-model="agentForm.output_format" :disabled="editingAgentIsBuiltin" class="accent-brand-600 mt-0.5" />
                           <div><p class="text-[11px] font-medium text-surface-700">执行型（默认）</p><p class="text-[9px] text-surface-400 leading-relaxed">结果交回主 Agent 综合后答复</p></div>
                         </label>
-                        <label class="flex items-start gap-1.5 p-2 rounded-lg border cursor-pointer transition-colors" :class="agentForm.output_format === 'deliverable' ? 'border-brand-400 bg-brand-50' : 'border-surface-200'">
-                          <input type="radio" value="deliverable" v-model="agentForm.output_format" class="accent-brand-600 mt-0.5" />
+                        <label class="flex items-start gap-1.5 p-2 rounded-lg border transition-colors" :class="[agentForm.output_format === 'deliverable' ? 'border-brand-400 bg-brand-50' : 'border-surface-200', editingAgentIsBuiltin ? 'cursor-default' : 'cursor-pointer']">
+                          <input type="radio" value="deliverable" v-model="agentForm.output_format" :disabled="editingAgentIsBuiltin" class="accent-brand-600 mt-0.5" />
                           <div><p class="text-[11px] font-medium text-surface-700">交付型</p><p class="text-[9px] text-surface-400 leading-relaxed">回答即终稿，直接完整呈现给用户（方案/报告类长文适用）</p></div>
                         </label>
                       </div>
@@ -2333,7 +2336,7 @@ async function saveProfileEditor() {
                     <!-- 系统预设 Agent 编辑说明 -->
                     <div v-if="editingAgentIsBuiltin" class="flex items-start gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200">
                       <AppIcon name="info" size="11" class="text-amber-500 flex-shrink-0 mt-px" />
-                      <p class="text-[9px] leading-relaxed text-amber-700">系统预设 Agent：可编辑名称、委托说明、路由提示与系统提示词；启停与工具分配为系统锁定。改坏了可在列表中点「还原默认配置」一键恢复。</p>
+                      <p class="text-[9px] leading-relaxed text-amber-700">系统预设 Agent：可编辑名称、委托说明、路由提示与系统提示词；启停、产出方式与工具分配为系统锁定。改坏了可在列表中点「还原默认配置」一键恢复。</p>
                     </div>
                     <!-- 系统提示词 -->
                     <div>
@@ -2345,15 +2348,22 @@ async function saveProfileEditor() {
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">最大迭代次数</label>
                       <input v-model.number="agentForm.max_iterations" type="number" min="1" max="50" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
                     </div>
-                    <!-- LLM 覆盖：模型 / 温度（留空 = 跟随全局配置） -->
-                    <div class="grid grid-cols-2 gap-3">
-                      <div>
-                        <label class="block text-[10px] font-medium text-surface-400 mb-1">模型覆盖</label>
-                        <input v-model="agentForm.model" type="text" placeholder="留空使用全局模型" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
-                      </div>
-                      <div>
-                        <label class="block text-[10px] font-medium text-surface-400 mb-1">温度覆盖</label>
-                        <input v-model.number="agentForm.temperature" type="number" min="0" max="2" step="0.1" placeholder="留空用全局 0.3" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
+                    <!-- 专属模型与温度：不填即跟随全局 AI 模型配置 -->
+                    <div>
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">专属模型与温度（可选）</label>
+                      <p class="text-[9px] text-surface-400 mb-1.5 leading-relaxed">不填=跟随「AI 模型配置」的全局设置；填写后此 Agent 委托执行时使用自己的模型。温度：0 严谨 ~ 2 发散，方案/数据类建议留空或偏低（全局默认 0.3）。例：方案/招投标配更强模型，文档排版配便宜快的</p>
+                      <div class="grid grid-cols-[1fr_110px] gap-3">
+                        <div>
+                          <label class="block text-[9px] text-surface-400 mb-1">专属模型（下拉选已配置的，也可手输）</label>
+                          <input v-model="agentForm.model" type="text" list="agent-model-options" placeholder="留空跟随全局模型" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
+                          <datalist id="agent-model-options">
+                            <option v-for="m in agentModelOptions" :key="m" :value="m"></option>
+                          </datalist>
+                        </div>
+                        <div>
+                          <label class="block text-[9px] text-surface-400 mb-1">温度 0-2</label>
+                          <input v-model.number="agentForm.temperature" type="number" min="0" max="2" step="0.1" placeholder="默认" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
+                        </div>
                       </div>
                     </div>
                     <!-- 工具分配 -->
