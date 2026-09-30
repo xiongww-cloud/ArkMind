@@ -593,12 +593,12 @@ onUnmounted(() => {
   border-bottom: 1px solid rgba(15,23,42,0.05);
 }
 .older-btn {
-  margin: 8px 14px 0; padding: 4px 10px; flex-shrink: 0;
-  font-size: 10px; color: #8e8e93; cursor: pointer;
-  background: rgba(241,245,249,0.8); border: none; border-radius: 8px;
-  transition: all 0.15s;
+  margin: 2px auto 0; padding: 2px 6px; flex-shrink: 0; width: fit-content;
+  font-size: 10px; color: #b6bcc7; cursor: pointer;
+  background: none; border: none; border-radius: 6px;
+  transition: color 0.15s;
 }
-.older-btn:hover { background: #eef2f7; color: #2563eb; }
+.older-btn:hover { color: #2563eb; }
 
 .messages-scroll {
   overflow-y: auto; overflow-x: hidden;
