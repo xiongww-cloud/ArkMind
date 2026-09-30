@@ -82,7 +82,7 @@ pub(crate) fn pick_direct_out(results: &[(String, String, String, bool)]) -> Opt
 }
 
 /// ext_tool_ask_user 参数归一化（纯函数，可单测）：
-/// - 问题截到 ≤3（超出丢弃并置 truncated）、每题选项截到 ≤6、剔除空 prompt/空选项
+/// - 问题截到 ≤5（超出丢弃并置 truncated）、每题选项截到 ≤6、剔除空 prompt/空选项
 /// - type 非 single_choice/multiple_choice 一律降级为 text
 /// - question_id 缺失时自动补 qN
 /// - 无合格问题 → 失败信封（提示 LLM 正确用法）
@@ -94,7 +94,7 @@ pub(crate) fn normalize_ask_args(a: &Value) -> String {
     for q in raw_qs {
         let prompt = q["prompt"].as_str().unwrap_or("").trim().to_string();
         if prompt.is_empty() { continue; }
-        if questions.len() >= 3 { truncated = true; break; }
+        if questions.len() >= 5 { truncated = true; break; }
         let qtype = match q["type"].as_str() {
             Some("single_choice") | Some("multiple_choice") => q["type"].as_str().unwrap(),
             _ => "text",
@@ -1668,7 +1668,7 @@ mod tests {
         assert_eq!(pick_direct_out(&without).as_deref(), Some("已完成"));
     }
 
-    /// 追问归一化：截断≤3题/≤6选项、type降级、question_id补全、全非法→invalid
+    /// 追问归一化：截断≤5题/≤6选项、type降级、question_id补全、全非法→invalid
     #[test]
     fn normalize_ask_args_truncates_and_sanitizes() {
         // 正常化
@@ -1679,18 +1679,21 @@ mod tests {
                 {"prompt": "", "type": "text"},
                 {"question_id": "q3", "prompt": "预算范围？", "type": "weird_type"},
                 {"question_id": "q4", "prompt": "交付形态？", "type": "multiple_choice", "options": []},
-                {"question_id": "q5", "prompt": "第四题应被截断", "type": "text"},
+                {"question_id": "q5", "prompt": "第五题", "type": "text"},
+                {"question_id": "q6", "prompt": "第六题", "type": "text"},
+                {"question_id": "q7", "prompt": "第七题应被截断", "type": "text"}
             ]
         });
         let v: serde_json::Value = serde_json::from_str(&normalize_ask_args(&a)).unwrap();
         assert_eq!(v["result_type"], "ask_user_result");
         assert_eq!(v["data"]["status"], "pending");
         let qs = v["data"]["questions"].as_array().unwrap();
-        // 空 prompt 剔除 + ≤3 截断（q1 + q3 + q4）
-        assert_eq!(qs.len(), 3);
+        // 空 prompt 剔除 + ≤5 截断（q1 + q3 + q4 + q5 + q6，q7 丢弃）
+        assert_eq!(qs.len(), 5);
         assert_eq!(qs[0]["options"].as_array().unwrap().len(), 6); // ≤6 选项
         assert_eq!(qs[1]["type"], "text"); // 非法 type 降级
         assert_eq!(qs[2]["question_id"], "q4");
+        assert_eq!(qs[4]["question_id"], "q6");
         assert_eq!(v["data"]["truncated"], true);
 
         // 无合格问题 → invalid
