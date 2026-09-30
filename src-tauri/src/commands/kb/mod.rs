@@ -217,11 +217,9 @@ fn backfill_fab_titles() {
     }
 }
 
-/// 浮窗发送前的轮转判定（唯一调用点 = ChatWindow.send）。
-/// 只读决定不写状态——KV 由 kb_agent_chat 每次发送落（单写者 = B 单流指针）
-#[tauri::command]
-pub async fn fab_resolve_session() -> Result<Value, String> {
-    let now = chrono::Local::now().timestamp();
+/// 会话状态综合判定（遗留接管 + 已删防御 + 窗口/冻结 decide）
+/// 返回 (当前会话 id, 动作)——Rotate 时 id 为既有会话（调用方决定是否新建）
+fn fab_evaluate(now: i64) -> (Option<String>, FabAction) {
     let (mut cur_id, mut last) = read_fab_state();
     // 升级迁移：无 KV 状态但存在遗留固定会话 → 接管（历史不丢）
     if cur_id.is_none() && legacy_fab_session_exists() {
@@ -245,6 +243,15 @@ pub async fn fab_resolve_session() -> Result<Value, String> {
         (Some(_), None) => FabAction::Keep, // 刚接管/时间戳缺失：视为窗口内
         (None, _) => FabAction::Rotate,
     };
+    (cur_id, action)
+}
+
+/// 浮窗发送前的轮转判定（唯一调用点 = ChatWindow.send）。
+/// 只读决定不写状态——KV 由 kb_agent_chat 每次发送落（单写者 = B 单流指针）
+#[tauri::command]
+pub async fn fab_resolve_session() -> Result<Value, String> {
+    let now = chrono::Local::now().timestamp();
+    let (cur_id, action) = fab_evaluate(now);
     let (id, rotated) = match action {
         FabAction::Keep => (cur_id.unwrap(), false),
         FabAction::Rotate => (create_fab_session(), true),
@@ -271,9 +278,18 @@ pub async fn kb_clear_fab_sessions() -> Result<Value, String> {
 }
 
 /// 加载当前对话的历史消息（支持 before_id 游标分页）；session_id 缺省走全局指针
+/// 全量加载（before_id=None，召唤/挂载路径）设显示门槛：此刻发送会轮转的会话不展示
+/// （超 30min 打开不淡显上一轮）；面板内翻页（before_id=Some）不设门槛，阅读不中断
 #[tauri::command]
 pub async fn kb_fab_load_history(session_id: Option<String>, limit: Option<usize>, before_id: Option<i64>) -> Result<Value, String> {
-    let Some(sid) = session_id.or_else(current_fab_session_id) else {
+    let sid = session_id.or_else(current_fab_session_id);
+    if before_id.is_none() {
+        let (_, action) = fab_evaluate(chrono::Local::now().timestamp());
+        if action == FabAction::Rotate {
+            return Ok(json!({"success": true, "sessionId": sid, "messages": [], "stale": true}));
+        }
+    }
+    let Some(sid) = sid else {
         return Ok(json!({"success": true, "sessionId": Value::Null, "messages": []}));
     };
     let limit = limit.unwrap_or(50);
