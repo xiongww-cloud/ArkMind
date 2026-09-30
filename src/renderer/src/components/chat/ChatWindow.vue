@@ -507,11 +507,11 @@ onUnmounted(() => {
   background: transparent;
 }
 
-/* ═══ 快呼面板：固定顶部居中（窗口零位移，生长全在 CSS） ═══ */
+/* ═══ 快呼面板：锚定窗口底部（输入在下、对话向上生长；窗口零位移，生长全在 CSS） ═══ */
 .chat-panel {
   position: absolute;
   left: 50%; transform: translateX(-50%);
-  top: 12px;
+  bottom: 52px;
   width: 580px;
   max-height: 616px;
   display: flex; flex-direction: column;

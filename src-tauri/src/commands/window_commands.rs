@@ -195,7 +195,7 @@ pub async fn set_sprite_position(app: AppHandle, x: f64, y: f64) -> Result<(), S
     Ok(())
 }
 
-// ─── 聊天浮窗：Spotlight 式快呼面板（固定尺寸顶部居中，窗口零位移，生长全在 webview 内 CSS）───
+// ─── 聊天浮窗：快呼面板（固定尺寸底部居中，输入常驻面板底部、对话向上生长；窗口零位移，生长全在 webview 内 CSS）───
 
 /// 浮窗固定逻辑尺寸：面板宽 580，四周留透明边距供 CSS 阴影渐变到消失。
 /// 窗口 shadow(false) 关闭 OS 阴影、浮起全靠 webview——若窗口只比面板大一丁点，
@@ -203,7 +203,7 @@ pub async fn set_sprite_position(app: AppHandle, x: f64, y: f64) -> Result<(), S
 const CHAT_WIN_W: f64 = 680.0;
 const CHAT_WIN_H: f64 = 700.0;
 
-/// 定位到屏幕顶部居中（x 居中，y ≈ 屏高 14%，Spotlight 视觉位）
+/// 定位到屏幕底部居中（x 居中，窗口底缘距屏幕底部 32px；面板在窗口内锚底、向上生长）
 fn position_chat_window(app: &AppHandle, win: &WebviewWindow) {
     let (screen_w, screen_h) = app.get_webview_window("main")
         .and_then(|m| m.primary_monitor().ok().flatten())
@@ -213,7 +213,7 @@ fn position_chat_window(app: &AppHandle, win: &WebviewWindow) {
         })
         .unwrap_or((1920.0, 1080.0));
     let x = (screen_w - CHAT_WIN_W) / 2.0;
-    let y = (screen_h * 0.14).max(48.0);
+    let y = (screen_h - CHAT_WIN_H - 32.0).max(48.0);
     let _ = win.set_size(tauri::LogicalSize::new(CHAT_WIN_W, CHAT_WIN_H));
     let _ = win.set_position(tauri::LogicalPosition::new(x, y));
 }

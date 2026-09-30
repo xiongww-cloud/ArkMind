@@ -43,7 +43,7 @@ async function onPointerMove(e: PointerEvent) {
 
 function onPointerUp() {
   if (!dragging && !moved) {
-    // 浮窗尺寸/位置由 Rust 侧固定（顶部居中），无需再传宽高
+    // 浮窗尺寸/位置由 Rust 侧固定（底部居中），无需再传宽高
     invoke('toggle_chat_window').catch(err => {
       console.error('[Sprite] 打开聊天窗口失败:', err)
     })
