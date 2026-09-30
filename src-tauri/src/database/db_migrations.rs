@@ -500,7 +500,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         ).ok();
         // ★ 委托路由提示（动态注入，仅当未被用户自定义时刷新）
         conn.execute(
-            "UPDATE agent_profiles SET routing_hint='当用户提到创建、编辑、删除项目/待办/合作伙伴/联系人/产品/笔记时，必须委托此 Agent' WHERE id='business' AND (routing_hint IS NULL OR routing_hint='')",
+            "UPDATE agent_profiles SET routing_hint='业务对象的创建、编辑、删除（项目/待办/合作伙伴/联系人/产品/笔记）必须委托此 Agent；仅信息查询由主 Agent 直接回答' WHERE id='business' AND (routing_hint IS NULL OR routing_hint='')",
             [],
         ).ok();
         // ★ 确保已有业务助手也有工具分配（补插）
@@ -545,7 +545,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         ).ok();
         // ★ 委托路由提示（动态注入，仅当未被用户自定义时刷新）
         conn.execute(
-            "UPDATE agent_profiles SET routing_hint='当用户提到\"招标参数编制\"\"招标规格书\"\"技术偏离比对\"\"应答\"\"控标排查\"及与产品技术参数相关的任务时，必须委托此 Agent' WHERE id='bidding' AND (routing_hint IS NULL OR routing_hint='')",
+            "UPDATE agent_profiles SET routing_hint='参数编制、招标规格书、技术偏离比对/应答、控标排查、参数对比表、选型推荐等多步执行或需要专业格式的任务必须委托此 Agent；单点参数事实的口语问答由主 Agent 直接回答，用户要求正式格式输出时仍必须委托' WHERE id='bidding' AND (routing_hint IS NULL OR routing_hint='')",
             [],
         ).ok();
         for tool_name in &["ext_tool_object", "ext_tool_relations", "ext_tool_search", "ext_tool_chunk_navigate", "ext_tool_web_search"] {
@@ -631,6 +631,20 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
             Err(e) => log::warn!("[数据库] 文档助手 prompt 强刷失败: {}", e),
         }
     }
+
+    // ★ 三层路由措辞迁移：旧"必须委托"默认提示 → 新三层路由措辞。
+    //   精确匹配旧默认值（自定义过的 routing_hint 不覆盖）；幂等，每次启动执行。
+    //   放在各预置块之后：同一次启动内先由 fill-empty 写入旧默认、此处随即升级为新文本。
+    conn.execute(
+        "UPDATE agent_profiles SET routing_hint='业务对象的创建、编辑、删除（项目/待办/合作伙伴/联系人/产品/笔记）必须委托此 Agent；仅信息查询由主 Agent 直接回答' \
+         WHERE id='business' AND routing_hint='当用户提到创建、编辑、删除项目/待办/合作伙伴/联系人/产品/笔记时，必须委托此 Agent'",
+        [],
+    ).ok();
+    conn.execute(
+        "UPDATE agent_profiles SET routing_hint='参数编制、招标规格书、技术偏离比对/应答、控标排查、参数对比表、选型推荐等多步执行或需要专业格式的任务必须委托此 Agent；单点参数事实的口语问答由主 Agent 直接回答，用户要求正式格式输出时仍必须委托' \
+         WHERE id='bidding' AND routing_hint='当用户提到\"招标参数编制\"\"招标规格书\"\"技术偏离比对\"\"应答\"\"控标排查\"及与产品技术参数相关的任务时，必须委托此 Agent'",
+        [],
+    ).ok();
 
     // ★ 迁移渠道/厂商数据到映射表（从 direct project_id 到 many-to-many mapping）
     let _ = conn.execute_batch("
