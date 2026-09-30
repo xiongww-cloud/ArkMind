@@ -436,7 +436,7 @@ onUnmounted(() => {
           </div>
           <div v-for="(m, mi) in visibleMessages" :key="m.id || mi" class="msg-block">
             <div v-if="m.role === 'user'" class="msg-q" :class="{ faded: isFaded(m) }">
-              <span class="msg-q__who">问</span><span class="msg-q__text">{{ displayContent(m.content) }}</span>
+              <span class="msg-q__who">我</span><span class="msg-q__text">{{ displayContent(m.content) }}</span>
               <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1" />
               <div v-else-if="m.content?.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1">
                 <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="px-1.5 py-0.5 rounded text-[10px] bg-[#f1f5f9] text-[#64748b]">{{ name }}</span>
