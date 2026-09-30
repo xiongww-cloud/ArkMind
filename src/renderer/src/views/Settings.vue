@@ -730,7 +730,7 @@ const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
 import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, profileFactSave, type LoopStatus, type ProfileFact } from '@/api/notification-client'
-import { getSpriteEnabled, getChatHotkey, setChatHotkey, kbClearFabSessions, fetchUserProfile, updateUserProfile } from '@/api/db-client'
+import { getSpriteEnabled, getChatHotkey, setChatHotkey, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
@@ -849,21 +849,6 @@ async function resetHotkeyDefault() {
     toast({ message: `已恢复默认 ${hotkeyLabel(r.key)}`, type: 'success' })
   } catch (err: any) {
     toast({ message: String(err?.message || err || '恢复失败'), type: 'error' })
-  }
-}
-
-async function clearSpriteChat() {
-  const ok = await dangerConfirm({
-    title: '清空精灵对话',
-    message: '确定清空桌面精灵的所有聊天记录？此操作不可撤销。',
-    confirmText: '清空',
-  })
-  if (!ok) return
-  try {
-    await kbClearFabSessions()
-    toast.success('精灵对话已清空')
-  } catch (e) {
-    toast.error('清空失败')
   }
 }
 
@@ -2073,13 +2058,6 @@ async function saveProfileEditor() {
                   <button class="text-[10px] text-brand-600 hover:underline" @click="startHotkeyRecord">修改</button>
                   <button v-if="hotkey !== hotkeyDefault" class="text-[10px] text-surface-400 hover:text-surface-600" @click="resetHotkeyDefault">默认</button>
                 </div>
-              </div>
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-[12px] font-medium text-surface-700">清空对话记录</p>
-                  <p class="text-[10px] text-surface-400">删除浮窗快聊的全部聊天历史</p>
-                </div>
-                <button class="btn-secondary text-xs !text-red-500 !border-red-300 hover:!bg-red-50" @click="clearSpriteChat"><AppIcon name="trash" size="12"/>清空</button>
               </div>
             </div>
           </div>
