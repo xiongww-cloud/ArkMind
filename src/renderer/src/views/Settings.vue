@@ -730,7 +730,7 @@ const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
 import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, profileFactSave, type LoopStatus, type ProfileFact } from '@/api/notification-client'
-import { getSpriteEnabled, setSpriteEnabled, getChatHotkey, setChatHotkey, kbClearFabSessions, fetchUserProfile, updateUserProfile } from '@/api/db-client'
+import { getSpriteEnabled, getChatHotkey, setChatHotkey, kbClearFabSessions, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
@@ -759,21 +759,13 @@ const notifyIntervalOptions = [
 const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.value === notifyInterval.value)?.label || '1 小时')
 
 // ─── Sprite Settings ────────────────────────────────────────
+// 仅状态展示（设置页状态卡）；开关已从设置页与托盘菜单移除
 const spriteEnabled = ref(false)
 
 async function loadSpriteConfig() {
   try {
     spriteEnabled.value = await getSpriteEnabled()
   } catch {}
-}
-
-async function toggleSprite() {
-  try {
-    await setSpriteEnabled(spriteEnabled.value)
-  } catch {
-    spriteEnabled.value = !spriteEnabled.value
-    toast({ message: '精灵开关保存失败', type: 'error' })
-  }
 }
 
 // ─── 浮窗快呼快捷键 ─────────────────────────────────────────
@@ -2060,13 +2052,10 @@ async function saveProfileEditor() {
             </div>
           </div>
 
-           <!-- 快速唤起：快捷键 + 桌面精灵 + 浮窗历史 -->
+           <!-- 快速唤起：快捷键 + 浮窗历史 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="flex items-center justify-between px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">快速唤起</h2>
-              <div class="flex items-center gap-1.5">
-                <span class="text-[10px]" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-400'">{{ spriteEnabled ? '精灵已启用' : '精灵已关闭' }}</span>
-              </div>
             </div>
             <div class="p-5 space-y-4">
               <div class="flex items-center justify-between gap-3">
@@ -2084,16 +2073,6 @@ async function saveProfileEditor() {
                   <button class="text-[10px] text-brand-600 hover:underline" @click="startHotkeyRecord">修改</button>
                   <button v-if="hotkey !== hotkeyDefault" class="text-[10px] text-surface-400 hover:text-surface-600" @click="resetHotkeyDefault">默认</button>
                 </div>
-              </div>
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-[12px] font-medium text-surface-700">启用桌面精灵</p>
-                  <p class="text-[10px] text-surface-400">桌面上显示悬浮精灵图标，点击同样可唤起 AI 浮窗；关闭不影响快捷键</p>
-                </div>
-                <label class="relative inline-flex items-center cursor-pointer">
-                  <input type="checkbox" v-model="spriteEnabled" class="sr-only peer" @change="toggleSprite">
-                  <div class="w-9 h-5 bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
-                </label>
               </div>
               <div class="flex items-center justify-between">
                 <div>
