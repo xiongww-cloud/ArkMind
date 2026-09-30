@@ -593,7 +593,7 @@ onUnmounted(() => {
   border-bottom: 1px solid rgba(15,23,42,0.05);
 }
 .older-btn {
-  margin: 2px auto 0; padding: 2px 6px; flex-shrink: 0; width: fit-content;
+  margin: 10px auto 0; padding: 0 6px; flex-shrink: 0; width: fit-content;
   font-size: 10px; color: #b6bcc7; cursor: pointer;
   background: none; border: none; border-radius: 6px;
   transition: color 0.15s;
