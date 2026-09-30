@@ -191,9 +191,34 @@ const visibleMessages = computed(() => {
 const hasStream = computed(() => visibleMessages.value.length > 0 || agent.isChatting.value)
 function isFaded(m: ChatMessage): boolean { return !revealOlder.value && !!m.id && fadedIds.value.has(m.id) }
 
-function expandToOlder() {
+async function expandToOlder() {
   revealOlder.value = true
-  nextTick(() => loadOlderMessages())
+  // 展开全部：一次性分页拉完本会话更早的记录（每页 50，安全上限 20 页）
+  if (!hasMore.value) { scrollChat(); return }
+  loadingMore.value = true
+  try {
+    let guard = 0
+    while (hasMore.value && guard++ < 20) {
+      const oldest = messages.value.find(m => !!(m as { dbId?: number }).dbId) as { dbId?: number } | undefined
+      if (!oldest?.dbId) { hasMore.value = false; break }
+      const result = await kbFabLoadHistory(sessionId.value || null, 50, oldest.dbId)
+      const older = (result.success && result.messages) ? result.messages : []
+      if (older.length) {
+        messages.value.unshift(...older.map(mapHistoryMessage))
+        for (const msg of older) {
+          if (msg.role === 'assistant' && msg.content) {
+            const key = msg.id as string
+            agent.renderMd(msg.content).then(h => { if (h) agent.rendered.value[key] = h })
+          }
+        }
+      }
+      if (older.length < 50) hasMore.value = false
+    }
+  } catch (e) {
+    console.error('[Chat] 展开全部消息失败:', e)
+  }
+  loadingMore.value = false
+  scrollChat()
 }
 
 function autoGrow(e: Event) {
@@ -429,7 +454,7 @@ onUnmounted(() => {
     <!-- 对话记录（输入上方，就地向上生长；高度动画全在 CSS，窗口零位移） -->
     <transition name="stream">
       <div v-if="hasStream" class="chat-stream">
-        <button v-if="!revealOlder && hasMore" class="older-btn" @click="expandToOlder">↑ 查看更早的对话</button>
+        <button v-if="!revealOlder && (hasMore || messages.length > lastRoundCount)" class="older-btn" @click="expandToOlder">↑ 展开全部对话</button>
         <div ref="chatListRef" class="messages-scroll" @scroll="onChatScroll">
           <div v-if="loadingMore" class="text-center py-1">
             <span class="text-[10px] text-[#94a3b8]">加载中...</span>
