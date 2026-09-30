@@ -777,10 +777,8 @@ onUnmounted(() => {
         </div>
 
         <!-- Messages -->
-        <div v-for="(msg, idx) in currentSession.messages" :key="msg.id || idx" class="flex gap-3 items-start animate-fade-in" :class="msg.role === 'user' ? 'flex-row-reverse' : ''">
-          <div v-if="msg.role === 'user'" class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-[#2563eb] text-white shadow-sm">我</div>
-          <div v-else class="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 bg-gradient-to-br from-[#2563eb] to-[#93c5fd] text-white shadow-sm">AI</div>
-            <div class="min-w-0" :class="msg.role === 'user' ? 'max-w-[65%]' : (msg.isThinking ? '' : 'max-w-[85%]')">
+        <div v-for="(msg, idx) in currentSession.messages" :key="msg.id || idx" class="flex items-start animate-fade-in" :class="msg.role === 'user' ? 'justify-end' : ''">
+            <div class="min-w-0" :class="msg.role === 'user' ? 'max-w-[72%]' : (msg.isThinking ? '' : 'max-w-[92%]')">
             <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1 flex items-center gap-1.5" :class="msg.role === 'user' ? 'justify-end' : ''">
               <span>{{ msg.timestamp ? formatChatTime(msg.timestamp) : '' }}</span>
               <span v-if="!msg.isThinking && msg.assistants?.length" class="px-1.5 py-[1px] rounded-full bg-[#f2f2f7] text-[#8e8e93] text-[9px] leading-none">via {{ msg.assistants.join(' · ') }}</span>
