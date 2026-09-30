@@ -474,7 +474,7 @@ onUnmounted(() => {
                 <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
                 <span class="text-[12px] text-[#8e8e93]">· 处理中</span>
               </div>
-              <div v-else class="msg-a__body" :class="{ 'thinking-bubble': m.thinking }"
+              <div v-else class="msg-a__body markdown-body" :class="{ 'thinking-bubble': m.thinking }"
                 v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
               <div v-if="!m.thinking" class="msg-a__meta">
                 <span>{{ fmtTime(m.timestamp) }}</span>
@@ -520,7 +520,7 @@ onUnmounted(() => {
   -webkit-backdrop-filter: blur(24px);
   border-radius: 18px;
   border: 1px solid rgba(15,23,42,0.06);
-  box-shadow: 0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08);
+  box-shadow: 0 24px 70px -18px rgba(15,23,42,0.22), 0 10px 30px -12px rgba(15,23,42,0.12);
   overflow: hidden;
   user-select: none;
 }

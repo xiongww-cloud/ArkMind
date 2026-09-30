@@ -197,9 +197,11 @@ pub async fn set_sprite_position(app: AppHandle, x: f64, y: f64) -> Result<(), S
 
 // ─── 聊天浮窗：Spotlight 式快呼面板（固定尺寸顶部居中，窗口零位移，生长全在 webview 内 CSS）───
 
-/// 浮窗固定逻辑尺寸：宽 620；高 640 = 输入区 + 面板最大展开高度
-const CHAT_WIN_W: f64 = 620.0;
-const CHAT_WIN_H: f64 = 640.0;
+/// 浮窗固定逻辑尺寸：面板宽 580，四周留透明边距供 CSS 阴影渐变到消失。
+/// 窗口 shadow(false) 关闭 OS 阴影、浮起全靠 webview——若窗口只比面板大一丁点，
+/// box-shadow 会被窗口边界硬切成矩形。故宽 = 580 + 2×50，高 = 顶部留白 + 面板最大高 616 + 底部阴影留。
+const CHAT_WIN_W: f64 = 680.0;
+const CHAT_WIN_H: f64 = 700.0;
 
 /// 定位到屏幕顶部居中（x 居中，y ≈ 屏高 14%，Spotlight 视觉位）
 fn position_chat_window(app: &AppHandle, win: &WebviewWindow) {
