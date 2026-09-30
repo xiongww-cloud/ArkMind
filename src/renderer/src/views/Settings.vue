@@ -1047,9 +1047,15 @@ const agentForm = ref({
   presetTools: [] as string[],
   output_format: 'natural' as 'natural' | 'deliverable',
 })
-/// 专属模型候选：来自「AI 模型配置」已配置的各家模型名（datalist 联想，仍可手输任意名）
+/// 专属模型候选：来自「AI 模型配置」已配置的各家模型名（去重去空）
 const agentModelOptions = computed(() =>
   [...new Set((aiProviders.value as Array<{ modelName?: string }>).map(p => (p.modelName || '').trim()).filter(Boolean))])
+const agentModelOpen = ref(false)
+/// 候选含存量兜底：当前值不在已配置列表时仍可选中展示（不丢历史自定义）
+const agentModelChoices = computed(() => {
+  const cur = (agentForm.value.model || '').trim()
+  return cur && !agentModelOptions.value.includes(cur) ? [cur, ...agentModelOptions.value] : agentModelOptions.value
+})
 const agentFormError = ref('')
 
 async function loadAgentProfiles() {
@@ -2354,11 +2360,17 @@ async function saveProfileEditor() {
                       <p class="text-[9px] text-surface-400 mb-1.5 leading-relaxed">不填=跟随「AI 模型配置」的全局设置；填写后此 Agent 委托执行时使用自己的模型。温度：0 严谨 ~ 2 发散，方案/数据类建议留空或偏低（全局默认 0.3）。例：方案/招投标配更强模型，文档排版配便宜快的</p>
                       <div class="grid grid-cols-[1fr_110px] gap-3">
                         <div>
-                          <label class="block text-[9px] text-surface-400 mb-1">专属模型（下拉选已配置的，也可手输）</label>
-                          <input v-model="agentForm.model" type="text" list="agent-model-options" placeholder="留空跟随全局模型" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" />
-                          <datalist id="agent-model-options">
-                            <option v-for="m in agentModelOptions" :key="m" :value="m"></option>
-                          </datalist>
+                          <label class="block text-[9px] text-surface-400 mb-1">专属模型</label>
+                          <div class="relative" @focusout="(e: FocusEvent) => { const el = e.currentTarget as HTMLElement | null; if (el && !el.contains(e.relatedTarget as Node | null)) agentModelOpen = false }">
+                            <button type="button" @click="agentModelOpen = !agentModelOpen" class="w-full flex items-center justify-between h-8 bg-white border border-surface-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors hover:border-surface-300" :class="agentForm.model ? 'text-surface-700' : 'text-surface-400'">
+                              <span class="truncate">{{ agentForm.model || '跟随全局模型' }}</span>
+                              <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 flex-shrink-0 transition-transform ml-1" :class="agentModelOpen ? 'rotate-180' : ''" />
+                            </button>
+                            <div v-if="agentModelOpen" class="absolute top-full left-0 mt-1 z-50 w-full max-h-[200px] overflow-y-auto bg-white rounded-lg shadow-lg border border-surface-100 py-1">
+                              <button type="button" @click="agentForm.model = ''; agentModelOpen = false" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="!agentForm.model ? 'text-brand-600 bg-brand-50/50 font-medium' : 'text-surface-600 hover:bg-surface-50'">跟随全局模型</button>
+                              <button v-for="m in agentModelChoices" :key="m" type="button" @click="agentForm.model = m; agentModelOpen = false" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="agentForm.model === m ? 'text-brand-600 bg-brand-50/50 font-medium' : 'text-surface-600 hover:bg-surface-50'">{{ m }}</button>
+                            </div>
+                          </div>
                         </div>
                         <div>
                           <label class="block text-[9px] text-surface-400 mb-1">温度 0-2</label>
@@ -2369,7 +2381,7 @@ async function saveProfileEditor() {
                     <!-- 工具分配 -->
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-2">工具分配</label>
-                      <div class="border border-surface-200 rounded-lg p-3 max-h-[240px] overflow-y-auto">
+                      <div class="border border-surface-200 rounded-lg p-3">
                         <div class="grid grid-cols-3 gap-1.5">
                           <div v-for="tool in availableTools" :key="tool.name"
                             class="flex flex-col p-2 rounded-lg border transition-colors relative select-none"
