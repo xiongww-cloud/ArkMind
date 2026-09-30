@@ -1045,6 +1045,7 @@ const agentForm = ref({
   temperature: null as number | null,
   tools: [] as string[],
   presetTools: [] as string[],
+  output_format: 'natural' as 'natural' | 'deliverable',
 })
 const agentFormError = ref('')
 
@@ -1072,6 +1073,7 @@ function openAddAgent() {
     temperature: null,
     tools: [],
     presetTools: [],
+    output_format: 'natural',
   }
   agentFormError.value = ''
   showAgentModal.value = true
@@ -1090,6 +1092,7 @@ function editAgent(agent: AgentProfile) {
     temperature: (agent.temperature as number | null) ?? null,
     tools: agent.tools || [],
     presetTools: presetTools,
+    output_format: agent.output_format === 'deliverable' ? 'deliverable' : 'natural',
   }
   agentFormError.value = ''
   showAgentModal.value = true
@@ -1178,6 +1181,7 @@ async function saveAgent() {
         routing_hint: f.routing_hint,
         system_prompt: f.system_prompt,
         max_iterations: f.max_iterations,
+        output_format: f.output_format,
         ...llmOverrides,
         tools: allTools,
       })
@@ -1189,6 +1193,7 @@ async function saveAgent() {
         routing_hint: f.routing_hint,
         system_prompt: f.system_prompt,
         max_iterations: f.max_iterations,
+        output_format: f.output_format,
         ...llmOverrides,
         tools: allTools,
       })
@@ -2310,6 +2315,20 @@ async function saveProfileEditor() {
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">路由提示（强匹配，可选）</label>
                       <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">写「何时必须委托」的关键词触发条件，会以「→」行追加在委托说明后注入主 Agent；内置 Agent 的强路由就靠它</p>
                       <input v-model="agentForm.routing_hint" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="如：当用户提到「会议纪要」「周报整理」时，必须委托此 Agent" />
+                    </div>
+                    <!-- 产出方式（自定义 Agent 可选；内置由预设/迁移管理，UI 锁定） -->
+                    <div v-if="!editingAgentIsBuiltin">
+                      <label class="block text-[10px] font-medium text-surface-400 mb-1">产出方式</label>
+                      <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-start gap-1.5 p-2 rounded-lg border cursor-pointer transition-colors" :class="agentForm.output_format === 'natural' ? 'border-brand-400 bg-brand-50' : 'border-surface-200'">
+                          <input type="radio" value="natural" v-model="agentForm.output_format" class="accent-brand-600 mt-0.5" />
+                          <div><p class="text-[11px] font-medium text-surface-700">执行型（默认）</p><p class="text-[9px] text-surface-400 leading-relaxed">结果交回主 Agent 综合后答复</p></div>
+                        </label>
+                        <label class="flex items-start gap-1.5 p-2 rounded-lg border cursor-pointer transition-colors" :class="agentForm.output_format === 'deliverable' ? 'border-brand-400 bg-brand-50' : 'border-surface-200'">
+                          <input type="radio" value="deliverable" v-model="agentForm.output_format" class="accent-brand-600 mt-0.5" />
+                          <div><p class="text-[11px] font-medium text-surface-700">交付型</p><p class="text-[9px] text-surface-400 leading-relaxed">回答即终稿，直接完整呈现给用户（方案/报告类长文适用）</p></div>
+                        </label>
+                      </div>
                     </div>
                     <!-- 系统预设 Agent 编辑说明 -->
                     <div v-if="editingAgentIsBuiltin" class="flex items-start gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200">
