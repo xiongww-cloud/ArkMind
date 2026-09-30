@@ -200,9 +200,8 @@ pub fn run() {
             // ★ 系统托盘图标（macOS 不需要）
             #[cfg(not(target_os = "macos"))]
             {
-            let sprite_item = MenuItemBuilder::with_id("sprite", "显示/隐藏精灵").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&sprite_item, &quit_item]).build()?;
+            let menu = MenuBuilder::new(app).items(&[&quit_item]).build()?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().unwrap())
                 .menu(&menu)
@@ -210,13 +209,6 @@ pub fn run() {
                 .tooltip("Arkmind")
                 .on_menu_event(move |app, event| {
                     match event.id().as_ref() {
-                        "sprite" => {
-                            let app_handle = app.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let current = commands::get_sprite_enabled_sync().unwrap_or(false);
-                                let _ = commands::set_sprite_enabled(!current, app_handle).await;
-                            });
-                        }
                         "quit" => {
                             app.exit(0);
                         }
