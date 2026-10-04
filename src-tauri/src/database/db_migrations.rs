@@ -287,6 +287,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "UPDATE agent_profiles SET description='项目、待办、合作伙伴、联系人、产品、笔记的创建、编辑、删除操作' WHERE id='business' AND description IN ('项目、待办、合作伙伴、联系人、产品的增删改查操作','项目、待办、合作伙伴、联系人、产品、笔记的增删改查操作')",
         // ★ 内置 Agent 已取消用户启停开关：曾被禁用的强制恢复 active（幂等）
         "UPDATE agent_profiles SET status='active' WHERE is_builtin=1 AND status!='active'",
+        // ★ 会话列表时间以最后一条消息为准：把被重命名/浏览等操作污染过的 updated_at 摆正（幂等；无消息会话不动）
+        "UPDATE chat_sessions SET updated_at = (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.session_id = chat_sessions.id) WHERE EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = chat_sessions.id)",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
@@ -662,6 +664,12 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
                 rusqlite::params![tool_name],
             ).ok();
         }
+        // 预置工具列同步升级：存量行停留在无 web_fetch 的首版 → 精确匹配旧默认值才刷新（自定义过不覆盖）
+        conn.execute(
+            "UPDATE agent_profiles SET preset_tools='[\"ext_tool_object\",\"ext_tool_relations\",\"ext_tool_search\",\"ext_tool_chunk_navigate\",\"ext_tool_web_search\",\"ext_tool_web_fetch\"]' \
+             WHERE id='solution' AND preset_tools='[\"ext_tool_object\",\"ext_tool_relations\",\"ext_tool_search\",\"ext_tool_chunk_navigate\",\"ext_tool_web_search\"]'",
+            [],
+        ).ok();
         conn.execute(
             "UPDATE agent_profiles SET routing_hint='做整体解决方案/技术建议书/技术方案、成套设备选型与配置清单、方案架构与拓扑设计、实施与售后规划等多产品综合方案文档必须委托此 Agent（产出严格不含价格与报价）；单个产品的技术参数查询/编制、招标偏离应答交招投标助手' \
              WHERE id='solution' AND (routing_hint IS NULL OR routing_hint='')",
