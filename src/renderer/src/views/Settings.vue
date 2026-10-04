@@ -2357,7 +2357,7 @@ async function saveProfileEditor() {
                     <!-- 专属模型与温度：不填即跟随全局 AI 模型配置 -->
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">专属模型与温度（可选）</label>
-                      <p class="text-[9px] text-surface-400 mb-1.5 leading-relaxed">不填=跟随「AI 模型配置」的全局设置；填写后此 Agent 委托执行时使用自己的模型。温度：0 严谨 ~ 2 发散，方案/数据类建议留空或偏低（全局默认 0.3）。例：方案/招投标配更强模型，文档排版配便宜快的</p>
+                      <p class="text-[9px] text-surface-400 mb-1.5 leading-relaxed">不填=跟随「AI 模型配置」的全局设置；填写后此 Agent 委托执行时使用自己的模型，选择其他服务商的模型会自动路由到该服务商的接口与密钥。温度：0 严谨 ~ 2 发散，方案/数据类建议留空或偏低（默认 0.3）。例：方案/招投标配更强模型，文档排版配便宜快的</p>
                       <div class="grid grid-cols-[1fr_110px] gap-3">
                         <div>
                           <label class="block text-[9px] text-surface-400 mb-1">专属模型</label>

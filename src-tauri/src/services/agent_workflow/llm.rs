@@ -184,9 +184,16 @@ async fn stream_once(
     cancel_aware: bool,
     overrides: &LlmOverrides,
 ) -> Result<(String, Option<String>, Vec<Value>, Option<Value>), StreamFail> {
-    let (url, api_key, model) = get_api_endpoint();
+    let (g_url, g_key, g_model) = get_api_endpoint();
     // ★ per-agent 覆盖：未配置时跟随全局模型/默认温度
-    let model = overrides.model.as_deref().filter(|m| !m.is_empty()).unwrap_or(&model);
+    let ovr_model = overrides.model.as_deref().filter(|m| !m.is_empty());
+    let model = ovr_model.unwrap_or(&g_model);
+    // ★ 跨服务商路由：专属模型属于其他已配置 provider 时同时换接口与密钥；
+    //   active 模型/同服务商自定义模型名 → None，保持全局路径原语义
+    let (url, api_key) = match ovr_model.and_then(|m| crate::services::chat_api::resolve_provider_for_model(m)) {
+        Some((u, k)) => (u, k),
+        None => (g_url, g_key),
+    };
     let temperature = overrides.temperature.unwrap_or(0.3);
     // ★ 清理消息内容中的非法字符，防止 LLM API 解析失败
     let msgs: Vec<Value> = messages.iter().enumerate().map(|(i, m)| {

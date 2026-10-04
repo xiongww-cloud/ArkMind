@@ -72,6 +72,35 @@ pub fn get_chat_config() -> ChatConfig {
 
 pub fn invalidate_chat_config_cache() { if let Ok(mut c) = CONFIG_CACHE.write() { c.1 = Instant::now() - std::time::Duration::from_secs(60); } }
 
+/// 子 Agent 专属模型的跨服务商路由：模型名属于某个**非 active** 的已配置 provider 时，
+/// 返回其 (baseUrl, apiKey)，调用方需同时替换接口与密钥；
+/// 空模型名 / 即当前 active 模型 / 未匹配任何 provider（同服务商自定义模型名）→ None=按全局配置走。
+pub fn resolve_provider_for_model(model: &str) -> Option<(String, String)> {
+    let m = model.trim();
+    if m.is_empty() || m == get_chat_config().model.as_str() { return None; }
+    let row = crate::database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", &[]).ok().flatten()?;
+    let s = row["ai_config"].as_str()?;
+    let v = serde_json::from_str::<Value>(s).ok()?;
+    let machine = crate::license::get_machine_hash();
+    let v = crate::crypto::decrypt_config_api_keys(&v, &machine);
+    pick_provider_for_model(&v, m)
+}
+
+/// 纯选择逻辑（可单测）：按 modelName 精确匹配，跳过 active 与 url/key 不全的条目，取首个命中
+fn pick_provider_for_model(cfg: &Value, model: &str) -> Option<(String, String)> {
+    let providers = cfg.get("providers").and_then(|v| v.as_array())?;
+    let active_id = cfg.get("activeProviderId").and_then(|v| v.as_str()).unwrap_or("");
+    for p in providers {
+        if p.get("modelName").and_then(|v| v.as_str()).map(str::trim) != Some(model) { continue; }
+        if p.get("id").and_then(|v| v.as_str()).unwrap_or("") == active_id { continue; }
+        let url = p.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").trim_end_matches('/').to_string();
+        let key = p.get("apiKey").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if url.is_empty() || key.is_empty() { continue; }
+        return Some((url, key));
+    }
+    None
+}
+
 /// 从推理模型的 reasoning_content 中提取 JSON（处理 deepseek-r1/v4 等推理模型）
 fn extract_json_from_reasoning(reasoning: &str) -> String {
     // 找第一个 { 和最后一个 }
@@ -133,6 +162,37 @@ pub async fn chat_completion_inner(system: &str, user: &str, cfg: Option<ChatCon
 /// 公开接口：chat_completion（保持向后兼容）
 pub async fn chat_completion(system: &str, user: &str, cfg: Option<ChatConfig>) -> Result<String, String> {
     chat_completion_inner(system, user, cfg, None).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_provider_for_model;
+    use serde_json::json;
+
+    fn cfg() -> serde_json::Value {
+        json!({
+            "activeProviderId": "p-deepseek",
+            "providers": [
+                {"id": "p-deepseek", "baseUrl": "https://api.deepseek.com/v1", "apiKey": "sk-ds", "modelName": "deepseek-chat"},
+                {"id": "p-glm", "baseUrl": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-glm", "modelName": "glm-4-plus"},
+                {"id": "p-named", "baseUrl": "https://x.test/v1", "apiKey": "", "modelName": "glm-4-plus"},
+            ]
+        })
+    }
+
+    #[test]
+    fn routes_non_active_provider_by_model_name() {
+        let got = pick_provider_for_model(&cfg(), "glm-4-plus");
+        // 首个完整命中的非 active provider（url 尾斜杠已剥，apiKey 空条目跳过）
+        assert_eq!(got, Some(("https://open.bigmodel.cn/api/paas/v4".to_string(), "sk-glm".to_string())));
+    }
+
+    #[test]
+    fn active_or_unknown_model_falls_back_to_global() {
+        assert_eq!(pick_provider_for_model(&cfg(), "deepseek-chat"), None);
+        assert_eq!(pick_provider_for_model(&cfg(), "qwen-max"), None);
+        assert_eq!(pick_provider_for_model(&json!({}), "glm-4-plus"), None);
+    }
 }
 
 
