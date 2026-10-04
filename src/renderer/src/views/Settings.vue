@@ -2003,7 +2003,7 @@ async function saveProfileEditor() {
                     <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] flex flex-col">
                       <div class="px-5 pt-4 pb-2 border-b border-surface-100 flex items-center justify-between gap-2">
                         <h3 class="text-[14px] font-semibold text-surface-800">观察池</h3>
-                        <span class="text-[10px] text-surface-400">{{ watchCount }} 条 · 每条保留 30 天，未升级为通知自动过期</span>
+                        <span class="text-[10px] text-surface-400">{{ watchCount }} 条 · 每条保留 7 天、至多 30 条，未升级为通知自动过期/淘汰</span>
                       </div>
                       <div class="px-5 py-3 max-h-[60vh] overflow-y-auto">
                         <pre class="w-full whitespace-pre-wrap text-[11px] leading-relaxed bg-amber-50/50 border border-amber-100 rounded-lg px-2.5 py-2 text-surface-600">{{ watchText }}</pre>

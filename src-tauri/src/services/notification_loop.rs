@@ -19,8 +19,10 @@ static STARTUP_DONE: AtomicBool = AtomicBool::new(false);
 const WATCH_KEY: &str = "analyst_watch";
 /// 单条观察最大长度（长度安全阀，非数量限制）
 const WATCH_MAX_LEN: usize = 120;
-/// 观察条目保留时长：30 天后自动过期（观察池只受时间限制，不限条数）
-const WATCH_TTL_SECS: i64 = 30 * 24 * 3600;
+/// 观察条目保留时长：7 天后自动过期
+const WATCH_TTL_SECS: i64 = 7 * 24 * 3600;
+/// 观察池条数上限：超出按创建顺序淘汰最旧
+const WATCH_MAX_ENTRIES: usize = 30;
 
 /// 分析师工具白名单：只读查询 + 创建通知。无任何业务写权限（建档走通知按钮用户确认）
 const ANALYSIS_TOOLS: [&str; 6] = [
@@ -85,7 +87,7 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 ## 连续观察（WATCH）
 证据不足但值得盯的，不要放弃也不要报警——在最终回复的末尾逐行记录：
 WATCH: <一句话观察 + 需要下轮验证什么>
-观察由系统按时间维护：每条保留 30 天，期间系统会自动带回后续轮次跟进；30 天内未升级为通知即自动过期。
+观察由系统按时间维护：每条保留 7 天、全池至多 30 条（超出淘汰最旧），期间系统会自动带回后续轮次跟进；7 天内未升级为通知即自动过期。
 你只需输出**本轮新增**的观察，无需回显已有的观察（回显不会让它续命，也不会丢失）。已有观察累积验证成立后，才升级为通知。
 
 ## 通知输出契约（硬性格式）
@@ -232,7 +234,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
 
     let w = crate::services::whoami::Whoami::load();
     let seeds = build_change_seeds(&since, &w);
-    // 观察池读取即过期过滤（30 天 TTL）
+    // 观察池读取即过期过滤（7 天 TTL + 30 条上限）
     let watch_effective = load_watch_entries().into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n");
 
     // 结构化跳过判断：无新线索且无遗留观察 → 不调 LLM（不再依赖魔法字符串哨兵）
@@ -305,7 +307,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
                 let preview: String = answer.chars().take(100).collect();
                 log::info!("[通知循环] 分析完成，迭代{}次，回复: {}", iters, preview);
                 // WATCH 池更新：时间驱动合并（同文去重、新条目新时间戳、过期淘汰）
-                // 模型本轮无 WATCH → 池保持原样（仅过期清理），不再清空——条目活到 30 天 TTL
+                // 模型本轮无 WATCH → 池保持原样（仅过期/超限清理），不再清空——条目活到 7 天 TTL
                 let watch_lines = parse_watch_lines(answer);
                 let merged = merge_watch_entries(&watch_lines);
                 log::info!("[通知循环] 观察池合并完成：{} 条（本轮模型新增输出 {} 条）", merged.len(), watch_lines.len());
@@ -355,16 +357,20 @@ fn parse_watch_value(raw: &str, now: i64) -> Vec<WatchEntry> {
     };
     entries.into_iter()
         .filter(|(t, _)| now - *t <= WATCH_TTL_SECS)
-        .collect()
+        .rev().take(WATCH_MAX_ENTRIES).collect::<Vec<_>>().into_iter().rev().collect()
 }
 
-/// 合并（纯函数）：新观察去重追加到存活条目（旧条目时间戳不变=不续命）
+/// 合并（纯函数）：新观察去重追加到存活条目（旧条目时间戳不变=不续命）；超出条数上限按最旧淘汰
 fn merge_entries(alive: Vec<WatchEntry>, new_lines: &[String], now: i64) -> Vec<WatchEntry> {
     let mut entries = alive;
     for line in new_lines {
         if !entries.iter().any(|(_, existing)| existing == line) {
             entries.push((now, line.clone()));
         }
+    }
+    if entries.len() > WATCH_MAX_ENTRIES {
+        let excess = entries.len() - WATCH_MAX_ENTRIES;
+        entries.drain(0..excess);
     }
     entries
 }
@@ -385,20 +391,17 @@ fn save_watch_entries(entries: &[WatchEntry]) {
     set_config(WATCH_KEY, &serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into()));
 }
 
-/// 合并写入：新观察去重追加（不刷新旧条目时间戳=不续命），过期条目顺带清理（读时过滤+写回）。
-/// 模型本轮无 WATCH 也调用——仅做过期淘汰，不再清空观察池。
+/// 合并写入：新观察去重追加（不刷新旧条目时间戳=不续命），过期/超限条目顺带清理（读时过滤+写回）。
+/// 模型本轮无 WATCH 也调用——仅做淘汰，不再清空观察池。
 fn merge_watch_entries(new_lines: &[String]) -> Vec<WatchEntry> {
     let now = now_secs();
     let merged = merge_entries(load_watch_entries(), new_lines, now);
     save_watch_entries(&merged);
-    if merged.len() > 50 {
-        log::warn!("[通知循环] 观察池已达 {} 条（30 天 TTL 内持续累积），注入提示词可能变长", merged.len());
-    }
     log::info!("[通知循环] 观察池合并后共 {} 条（本轮新增 {}）", merged.len(), new_lines.len());
     merged
 }
 
-/// 从分析回复中解析 `WATCH:` 行（保序、单条截断 120 字；**不限条数**——观察池只受 30 天时间限制）
+/// 从分析回复中解析 `WATCH:` 行（保序、单条截断 120 字；池级限制在合并时执行：7 天 TTL + 30 条上限）
 pub(crate) fn parse_watch_lines(answer: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in answer.lines() {
@@ -644,7 +647,7 @@ fn update_call_stats() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_watch_lines, parse_watch_value, merge_entries, WATCH_TTL_SECS};
+    use super::{parse_watch_lines, parse_watch_value, merge_entries, WATCH_TTL_SECS, WATCH_MAX_ENTRIES};
 
     #[test]
     fn parses_watch_lines_in_order() {
@@ -662,13 +665,35 @@ mod tests {
     }
 
     #[test]
-    fn unlimited_items_but_caps_length() {
-        // 观察池不限条数，仅单条 120 字截断
+    fn parse_caps_length_not_count() {
+        // 单行解析只截长度；池级条数限制在 merge/读取处生效
         let mut s = String::new();
         for i in 0..10 { s.push_str(&format!("WATCH: 观察{}{}\n", i, "长".repeat(200))); }
         let w = parse_watch_lines(&s);
         assert_eq!(w.len(), 10);
         assert!(w.iter().all(|x| x.chars().count() <= 120));
+    }
+
+    #[test]
+    fn merge_caps_to_max_entries_dropping_oldest() {
+        let now = 1_000_000_000_i64;
+        let alive: Vec<(i64, String)> = (0..WATCH_MAX_ENTRIES as i64).map(|i| (now - (100 - i), format!("旧{i}"))).collect();
+        assert_eq!(alive.len(), WATCH_MAX_ENTRIES);
+        let merged = merge_entries(alive, &["新观察".to_string()], now);
+        assert_eq!(merged.len(), WATCH_MAX_ENTRIES);
+        assert!(!merged.iter().any(|(_, t)| t == "旧0"), "最旧条目应被淘汰");
+        assert_eq!(merged[WATCH_MAX_ENTRIES - 1].1, "新观察");
+    }
+
+    #[test]
+    fn read_trims_over_cap_keeping_newest() {
+        let now = 1_000_000_000_i64;
+        let arr: Vec<serde_json::Value> = (0..40i64).map(|i| serde_json::json!({"t": now - (400 - i * 10), "text": format!("观察{i}")})).collect();
+        let raw = serde_json::to_string(&arr).unwrap();
+        let alive = parse_watch_value(&raw, now);
+        assert_eq!(alive.len(), WATCH_MAX_ENTRIES);
+        assert_eq!(alive[alive.len() - 1].1, "观察39", "保留最新条目");
+        assert_eq!(alive[0].1, "观察10", "最旧 10 条被裁掉");
     }
 
     #[test]
