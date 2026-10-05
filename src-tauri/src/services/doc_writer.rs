@@ -44,17 +44,145 @@ fn text_type_size_half_pt(r: &Value, body_half_pt: u16) -> u16 {
     }
 }
 
-/// 正文 run（预设宋体小四；text_type=caption → 小五）
-fn body_run(text: &str) -> rwml::Run {
-    body_run_from(text, None)
+// ═══════════════ 行内 Markdown → 格式（确定性渲染，AI 只管原样传文） ═══════════════
+/// 行内样式段（md_inline_runs 产出）
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub(crate) struct InlineStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub code: bool,
 }
-fn body_run_from(text: &str, r: Option<&Value>) -> rwml::Run {
-    let size = r.map(|v| text_type_size_half_pt(v, DOC_PRESET_BODY_HALF_PT))
+
+/// 解析行内 **粗体** / *斜体* / `代码`（含 __/_ 变体与 ***组合***）为样式段序列。
+/// 保守规则：必须成对、开侧后非空白、闭侧前非空白；单 * / _ 的两侧不得紧贴 ASCII 字母数字
+/// （护住 1*2*3、1920*1080、user_name 这类工程文本）；未闭合标记原样输出不吞字。
+pub(crate) fn md_inline_runs(text: &str) -> Vec<(String, InlineStyle)> {
+    let mut out = Vec::new();
+    parse_emph(text, InlineStyle::default(), &mut out);
+    out.iter().for_each(|(s, _)| {
+        debug_assert!(!s.is_empty());
+    });
+    out
+}
+
+/// 只保留纯文本（剥行内标记）：标题/目录/超链标签等自带粗体的位置使用
+pub(crate) fn md_strip_inline(text: &str) -> String {
+    md_inline_runs(text).into_iter().map(|(t, _)| t).collect()
+}
+
+/// 整段被 ** 包裹（用于 Excel 单样式单元格 → 整格加粗）
+pub(crate) fn md_fully_bold(text: &str) -> bool {
+    let t = text.trim();
+    t.len() > 4 && t.starts_with("**") && t.ends_with("**") && !t[2..t.len() - 2].contains("**")
+}
+
+fn parse_emph(s: &str, base: InlineStyle, out: &mut Vec<(String, InlineStyle)>) {
+    if let Some((pre, inner, post, bold, italic)) = take_emph(s) {
+        parse_emph(&pre, base, out);
+        parse_emph(&inner, InlineStyle { bold: base.bold || bold, italic: base.italic || italic, ..base }, out);
+        parse_emph(&post, base, out);
+        return;
+    }
+    parse_code(s, base, out);
+}
+
+fn parse_code(s: &str, base: InlineStyle, out: &mut Vec<(String, InlineStyle)>) {
+    let mut rest = s;
+    while let Some(open) = rest.find('`') {
+        match rest[open + 1..].find('`') {
+            Some(rel) if rel > 0 => {
+                let close = open + 1 + rel;
+                if open > 0 {
+                    out.push((rest[..open].to_string(), base));
+                }
+                out.push((rest[open + 1..close].to_string(), InlineStyle { code: true, ..base }));
+                rest = &rest[close + 1..];
+            }
+            _ => break,
+        }
+    }
+    if !rest.is_empty() {
+        out.push((rest.to_string(), base));
+    }
+}
+
+/// 找第一个合法强调对：返回 (前文, 内文, 后文, bold, italic)
+fn take_emph(s: &str) -> Option<(String, String, String, bool, bool)> {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let findable: [(&str, bool, bool); 6] =
+        [("***", true, true), ("**", true, false), ("*", false, true), ("___", true, true), ("__", true, false), ("_", false, true)];
+    for (marker, bold, italic) in findable {
+        let m: Vec<char> = marker.chars().collect();
+        let ml = m.len();
+        let strict_boundary = ml == 1; // 单 * / 单 _：两侧不得紧贴 ASCII 字母数字
+        let mut i = 0usize;
+        while i + ml <= n {
+            if chars[i..i + ml] != m[..] {
+                i += 1;
+                continue;
+            }
+            let prev_ok = i == 0 || !chars[i - 1].is_ascii_alphanumeric();
+            let after = i + ml;
+            let ok_open = after < n
+                && !chars[after].is_whitespace()
+                && chars[after] != m[0]
+                && (!strict_boundary || prev_ok);
+            if !ok_open {
+                i += ml;
+                continue;
+            }
+            let mut j = after;
+            let mut close = None;
+            while j + ml <= n {
+                if chars[j..j + ml] == m[..] && j > after && !chars[j - 1].is_whitespace() {
+                    let next_ok = j + ml >= n || !chars[j + ml].is_ascii_alphanumeric() || !strict_boundary;
+                    if next_ok {
+                        close = Some(j);
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            if let Some(c) = close {
+                let pre: String = chars[..i].iter().collect();
+                let inner: String = chars[after..c].iter().collect();
+                let post: String = chars[c + ml..].iter().collect();
+                return Some((pre, inner, post, bold, italic));
+            }
+            i += ml;
+        }
+    }
+    None
+}
+
+/// 正文 run（预设宋体小四）
+fn body_run(text: &str) -> rwml::Run {
+    rwml::RunBuilder::new(text).font(DOC_PRESET_FONT).size_half_pt(DOC_PRESET_BODY_HALF_PT).build()
+}
+
+/// 正文 run 序列：行内 markdown（**粗**/*斜*/`code`）解析为多 run；
+/// 段落样式对象（text_type/bold）作基底，inline 叠加覆盖
+fn body_runs(text: &str, r: Option<&Value>) -> Vec<rwml::Run> {
+    let size = r
+        .map(|v| text_type_size_half_pt(v, DOC_PRESET_BODY_HALF_PT))
         .unwrap_or(DOC_PRESET_BODY_HALF_PT);
-    rwml::RunBuilder::new(text)
-        .font(DOC_PRESET_FONT)
-        .size_half_pt(size)
-        .build()
+    let base_bold = r.and_then(|v| v["bold"].as_bool()).unwrap_or(false);
+    md_inline_runs(text)
+        .into_iter()
+        .map(|(t, st)| {
+            let mut b = rwml::RunBuilder::new(t.as_str())
+                .font(if st.code { "Consolas" } else { DOC_PRESET_FONT })
+                .size_half_pt(size);
+            if st.bold || base_bold {
+                b = b.bold();
+            }
+            if st.italic {
+                b = b.italic();
+            }
+            b.build()
+        })
+        .collect()
 }
 
 /// 正文段落（预设 run + 1.5 倍行距），替代 builder.paragraph 使预设生效
@@ -63,7 +191,7 @@ fn body_paragraph(builder: rwml::DocBuilder, text: &str) -> rwml::DocBuilder {
 }
 fn body_paragraph_from(builder: rwml::DocBuilder, text: &str, r: Option<&Value>) -> rwml::DocBuilder {
     let pb = rwml::ParagraphBuilder::new()
-        .runs(vec![body_run_from(text, r)])
+        .runs(body_runs(text, r))
         .line_pct(DOC_PRESET_LINE_PCT);
     builder.rich_paragraph(pb.build())
 }
@@ -551,7 +679,7 @@ fn apply_docx_blocks(
                 let shading = docx_shading_color(child);
                 let styled = align.is_some() || shading.is_some();
                 if let Some(runs) = child["runs"].as_array() {
-                    let built: Vec<rwml::Run> = runs.iter().filter_map(build_run).collect();
+                    let built: Vec<rwml::Run> = runs.iter().flat_map(build_runs).collect();
                     if !built.is_empty() {
                         let mut pb = rwml::ParagraphBuilder::new().runs(built).line_pct(DOC_PRESET_LINE_PCT);
                         if let Some(a) = align {
@@ -570,7 +698,7 @@ fn apply_docx_blocks(
                         }
                         if styled {
                             let mut pb = rwml::ParagraphBuilder::new()
-                                .runs(vec![body_run_from(line.trim_end(), Some(child))])
+                                .runs(body_runs(line.trim_end(), Some(child)))
                                 .line_pct(DOC_PRESET_LINE_PCT);
                             if let Some(a) = align {
                                 pb = pb.align(a);
@@ -740,7 +868,7 @@ fn collect_docx_headings(children: &[Value]) -> Vec<(u8, String)> {
                 "heading" => {
                     let level = child["level"].as_u64().unwrap_or(1).clamp(1, 6) as u8;
                     if let Some(t) = str_field(child, "text") {
-                        out.push((level, t));
+                        out.push((level, md_strip_inline(&t))); // 目录条目去行内标记（标题渲染自带粗体）
                     }
                 }
                 "group" => {
@@ -768,29 +896,38 @@ fn collect_docx_headings(children: &[Value]) -> Vec<(u8, String)> {
     out
 }
 
-fn build_run(r: &Value) -> Option<rwml::Run> {
-    let text = r["text"].as_str().filter(|t| !t.is_empty())?;
-    let mut b = rwml::RunBuilder::new(text);
-    if r["bold"].as_bool().unwrap_or(false) { b = b.bold(); }
-    if r["italic"].as_bool().unwrap_or(false) { b = b.italic(); }
-    if r["underline"].as_bool().unwrap_or(false) { b = b.underline(); }
-    if r["small_caps"].as_bool().unwrap_or(false) { b = b.small_caps(); }
-    // 字号字体由系统预设（text_type 选择类型：body/caption）——自由 font/size 字段已废除，传了忽略
-    b = b.font(DOC_PRESET_FONT);
-    b = b.size_half_pt(text_type_size_half_pt(r, DOC_PRESET_BODY_HALF_PT));
-    if let Some(hl) = str_field(r, "highlight") { b = b.highlight(hl); }
-    if let Some(url) = str_field(r, "hyperlink") { b = b.hyperlink(url); }
-    // 文字颜色（hex 如 "FF0000" / "#FF0000"）
-    if let Some((cr, cg, cb)) = str_field(r, "color").and_then(|s| parse_hex_rgb(&s)) {
-        b = b.color(rwml::Color::rgb(cr, cg, cb));
-    }
-    Some(b.build())
+/// 显式 runs 数组的单条目 → run 序列：显式样式为基底，其 text 内行内 markdown 再细分
+///（AI 直接透传 markdown 文本也能得到正确格式，无需手工拆 runs）
+fn build_runs(r: &Value) -> Vec<rwml::Run> {
+    let Some(text) = r["text"].as_str().filter(|t| !t.is_empty()) else { return vec![] };
+    let size = text_type_size_half_pt(r, DOC_PRESET_BODY_HALF_PT);
+    let color = str_field(r, "color").and_then(|s| parse_hex_rgb(&s));
+    md_inline_runs(text)
+        .into_iter()
+        .map(|(t, st)| {
+            let mut b = rwml::RunBuilder::new(t.as_str());
+            if r["bold"].as_bool().unwrap_or(false) || st.bold { b = b.bold(); }
+            if r["italic"].as_bool().unwrap_or(false) || st.italic { b = b.italic(); }
+            if r["underline"].as_bool().unwrap_or(false) { b = b.underline(); }
+            if r["small_caps"].as_bool().unwrap_or(false) { b = b.small_caps(); }
+            // 字号字体由系统预设（text_type 选择类型：body/caption）——自由 font/size 字段已废除，传了忽略
+            b = b.font(if st.code { "Consolas" } else { DOC_PRESET_FONT });
+            b = b.size_half_pt(size);
+            if let Some(hl) = str_field(r, "highlight") { b = b.highlight(hl); }
+            if let Some(url) = str_field(r, "hyperlink") { b = b.hyperlink(url); }
+            if let Some((cr, cg, cb)) = color {
+                b = b.color(rwml::Color::rgb(cr, cg, cb));
+            }
+            b.build()
+        })
+        .collect()
 }
 
-/// 标题 run：宋体 + 级别字号（预设表唯一真相源；heading_level 保留大纲/目录能力）
+/// 标题 run：宋体 + 级别字号（预设表唯一真相源；heading_level 保留大纲/目录能力）。
+/// 标题自带粗体语义：行内标记只剥除防残留星号，不做分段
 fn heading_run(text: &str, level: u8) -> rwml::Run {
     let idx = (level.clamp(1, 6) - 1) as usize;
-    rwml::RunBuilder::new(text)
+    rwml::RunBuilder::new(md_strip_inline(text).as_str())
         .font(DOC_PRESET_FONT)
         .size_half_pt(DOC_PRESET_HEADING_HALF_PT[idx])
         .build()
@@ -820,8 +957,10 @@ fn render_list_paragraphs(
         } else {
             match lvl % 3 { 0 => "• ", 1 => "◦ ", _ => "▪ " }.to_string()
         };
+        let mut item_runs = vec![body_run(&prefix)];
+        item_runs.extend(body_runs(&bare, None)); // 列表项文本同样支持行内加粗
         let pb = rwml::ParagraphBuilder::new()
-            .runs(vec![body_run(&format!("{}{}", prefix, bare))])
+            .runs(item_runs)
             .line_pct(DOC_PRESET_LINE_PCT)
             .indent_left_pt(21.0 * (lvl as f32 + 1.0))
             .hanging_pt(21.0);
@@ -1055,30 +1194,30 @@ fn build_docx_cell(v: &Value, is_header: bool) -> rwml::Cell {
     let align = if is_obj { parse_docx_align(v) } else { None };
     let align = align.or_else(|| if cell_header { Some(rwml::Align::Center) } else { None });
 
-    // 段落内容：空文本 cell 仍可由 shading 承载底纹（cell 级属性不依赖 blocks）
+    // 段落内容：空文本 cell 仍可由 shading 承载底纹（cell 级属性不依赖 blocks）；
+    // 显式 bold/color 作全段基底，text 内行内 **粗**/*斜* 叠加为部分加粗
     let blocks = if text.is_empty() {
         vec![]
-    } else if bold || color.is_some() {
-        let mut rb = rwml::RunBuilder::new(text.as_str())
-            .font(DOC_PRESET_FONT)
-            .size_half_pt(table_run_size(v));
-        if bold {
-            rb = rb.bold();
-        }
-        if let Some((r, g, b)) = color {
-            rb = rb.color(rwml::Color::rgb(r, g, b));
-        }
-        let mut pb = rwml::ParagraphBuilder::new().push_run(rb.build());
-        if let Some(a) = align {
-            pb = pb.align(a);
-        }
-        vec![rwml::Block::Paragraph(pb.build())]
     } else {
-        let run = rwml::RunBuilder::new(text.as_str())
-            .font(DOC_PRESET_FONT)
-            .size_half_pt(table_run_size(v))
-            .build();
-        let mut pb = rwml::ParagraphBuilder::new().runs(vec![run]);
+        let runs: Vec<rwml::Run> = md_inline_runs(&text)
+            .into_iter()
+            .map(|(t, st)| {
+                let mut rb = rwml::RunBuilder::new(t.as_str())
+                    .font(DOC_PRESET_FONT)
+                    .size_half_pt(table_run_size(v));
+                if bold || st.bold {
+                    rb = rb.bold();
+                }
+                if st.italic {
+                    rb = rb.italic();
+                }
+                if let Some((r, g, b)) = color {
+                    rb = rb.color(rwml::Color::rgb(r, g, b));
+                }
+                rb.build()
+            })
+            .collect();
+        let mut pb = rwml::ParagraphBuilder::new().runs(runs);
         if let Some(a) = align {
             pb = pb.align(a);
         }
@@ -1414,6 +1553,15 @@ fn write_xlsx_row(
                 None => ws.write(row, col, n).map(|_| ()),
             },
             CellContent::Text(s) => {
+                // Excel 单元格单样式：整段 **包裹** → 转整格加粗；其余行内标记仅剥除（不改字）
+                let (s, wrap_bold) = if md_fully_bold(&s) {
+                    (md_strip_inline(&s), true)
+                } else if s.contains("**") {
+                    (md_strip_inline(&s), false)
+                } else {
+                    (s, false)
+                };
+                let fmt = if wrap_bold { fmt.map(|f| f.set_bold()) } else { fmt };
                 if s.is_empty() {
                     match &fmt {
                         Some(f) => ws.write_blank(row, col, f).map(|_| ()),
@@ -2493,14 +2641,106 @@ mod tests {
         ]}), "document.xml");
         assert!(xml.contains(r#"w:sz w:val="24""#), "列表应宋体小四");
         assert!(xml.contains(r#"w:line="360""#), "列表应 1.5 倍行距");
+        // 前缀与正文现为独立 run（行内加粗支持）：分别断言存在、无双重编号残留
         assert!(
-            xml.contains("2. 自带序号第二步"),
+            xml.contains(">2. <") && xml.contains("自带序号第二步") && !xml.contains("1. 自带"),
             "自带前缀应被剥除并统一重编号: {}",
             &xml[..xml.len().min(1600)]
         );
-        assert!(xml.contains("1. 新组应从1开始"), "有序组间编号应独立重置");
+        assert!(xml.contains(">1. ") && xml.contains("新组应从1开始"), "有序组间编号应独立重置");
         assert!(!xml.contains("1. 1."), "不得双重前缀");
-        assert!(xml.contains("◦ 子项甲"), "嵌套子级应为二级圆点");
+        assert!(xml.contains(">◦ ") && xml.contains("子项甲"), "嵌套子级应为二级圆点");
         assert!(xml.contains("w:left"), "列表应有层级缩进");
+    }
+
+    /// 行内 markdown 解析：成对标记 → 样式段；工程文本/未闭合 → 原样字面
+    #[test]
+    fn md_inline_runs_parser_table() {
+        let segs = |s: &str| md_inline_runs(s);
+        let plain = |st: &InlineStyle| !st.bold && !st.italic && !st.code;
+        // 基础粗体
+        let r = segs("采用**冗余**设计");
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[1].0, "冗余");
+        assert!(r[1].1.bold && !r[0].1.bold && plain(&r[2].1));
+        // 斜体（中文紧邻合法）
+        let r = segs("重点*双机热备*架构");
+        assert_eq!(r[1].0, "双机热备");
+        assert!(r[1].1.italic && !r[1].1.bold);
+        // 组合 ***x*** = 粗+斜
+        let r = segs("***组合***");
+        assert!(r.len() == 1 && r[0].0 == "组合" && r[0].1.bold && r[0].1.italic);
+        // 代码段
+        let r = segs("执行 `select 1` 语句");
+        assert_eq!(r[1].0, "select 1");
+        assert!(r[1].1.code);
+        // 嵌套：粗内含斜
+        let r = segs("混**粗*斜*续**尾");
+        let has = |txt: &str, b: bool, i: bool| r.iter().any(|(t, st)| t == txt && st.bold == b && st.italic == i);
+        assert!(has("斜", true, true) && has("粗", true, false) && has("续", true, false));
+        // 工程文本保护：单 * / _ 紧贴 ASCII 字母数字不生效
+        for lit in ["1920*1080 分辨率", "算式 1*2*3", "字段 user_name 与 a__b"] {
+            let r = segs(lit);
+            assert_eq!(r.iter().map(|(t, _)| t.as_str()).collect::<String>(), lit, "应原样: {}", lit);
+            assert!(r.iter().all(|(_, st)| plain(st)), "不应产生样式: {}", lit);
+        }
+        // 未闭合标记原样保留不吞字
+        let r = segs("未闭合 **粗体 与 *斜 尾巴");
+        assert_eq!(r.iter().map(|(t, _)| t.as_str()).collect::<String>(), "未闭合 **粗体 与 *斜 尾巴");
+        assert!(r.iter().all(|(_, st)| plain(st)));
+        // 剥除工具
+        assert_eq!(md_strip_inline("一、**总体**架构"), "一、总体架构");
+        assert!(md_fully_bold("**合计**"));
+        assert!(!md_fully_bold("**局部**加粗其余"));
+        assert!(!md_fully_bold("**"));
+    }
+
+    /// docx 渲染：段落/表格 cell 部分加粗为独立 run 且无 ** 残留；标题与目录剥标记
+    #[test]
+    fn docx_inline_markdown_rendering() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "paragraph", "text": "采用**双机热备**保障可用性"},
+            {"type": "table", "rows": [["项目", "说明"], ["SLA", "**99.999%** 承诺"]]},
+            {"type": "heading", "level": 2, "text": "二、**建设**目标"},
+        ]}), "document.xml");
+        assert!(xml.contains("双机热备") && xml.contains("<w:b/>"), "段落应出现加粗 run");
+        assert!(xml.contains("99.999%"), "cell 文本保留");
+        assert!(!xml.contains("**"), "全文档不得残留 ** 标记: {}", &xml[..xml.len().min(400)]);
+        assert!(xml.contains("二、建设目标"), "标题剥标记保留文本");
+    }
+
+    /// docx 显式 runs 通道：run.text 内的行内标记同样解析（叠加基底样式）
+    #[test]
+    fn docx_explicit_runs_inline_md() {
+        let xml = docx_part(&json!({"children": [{
+            "type": "paragraph",
+            "runs": [{"text": "总体：承诺 **99.99%** 可用性", "italic": true}]
+        }]}), "document.xml");
+        assert!(xml.contains("99.99%") && xml.contains("<w:b/>"), "显式 run 内标记应转粗体");
+        assert!(!xml.contains("**"), "无标记残留: {}", &xml[..xml.len().min(400)]);
+        assert!(xml.contains("<w:i/>"), "基底 italic 样式保留");
+    }
+
+    /// xlsx：整格 **包裹** → 整格加粗（styles.xml 出现 bold 字体）且无标记残留
+    #[test]
+    fn xlsx_wrap_bold_cell_and_strip() {
+        use std::io::Read as _;
+        let content = json!({"sheets": [{"name": "S1", "rows": [
+            ["**合计**"], ["**局部**其余不加粗"], ["普通文本"]
+        ]}]});
+        let bytes = build_xlsx(&content).expect("build_xlsx");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("open xlsx zip");
+        let mut styles = String::new();
+        zip.by_name("xl/styles.xml").unwrap().read_to_string(&mut styles).unwrap();
+        assert!(styles.contains("<b/>"), "整格包裹应产生加粗字体: {}", &styles[..styles.len().min(500)]);
+        let mut sheet = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet).unwrap();
+        let mut ss = String::new();
+        if let Ok(mut f) = zip.by_name("xl/sharedStrings.xml") {
+            f.read_to_string(&mut ss).unwrap();
+        }
+        let text = format!("{}{}", sheet, ss);
+        assert!(!text.contains("**"), "xlsx 单元格不得残留 ** 标记");
+        assert!(text.contains("合计") && text.contains("局部") && text.contains("普通文本"), "文本逐字保留");
     }
 }
