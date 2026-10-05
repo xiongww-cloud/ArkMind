@@ -1,7 +1,8 @@
 //! ext_tool_write_document：AI 生成 Word(.docx)/Excel(.xlsx) 文档执行器
 //!
 //! - create：按 AI 设计的 content 结构生成文档 → CAS 入库 → 返回 file_id（供预览/下载/复制）
-//! - read：回读已有生成文档的原始 content（多轮修改：先读结构，再整体重新生成）
+//! - read：回读已有生成文档的原始 content（小文档多轮修改：读结构后整体重新生成）
+//! - append：向已有 docx 追加章节块（长文档分批成文：file_id 原地不变）
 
 use crate::services::agent_workflow::ToolResultEnvelope;
 use crate::services::doc_writer;
@@ -19,7 +20,7 @@ pub(crate) fn execute(a: &Value) -> String {
                 result_type: "document_read_result".to_string(),
                 data,
                 summary: Some(
-                    "已返回该文档的原始 content 结构。修改后用 action=create 传入完整新内容重新生成（传完整内容，不要只传增量）。"
+                    "已返回该文档的原始 content 结构。小文档修改用 action=create 传完整新内容重新生成；长文档只改尾部时优先 action=append 仅传新增块。"
                         .to_string(),
                 ),
             }
@@ -33,9 +34,40 @@ pub(crate) fn execute(a: &Value) -> String {
         };
     }
 
+    // ── append：向已有 docx 追加章节块（长文分批成文的组装路径，file_id 不变）──
+    if action == "append" {
+        let source_id = a["source_file_id"].as_str().unwrap_or("");
+        if source_id.is_empty() {
+            return err("append 需要 source_file_id（create 返回的 file_id）。".to_string());
+        }
+        let content = &a["content"];
+        if content.is_null() {
+            return err("append 需要 content：{children:[新章节块]}，只传本次新增内容。".to_string());
+        }
+        return match doc_writer::append_docx(source_id, content) {
+            Ok(doc) => ToolResultEnvelope {
+                result_type: "document_write_result".to_string(),
+                data: json!({
+                    "success": true,
+                    "appended": true,
+                    "file_id": doc.file_id,
+                    "file_name": doc.file_name,
+                    "file_type": doc.file_type,
+                    "file_size": doc.file_size,
+                }),
+                summary: Some(format!(
+                    "已向文档「{}」追加章节（file_id={} 不变，当前 {} KB）。继续 append 后续章节；全部章节完成后一句话汇报。",
+                    doc.file_name, doc.file_id, (doc.file_size as f64 / 1024.0).ceil() as i64
+                )),
+            }
+            .to_json(),
+            Err(e) => err(e),
+        };
+    }
+
     if action != "create" {
         return err(format!(
-            "未知 action「{}」。支持：create（生成文档）、read（读取已有文档结构）。",
+            "未知 action「{}」。支持：create（生成文档）、read（读取已有文档结构）、append（向 docx 追加章节块）。",
             action
         ));
     }
@@ -76,7 +108,7 @@ pub(crate) fn execute(a: &Value) -> String {
                     "file_size": doc.file_size,
                 }),
                 summary: Some(format!(
-                    "已创建{}文档「{}」（{}），用户可在对话中预览/下载/复制。需要修改它时：action=read & source_file_id={} 读取原结构，再 action=create 传完整新内容重新生成。",
+                    "已创建{}文档「{}」（{}），用户可在对话中预览/下载/复制。修改：小文档 action=read 读原结构后 action=create 传完整新内容；长文档追加章节用 action=append + source_file_id={} 只传新增块。",
                     type_label,
                     doc.file_name,
                     human_size(doc.file_size),

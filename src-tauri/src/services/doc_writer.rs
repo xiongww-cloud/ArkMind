@@ -127,6 +127,82 @@ pub fn read_content(file_id: &str) -> Result<Value, String> {
     }))
 }
 
+/// 长文分批成文：把新章节块并入已有 content（纯函数，可单测）。
+/// new 接受 {children:[...]} 或裸块数组；只追加 children，title/页眉页脚等顶层字段沿用旧文档。
+pub(crate) fn merge_docx_children(old: &Value, new: &Value) -> Result<Value, String> {
+    let mut merged = old.clone();
+    let new_children: Vec<Value> = match new.as_array() {
+        Some(a) => a.clone(),
+        None => new
+            .get("children")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .ok_or("append 的 content 需为 {children:[块,...]} 或块数组")?,
+    };
+    if new_children.is_empty() {
+        return Err("append 的 children 为空，没有可追加的内容".to_string());
+    }
+    let obj = merged.as_object_mut().ok_or("原文档 content 非对象，无法追加")?;
+    let mut children = obj
+        .get("children")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+    children.extend(new_children);
+    obj.insert("children".to_string(), json!(children));
+    Ok(merged)
+}
+
+/// 原地覆盖保存：合并后的 content 重新渲染为 docx 字节，**沿用同一 file_id**
+/// （更新 file_assets 字节指向/大小/hash 与 generated_docs.content），聊天里的文档卡片持续指向同一文件。
+fn save_overwrite(bytes: &[u8], file_id: &str, file_name: &str, content: &Value) -> Result<GeneratedDoc, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let hash = hex::encode(&hasher.finalize()[..32]);
+    let size = bytes.len() as i64;
+    let disk = flat_disk_path(&hash);
+    if disk.is_empty() {
+        return Err("存储路径无效".to_string());
+    }
+    if !std::path::Path::new(&disk).exists() {
+        if let Some(p) = std::path::Path::new(&disk).parent() {
+            std::fs::create_dir_all(p).map_err(|e| format!("创建存储目录失败: {}", e))?;
+        }
+        std::fs::write(&disk, bytes).map_err(|e| format!("写入文件失败: {}", e))?;
+    }
+    database::run(
+        "UPDATE file_assets SET content_hash=?1, file_size=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+        &[json!(&hash), json!(size), json!(file_id)],
+    )
+    .map_err(|e| e.to_string())?;
+    database::run(
+        "INSERT OR REPLACE INTO generated_docs(file_id, content, created_at) VALUES(?1,?2,datetime('now','localtime'))",
+        &[json!(file_id), json!(content.to_string())],
+    )
+    .map_err(|e| e.to_string())?;
+    // 重新进解析管道刷新知识库正文（enqueue 对同实体先删 pending，幂等）
+    crate::services::knowledge_lifecycle::notify_file_upload(file_id);
+    log::info!("[文档生成] append 已原地更新 file_id={} 累计size={}B", file_id, size);
+    Ok(GeneratedDoc {
+        file_id: file_id.to_string(),
+        file_name: file_name.to_string(),
+        file_type: "docx".to_string(),
+        file_size: size as u64,
+    })
+}
+
+/// 向已生成的 docx 追加章节块并原地重建（长方案分块成文的组装端）。
+/// 文档属性（metadata）未持久化于 generated_docs，追加后按系统默认重建——可接受降级。
+pub fn append_docx(source_file_id: &str, new_content: &Value) -> Result<GeneratedDoc, String> {
+    let cur = read_content(source_file_id)?;
+    if cur["file_type"].as_str() != Some("docx") {
+        return Err("append 目前仅支持 docx；xlsx 请读取结构后整体重新 create".to_string());
+    }
+    let merged = merge_docx_children(&cur["content"], new_content)?;
+    let bytes = build_docx(&merged, None)?;
+    save_overwrite(&bytes, cur["file_id"].as_str().unwrap_or(source_file_id), cur["file_name"].as_str().unwrap_or("文档"), &merged)
+}
+
 /// 启动清理：仅回收孤儿快照（资产已被别处删除的残留记录）。
 /// 不再按时间自动过期——生命周期由用户驱动：kb_delete_session 删会话时联动删除关联文档。
 pub fn cleanup_generated_docs() {
@@ -1733,6 +1809,24 @@ mod tests {
         // XLSX 文件头是 PK (ZIP)
         assert_eq!(&bytes[..2], b"PK", "not a valid zip/xlsx file");
         println!("xlsx size: {} bytes", bytes.len());
+    }
+
+    #[test]
+    fn merge_docx_children_appends_and_validates() {
+        let old = json!({"title": "方案", "children": [{"type": "heading", "text": "一、背景"}]});
+        // 对象 {children:[...]} 追加
+        let merged = merge_docx_children(&old, &json!({"children": [{"type": "heading", "text": "二、需求"}]})).unwrap();
+        assert_eq!(merged["title"], "方案");
+        assert_eq!(merged["children"].as_array().unwrap().len(), 2);
+        // 裸数组追加同样可行
+        let m2 = merge_docx_children(&old, &json!([{"type": "paragraph", "text": "p"}])).unwrap();
+        assert_eq!(m2["children"].as_array().unwrap().len(), 2);
+        // 空 children / 结构非法 → 报错不产出
+        assert!(merge_docx_children(&old, &json!({"children": []})).is_err());
+        assert!(merge_docx_children(&old, &json!({"foo": 1})).is_err());
+        // 旧文档无 children 时以追加块为全新 children
+        let m3 = merge_docx_children(&json!({"title": "t"}), &json!({"children": [{"type": "paragraph", "text": "x"}]})).unwrap();
+        assert_eq!(m3["children"].as_array().unwrap().len(), 1);
     }
 
     #[test]
