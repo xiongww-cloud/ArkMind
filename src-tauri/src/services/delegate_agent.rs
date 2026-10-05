@@ -109,6 +109,7 @@ pub async fn execute_delegate_agent(
     let llm = crate::services::agent_workflow::LlmOverrides {
         model: first["model"].as_str().filter(|m| !m.is_empty()).map(String::from),
         temperature: first["temperature"].as_f64(),
+        agent_id: Some(agent_id.to_string()),
     };
 
     // 构建共享上下文快照：截尾防御（剥未闭合 tool_calls）+ 尾部注入执行体指令

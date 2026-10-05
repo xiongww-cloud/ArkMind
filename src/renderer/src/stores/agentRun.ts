@@ -8,8 +8,8 @@ export interface AgentRunState {
   currentAgent: { id: string; name: string } | null
   /** 本轮参与过的子 Agent 名称（去重保序），agent:done 时由前端写入消息的 assistants 署名 */
   participants: string[]
-  /** 生成心跳：当前子 Agent 已产出字符数（含工具调用参数）；0=尚无进度 */
-  writingChars: number
+  /** 生成心跳：按子 Agent id 分桶的已产出字符数（并行委托不串台）；主流程记在 '' 桶 */
+  writingByAgent: Record<string, number>
 }
 
 let listenersBound = false
@@ -18,17 +18,17 @@ export const useAgentRunStore = defineStore('agentRun', {
   state: (): AgentRunState => ({
     currentAgent: null,
     participants: [],
-    writingChars: 0,
+    writingByAgent: {},
   }),
   actions: {
     setAgent(id: string, name: string) {
       this.currentAgent = { id, name }
-      this.writingChars = 0
+      this.writingByAgent = {}
       if (name && !this.participants.includes(name)) this.participants.push(name)
     },
     clearAgent() {
       this.currentAgent = null
-      this.writingChars = 0
+      this.writingByAgent = {}
     },
     /** 每轮发送开始时调用：清空上轮署名（done 处理器读取 participants 之后才会再次重置） */
     resetParticipants() {
@@ -60,8 +60,8 @@ export function initAgentRunListeners() {
   listen<{ stage?: string; agent_id?: string; agent_name?: string; chars?: number }>('agent:status', (ev) => {
     const p = ev.payload
     if (p?.stage === 'writing') {
-      // 生成心跳：只更新进度字数，绝不触碰 currentAgent（无 agent_name 的 payload 会被 applyStatus 误清）
-      store.writingChars = p.chars ?? 0
+      // 生成心跳：按 agent_id 落桶，绝不触碰 currentAgent（无 agent_name 的 payload 会被 applyStatus 误清）
+      store.writingByAgent[p.agent_id || ''] = p.chars ?? 0
     } else if (p?.stage === 'delegate-done') {
       store.clearAgent()
     } else {

@@ -269,6 +269,11 @@ watch(() => agent.isChatting.value, (busy) => {
 })
 const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 const fmtElapsed = () => `${Math.floor(elapsedSec.value / 60)}:${String(elapsedSec.value % 60).padStart(2, '0')}`
+// 当前子 Agent 的产出字数（按 agent 分桶，并行委托不串台）
+const wChars = computed(() => {
+  const a = agentRun.currentAgent
+  return a ? (agentRun.writingByAgent[a.id] || 0) : 0
+})
 
 /// 加载当前对话历史（全局指针，后端兜底）——打开/召唤用，不做轮转判定
 async function loadHistory() {
@@ -489,7 +494,7 @@ onUnmounted(() => {
               <div v-else-if="m.thinking && !agent.rendered.value[m.id || ''] && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
                 <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
                 <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
-                <span class="text-[12px] text-[#8e8e93]">· {{ agentRun.writingChars > 0 ? `正在生成 · ${fmtK(agentRun.writingChars)} 字` : '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
+                <span class="text-[12px] text-[#8e8e93]">· {{ wChars > 0 ? `正在生成 · ${fmtK(wChars)} 字` : '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
               </div>
               <div v-else class="msg-a__body markdown-body" :class="{ 'thinking-bubble': m.thinking }"
                 v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
