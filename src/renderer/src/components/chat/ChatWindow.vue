@@ -275,7 +275,7 @@ const wProgress = computed(() => {
   if (!a) return ''
   const w = agentRun.writingByAgent[a.id]
   if (!w) return ''
-  if (w.stool) return `正在生成内容 · ${fmtK(w.chars)} 字`
+  if (w.stool || (w.pending ?? 0) > 400) return `正在生成内容 · ${fmtK(w.chars)} 字`
   if (w.cur) return `正在：${w.cur}`
   if (w.deliverable) return w.chars > 0 ? `正在生成 · ${fmtK(w.chars)} 字` : ''
   return ''

@@ -39,7 +39,7 @@ const wProgress = computed(() => {
   if (!a) return ''
   const w = agentRun.writingByAgent[a.id]
   if (!w) return ''
-  if (w.stool) return `正在生成内容 · ${fmtK(w.chars)} 字`
+  if (w.stool || (w.pending ?? 0) > 400) return `正在生成内容 · ${fmtK(w.chars)} 字`
   if (w.cur) return `正在：${w.cur}`
   if (w.deliverable) return w.chars > 0 ? `正在生成 · ${fmtK(w.chars)} 字` : ''
   return ''
@@ -387,8 +387,8 @@ const currentSession = computed(() => sessions.value.find(s => s.id === currentS
 
 function saveToStorage(target?: ChatSession) { 
   // 可显式传入提问时的会话：AI 回答期间用户切会话/新建后，回复必须存回原会话而非当前会话
-  const s = target || currentSession.value; 
     const isCurrent = s === currentSession.value
+  const s = target || currentSession.value; 
   if (s && s.messages.length > 0) {
     const currentContent = JSON.stringify(s.messages)
     if (isCurrent && currentContent === lastSavedContent) {
@@ -397,8 +397,8 @@ function saveToStorage(target?: ChatSession) {
     }
     s.updatedAt = new Date().toLocaleString('sv-SE'); 
     if (isCurrent) {
-      sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()); 
       lastSavedContent = currentContent
+      sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()); 
       sessionDirty.value = false;
     }
     kbSaveSessions([s]).catch((e) => console.error('[Agent] 保存会话失败:', e)); 
@@ -415,8 +415,8 @@ async function loadFromStorage() {
       if (m.role === 'assistant') {
         m.isThinking = false
         m.typewriterDone = true
-      }
     lastSavedContent = JSON.stringify(s.messages)
+      }
     }
   }
   // Render markdown for loaded AI messages — await all renders

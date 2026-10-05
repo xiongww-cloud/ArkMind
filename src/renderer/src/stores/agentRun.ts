@@ -10,7 +10,7 @@ export interface AgentRunState {
   participants: string[]
   /** 生成心跳：按子 Agent id 分桶的产出进度。展示口径：写参数期显示"生成内容 · N 字"、
    *  工具执行期显示"正在：动作"、交付型正文期显示"生成 · N 字"（不再有虚指的"步数"） */
-  writingByAgent: Record<string, { chars: number; tools: number; deliverable: boolean; stool?: string; cur?: string }>
+  writingByAgent: Record<string, { chars: number; tools: number; deliverable: boolean; stool?: string; cur?: string; pending?: number }>
 }
 
 let listenersBound = false
@@ -58,7 +58,7 @@ export function initAgentRunListeners() {
   if (listenersBound) return
   listenersBound = true
   const store = useAgentRunStore()
-  listen<{ stage?: string; agent_id?: string; agent_name?: string; chars?: number; tools?: number; class?: string; stool?: string; label?: string; tool?: string }>('agent:status', (ev) => {
+  listen<{ stage?: string; agent_id?: string; agent_name?: string; chars?: number; tools?: number; class?: string; stool?: string; label?: string; tool?: string; pending?: number }>('agent:status', (ev) => {
     const p = ev.payload
     if (p?.stage === 'writing') {
       // 生成心跳：按 agent_id 落桶，绝不触碰 currentAgent（无 agent_name 的 payload 会被 applyStatus 误清）
@@ -68,6 +68,7 @@ export function initAgentRunListeners() {
         tools: p.tools ?? 0,
         deliverable: p.class === 'deliverable',
         stool: p.stool || '',
+        pending: p.pending ?? 0,
       }
     } else if (p?.stage === 'tool_start') {
       store.applyStatus(p)
