@@ -232,9 +232,9 @@ pub(crate) fn build_confirmation_cards(confs: &[Value]) -> Option<Value> {
         })
         .collect();
     if questions.is_empty() { return None; }
+    // 不带 reason：自动卡片的问题本身即语境，头部说明文案易与用户主动追问混淆（ClarifyCard 空 reason 不渲染）
     Some(json!({
         "status": "pending",
-        "reason": "执行过程需要你的确认（系统根据子 Agent 上报自动生成）：",
         "questions": questions,
     }))
 }
