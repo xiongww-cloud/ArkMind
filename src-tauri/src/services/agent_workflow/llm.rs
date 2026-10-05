@@ -78,6 +78,8 @@ struct StreamFail {
     /// 是否已出现工具调用（API tool_calls 或文本抑制标记）——此时不宜续写，应原样重试
     has_tool_calls: bool,
     cancelled: bool,
+    /// 已累积的工具调用参数总字数（大参数流中断时上层据此决定不盲重发）
+    tool_args_chars: usize,
 }
 
 /// SSE 解析状态
@@ -93,7 +95,10 @@ struct SseState {
     suppress_tokens: bool,
     done: bool,               // 已收到 [DONE]（或 error 事件），终止流读取
     got_finish: bool,         // 已收到 finish_reason（stop/tool_calls/length 等）
+    finish: Option<String>,   // 具体 finish_reason（length = 输出被模型长度上限截断）
     server_err: Option<String>, // 服务端推送的 error 事件
+    prog_last_chars: usize,   // 生成心跳：上次已上报的产出字符数
+    prog_last_at: std::time::Instant, // 生成心跳：上次上报时刻
 }
 
 /// flush 积压未发的 token（失败路径也要 flush：保证前端已有内容与 partial 一致，续写无缝衔接）
@@ -157,7 +162,13 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
             Err(f) => {
                 log::warn!("[LLM] 流式调用失败(第{}次): {}", attempt, f.message);
                 if attempt > MAX_RETRIES {
-                    log::error!("[LLM] 流式调用重试{}次后仍失败: {}", MAX_RETRIES, f.message);
+                    log::error!("[LLM] 流式调用重试{}次后仍失败: {}", attempt, f.message);
+                    return Err(f.message);
+                }
+                // ★ 大型工具流快失败：工具参数已深度累积（长文档生成中）后断流，原样重发=整篇重生成，
+                //   大概率同样死且再耗数分钟静默——立即失败，交调用方（主 Agent 的重试语义）决策
+                if f.tool_args_chars > 2000 {
+                    log::error!("[LLM] 工具参数已累积 {} 字后中断，不原样重发直接失败", f.tool_args_chars);
                     return Err(f.message);
                 }
                 if !f.partial.trim().is_empty() && !f.has_tool_calls {
@@ -223,23 +234,24 @@ async fn stream_once(
     let mut req = AGENT_HTTP_CLIENT.post(&format!("{}/chat/completions", url)).json(&body);
     if !api_key.is_empty() { req = req.header("Authorization", format!("Bearer {}", api_key)); }
     req = req.header("Accept", "text/event-stream");
-    req = req.timeout(std::time::Duration::from_secs(300)); // 覆盖客户端 30s 默认：reqwest 的 timeout 覆盖整个流式周期
+    req = req.timeout(std::time::Duration::from_secs(1800)); // 总上限放宽到 30 分钟（长文档生成场景）；掐断死流的责任交给下面的 120s 空闲超时
     let t0 = std::time::Instant::now();
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(e) => { log::error!("LLM 请求发送失败: {e}"); return Err(StreamFail { message: format!("LLM: {e}"), partial: String::new(), has_tool_calls: false, cancelled: false }); }
+        Err(e) => { log::error!("LLM 请求发送失败: {e}"); return Err(StreamFail { message: format!("LLM: {e}"), partial: String::new(), has_tool_calls: false, cancelled: false, tool_args_chars: 0 }); }
     };
     log::info!("[SSE] headers +{}ms status={}", t0.elapsed().as_millis(), resp.status());
     if !resp.status().is_success() {
         let s = resp.status();
         let b = resp.text().await.unwrap_or_default();
-        return Err(StreamFail { message: format!("LLM {s}: {b}"), partial: String::new(), has_tool_calls: false, cancelled: false });
+        return Err(StreamFail { message: format!("LLM {s}: {b}"), partial: String::new(), has_tool_calls: false, cancelled: false, tool_args_chars: 0 });
     }
 
     let mut st = SseState {
         buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(),
         usage: None, count: 0, token_buf: String::new(), token_buf_start: 0,
-        suppress_tokens: false, done: false, got_finish: false, server_err: None,
+        suppress_tokens: false, done: false, got_finish: false, finish: None,
+        server_err: None, prog_last_chars: 0, prog_last_at: std::time::Instant::now(),
     };
     let mut stream = resp.bytes_stream();
 
@@ -266,10 +278,10 @@ async fn stream_once(
                 }
                 if chunk["usage"].is_object() { st.usage = Some(chunk["usage"].clone()); }
                 // finish_reason（choices[]. 或 chunk 级）：流完整性的正标记
-                if chunk["finish_reason"].as_str().map_or(false, |f| !f.is_empty()) { st.got_finish = true; }
+                if chunk["finish_reason"].as_str().filter(|f| !f.is_empty()).map(|f| f.to_string()).is_some() { st.got_finish = true; st.finish = chunk["finish_reason"].as_str().map(|f| f.to_string()); }
                 if let Some(choices) = chunk["choices"].as_array() {
                     for c in choices {
-                        if c["finish_reason"].as_str().map_or(false, |f| !f.is_empty()) { st.got_finish = true; }
+                        if c["finish_reason"].as_str().filter(|f| !f.is_empty()).is_some() { st.got_finish = true; st.finish = c["finish_reason"].as_str().map(|f| f.to_string()); }
                         let delta = &c["delta"];
                         // content → 缓存并检测工具调用标记（用 st.full 检测，不受换行/切分影响）
                         if let Some(tok) = delta["content"].as_str() {
@@ -332,24 +344,38 @@ async fn stream_once(
         ($msg:expr, $cancelled:expr) => {{
             flush_pending_tokens(&mut st, silent, &app_handle);
             let has_tool_calls = !st.tca.is_empty() || st.suppress_tokens;
+            let tool_args_chars = st.tca.iter().map(|(_, _, a)| a.len()).sum();
             let partial = st.full.clone();
             if $cancelled {
                 log::info!("SSE stream cancelled +{}ms tokens={}", t0.elapsed().as_millis(), st.count);
             } else {
                 log::error!("SSE stream error +{}ms: {}", t0.elapsed().as_millis(), $msg);
             }
-            return Err(StreamFail { message: $msg, partial, has_tool_calls, cancelled: $cancelled });
+            return Err(StreamFail { message: $msg, partial, has_tool_calls, cancelled: $cancelled, tool_args_chars });
         }};
     }
 
-    while let Some(chunk) = stream.next().await {
-        let bytes = match chunk {
+    loop {
+        // ★ 空闲超时：120s 收不到任何 chunk 判连接已死（生成中的流每几秒必有增量，不会误杀大文档）
+        let next = match tokio::time::timeout(std::time::Duration::from_secs(120), stream.next()).await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(_) => { fail!("流空闲超时：120 秒未收到数据，连接疑似已断开".to_string(), false); }
+        };
+        let bytes = match next {
             Ok(b) => b,
             Err(e) => { fail!(format!("stream: {e}"), false); }
         };
         st.buf.push_str(&String::from_utf8_lossy(&bytes));
         st.buf = st.buf.replace("\r\n", "\n");
         while try_process_one(&mut st, &app_handle) {}
+        // ★ 生成心跳：每 5s 且产出有增量即上报已产字符数（含工具参数——文档助手长文生成期的"活着"证据）
+        let produced = st.full.len() + st.reasoning.len() + st.tca.iter().map(|(_, _, a)| a.len()).sum::<usize>();
+        if !silent && produced > st.prog_last_chars && st.prog_last_at.elapsed().as_secs() >= 5 {
+            if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"writing","chars":produced})); }
+            st.prog_last_chars = produced;
+            st.prog_last_at = std::time::Instant::now();
+        }
         if st.done { break; }
         if cancel_aware && AGENT_CANCEL.load(Ordering::Acquire) {
             fail!("cancelled".to_string(), true);
@@ -363,11 +389,19 @@ async fn stream_once(
     log::info!("SSE stream end +{}ms tokens={} len={} tool_calls={} done={} finish={} err={}",
         t0.elapsed().as_millis(), st.count, st.full.len(), st.tca.len(), st.done, st.got_finish, st.server_err.is_some());
 
+    // ★ 输出达模型长度上限被截断：明确失败（此前被当正常结束 → 半截文档/工具参数）
+    if st.finish.as_deref() == Some("length") {
+        let has_tool_calls = !st.tca.is_empty() || st.suppress_tokens;
+        let tool_args_chars = st.tca.iter().map(|(_, _, a)| a.len()).sum();
+        log::error!("SSE 输出达模型长度上限被截断 (finish_reason=length) content={} tool_args={}", st.full.len(), tool_args_chars);
+        return Err(StreamFail { message: "模型输出达到长度上限被截断（finish_reason=length）：请拆分为多次生成，或改用输出上限更大的模型".to_string(), partial: st.full.clone(), has_tool_calls, cancelled: false, tool_args_chars });
+    }
+
     // ★ 完整性判定：服务端 error 事件 / 未收到完成标记 → 视为中断，不把半截内容伪装成功
     if let Some(e) = stream_end_error(st.done, st.got_finish, st.server_err.as_deref()) {
         let has_tool_calls = !st.tca.is_empty() || st.suppress_tokens;
         log::error!("SSE stream incomplete +{}ms: {}", t0.elapsed().as_millis(), e);
-        return Err(StreamFail { message: e, partial: st.full.clone(), has_tool_calls, cancelled: false });
+        return Err(StreamFail { message: e, partial: st.full.clone(), has_tool_calls, cancelled: false, tool_args_chars: st.tca.iter().map(|(_, _, a)| a.len()).sum() });
     }
 
     let tool_calls: Vec<Value> = st.tca.into_iter()
