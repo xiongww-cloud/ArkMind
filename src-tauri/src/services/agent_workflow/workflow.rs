@@ -68,8 +68,8 @@ async fn summarize_large_attachment(
 /// 输入：本轮全部可解析结果的 (result_type, status, answer, has_missing) 四元组。
 /// 仅当其中恰好 1 个委托信封（delegate_agent_result）且回答合格时返回 Some：
 /// - ≥2 个委托：多份回答必须交回主 LLM 综合，否则第二个及之后的回答文本被丢弃
-/// - partial 且 missing 非空：MISSING 声明已从正文剥离，直出会把缺口藏起来——
-///   交回主 LLM，由它决定补齐/追问（衔接 ext_tool_ask_user）
+/// - partial 且 missing 非空：数据缺口（gaps）需主 LLM 自答续派或转问，直出会把缺口藏起来——
+///   交回主 LLM 处理（confirmations 不产生 missing，交付型直出不受影响）
 /// - 0 个委托 / failed / 空回答：None，走常规主 LLM 路径
 pub(crate) fn pick_direct_out(results: &[(String, String, String, bool)]) -> Option<String> {
     let delegates: Vec<&(String, String, String, bool)> = results.iter()
@@ -211,6 +211,58 @@ pub(crate) fn round_output_chars(text: &str, tool_calls: &[Value]) -> usize {
         + tool_calls.iter()
             .map(|t| t["function"]["arguments"].as_str().map(|a| a.chars().count()).unwrap_or(0))
             .sum::<usize>()
+}
+
+/// confirmations → 交互卡片结构（纯函数，可单测）：上限 5 题；
+/// 有 options → single_choice，无 → text；与 ext_tool_ask_user 卡片同构，前端零改动复用
+pub(crate) fn build_confirmation_cards(confs: &[Value]) -> Option<Value> {
+    let questions: Vec<Value> = confs.iter().take(5).enumerate()
+        .filter_map(|(i, c)| {
+            let q = c["question"].as_str().unwrap_or("").trim();
+            if q.is_empty() { return None; }
+            let options: Vec<String> = c["options"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+                .unwrap_or_default();
+            Some(json!({
+                "question_id": format!("cf{}", i + 1),
+                "prompt": q,
+                "type": if options.is_empty() { "text" } else { "single_choice" },
+                "options": options,
+            }))
+        })
+        .collect();
+    if questions.is_empty() { return None; }
+    Some(json!({
+        "status": "pending",
+        "reason": "执行过程需要你的确认（系统根据子 Agent 上报自动生成）：",
+        "questions": questions,
+    }))
+}
+
+/// 回合末自动发卡：收集本轮各委托上报的 confirmations，主 Agent 未自行追问时附上卡片。
+/// 单点收口于 done 出口（直出/转述/多委托路径全覆盖）；已有 clarification（ask_user 早退）不重复发。
+pub fn attach_confirmation_cards(v: &mut Value) {
+    if !v["clarification"].is_null() { return; }
+    let Some(rounds) = v.get("tool_log").and_then(|t| t.as_array()) else { return };
+    let mut confs: Vec<Value> = Vec::new();
+    for round in rounds {
+        let Some(tools) = round["tools"].as_array() else { continue };
+        for t in tools {
+            let Ok(env) = serde_json::from_str::<Value>(t["result"].as_str().unwrap_or("")) else { continue };
+            if env["result_type"].as_str() != Some("delegate_agent_result") { continue; }
+            if let Some(arr) = env["data"]["confirmations"].as_array() {
+                for c in arr {
+                    let q = c["question"].as_str().unwrap_or("");
+                    if q.is_empty() || confs.iter().any(|e: &Value| e["question"].as_str() == Some(q)) { continue; }
+                    confs.push(c.clone());
+                }
+            }
+        }
+    }
+    if let Some(card) = build_confirmation_cards(&confs) {
+        log::info!("[Agent] 自动发卡：{} 条确认事项", card["questions"].as_array().map_or(0, |a| a.len()));
+        v["clarification"] = card;
+    }
 }
 
 /// 工具名 → 中文能力标签（单一真相源：agent 清单注入与进度事件共用）
@@ -1676,6 +1728,56 @@ mod tests {
         assert_eq!(super::round_output_chars("", &[serde_json::json!({"function":{"arguments":"{\"a\":\"中文\"}"}})]), 10);
         assert_eq!(super::round_output_chars("尾", &[serde_json::json!({})]), 1);
     }
+
+    /// confirmations→卡片：有 options 单选、无 options 文本、空问题跳过、上限 5
+    #[test]
+    fn build_confirmation_cards_shape() {
+        let confs = serde_json::json!([
+            {"question": "确认框架？", "options": ["确认", "调整"]},
+            {"question": ""},
+            {"question": "预算区间？", "options": []},
+        ]);
+        let card = super::build_confirmation_cards(confs.as_array().unwrap()).unwrap();
+        let qs = card["questions"].as_array().unwrap();
+        assert_eq!(qs.len(), 2);
+        assert_eq!(qs[0]["type"], "single_choice");
+        assert_eq!(qs[0]["options"].as_array().unwrap().len(), 2);
+        assert_eq!(qs[1]["type"], "text");
+        assert_eq!(card["status"], "pending");
+        assert!(super::build_confirmation_cards(&[]).is_none());
+        let many: Vec<serde_json::Value> = (0..7).map(|i| serde_json::json!({"question": format!("q{}", i)})).collect();
+        assert_eq!(super::build_confirmation_cards(&many).unwrap()["questions"].as_array().unwrap().len(), 5);
+    }
+
+    /// 回合末自动发卡：跨委托聚合去重；已有 clarification 不覆盖；无 confs 不加字段
+    #[test]
+    fn attach_confirmation_cards_aggregates_and_skips() {
+        let env = |confs: serde_json::Value| serde_json::json!({
+            "result_type": "delegate_agent_result",
+            "data": {"status": "completed", "confirmations": confs}
+        }).to_string();
+        let mut v = serde_json::json!({
+            "answer": "正文",
+            "tool_log": [{"round": 1, "tools": [
+                {"tool": "ext_tool_delegate_agent", "result": env(serde_json::json!([{"question": "框架？", "options": ["确认"]}]))},
+                {"tool": "ext_tool_search", "result": "not-an-envelope"}
+            ]}, {"round": 2, "tools": [
+                {"tool": "ext_tool_delegate_agent", "result": env(serde_json::json!([{"question": "框架？"}, {"question": "预算？"}]))}
+            ]}]
+        });
+        super::attach_confirmation_cards(&mut v);
+        let qs = v["clarification"]["questions"].as_array().unwrap();
+        assert_eq!(qs.len(), 2, "按 question 去重聚合: {:?}", qs);
+        assert_eq!(qs[0]["options"].as_array().unwrap().len(), 1, "首次出现的完整 conf 保留 options");
+        // 已有 clarification（主 Agent 自行 ask_user）→ 不覆盖
+        let mut v2 = serde_json::json!({"clarification": {"questions": [{"prompt": "手动"}]}, "tool_log": []});
+        super::attach_confirmation_cards(&mut v2);
+        assert_eq!(v2["clarification"]["questions"][0]["prompt"], "手动");
+        // 无 confs → 不加字段
+        let mut v3 = serde_json::json!({"answer": "x", "tool_log": []});
+        super::attach_confirmation_cards(&mut v3);
+        assert!(v3.get("clarification").is_none());
+    }
     use serde_json::json;
 
     fn env(rt: &str, status: &str, answer: &str) -> (String, String, String, bool) {
@@ -1724,7 +1826,7 @@ mod tests {
         assert_eq!(pick_direct_out(&empty), None);
     }
 
-    /// partial+missing 非空 → 不直出（MISSING 已从正文剥离，直出会藏缺口令）
+    /// partial+missing 非空 → 不直出（数据缺口需主 LLM 自答续派，直出会藏缺口令）
     #[test]
     fn direct_out_rejected_for_partial_with_missing() {
         let with_missing = vec![env_missing("delegate_agent_result", "partial", "已完成部分", true)];

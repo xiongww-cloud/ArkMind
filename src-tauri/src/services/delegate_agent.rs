@@ -119,6 +119,29 @@ pub async fn execute_delegate_agent(
         agent_class: Some(out_class.key().to_string()),
     };
 
+    // ★ 无任何业务工具（仅自动注入的 report）：框架直接短路——不烧一轮 LLM、不靠模型复述状态行，
+    //   missing 由信封结构化上抛（主 Agent 按 gaps 闭环处理：补齐续派或转问用户）
+    let auto = crate::services::agent_workflow::tools::SUB_AGENT_AUTO_TOOLS;
+    let has_biz_tool = allowed_tools.iter().any(|t| !auto.iter().any(|a| *a == t.as_str()));
+    if !has_biz_tool {
+        log::warn!("[DelegateAgent] 目标 Agent 无业务工具，框架短路: agent_id={}", agent_id);
+        let msg = format!("Agent「{}」未配置任何业务工具，无法执行操作。请为其分配工具后重试，或由你直接用自身工具完成该请求。", agent_name);
+        let envelope = super::agent_workflow::ToolResultEnvelope {
+            result_type: "delegate_agent_result".to_string(),
+            data: json!({
+                "status": "partial",
+                "result": "",
+                "artifacts": [],
+                "missing": [msg],
+                "confirmations": [],
+                "agent_id": agent_id,
+                "warnings": []
+            }),
+            summary: Some(msg),
+        };
+        return envelope.to_json();
+    }
+
     // 构建共享上下文快照：截尾防御（剥未闭合 tool_calls）+ 尾部注入执行体指令
     let mut sub_messages = truncate_dangling_tool_calls(history);
     let history_len = sub_messages.len();
@@ -256,14 +279,10 @@ fn build_directive(
     }
 
     // 3. 可用工具清单（canonical tools 下 schema 为全量清单，此处收敛本 Agent 实际可调用子集）
-    if allowed_tools.is_empty() {
-        parts.push("注意：你当前没有分配任何工具，无法执行任何操作。不要编造信息，直接回复最后一行：MISSING: 当前 Agent 未配置任何工具".to_string());
-    } else {
-        parts.push(format!(
-            "【可用工具清单】你只能调用：{}。tools schema 中出现的其他工具对你不可用（调用会返回\"未授权\"），跳过即可，不要重试。",
-            allowed_tools.join("、")
-        ));
-    }
+    parts.push(format!(
+        "【可用工具清单】你只能调用：{}。tools schema 中出现的其他工具对你不可用（调用会返回\"未授权\"），跳过即可，不要重试。",
+        allowed_tools.join("、")
+    ));
 
     // 4. 任务本体
     parts.push(format!("【执行任务】{}", task));
@@ -414,34 +433,6 @@ fn extract_artifacts(tool_log: &[Value]) -> Vec<Value> {
 }
 
 
-/// LEGACY（P3 过渡层）：旧式 MISSING:/NEED_USER: 行内文字标记解析（容忍列表符/加粗/全角冒号变体）。
-/// 协议已改为 ext_tool_report 结构化上报——此函数为模型惯性兜底；观察一版、日志确认零命中后删除。
-/// 返回 (剥离标记后的正文, missing, questions)
-fn parse_legacy_markers(answer: &str) -> (String, Vec<String>, Vec<String>) {
-    let mut missing: Vec<String> = Vec::new();
-    let mut questions: Vec<String> = Vec::new();
-    let kept: Vec<&str> = answer.lines().filter(|line| {
-        let t = line.trim()
-            .trim_start_matches(['-', '*', '#', '>', ' '])
-            .trim_start_matches('*')
-            .trim_start();
-        if let Some(rest) = t.strip_prefix("NEED_USER") {
-            let q = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
-            if !q.is_empty() { questions.push(q); }
-            return false;
-        }
-        match t.strip_prefix("MISSING") {
-            Some(rest) => {
-                let m = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
-                if !m.is_empty() { missing.push(m); }
-                false
-            }
-            None => true,
-        }
-    }).collect();
-    (kept.join("\n").trim().to_string(), missing, questions)
-}
-
 /// 结构化上报聚合（纯函数，可单测）：扫 tool_log 中的 agent_report_result ack，按序合并去重。
 /// 返回 (gaps, confirmations[{question,options}])
 pub(crate) fn collect_reports(tool_log: &[Value]) -> (Vec<String>, Vec<Value>) {
@@ -495,11 +486,10 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
         }
     }
 
-    // ★ 双通道合并：结构化上报为主通道；旧文字标记为过渡兜底（finalize 内按内容去重）
-    let (result_text, stray_missing, legacy_questions) = parse_legacy_markers(answer);
+    // ★ 唯一通道：ext_tool_report 结构化上报（文字标记解析层已删除——协议禁止且系统不再消费）
     let (rep_gaps, rep_confs) = collect_reports(tool_log);
     let (result_text, status, effective_missing, confirmations) =
-        out_class.finalize(result_text, &stray_missing, &legacy_questions, &rep_gaps, &rep_confs, any_failed, !artifacts.is_empty());
+        out_class.finalize(answer.to_string(), &rep_gaps, &rep_confs, any_failed, !artifacts.is_empty());
 
     let preview: String = result_text.chars().take(200).collect();
     let status_label = match status { "partial" => "部分完成", "failed" => "执行失败", _ => "已完成任务" };
@@ -600,7 +590,7 @@ mod tests {
         assert_eq!(out.len(), 2);
     }
 
-    /// build_directive：必须包含角色覆盖、职责、任务、协议、MISSING 约定
+    /// build_directive：必须包含角色覆盖、职责、任务、协议、结构化上报约定
     #[test]
     fn directive_contains_required_sections() {
         let ctx = json!({"product_ids": ["P-1"]});
@@ -611,16 +601,17 @@ mod tests {
         assert!(d.contains("【执行任务】把定稿转为 Word"));
         assert!(d.contains("【补充上下文】"));
         assert!(d.contains("【期望输出格式】review"));
-        assert!(d.contains("MISSING"));
+        assert!(d.contains("ext_tool_report"), "上报通道必须教学");
         assert!(d.contains("没有委托能力"));
         // 结构化上报协议：缺口/确认走 ext_tool_report，禁止文字标记暗号与"先向用户确认"死路
         assert!(d.contains("ext_tool_report 上报 confirmations（附候选）"));
         assert!(d.contains("不要在正文里写 MISSING:/NEED_USER: 等文字标记"));
         assert!(d.contains("完全同名由工具层自动复用"));
         assert!(!d.contains("先向用户确认"), "子 Agent 无提问用户通道，不应再出现该指令");
-        // 无工具提示路径
+        // 无业务工具不再由 directive 教学（执行入口框架短路），此处仅验清单结构恒在
         let d2 = build_directive("x", "y", "p", "t", None, "", &[], crate::services::agent_workflow::output_class::OutputClass::Natural);
-        assert!(d2.contains("未配置任何工具"));
+        assert!(d2.contains("【可用工具清单】"));
+        assert!(!d2.contains("MISSING: 当前 Agent 未配置任何工具"), "文字标记教学已物理删除");
     }
 
     /// 交付型指令：回答即交付文档、上报走 ext_tool_report、协议优先于角色提示词
@@ -630,8 +621,9 @@ mod tests {
         let d = build_directive("solution", "解决方案助手", "p", "t", None, "", &allowed, crate::services::agent_workflow::output_class::OutputClass::Deliverable);
         assert!(d.contains("执行协议（交付型产出）"));
         assert!(d.contains("你的回答就是最终交付文档"));
-        assert!(d.contains("不要使用 MISSING:/NEED_USER: 等文字标记"));
+        assert!(d.contains("不要在正文写 MISSING:/NEED_USER: 等状态文字标记"));
         assert!(d.contains("ext_tool_report"), "交付型确认/缺口须有结构上报通道");
+        assert!(d.contains("系统会自动转为交互卡片"), "确认事项框架自动发卡");
         assert!(d.contains("本协议优先于角色提示词"));
         assert!(!d.contains("单起一行输出"), "不得再教学文字标记格式");
     }
