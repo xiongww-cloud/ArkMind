@@ -268,7 +268,7 @@ fn build_directive(
 
     // 6. 执行协议（运行时统一注入；按产出方式类别分流：交付型禁用 MISSING 通道、缺口内联成文）
     if is_deliverable {
-        parts.push("## 执行协议（交付型产出）\n- 你的回答就是最终交付文档，将原样、完整地呈现给用户（主 Agent 不复述、你也没有向用户提问的工具），请按角色提示词的结构、篇幅与风格直接成文；本协议优先于角色提示词中的 MISSING/追问类规则\n- 不要使用 MISSING: 行（会使结果降级并被交回转述、破坏文档）；信息缺口直接写进正文：在相应处内联标注（待补：xxx），或在文末集中列「【待补/需确认】」清单\n- 同一任务的多个独立工具调用必须在一次回复中并发发起；查询结果全程复用，需要补充信息时换角度查询，不要原样重查\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有信息继续完成任务\n- 按照 system_prompt 中的「回答规范」输出，不要输出内部 ID".to_string());
+        parts.push("## 执行协议（交付型产出）\n- 你的回答就是最终交付文档，将原样、完整地呈现给用户（主 Agent 不复述、你也没有向用户提问的工具），请按角色提示词的结构、篇幅与风格直接成文；本协议优先于角色提示词中的 MISSING/追问类规则\n- 不使用 MISSING: 行（会破坏交付直出）；信息缺口在相应处内联标注（待补：xxx）或文末列「【待补/需确认】」\n- 确需用户确认/拍板时（典型：规划遍的框架确认），在回答最末单起一行输出 NEED_USER: <问题> | <选项A> / <选项B>（选项可省略）——该行会被系统剥出并交主 Agent 转成追问卡片，不会进入文档正文；成文遍原则上不用（按合理假设+★待校核继续），仅出现必须用户拍板的分支决策时使用\n- 同一任务的多个独立工具调用必须在一次回复中并发发起；查询结果全程复用，需要补充信息时换角度查询，不要原样重查\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有信息继续完成任务\n- 按照 system_prompt 中的「回答规范」输出，不要输出内部 ID".to_string());
     } else {
         parts.push("## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用 ext_tool_object 按名称检索同类对象：完全同名由工具层自动复用；存在相似项且不确定是否同一目标时，不要猜测创建，输出 MISSING 列出候选请确认\n- 拿不准的判断点不要中途停摆、不要编造：独立操作照常完成，在回复的最后一行输出 MISSING 向主 Agent 提问（它会作答或转问用户）；有可枚举候选时附带：MISSING: <问题> | <选项A> / <选项B>\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务，不要输出 MISSING\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID".to_string());
     }
@@ -392,30 +392,47 @@ fn extract_artifacts(tool_log: &[Value]) -> Vec<Value> {
     artifacts
 }
 
-/// 委托结果终裁（纯函数，可单测）。
-/// 交付型（deliverable）：MISSING 声明不再降级 partial，而是回贴为正文末「【待补/需确认】」块
-///   并保持 completed——保住委托直出（缺口对用户仍可见，无需经主 Agent 转述）；
-///   全部操作失败且无任何产出时仍判 failed。
+/// 委托结果终裁（纯函数，可单测）。返回 (正文, status, 生效 missing)。
+/// 交付型（deliverable）：
+/// - 有 NEED_USER 确认请求 → partial 且生效 missing=问题清单：直出被拒，主 Agent 据此转
+///   ext_tool_ask_user 卡片引导用户（杂散 MISSING 已回贴正文不重复上报）
+/// - 仅杂散 MISSING → 回贴「【待补/需确认】」块并保持 completed（直出命中，缺口对用户可见）
+/// - 全失败无产出 → failed
 /// 执行型（natural）：维持原三态语义 missing→partial（交主 Agent 自答补齐/转问用户）。
 pub(crate) fn finalize_delegate_status(
     is_deliverable: bool,
     mut text: String,
     missing: &[String],
+    questions: &[String],
     any_failed: bool,
     has_artifacts: bool,
-) -> (String, &'static str) {
+) -> (String, &'static str, Vec<String>) {
+    let append_stray = |text: &mut String, stray: &[String]| {
+        let block = stray.iter().map(|m| format!("- {}", m)).collect::<Vec<_>>().join("\n");
+        text.push_str(&format!("\n\n【待补/需确认】\n{}", block));
+    };
+    if is_deliverable && !questions.is_empty() {
+        if any_failed && !has_artifacts {
+            return (text, "failed", vec![]);
+        }
+        if !missing.is_empty() {
+            append_stray(&mut text, missing);
+        }
+        return (text, "partial", questions.to_vec());
+    }
     if is_deliverable && !missing.is_empty() {
         if any_failed && !has_artifacts {
-            return (text, "failed");
+            return (text, "failed", vec![]);
         }
-        let block = missing.iter().map(|m| format!("- {}", m)).collect::<Vec<_>>().join("\n");
-        text.push_str(&format!("\n\n【待补/需确认】\n{}", block));
-        return (text, "completed");
+        append_stray(&mut text, missing);
+        return (text, "completed", vec![]);
     }
-    let status = if !missing.is_empty() { "partial" }
+    let status = if !missing.is_empty() || !questions.is_empty() { "partial" }
         else if any_failed && !has_artifacts { "failed" }
         else { "completed" };
-    (text, status)
+    let mut eff: Vec<String> = missing.to_vec();
+    eff.extend(questions.iter().cloned());
+    (text, status, eff)
 }
 
 fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value], is_deliverable: bool) -> String {
@@ -443,14 +460,20 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
         }
     }
 
-    // ★ MISSING 解析：子Agent声明的信息缺口，从正文剥离（容忍列表符/加粗/全角冒号等常见变体）
+    // ★ MISSING / NEED_USER 解析：信息缺口与确认请求从正文剥离（容忍列表符/加粗/全角冒号等常见变体）
     let mut missing: Vec<String> = Vec::new();
+    let mut user_questions: Vec<String> = Vec::new();
     let result_text = {
         let kept: Vec<&str> = answer.lines().filter(|line| {
             let t = line.trim()
                 .trim_start_matches(['-', '*', '#', '>', ' '])
                 .trim_start_matches('*')
                 .trim_start();
+            if let Some(rest) = t.strip_prefix("NEED_USER") {
+                let q = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
+                if !q.is_empty() { user_questions.push(q); }
+                return false;
+            }
             match t.strip_prefix("MISSING") {
                 Some(rest) => {
                     let m = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
@@ -463,8 +486,9 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
         kept.join("\n").trim().to_string()
     };
 
-    // ★ 三态判定（交付型特殊处理：缺口回贴正文、保住直出；执行型语义原样）
-    let (result_text, status) = finalize_delegate_status(is_deliverable, result_text, &missing, any_failed, !artifacts.is_empty());
+    // ★ 三态判定（交付型特殊处理：缺口回贴正文、保持直出；NEED_USER 交回主 Agent 转卡片）
+    let (result_text, status, effective_missing) =
+        finalize_delegate_status(is_deliverable, result_text, &missing, &user_questions, any_failed, !artifacts.is_empty());
 
     let preview: String = result_text.chars().take(200).collect();
     let status_label = match status { "partial" => "部分完成", "failed" => "执行失败", _ => "已完成任务" };
@@ -474,7 +498,7 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
             "status": status,
             "result": result_text,
             "artifacts": artifacts,
-            "missing": missing,
+            "missing": effective_missing,
             "agent_id": agent_id,
             "iterations": iterations,
             "warnings": warnings
@@ -594,25 +618,35 @@ mod tests {
         let d = build_directive("solution", "解决方案助手", "p", "t", None, "", &allowed, true);
         assert!(d.contains("执行协议（交付型产出）"));
         assert!(d.contains("你的回答就是最终交付文档"));
-        assert!(d.contains("不要使用 MISSING: 行"));
+        assert!(d.contains("不使用 MISSING: 行"));
+        assert!(d.contains("NEED_USER"), "交付型须有 NEED_USER 确认卡片通道");
         assert!(d.contains("本协议优先于角色提示词"));
         assert!(!d.contains("在回复的最后一行输出 MISSING"), "交付型不得注入执行型 MISSING 协议");
     }
 
-    /// 终裁：交付型 MISSING 回贴正文并保持 completed；执行型维持 partial；全失败仍 failed
+    /// 终裁：交付型 NEED_USER→partial(生效missing=问题)；杂散 MISSING 回贴保持 completed；执行型维持 partial；全失败 failed
     #[test]
     fn finalize_status_by_class() {
         let miss = vec!["缺预算".to_string()];
-        let (t, s) = finalize_delegate_status(true, "正文".to_string(), &miss, false, false);
+        let qs = vec!["是否按此框架开写？| 确认 / 调整".to_string()];
+        // 交付型 + 杂散 MISSING（无 NEED_USER）→ 回贴并保持 completed、生效 missing 清空
+        let (t, s, eff) = finalize_delegate_status(true, "正文".to_string(), &miss, &[], false, false);
         assert_eq!(s, "completed");
         assert!(t.contains("正文") && t.contains("【待补/需确认】") && t.contains("- 缺预算"));
-        let (t2, s2) = finalize_delegate_status(false, "正文".to_string(), &miss, false, true);
-        assert_eq!(s2, "partial");
-        assert_eq!(t2, "正文");
-        let (_, s3) = finalize_delegate_status(true, "x".to_string(), &miss, true, false);
-        assert_eq!(s3, "failed");
-        let (_, s4) = finalize_delegate_status(true, "x".to_string(), &[], false, false);
-        assert_eq!(s4, "completed");
+        assert!(eff.is_empty());
+        // 交付型 + NEED_USER → partial，生效 missing=问题清单（交主转卡片）
+        let (t2, s2, eff2) = finalize_delegate_status(true, "框架".to_string(), &[], &qs, false, false);
+        assert_eq!((s2, eff2.as_slice()), ("partial", qs.as_slice()));
+        assert_eq!(t2, "框架");
+        // 交付型 NEED_USER 与杂散 MISSING 并存：MISSING 回贴、问题上报
+        let (_, s3, eff3) = finalize_delegate_status(true, "文".to_string(), &miss, &qs, false, false);
+        assert_eq!(s3, "partial");
+        assert_eq!(eff3, qs);
+        // 执行型：MISSING 维持 partial；交付/执行型全失败均 failed
+        let (_, s4, _) = finalize_delegate_status(false, "正文".to_string(), &miss, &[], false, true);
+        assert_eq!(s4, "partial");
+        let (_, s5, _) = finalize_delegate_status(true, "x".to_string(), &miss, &qs, true, false);
+        assert_eq!(s5, "failed");
     }
 
     /// canonical tools 下 schema 为全量清单，指令必须显式收敛本 Agent 实际可调用子集
