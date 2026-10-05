@@ -3,6 +3,7 @@
 
 mod commands;
 mod crypto;
+mod builtin_agents;
 mod database;
 mod license;
 mod services;
@@ -282,6 +283,7 @@ pub fn run() {
             commands::file_preview, commands::file_export, commands::file_export_to_path, commands::file_read_bytes, commands::chat_save_temp_image, commands::chat_save_temp_chunk, commands::chat_save_temp_abort, commands::file_remove_temp, commands::chat_read_clipboard_files,
             commands::file_copy_to_clipboard,
             commands::file_list_global,
+            commands::file_list_project_files,
             commands::file_move, commands::file_tree,
             commands::file_folder_create, commands::file_folder_rename, commands::file_folder_delete, commands::file_folder_move, commands::file_folder_reorder,
             commands::file_remove_note_mapping, commands::file_list_by_note,
@@ -332,7 +334,7 @@ pub fn run() {
             commands::ext_tool_find_related_knowledge,
             commands::ext_tool_get_project_context,
             commands::kb_memory_objects, commands::search_business, commands::search_source_data, commands::lookup_object_names, commands::kb_project_note_ids, commands::kb_memory_parents,
-            commands::kb_memory_heatmap, commands::kb_memory_dashboard_stats,
+            commands::kb_memory_heatmap, commands::kb_memory_dashboard_stats, commands::kb_graph_data,
             commands::ext_tool_translate_filter, commands::ext_tool_search_filtered,
             // AI sync
             commands::ai_sync_status, commands::ai_sync_trigger, commands::ai_sync_diagnose,
