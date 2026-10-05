@@ -122,6 +122,8 @@ pub fn init_database(path: &std::path::Path) -> SqliteResult<()> {
 
     // ★ 添加 file_assets.original_name 列
     let _ = conn.execute_batch("ALTER TABLE file_assets ADD COLUMN original_name TEXT DEFAULT ''");
+    // ★ AI 生成文档草稿态：'draft'=生成中（分批 append 未定稿），'ready'=已定稿可见
+    let _ = conn.execute_batch("ALTER TABLE file_assets ADD COLUMN status TEXT DEFAULT 'ready'");
 
     // ★ KB FTS5 triggers always initialized (core retrieval infrastructure)
     db_fts::init_kb_fts_triggers(&conn)?;

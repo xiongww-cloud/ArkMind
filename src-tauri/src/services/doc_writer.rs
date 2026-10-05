@@ -308,8 +308,14 @@ fn save_overwrite(bytes: &[u8], file_id: &str, file_name: &str, content: &Value)
         &[json!(file_id), json!(content.to_string())],
     )
     .map_err(|e| e.to_string())?;
-    // 重新进解析管道刷新知识库正文（enqueue 对同实体先删 pending，幂等）
-    crate::services::knowledge_lifecycle::notify_file_upload(file_id);
+    // 刷新知识库正文仅对已定稿文件生效（草稿期 append 不入索引，定稿由 finalize 统一进管道）
+    let ready = database::get("SELECT status FROM file_assets WHERE id=?1", &[json!(file_id)])
+        .ok().flatten()
+        .map(|r| r["status"].as_str() != Some("draft"))
+        .unwrap_or(true);
+    if ready {
+        crate::services::knowledge_lifecycle::notify_file_upload(file_id);
+    }
     log::info!("[文档生成] append 已原地更新 file_id={} 累计size={}B", file_id, size);
     Ok(GeneratedDoc {
         file_id: file_id.to_string(),
@@ -331,9 +337,41 @@ pub fn append_docx(source_file_id: &str, new_content: &Value) -> Result<Generate
     save_overwrite(&bytes, cur["file_id"].as_str().unwrap_or(source_file_id), cur["file_name"].as_str().unwrap_or("文档"), &merged)
 }
 
-/// 启动清理：仅回收孤儿快照（资产已被别处删除的残留记录）。
-/// 不再按时间自动过期——生命周期由用户驱动：kb_delete_session 删会话时联动删除关联文档。
+/// 回合末定稿翻正：本轮持久化到消息卡片的生成文档置 ready 并首次进解析管道。
+/// 只在真正发生 draft→ready 时 enqueue（CAS 复用已定稿文件/已定稿续写不重复入队）。
+pub fn finalize_generated_docs(docs: &[Value]) {
+    for d in docs {
+        let Some(fid) = d["file_id"].as_str().filter(|s| !s.is_empty()) else { continue };
+        let flipped = database::run(
+            "UPDATE file_assets SET status='ready', updated_at=datetime('now','localtime') WHERE id=?1 AND status='draft'",
+            &[json!(fid)],
+        )
+        .map(|r| r.changes)
+        .unwrap_or(0)
+            > 0;
+        if flipped {
+            crate::services::knowledge_lifecycle::notify_file_upload(fid);
+            log::info!("[文档生成] 定稿翻正 file_id={}", fid);
+        }
+    }
+}
+
+/// 启动清理：1) 崩溃/取消残留的超期草稿（48h）按删除路径整链回收；
+/// 2) 仅回收孤儿快照（资产已被别处删除的残留记录）。不再按时间自动过期 ready 文档。
 pub fn cleanup_generated_docs() {
+    let stale = database::all(
+        "SELECT id FROM file_assets WHERE status='draft' AND created_at < datetime('now','localtime','-48 hours')",
+        &[],
+    )
+    .unwrap_or_default();
+    for r in &stale {
+        if let Some(fid) = r["id"].as_str() {
+            delete_generated_doc(fid);
+        }
+    }
+    if !stale.is_empty() {
+        log::info!("[文档清理] 回收超期草稿 {} 个（生成中断）", stale.len());
+    }
     let n = database::run(
         "DELETE FROM generated_docs WHERE file_id NOT IN (SELECT id FROM file_assets)",
         &[],
@@ -409,8 +447,8 @@ fn save_bytes(bytes: &[u8], filename: &str, ext: &str, content: &Value) -> Resul
         None => {
             let id = uuid::Uuid::new_v4().to_string();
             database::run(
-                "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) \
-                 VALUES(?1,?2,?3,?4,?5,datetime('now','localtime'),datetime('now','localtime'))",
+                "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name,status,created_at,updated_at) \
+                 VALUES(?1,?2,?3,?4,?5,'draft',datetime('now','localtime'),datetime('now','localtime'))",
                 &[json!(&id), json!(ext), json!(size), json!(&hash), json!(&file_name)],
             )
             .map_err(|e| e.to_string())?;
@@ -441,11 +479,9 @@ fn save_bytes(bytes: &[u8], filename: &str, ext: &str, content: &Value) -> Resul
     )
     .map_err(|e| e.to_string())?;
 
-    // 进知识库（管理架构统一）：与上传文件同一条解析管道（解析正文 → source_data → 物化）；
-    // enqueue_push 先删同实体 pending 再插，重复生成同内容幂等无害
-    crate::services::knowledge_lifecycle::notify_file_upload(&file_id);
-
-    log::info!("[文档生成] {} 已保存 file_id={} size={}B", file_name, file_id, size);
+    // ★ 草稿态：不进解析管道（半截文档不入知识库、不出现在任何列表）——
+    // 回合末持久化文档卡片时 finalize_generated_docs 统一翻正并入解析
+    log::info!("[文档生成] {} 已保存(草稿) file_id={} size={}B", file_name, file_id, size);
     Ok(GeneratedDoc {
         file_id,
         file_name,
@@ -1034,7 +1070,7 @@ fn strip_list_prefix(text: &str) -> String {
     text.to_string()
 }
 
-/// 表格单元格字号：text_type=caption→小五9pt，缺省五号10.5pt（字体恒宋体——预设唯一真相源）
+/// 表格单元格字号：text_type=caption→小五9pt，缺省小四12pt（字体恒宋体——预设唯一真相源）
 fn table_run_size(v: &Value) -> u16 {
     text_type_size_half_pt(v, DOC_PRESET_TABLE_HALF_PT)
 }
@@ -2575,7 +2611,7 @@ mod tests {
         assert!(!xml.contains(r#"w:val="198""#), "自由 size_pt=99(198half) 应被忽略");
     }
 
-    /// 表格单元格缺省 → 宋体五号（21half=10.5pt）
+    /// 表格单元格缺省 → 宋体小四（24half=12pt，与正文一致）
     #[test]
     fn docx_table_cell_preset() {
         let xml = docx_part(&json!({"children": [

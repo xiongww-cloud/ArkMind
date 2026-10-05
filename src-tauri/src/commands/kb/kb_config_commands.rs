@@ -142,7 +142,11 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                     // ★ via 署名：本轮参与过的子 Agent（历史回放用）
                     let assistants: Vec<String> = v.get("tool_log").map(extract_assistants).unwrap_or_default();
                     let mut meta_map = serde_json::Map::new();
-                    if !docs.is_empty() { meta_map.insert("documents".to_string(), json!(docs)); }
+                    if !docs.is_empty() {
+                        meta_map.insert("documents".to_string(), json!(docs));
+                        // ★ 卡片与定稿同步：生成期 draft 到此翻 ready 并首次进知识库解析管道
+                        crate::services::doc_writer::finalize_generated_docs(&docs);
+                    }
                     if let Some(c) = clarification { meta_map.insert("clarification".to_string(), c); }
                     if !assistants.is_empty() { meta_map.insert("assistants".to_string(), json!(assistants)); }
                     let metadata = if meta_map.is_empty() { Value::Null } else { Value::Object(meta_map) };

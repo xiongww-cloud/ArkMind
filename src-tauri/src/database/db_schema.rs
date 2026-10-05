@@ -93,6 +93,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             id TEXT PRIMARY KEY, file_ext TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
             content_hash TEXT NOT NULL UNIQUE,
             original_name TEXT DEFAULT '',
+            status TEXT DEFAULT 'ready',
             created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
         CREATE TABLE IF NOT EXISTS library_folders (

@@ -199,10 +199,21 @@ pub(crate) fn extract_created_documents(tool_log: Option<&Value>) -> Vec<Value> 
             }
         }
     }
-    // 按 file_id 去重（保序）
-    let mut seen = std::collections::HashSet::new();
-    docs.retain(|d| seen.insert(d["file_id"].as_str().unwrap_or("").to_string()));
-    docs
+    // 按 file_id 去重（保序）：同 id 保留**末次**结果的 size/name——长文分批成文时
+    // create 快照只有骨架大小，必须以最后一次 append 的完整大小为准
+    let mut idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut out: Vec<Value> = Vec::new();
+    for d in docs {
+        let fid = d["file_id"].as_str().unwrap_or("").to_string();
+        match idx.get(&fid) {
+            Some(&i) => out[i] = d,
+            None => {
+                idx.insert(fid, out.len());
+                out.push(d);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -240,6 +251,28 @@ mod tests {
         assert_eq!(docs[0]["file_id"].as_str(), Some("fid-direct"));
         assert_eq!(docs[1]["file_id"].as_str(), Some("fid-delegated"));
         assert_eq!(docs[1]["file_name"].as_str(), Some("委托.xlsx"));
+    }
+
+    /// 分批成文：同 file_id 的 create(骨架小尺寸)+多次 append(增长) → 去重保**末次**尺寸
+    #[test]
+    fn test_extract_created_documents_last_wins_size() {
+        let tool_log = json!([
+            {"round": 1, "tools": [{
+                "tool": "ext_tool_delegate_agent",
+                "result": r#"{"result_type":"delegate_agent_result","data":{"artifacts":[{"type":"document_created","file_id":"F1","file_name":"方案.docx","file_type":"docx","file_size":30}]}}"#
+            }]},
+            {"round": 2, "tools": [{
+                "tool": "ext_tool_delegate_agent",
+                "result": r#"{"result_type":"delegate_agent_result","data":{"artifacts":[{"type":"document_created","file_id":"F1","file_name":"方案.docx","file_type":"docx","file_size":190}]}}"#
+            }]},
+            {"round": 3, "tools": [{
+                "tool": "ext_tool_write_document",
+                "result": r#"{"result_type":"document_write_result","data":{"success":true,"appended":true,"file_id":"F1","file_name":"方案.docx","file_type":"docx","file_size":420}}"#
+            }]}
+        ]);
+        let docs = extract_created_documents(Some(&tool_log));
+        assert_eq!(docs.len(), 1, "同 file_id 应合并为一条");
+        assert_eq!(docs[0]["file_size"].as_i64(), Some(420), "尺寸必须取末次完整大小");
     }
 
     /// 空输入与非文档条目不产出

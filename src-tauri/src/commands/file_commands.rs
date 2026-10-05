@@ -132,7 +132,7 @@ pub fn get_physical_path(file_id: &str) -> Option<String> {
 
 #[tauri::command] pub async fn file_list(project_id: String) -> Result<Vec<Value>, String> {
     let sql = if project_id.is_empty() {
-        "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id ORDER BY fr.created_at DESC"
+        "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fa.status!='draft' ORDER BY fr.created_at DESC"
     } else {
         "SELECT fr.id, fa.id as file_id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at, fr.custom_name as name, fr.custom_name as displayName, fr.custom_name as custom_name, fr.remark, fr.folder_id, fr.entity_type, fr.entity_id FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id WHERE fr.entity_type='project' AND fr.entity_id=? ORDER BY fr.created_at DESC"
     };
@@ -332,7 +332,25 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
     database::all(
         "SELECT fa.id, fa.file_ext, fa.file_size, fa.content_hash, fa.created_at, fa.updated_at FROM file_relations fr INNER JOIN file_assets fa ON fa.id = fr.file_id ORDER BY fr.created_at DESC",
         &[]
-    ).map_err(|e| e.to_string())
+    ).map_err(|e|e.to_string())
+}
+
+/// 项目文件聚合视图（资料库"项目文件"树用）：project_id 省略=全部项目的文件，传入=仅该项目。
+/// 行粒度=文件×项目归属（一文件挂多项目则多行，各自带项目名）；列名对齐前端文件行字段。
+#[tauri::command]
+pub async fn file_list_project_files(project_id: Option<String>) -> Result<Value, String> {
+    let pid = project_id.filter(|s| !s.is_empty());
+    let base = "SELECT DISTINCT fa.id AS file_id, fa.file_ext, fa.file_size, fa.created_at, fa.updated_at, \
+         COALESCE(fr.custom_name, fa.original_name, '') AS name, fr.folder_id, p.id AS project_id, p.name AS project_name \
+         FROM file_relations fr \
+         INNER JOIN file_assets fa ON fa.id = fr.file_id \
+         INNER JOIN projects p ON p.id = fr.entity_id \
+         WHERE fr.entity_type='project'";
+    let files = match &pid {
+        Some(p) => database::all(&format!("{} AND fr.entity_id=?1 ORDER BY fa.updated_at DESC", base), &[json!(p)]),
+        None => database::all(&format!("{} ORDER BY fa.updated_at DESC", base), &[]),
+    }.map_err(|e| e.to_string())?;
+    Ok(json!({"success": true, "files": files}))
 }
 
 #[tauri::command] pub async fn file_tree(project_id: Option<String>) -> Result<Value, String> {

@@ -161,7 +161,7 @@ pub async fn pipeline_clear_all() -> Result<Value, String> {
     // 重新入队所有已有文件（成功任务已从队列删除，需重新入队解析写入 source_data）
     let _ = crate::database::run("DELETE FROM knowledge_push_queue WHERE source_type='FILE'", &[]);
     let _ = crate::database::run(
-        "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) SELECT 'FILE', id, 'file_upload', 'pending' FROM file_assets",
+        "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) SELECT 'FILE', id, 'file_upload', 'pending' FROM file_assets WHERE status!='draft'",
         &[],
     );
     Ok(json!({"success":true,"message":"已清空所有管线数据"}))
@@ -184,7 +184,7 @@ pub async fn pipeline_resync() -> Result<Value, String> {
     // 重新入队所有已有文件（重新解析写入 source_data，而非插入空内容行）
     let _ = crate::database::run("DELETE FROM knowledge_push_queue WHERE source_type='FILE'", &[]);
     let _ = crate::database::run(
-        "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) SELECT 'FILE', id, 'file_upload', 'pending' FROM file_assets",
+        "INSERT INTO knowledge_push_queue(source_type, source_id, operation, status) SELECT 'FILE', id, 'file_upload', 'pending' FROM file_assets WHERE status!='draft'",
         &[],
     );
     let source_count: i64 = crate::database::with_db(|c| c.query_row("SELECT COUNT(*) FROM source_data", [], |r| r.get(0))).unwrap_or(0);

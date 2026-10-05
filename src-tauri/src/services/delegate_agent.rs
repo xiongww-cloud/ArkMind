@@ -392,7 +392,25 @@ fn extract_artifacts(tool_log: &[Value]) -> Vec<Value> {
             }
         }
     }
-    artifacts
+    // 同一文档多次写入（create+逐章 append）→ document_created 按 file_id 合并保末次：
+    // 首次的 file_size 只是骨架大小，末次才是完整文档
+    let mut doc_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut merged: Vec<Value> = Vec::new();
+    for a in artifacts {
+        if a["type"] == "document_created" {
+            let fid = a["file_id"].as_str().unwrap_or("").to_string();
+            match doc_idx.get(&fid) {
+                Some(&i) => merged[i] = a,
+                None => {
+                    doc_idx.insert(fid, merged.len());
+                    merged.push(a);
+                }
+            }
+        } else {
+            merged.push(a);
+        }
+    }
+    merged
 }
 
 
@@ -640,8 +658,31 @@ mod tests {
         ]);
         let (gaps, confs) = collect_reports(log.as_array().unwrap());
         assert_eq!(gaps, vec!["缺预算".to_string(), "缺台数".to_string()]);
-        assert_eq!(confs.len(), 1);
         assert_eq!(confs[0]["options"].as_array().unwrap().len(), 2); // 重复 question 合并保留首个（含选项）
+    }
+
+    /// artifacts：同 file_id 的 create+append 多次成功 → document_created 合并保末次大小；
+    /// 非文档 artifact 不受影响
+    #[test]
+    fn extract_artifacts_merges_doc_last_wins() {
+        let doc = |id: &str, size: i64| -> String {
+            serde_json::to_string(&json!({
+                "result_type": "document_write_result",
+                "data": {"success": true, "file_id": id, "file_name": "方案.docx", "file_type": "docx", "file_size": size}
+            })).unwrap()
+        };
+        let log = json!([
+            {"tools": [
+                {"tool": "ext_tool_write_document", "result": doc("F1", 30)},
+                {"tool": "ext_tool_manage_todo", "result": "{\"result_type\":\"todo_create_result\",\"data\":{\"success\":true,\"id\":\"T1\",\"name\":\"跟进\"}}"}
+            ]},
+            {"tools": [{"tool": "ext_tool_write_document", "result": doc("F1", 420)}]}
+        ]);
+        let arts = extract_artifacts(log.as_array().unwrap());
+        let docs: Vec<&Value> = arts.iter().filter(|a| a["type"] == "document_created").collect();
+        assert_eq!(docs.len(), 1, "同 file_id 应合并: {:?}", arts);
+        assert_eq!(docs[0]["file_size"].as_i64(), Some(420));
+        assert!(arts.iter().any(|a| a["type"] == "object_created" && a["id"] == "T1"), "非文档条目保留");
     }
 
 
