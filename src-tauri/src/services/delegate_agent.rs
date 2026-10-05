@@ -94,10 +94,14 @@ pub async fn execute_delegate_agent(
         log::warn!("[DelegateAgent] 检测到为子 Agent 分配 delegate 工具（已硬剔除）: agent_id={}", agent_id);
     }
     // ★ 主 Agent 专属工具清单：以 is_sub_agent_forbidden_tool 为唯一数据源（MAIN_AGENT_ONLY + delegate）
-    let allowed_tools: Vec<String> = rows.iter()
+    let mut allowed_tools: Vec<String> = rows.iter()
         .filter_map(|r| r["tool_name"].as_str().map(|s| s.to_string()))
         .filter(|t| !is_sub_agent_forbidden_tool(t))
         .collect();
+    // ★ 结构化上报通道自动注入（SUB_AGENT_AUTO_TOOLS）：统一协议，无需逐 Agent 分配
+    for t in crate::services::agent_workflow::tools::SUB_AGENT_AUTO_TOOLS {
+        if !allowed_tools.iter().any(|a| a == t) { allowed_tools.push((*t).to_string()); }
+    }
 
     // system_prompt 直接用 Agent 配置的提示词（工具说明已由 API tools schema 提供，不再重复注入）
     let system_prompt = first["system_prompt"].as_str().unwrap_or("").to_string();
@@ -112,6 +116,7 @@ pub async fn execute_delegate_agent(
         model: first["model"].as_str().filter(|m| !m.is_empty()).map(String::from),
         temperature: first["temperature"].as_f64(),
         agent_id: Some(agent_id.to_string()),
+        agent_class: Some(out_class.key().to_string()),
     };
 
     // 构建共享上下文快照：截尾防御（剥未闭合 tool_calls）+ 尾部注入执行体指令
@@ -391,16 +396,72 @@ fn extract_artifacts(tool_log: &[Value]) -> Vec<Value> {
 }
 
 
+/// LEGACY（P3 过渡层）：旧式 MISSING:/NEED_USER: 行内文字标记解析（容忍列表符/加粗/全角冒号变体）。
+/// 协议已改为 ext_tool_report 结构化上报——此函数为模型惯性兜底；观察一版、日志确认零命中后删除。
+/// 返回 (剥离标记后的正文, missing, questions)
+fn parse_legacy_markers(answer: &str) -> (String, Vec<String>, Vec<String>) {
+    let mut missing: Vec<String> = Vec::new();
+    let mut questions: Vec<String> = Vec::new();
+    let kept: Vec<&str> = answer.lines().filter(|line| {
+        let t = line.trim()
+            .trim_start_matches(['-', '*', '#', '>', ' '])
+            .trim_start_matches('*')
+            .trim_start();
+        if let Some(rest) = t.strip_prefix("NEED_USER") {
+            let q = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
+            if !q.is_empty() { questions.push(q); }
+            return false;
+        }
+        match t.strip_prefix("MISSING") {
+            Some(rest) => {
+                let m = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
+                if !m.is_empty() { missing.push(m); }
+                false
+            }
+            None => true,
+        }
+    }).collect();
+    (kept.join("\n").trim().to_string(), missing, questions)
+}
+
+/// 结构化上报聚合（纯函数，可单测）：扫 tool_log 中的 agent_report_result ack，按序合并去重。
+/// 返回 (gaps, confirmations[{question,options}])
+pub(crate) fn collect_reports(tool_log: &[Value]) -> (Vec<String>, Vec<Value>) {
+    let mut gaps: Vec<String> = Vec::new();
+    let mut confs: Vec<Value> = Vec::new();
+    for round in tool_log {
+        let Some(tools) = round["tools"].as_array() else { continue };
+        for t in tools {
+            let Ok(env) = serde_json::from_str::<Value>(t["result"].as_str().unwrap_or("")) else { continue };
+            if env["result_type"].as_str() != Some("agent_report_result") || env["data"]["success"] != serde_json::Value::Bool(true) { continue; }
+            if let Some(arr) = env["data"]["recorded"]["gaps"].as_array() {
+                for g in arr {
+                    if let Some(s) = g.as_str() { if !s.is_empty() && !gaps.iter().any(|e| e == s) { gaps.push(s.to_string()); } }
+                }
+            }
+            if let Some(arr) = env["data"]["recorded"]["confirmations"].as_array() {
+                for c in arr {
+                    let q = c["question"].as_str().unwrap_or("");
+                    if q.is_empty() || confs.iter().any(|e: &Value| e["question"].as_str() == Some(q)) { continue; }
+                    confs.push(c.clone());
+                }
+            }
+        }
+    }
+    (gaps, confs)
+}
+
 fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value], out_class: crate::services::agent_workflow::output_class::OutputClass) -> String {
     let artifacts = extract_artifacts(tool_log);
 
-    // ★ warnings：收集失败的工具结果
+    // ★ warnings：收集失败的工具结果（上报 ack 无业务副作用，不参与失败判定）
     let mut warnings: Vec<Value> = Vec::new();
     let mut any_failed = false;
     for round in tool_log {
         let Some(tools) = round["tools"].as_array() else { continue };
         for tool in tools {
             if let Ok(envelope) = serde_json::from_str::<Value>(tool["result"].as_str().unwrap_or("")) {
+                if envelope["result_type"].as_str() == Some("agent_report_result") { continue; }
                 // 失败判定双保险：显式 success:false，或带 error 字段但未声明 success:true（旧式信封）
                 let d = &envelope["data"];
                 let failed = d["success"].as_bool() == Some(false)
@@ -416,35 +477,11 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
         }
     }
 
-    // ★ MISSING / NEED_USER 解析：信息缺口与确认请求从正文剥离（容忍列表符/加粗/全角冒号等常见变体）
-    let mut missing: Vec<String> = Vec::new();
-    let mut user_questions: Vec<String> = Vec::new();
-    let result_text = {
-        let kept: Vec<&str> = answer.lines().filter(|line| {
-            let t = line.trim()
-                .trim_start_matches(['-', '*', '#', '>', ' '])
-                .trim_start_matches('*')
-                .trim_start();
-            if let Some(rest) = t.strip_prefix("NEED_USER") {
-                let q = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
-                if !q.is_empty() { user_questions.push(q); }
-                return false;
-            }
-            match t.strip_prefix("MISSING") {
-                Some(rest) => {
-                    let m = rest.trim_start_matches([':', '：', '*', ' ']).trim().to_string();
-                    if !m.is_empty() { missing.push(m); }
-                    false
-                }
-                None => true,
-            }
-        }).collect();
-        kept.join("\n").trim().to_string()
-    };
-
-    // ★ 三态判定：OutputClass 策略收口（交付型缺口回贴保持直出；NEED_USER 交回主 Agent 转卡片）
-    let (result_text, status, effective_missing) =
-        out_class.finalize(result_text, &missing, &user_questions, any_failed, !artifacts.is_empty());
+    // ★ 双通道合并：结构化上报为主通道；旧文字标记为过渡兜底（finalize 内按内容去重）
+    let (result_text, stray_missing, legacy_questions) = parse_legacy_markers(answer);
+    let (rep_gaps, rep_confs) = collect_reports(tool_log);
+    let (result_text, status, effective_missing, confirmations) =
+        out_class.finalize(result_text, &stray_missing, &legacy_questions, &rep_gaps, &rep_confs, any_failed, !artifacts.is_empty());
 
     let preview: String = result_text.chars().take(200).collect();
     let status_label = match status { "partial" => "部分完成", "failed" => "执行失败", _ => "已完成任务" };
@@ -455,6 +492,7 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
             "result": result_text,
             "artifacts": artifacts,
             "missing": effective_missing,
+            "confirmations": confirmations,
             "agent_id": agent_id,
             "iterations": iterations,
             "warnings": warnings
@@ -557,9 +595,9 @@ mod tests {
         assert!(d.contains("【期望输出格式】review"));
         assert!(d.contains("MISSING"));
         assert!(d.contains("没有委托能力"));
-        // MISSING=向主 Agent 提问 语义 + 选项格式 + 相似项工具层复用（禁止"先向用户确认"死路表述）
-        assert!(d.contains("向主 Agent 提问"));
-        assert!(d.contains("<问题> | <选项A> / <选项B>"));
+        // 结构化上报协议：缺口/确认走 ext_tool_report，禁止文字标记暗号与"先向用户确认"死路
+        assert!(d.contains("ext_tool_report 上报 confirmations（附候选）"));
+        assert!(d.contains("不要在正文里写 MISSING:/NEED_USER: 等文字标记"));
         assert!(d.contains("完全同名由工具层自动复用"));
         assert!(!d.contains("先向用户确认"), "子 Agent 无提问用户通道，不应再出现该指令");
         // 无工具提示路径
@@ -567,17 +605,43 @@ mod tests {
         assert!(d2.contains("未配置任何工具"));
     }
 
-    /// 交付型指令：回答即交付文档、禁 MISSING 通道、协议优先于角色提示词
+    /// 交付型指令：回答即交付文档、上报走 ext_tool_report、协议优先于角色提示词
     #[test]
     fn directive_deliverable_protocol() {
         let allowed = vec!["ext_tool_object".to_string()];
         let d = build_directive("solution", "解决方案助手", "p", "t", None, "", &allowed, crate::services::agent_workflow::output_class::OutputClass::Deliverable);
         assert!(d.contains("执行协议（交付型产出）"));
         assert!(d.contains("你的回答就是最终交付文档"));
-        assert!(d.contains("不使用 MISSING: 行"));
-        assert!(d.contains("NEED_USER"), "交付型须有 NEED_USER 确认卡片通道");
+        assert!(d.contains("不要使用 MISSING:/NEED_USER: 等文字标记"));
+        assert!(d.contains("ext_tool_report"), "交付型确认/缺口须有结构上报通道");
         assert!(d.contains("本协议优先于角色提示词"));
-        assert!(!d.contains("在回复的最后一行输出 MISSING"), "交付型不得注入执行型 MISSING 协议");
+        assert!(!d.contains("单起一行输出"), "不得再教学文字标记格式");
+    }
+
+    /// 结构化上报聚合：多轮合并、按内容去重、无效/非上报 ack 忽略
+    #[test]
+    fn collect_reports_merges_and_dedups() {
+        let ack = |gaps: Vec<&str>, confs: Vec<serde_json::Value>| -> String {
+            serde_json::to_string(&json!({
+                "result_type": "agent_report_result",
+                "data": {"success": true, "recorded": {"gaps": gaps, "confirmations": confs}},
+                "summary": "已记录"
+            })).unwrap()
+        };
+        let log = json!([
+            {"tools": [
+                {"tool": "ext_tool_report", "result": ack(vec!["缺预算"], vec![json!({"question":"路线?","options":["A","B"]})])},
+                {"tool": "ext_tool_search", "result": "{\"result_type\":\"search_result\"}"}
+            ]},
+            {"tools": [
+                {"tool": "ext_tool_report", "result": ack(vec!["缺预算", "缺台数"], vec![json!({"question":"路线?"})])},
+                {"tool": "ext_tool_report", "result": "{\"result_type\":\"agent_report_result\",\"data\":{\"success\":false,\"error\":\"空上报\"}}"}
+            ]}
+        ]);
+        let (gaps, confs) = collect_reports(log.as_array().unwrap());
+        assert_eq!(gaps, vec!["缺预算".to_string(), "缺台数".to_string()]);
+        assert_eq!(confs.len(), 1);
+        assert_eq!(confs[0]["options"].as_array().unwrap().len(), 2); // 重复 question 合并保留首个（含选项）
     }
 
 

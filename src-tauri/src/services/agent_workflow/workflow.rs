@@ -1365,6 +1365,9 @@ pub async fn agent_chat_workflow_internal(
                         "ext_tool_manage_contact" => {
                             (tools::manage_contact::execute(&a), vec![])
                         }
+                        "ext_tool_report" => {
+                            (tools::report::execute(&a), vec![])
+                        }
                         "ext_tool_manage_product" => {
                             let res = ext_tool_manage_product(&a);
                             (res, vec![])

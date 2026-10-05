@@ -10,6 +10,9 @@ pub(crate) const MAIN_AGENT_ONLY: &[&str] = &[
     "ext_tool_ask_user",
 ];
 
+/// 子 Agent 自动注入的结构通道：不进主 Agent 允许清单、不显示在分配 UI（AVAILABLE_TOOLS 为白名单式，天然不含）
+pub(crate) const SUB_AGENT_AUTO_TOOLS: &[&str] = &["ext_tool_report"];
+
 pub(crate) mod common;
 pub(crate) mod search;
 pub(crate) mod chunk_navigate;
@@ -23,6 +26,7 @@ pub(crate) mod manage_product;
 pub(crate) mod manage_note;
 pub(crate) mod memory;
 pub(crate) mod notification;
+pub(crate) mod report;
 pub(crate) mod write_document;
 
 pub(crate) use common::*;

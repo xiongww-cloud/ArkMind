@@ -121,6 +121,8 @@ pub struct LlmOverrides {
     pub temperature: Option<f64>,
     /// 委托路径注入：当前子 Agent 的 id，随 writing 心跳下发供前端按 Agent 分桶显示（主流程为 None）
     pub agent_id: Option<String>,
+    /// 委托路径注入：产出类别 key（natural/deliverable），心跳据此让前端选择字数/步数展示口径
+    pub agent_class: Option<String>,
 }
 
 /// 公开接口：流式调用（silent=false）
@@ -375,7 +377,8 @@ async fn stream_once(
         let produced = st.full.len() + st.reasoning.len() + st.tca.iter().map(|(_, _, a)| a.len()).sum::<usize>();
         if !silent && produced > st.prog_last_chars && st.prog_last_at.elapsed().as_secs() >= 5 {
             if let Some(ref h) = app_handle {
-                let _ = h.emit("agent:status", json!({"stage":"writing","agent_id":overrides.agent_id.clone().unwrap_or_default(),"chars":produced}));
+                let tool_steps = messages.iter().filter(|m| matches!(m.role, MessageRole::Tool)).count();
+                let _ = h.emit("agent:status", json!({"stage":"writing","agent_id":overrides.agent_id.clone().unwrap_or_default(),"class":overrides.agent_class.clone().unwrap_or_default(),"chars":produced,"tools":tool_steps}));
             }
             st.prog_last_chars = produced;
             st.prog_last_at = std::time::Instant::now();
