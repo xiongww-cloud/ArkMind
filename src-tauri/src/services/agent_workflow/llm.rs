@@ -102,11 +102,12 @@ struct SseState {
 }
 
 /// flush 积压未发的 token（失败路径也要 flush：保证前端已有内容与 partial 一致，续写无缝衔接）
-fn flush_pending_tokens(st: &mut SseState, silent: bool, app: &Option<tauri::AppHandle>) {
+/// to_ui=DELIVERY 通道授权（OutputClass 裁决），owner=token 归属（"main" 或子 Agent id）
+fn flush_pending_tokens(st: &mut SseState, to_ui: bool, owner: &str, app: &Option<tauri::AppHandle>) {
     if !st.suppress_tokens && !st.token_buf.is_empty() {
-        if !silent {
+        if to_ui {
             if let Some(ref h) = app {
-                let _ = h.emit("agent:token", json!({"token": &st.token_buf}));
+                let _ = h.emit("agent:token", json!({"token": &st.token_buf, "owner": owner}));
             }
         }
         st.token_buf.clear();
@@ -259,6 +260,16 @@ async fn stream_once(
     };
     let mut stream = resp.bytes_stream();
 
+    // ★ 通道框架：DELIVERY 直出授权由 OutputClass 单点裁决——执行型子 Agent 的正文/思考是
+    //   交主 Agent 的 HANDOFF 内部汇报，不直连用户 UI（防内部问句泄漏、与主 Agent 转述/卡片双重呈现）；
+    //   主 Agent（class=None）与交付型（deliverable）保持流式直出。owner 显式声明每段 token 归属。
+    let streams_user = match overrides.agent_class.as_deref() {
+        None => true, // 主 Agent 自身恒直出
+        Some(c) => crate::services::agent_workflow::output_class::OutputClass::from_format(c).streams_to_user(),
+    };
+    let to_ui = !silent && streams_user;
+    let owner = overrides.agent_id.clone().unwrap_or_else(|| "main".to_string());
+
     // 逐行解析 SSE：data: 前缀仅认行首，一行到达即完整事件（内容含 "data:" 不再破坏边界）
     let try_process_one = |st: &mut SseState, app: &Option<tauri::AppHandle>| -> bool {
         let mut processed_any = false;
@@ -300,16 +311,16 @@ async fn stream_once(
                                         .or_else(|| st.full.find("<invoke"))
                                         .unwrap_or(0);
                                     if marker > st.token_buf_start {
-                                        if !silent { if let Some(ref h) = app {
-                                            let _ = h.emit("agent:token", json!({"token": &st.token_buf[..marker - st.token_buf_start]}));
+                                        if to_ui { if let Some(ref h) = app {
+                                            let _ = h.emit("agent:token", json!({"token": &st.token_buf[..marker - st.token_buf_start], "owner": owner}));
                                         } }
                                     }
                                     st.suppress_tokens = true;
                                     st.token_buf.clear();
                                     st.token_buf_start = st.full.len();
                                 } else if st.token_buf.len() >= 50 || tok.contains('\n') {
-                                    if !silent { if let Some(ref h) = app {
-                                        let _ = h.emit("agent:token", json!({"token": &st.token_buf}));
+                                    if to_ui { if let Some(ref h) = app {
+                                        let _ = h.emit("agent:token", json!({"token": &st.token_buf, "owner": owner}));
                                     } }
                                     st.token_buf.clear();
                                     st.token_buf_start = st.full.len();
@@ -319,9 +330,9 @@ async fn stream_once(
                         // reasoning_content → 累积并推送到前端显示思考过程
                         if let Some(rtok) = delta["reasoning_content"].as_str() {
                             st.reasoning.push_str(rtok);
-                            if !silent {
+                            if to_ui {
                                 if let Some(ref h) = app {
-                                    let _ = h.emit("agent:thought", json!({"text": rtok}));
+                                    let _ = h.emit("agent:thought", json!({"text": rtok, "owner": owner}));
                                 }
                             }
                         }
@@ -346,7 +357,7 @@ async fn stream_once(
     // 失败退出（流错误/取消）：flush 积压 token 保证前端与 partial 一致
     macro_rules! fail {
         ($msg:expr, $cancelled:expr) => {{
-            flush_pending_tokens(&mut st, silent, &app_handle);
+            flush_pending_tokens(&mut st, to_ui, &owner, &app_handle);
             let has_tool_calls = !st.tca.is_empty() || st.suppress_tokens;
             let tool_args_chars = st.tca.iter().map(|(_, _, a)| a.len()).sum();
             let partial = st.full.clone();
@@ -403,7 +414,7 @@ async fn stream_once(
     if !st.buf.is_empty() { st.buf.push('\n'); }
     while try_process_one(&mut st, &app_handle) {}
     // 流结束后 flush 残余 buffer
-    flush_pending_tokens(&mut st, silent, &app_handle);
+    flush_pending_tokens(&mut st, to_ui, &owner, &app_handle);
     log::info!("SSE stream end +{}ms tokens={} len={} tool_calls={} done={} finish={} err={}",
         t0.elapsed().as_millis(), st.count, st.full.len(), st.tca.len(), st.done, st.got_finish, st.server_err.is_some());
 

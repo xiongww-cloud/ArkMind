@@ -13,10 +13,10 @@ pub enum OutputClass {
 pub const ALL_OUTPUT_CLASSES: [OutputClass; 2] = [OutputClass::Natural, OutputClass::Deliverable];
 
 /// 交付型协议：回答即交付文档 + ext_tool_report 结构化上报（禁文字标记暗号）
-const DELIVERABLE_PROTOCOL: &str = "## 执行协议（交付型产出）\n- 你的回答就是最终交付文档，将原样、完整地呈现给用户（主 Agent 不复述、你也没有向用户提问的工具），请按角色提示词的结构、篇幅与风格直接成文；本协议优先于角色提示词中的 MISSING/追问类规则\n- 不要使用 MISSING:/NEED_USER: 等文字标记（会破坏交付直出）；信息缺口调用 ext_tool_report 上报 gaps——系统会在文末回贴「【待补/需确认】」清单，不阻塞你成文\n- 确需用户确认/拍板时（典型：规划遍的框架确认），调用 ext_tool_report 上报 confirmations（question+options）——结束后可转成追问卡片，不会混入文档正文；成文遍原则上不用（按合理假设+★待校核继续），仅出现必须用户拍板的分支决策时使用\n- 同一任务的多个独立工具调用必须在一次回复中并发发起；查询结果全程复用，需要补充信息时换角度查询，不要原样重查\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有信息继续完成任务\n- 按照 system_prompt 中的「回答规范」输出，不要输出内部 ID";
+const DELIVERABLE_PROTOCOL: &str = "## 执行协议（交付型产出）\n- 你的回答就是最终交付文档，将原样、完整地呈现给用户（主 Agent 不复述、你也没有向用户提问的工具），请按角色提示词的结构、篇幅与风格直接成文；本协议优先于角色提示词中的 MISSING/追问类规则\n- 不要使用 MISSING:/NEED_USER: 等文字标记（会破坏交付直出）；信息缺口调用 ext_tool_report 上报 gaps——系统会在文末回贴「【待补/需确认】」清单，不阻塞你成文\n- 确需用户确认/拍板时（典型：规划遍的框架确认），调用 ext_tool_report 上报 confirmations（question+options）——结束后可转成追问卡片，不会混入文档正文；成文遍原则上不用（按合理假设+★待校核继续），仅出现必须用户拍板的分支决策时使用\n- 正文只含交付内容：一切对话控制（确认请求、继续引导、进度播报、完成提示）一律经 ext_tool_report confirmations 表达，由主 Agent 转为交互卡片——禁止在正文写【请确认】【回复「继续」】【进度】类对话句，否则会与卡片重复呈现\n- 同一任务的多个独立工具调用必须在一次回复中并发发起；查询结果全程复用，需要补充信息时换角度查询，不要原样重查\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有信息继续完成任务\n- 按照 system_prompt 中的「回答规范」输出，不要输出内部 ID";
 
 /// 执行型协议：结果交主 Agent 综合；缺口/确认走 ext_tool_report 结构化上报
-const NATURAL_PROTOCOL: &str = "## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用 ext_tool_object 按名称检索同类对象：完全同名由工具层自动复用；存在相似项且不确定是否同一目标时，不要猜测创建，调用 ext_tool_report 上报 confirmations（附候选）请用户确认\n- 拿不准的判断点不要中途停摆、不要编造：独立操作照常完成；数据缺口调用 ext_tool_report 上报 gaps（主 Agent 会自查补齐并续派，或转问用户），必须用户拍板的放 confirmations；不要在正文里写 MISSING:/NEED_USER: 等文字标记\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID";
+const NATURAL_PROTOCOL: &str = "## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用 ext_tool_object 按名称检索同类对象：完全同名由工具层自动复用；存在相似项且不确定是否同一目标时，不要猜测创建，调用 ext_tool_report 上报 confirmations（附候选）请用户确认\n- 拿不准的判断点不要中途停摆、不要编造：独立操作照常完成；数据缺口调用 ext_tool_report 上报 gaps（主 Agent 会自查补齐并续派，或转问用户），必须用户拍板的放 confirmations；不要在正文里写 MISSING:/NEED_USER: 等文字标记\n- 你的汇报只交主 Agent 处理、不直接展示给用户：面向用户的提问与引导一律经 ext_tool_report confirmations 表达，由主 Agent 转述或转卡片，正文勿直接向用户发问\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID";
 
 #[derive(Serialize)]
 pub struct OutputClassInfo {
@@ -50,6 +50,13 @@ impl OutputClass {
             OutputClass::Natural => "",
             OutputClass::Deliverable => "\n  ⚑ 交付型：正文即终稿，直出交付用户，不得改写、不得代笔续写",
         }
+    }
+    /// ★ 通道框架（DELIVERY 直出授权唯一裁决）：本轮 LLM 正文/思考流是否直连用户 UI。
+    /// deliverable=成品流直出；natural=内部汇报仅交主 Agent（UI 走 TRACE 事件与主 Agent 复述）。
+    /// 主 Agent 自身（无子 Agent 身份）恒为 true（调用侧以 class=None 处理）。
+    /// 新增产出类别只需在此补齐一行语义，delegate/llm/前端零散点自动收敛。
+    pub fn streams_to_user(self) -> bool {
+        match self { OutputClass::Natural => false, OutputClass::Deliverable => true }
     }
     /// 委托尾部指令的执行协议段
     pub fn directive_protocol(self) -> &'static str {
@@ -122,6 +129,22 @@ impl OutputClass {
 mod tests {
     use super::OutputClass;
     use serde_json::json;
+
+    /// 通道框架：DELIVERY 直出授权表驱动——natural 不直出、deliverable 直出
+    #[test]
+    fn streams_to_user_channel_routing() {
+        assert!(!OutputClass::Natural.streams_to_user(), "执行型正文是 HANDOFF，不直连 UI");
+        assert!(OutputClass::Deliverable.streams_to_user(), "交付型正文是 DELIVERY，直出气泡");
+    }
+
+    /// 框架协议含控制面/内容面分离条款（对话控制走 report，正文禁对话句）
+    #[test]
+    fn protocols_enforce_control_plane_separation() {
+        use super::{DELIVERABLE_PROTOCOL, NATURAL_PROTOCOL};
+        assert!(DELIVERABLE_PROTOCOL.contains("正文只含交付内容"), "交付协议须含对话控制分离条款");
+        assert!(DELIVERABLE_PROTOCOL.contains("禁止在正文写【请确认】"));
+        assert!(NATURAL_PROTOCOL.contains("不直接展示给用户"), "执行协议须声明 HANDOFF 定位");
+    }
 
     #[test]
     fn deliverable_confirmation_report_goes_partial() {
