@@ -205,6 +205,29 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true, None).await
 }
 
+/// 工具名 → 中文能力标签（单一真相源：agent 清单注入与进度事件共用）
+pub(crate) fn tool_display_label(name: &str) -> &'static str {
+    match name {
+        "ext_tool_object" => "业务对象查询",
+        "ext_tool_search" => "知识库检索",
+        "ext_tool_chunk_navigate" => "文档翻页",
+        "ext_tool_web_search" => "联网搜索",
+        "ext_tool_manage_product" => "产品管理(读写)",
+        "ext_tool_manage_project" => "项目管理(读写)",
+        "ext_tool_manage_todo" => "待办管理(读写)",
+        "ext_tool_manage_partner" => "合作伙伴管理(读写)",
+        "ext_tool_manage_contact" => "联系人管理(读写)",
+        "ext_tool_manage_note" => "笔记管理(读写)",
+        "ext_tool_relations" => "关联查询",
+        "ext_tool_memory" => "记忆管理",
+        "ext_tool_report" => "上报缺口/确认",
+        "ext_tool_write_document" => "文档生成",
+        "ext_tool_delegate_agent" => "委托专业助手",
+        "ext_tool_ask_user" => "向用户提问",
+        _ => "其他",
+    }
+}
+
 /// 委托运行上下文（共享历史模式专用）：
 /// - session: 直接借用主会话（写穿共享——子 Agent 的 visited/tool_history/token 累计
 ///   无需合并即回写主会话；顺序 await 无并发竞态），工作记忆不再每次清零
@@ -309,22 +332,7 @@ pub async fn agent_chat_workflow_internal(
                     "SELECT tool_name FROM agent_tool_assignments WHERE agent_id=?",
                     &[json!(id)]
                 ).unwrap_or_default().iter()
-                    .filter_map(|r| r["tool_name"].as_str().map(|s| match s {
-                        "ext_tool_object" => "业务对象查询",
-                        "ext_tool_search" => "知识库检索",
-                        "ext_tool_chunk_navigate" => "文档翻页",
-                        "ext_tool_web_search" => "联网搜索",
-                        "ext_tool_manage_product" => "产品管理(读写)",
-                        "ext_tool_manage_project" => "项目管理(读写)",
-                        "ext_tool_manage_todo" => "待办管理(读写)",
-                        "ext_tool_manage_partner" => "合作伙伴管理(读写)",
-                        "ext_tool_manage_contact" => "联系人管理(读写)",
-                        "ext_tool_manage_note" => "笔记管理(读写)",
-                        "ext_tool_relations" => "关联查询",
-                        "ext_tool_memory" => "记忆管理",
-                        "ext_tool_write_document" => "文档生成",
-                        _ => "其他",
-                    }.to_string()))
+                    .filter_map(|r| r["tool_name"].as_str().map(|s| tool_display_label(s).to_string()))
                     .collect();
                 let tools_str = if tools.is_empty() { String::new() } else { format!("\n  工具：{}", tools.join("、")) };
                 // ★ 交付型标记：其回答即终稿、原样交付用户（协议见 prompt.rs §6 交付型保真规则）
@@ -971,7 +979,8 @@ pub async fn agent_chat_workflow_internal(
                             "ext_tool_chunk_navigate" => args.get("chunk_id").and_then(|c| c.as_str()).map(|c| format!("chunk {}", crate::preview(c, 8))),
                             _ => None,
                         };
-                        let _ = h.emit("agent:status", json!({"stage":"tool_start","tool":tc.function.name,"target":target.unwrap_or_default()}));
+                        let (said, sanme) = match &delegate_label { Some((aid, aname)) => (aid.as_str(), aname.as_str()), None => ("", "") };
+                        let _ = h.emit("agent:status", json!({"stage":"tool_start","tool":tc.function.name,"label":tool_display_label(&tc.function.name),"agent_id":said,"agent_name":sanme,"target":target.unwrap_or_default()}));
                         let _ = h.emit("agent:progress", json!({"msg": format!("正在{}...", if tc.function.name.starts_with("ext_tool_search") { "检索知识库" } else if tc.function.name.starts_with("ext_tool_object") { "查询数据" } else { "处理中" })}));
                     }
                 } }

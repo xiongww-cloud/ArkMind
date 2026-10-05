@@ -269,14 +269,16 @@ watch(() => agent.isChatting.value, (busy) => {
 })
 const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 const fmtElapsed = () => `${Math.floor(elapsedSec.value / 60)}:${String(elapsedSec.value % 60).padStart(2, '0')}`
-// 当前子 Agent 进度口径（按 agent 分桶）：交付型显示产出字数，执行型显示已完成工具步数
+// 当前子 Agent 进度口径（按 agent 分桶）：写工具参数=生成内容字数；工具执行=当前动作；交付型正文=生成字数
 const wProgress = computed(() => {
   const a = agentRun.currentAgent
   if (!a) return ''
   const w = agentRun.writingByAgent[a.id]
   if (!w) return ''
+  if (w.stool) return `正在生成内容 · ${fmtK(w.chars)} 字`
+  if (w.cur) return `正在：${w.cur}`
   if (w.deliverable) return w.chars > 0 ? `正在生成 · ${fmtK(w.chars)} 字` : ''
-  return w.tools > 0 ? `已处理 ${w.tools} 步` : ''
+  return ''
 })
 
 /// 加载当前对话历史（全局指针，后端兜底）——打开/召唤用，不做轮转判定

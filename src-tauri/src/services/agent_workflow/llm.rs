@@ -378,7 +378,13 @@ async fn stream_once(
         if !silent && produced > st.prog_last_chars && st.prog_last_at.elapsed().as_secs() >= 5 {
             if let Some(ref h) = app_handle {
                 let tool_steps = messages.iter().filter(|m| matches!(m.role, MessageRole::Tool)).count();
-                let _ = h.emit("agent:status", json!({"stage":"writing","agent_id":overrides.agent_id.clone().unwrap_or_default(),"class":overrides.agent_class.clone().unwrap_or_default(),"chars":produced,"tools":tool_steps}));
+                // 当前正在流式写参数的工具调用（长文落盘期判据）：前端据此显示"正在写入 文档生成 · N 字"
+                let targs: usize = st.tca.iter().map(|(_, _, a)| a.len()).sum();
+                let stool = st.tca.iter().rev()
+                    .find(|(_, n, a)| !a.is_empty() && !n.is_empty())
+                    .map(|(_, n, _)| n.clone())
+                    .unwrap_or_default();
+                let _ = h.emit("agent:status", json!({"stage":"writing","agent_id":overrides.agent_id.clone().unwrap_or_default(),"class":overrides.agent_class.clone().unwrap_or_default(),"chars":produced,"tools":tool_steps,"stool":stool,"targs":targs}));
             }
             st.prog_last_chars = produced;
             st.prog_last_at = std::time::Instant::now();

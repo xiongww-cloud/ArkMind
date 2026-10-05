@@ -33,14 +33,16 @@ watch(() => agent.isChatting.value, (busy) => {
 })
 const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 const fmtElapsed = () => `${Math.floor(elapsedSec.value / 60)}:${String(elapsedSec.value % 60).padStart(2, '0')}`
-// 当前子 Agent 进度口径（按 agent 分桶）：交付型显示产出字数，执行型显示已完成工具步数
+// 当前子 Agent 进度口径（按 agent 分桶）：写工具参数=生成内容字数；工具执行=当前动作；交付型正文=生成字数
 const wProgress = computed(() => {
   const a = agentRun.currentAgent
   if (!a) return ''
   const w = agentRun.writingByAgent[a.id]
   if (!w) return ''
+  if (w.stool) return `正在生成内容 · ${fmtK(w.chars)} 字`
+  if (w.cur) return `正在：${w.cur}`
   if (w.deliverable) return w.chars > 0 ? `正在生成 · ${fmtK(w.chars)} 字` : ''
-  return w.tools > 0 ? `已处理 ${w.tools} 步` : ''
+  return ''
 })
 
 // ─── Attachments ─────────────────────────────────────────────────
@@ -386,8 +388,8 @@ const currentSession = computed(() => sessions.value.find(s => s.id === currentS
 function saveToStorage(target?: ChatSession) { 
   // 可显式传入提问时的会话：AI 回答期间用户切会话/新建后，回复必须存回原会话而非当前会话
   const s = target || currentSession.value; 
-  if (s && s.messages.length > 0) {
     const isCurrent = s === currentSession.value
+  if (s && s.messages.length > 0) {
     const currentContent = JSON.stringify(s.messages)
     if (isCurrent && currentContent === lastSavedContent) {
       sessionDirty.value = false
@@ -396,8 +398,8 @@ function saveToStorage(target?: ChatSession) {
     s.updatedAt = new Date().toLocaleString('sv-SE'); 
     if (isCurrent) {
       sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()); 
-      sessionDirty.value = false;
       lastSavedContent = currentContent
+      sessionDirty.value = false;
     }
     kbSaveSessions([s]).catch((e) => console.error('[Agent] 保存会话失败:', e)); 
   }
@@ -414,8 +416,8 @@ async function loadFromStorage() {
         m.isThinking = false
         m.typewriterDone = true
       }
-    }
     lastSavedContent = JSON.stringify(s.messages)
+    }
   }
   // Render markdown for loaded AI messages — await all renders
   const msgs = sessions.value[0].messages
