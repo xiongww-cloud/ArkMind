@@ -328,7 +328,10 @@ pub async fn agent_chat_workflow_internal(
                     .collect();
                 let tools_str = if tools.is_empty() { String::new() } else { format!("\n  工具：{}", tools.join("、")) };
                 // ★ 交付型标记：其回答即终稿、原样交付用户（协议见 prompt.rs §6 交付型保真规则）
-                let deliver_tag = if a["output_format"].as_str() == Some("deliverable") { "\n  ⚑ 交付型：正文即终稿，直出交付用户，不得改写、不得代笔续写" } else { "" };
+                // ★ 产出类别标记：文案由 OutputClass 单点维护
+                let deliver_tag = crate::services::agent_workflow::output_class::OutputClass::from_format(
+                    a["output_format"].as_str().unwrap_or("natural"),
+                ).injection_tag();
                 if hint.is_empty() {
                     Some(format!("- {}: {} (agent_id: \"{}\"){}{}", name, desc, id, tools_str, deliver_tag))
                 } else {

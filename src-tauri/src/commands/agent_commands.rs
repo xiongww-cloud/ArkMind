@@ -277,6 +277,15 @@ pub async fn agent_tool_assign(agent_id: String, tool_names: Vec<String>) -> Res
     Ok(())
 }
 
+/// 产出方式注册表（设置页"产出方式"下拉数据源；新类别在 OutputClass 枚举处扩展）
+#[tauri::command]
+pub async fn agent_output_formats() -> Result<Vec<Value>, String> {
+    Ok(crate::services::agent_workflow::output_class::ALL_OUTPUT_CLASSES
+        .iter()
+        .map(|c| json!({"key": c.key(), "label": c.label(), "desc": c.desc()}))
+        .collect())
+}
+
 /// 重置内置 Agent 到默认配置
 #[tauri::command]
 pub async fn agent_profile_reset(id: String) -> Result<(), String> {

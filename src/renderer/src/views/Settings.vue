@@ -1023,7 +1023,7 @@ async function removeEmailAccount(id: string) {
 }
 
 // ─── Agent Profile Management ──────────────────────────────────
-import { fetchAgentProfiles, fetchAgentAvailableTools, createAgentProfile, updateAgentProfile, deleteAgentProfile, resetAgentProfile, type AgentProfile, type AgentToolInfo } from '@/api/db-client'
+import { fetchAgentProfiles, fetchAgentAvailableTools, createAgentProfile, updateAgentProfile, deleteAgentProfile, resetAgentProfile, fetchAgentOutputFormats, type AgentProfile, type AgentToolInfo, type OutputFormatOption } from '@/api/db-client'
 
 const agentProfiles = ref<AgentProfile[]>([])
 const availableTools = ref<AgentToolInfo[]>([])
@@ -1047,6 +1047,14 @@ const agentForm = ref({
   presetTools: [] as string[],
   output_format: 'natural' as 'natural' | 'deliverable',
 })
+/// 产出方式注册表：Rust OutputClass 枚举驱动；拉取失败时用内置两项兜底
+const outputFormats = ref<OutputFormatOption[]>([
+  { key: 'natural', label: '执行型（默认）', desc: '结果交回主 Agent 综合后答复' },
+  { key: 'deliverable', label: '交付型', desc: '回答即终稿，直接完整呈现给用户（方案/报告类长文适用）' },
+])
+async function loadOutputFormats() {
+  try { const l = await fetchAgentOutputFormats(); if (l.length) outputFormats.value = l } catch {}
+}
 /// 专属模型候选：来自「AI 模型配置」已配置的各家模型名（去重去空）
 const agentModelOptions = computed(() =>
   [...new Set((aiProviders.value as Array<{ modelName?: string }>).map(p => (p.modelName || '').trim()).filter(Boolean))])
@@ -1071,6 +1079,7 @@ async function loadAvailableTools() {
 }
 
 function openAddAgent() {
+  loadOutputFormats()
   editingAgentId.value = null
   agentForm.value = {
     name: '',
@@ -1089,6 +1098,7 @@ function openAddAgent() {
 }
 
 function editAgent(agent: AgentProfile) {
+  loadOutputFormats()
   editingAgentId.value = agent.id
   const presetTools = Array.isArray(agent.preset_tools) ? agent.preset_tools : (typeof agent.preset_tools === 'string' && agent.preset_tools ? JSON.parse(agent.preset_tools) : [])
   agentForm.value = {
@@ -1101,7 +1111,7 @@ function editAgent(agent: AgentProfile) {
     temperature: (agent.temperature as number | null) ?? null,
     tools: agent.tools || [],
     presetTools: presetTools,
-    output_format: agent.output_format === 'deliverable' ? 'deliverable' : 'natural',
+    output_format: agent.output_format || 'natural',
   }
   agentFormError.value = ''
   showAgentModal.value = true
@@ -2329,13 +2339,9 @@ async function saveProfileEditor() {
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">产出方式<span v-if="editingAgentIsBuiltin" class="ml-1.5 text-[9px] text-surface-300 font-normal">系统预设 · 锁定</span></label>
                       <div class="grid grid-cols-2 gap-2" :class="editingAgentIsBuiltin ? 'opacity-60' : ''">
-                        <label class="flex items-start gap-1.5 p-2 rounded-lg border transition-colors" :class="[agentForm.output_format === 'natural' ? 'border-brand-400 bg-brand-50' : 'border-surface-200', editingAgentIsBuiltin ? 'cursor-default' : 'cursor-pointer']">
-                          <input type="radio" value="natural" v-model="agentForm.output_format" :disabled="editingAgentIsBuiltin" class="accent-brand-600 mt-0.5" />
-                          <div><p class="text-[11px] font-medium text-surface-700">执行型（默认）</p><p class="text-[9px] text-surface-400 leading-relaxed">结果交回主 Agent 综合后答复</p></div>
-                        </label>
-                        <label class="flex items-start gap-1.5 p-2 rounded-lg border transition-colors" :class="[agentForm.output_format === 'deliverable' ? 'border-brand-400 bg-brand-50' : 'border-surface-200', editingAgentIsBuiltin ? 'cursor-default' : 'cursor-pointer']">
-                          <input type="radio" value="deliverable" v-model="agentForm.output_format" :disabled="editingAgentIsBuiltin" class="accent-brand-600 mt-0.5" />
-                          <div><p class="text-[11px] font-medium text-surface-700">交付型</p><p class="text-[9px] text-surface-400 leading-relaxed">回答即终稿，直接完整呈现给用户（方案/报告类长文适用）</p></div>
+                        <label v-for="opt in outputFormats" :key="opt.key" class="flex items-start gap-1.5 p-2 rounded-lg border transition-colors" :class="[agentForm.output_format === opt.key ? 'border-brand-400 bg-brand-50' : 'border-surface-200', editingAgentIsBuiltin ? 'cursor-default' : 'cursor-pointer']">
+                          <input type="radio" :value="opt.key" v-model="agentForm.output_format" :disabled="editingAgentIsBuiltin" class="accent-brand-600 mt-0.5" />
+                          <div><p class="text-[11px] font-medium text-surface-700">{{ opt.label }}</p><p class="text-[9px] text-surface-400 leading-relaxed">{{ opt.desc }}</p></div>
                         </label>
                       </div>
                     </div>

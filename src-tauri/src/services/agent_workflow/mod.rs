@@ -13,6 +13,7 @@ pub(crate) mod prompt;
 pub(crate) mod schemas;
 pub(crate) mod session;
 pub(crate) mod llm;
+pub(crate) mod output_class;
 pub(crate) mod tools;
 
 pub(crate) use prompt::*;

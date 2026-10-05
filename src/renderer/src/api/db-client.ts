@@ -1743,3 +1743,9 @@ export async function assignAgentTools(
 export async function resetAgentProfile(id: string): Promise<void> {
   return invoke('agent_profile_reset', { id })
 }
+
+/** 产出方式注册表（设置页下拉数据源，Rust OutputClass 枚举驱动） */
+export interface OutputFormatOption { key: string; label: string; desc: string }
+export async function fetchAgentOutputFormats(): Promise<OutputFormatOption[]> {
+  return invoke('agent_output_formats')
+}

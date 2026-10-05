@@ -390,7 +390,7 @@ pub fn run() {
             // Agent Profiles
             commands::agent_available_tools, commands::agent_profile_list, commands::agent_profile_get,
             commands::agent_profile_create, commands::agent_profile_update, commands::agent_profile_delete,
-            commands::agent_tool_list, commands::agent_tool_assign, commands::agent_profile_reset,
+            commands::agent_tool_list, commands::agent_tool_assign, commands::agent_profile_reset, commands::agent_output_formats,
             // Debug（仅 debug 构建注册）
             #[cfg(debug_assertions)]
             commands::save_agent_context,
