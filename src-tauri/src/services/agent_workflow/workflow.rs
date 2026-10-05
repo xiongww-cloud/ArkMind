@@ -138,7 +138,7 @@ pub(crate) fn format_clarification_answer(reason: &str, questions: &[Value]) -> 
             if !joined.is_empty() { s.push_str(&format!("\n   {}", joined)); }
         }
     }
-    s.push_str("\n\n请在上方卡片选择或直接回复补充信息，我将继续推进。");
+    s.push_str("\n\n请在确认卡片中选择或直接回复补充信息，我将继续推进。");
     s
 }
 
@@ -1894,6 +1894,7 @@ mod tests {
         ];
         let text = format_clarification_answer("为了精准编制参数", &qs);
         assert!(text.starts_with("【需要确认】"));
+        assert!(text.contains("确认卡片") && !text.contains("上方") && !text.contains("下方"), "提及卡片不得用方位词（卡片实际渲染在正文下方）");
         assert!(text.contains("为了精准编制参数"));
         assert!(text.contains("1. 业务场景？"));
         assert!(text.contains("HIS/PACS / 通用办公"));
