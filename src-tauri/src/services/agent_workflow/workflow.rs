@@ -205,6 +205,14 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true, None).await
 }
 
+/// 一轮 LLM 产出落定的字符数（正文 + 全部工具调用参数）——轮末记账用
+pub(crate) fn round_output_chars(text: &str, tool_calls: &[Value]) -> usize {
+    text.chars().count()
+        + tool_calls.iter()
+            .map(|t| t["function"]["arguments"].as_str().map(|a| a.chars().count()).unwrap_or(0))
+            .sum::<usize>()
+}
+
 /// 工具名 → 中文能力标签（单一真相源：agent 清单注入与进度事件共用）
 pub(crate) fn tool_display_label(name: &str) -> &'static str {
     match name {
@@ -749,6 +757,9 @@ pub async fn agent_chat_workflow_internal(
     }
     let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
     let mut retry_count = 0u32; // ToolCall 清理后重试计数器
+    // ★ 轮次核算（通道框架的批末记账）：每轮 LLM 产出的确切字数累计，随 writing 事件下发，
+    //   前端"正在生成内容 · N 字"按批叠加显示——不依赖 provider 流式节奏，数字到达即真值
+    let mut confirmed_chars: usize = 0;
 
     loop {
         // ★ 检查停止信号（仅顶层清除标志，子Agent保留信号向上传播；独立后台运行体跳过）
@@ -831,6 +842,13 @@ pub async fn agent_chat_workflow_internal(
                 return Ok(json!({"success":false,"answer":format!("LLM 调用失败: {}", e),"iterations":iters}));
             }
         };
+        // ★ 轮末落定即记账并广播（子 Agent 多轮逐批叠加；主 Agent 无分桶消费者不发事件）
+        confirmed_chars += round_output_chars(&ac_owned, &tcs_streamed);
+        if !silent && delegate_depth > 0 {
+            if let (Some((aid, _)), Some(ref h)) = (&delegate_label, &app_handle) {
+                let _ = h.emit("agent:status", json!({"stage":"writing","agent_id":aid,"chars":confirmed_chars,"confirmed":confirmed_chars,"stool":"","pending":0}));
+            }
+        }
         if let Some(u) = usage {
             _prev_pt = pt;
             let round_pt = u["prompt_tokens"].as_i64().unwrap_or(0);
@@ -1650,6 +1668,14 @@ mod tests {
     use super::append_documents_note;
     use super::{pick_direct_out, build_delegate_snapshot, normalize_ask_args, format_clarification_answer, pick_clarification_out, append_delegated_note};
     use crate::services::agent_workflow::{ChatMessage, FunctionCall, MessageRole, ToolCall};
+
+    /// 轮末记账：正文与工具参数均按**字符**计（非字节）；缺字段容错为 0
+    #[test]
+    fn round_output_chars_counts_chars_not_bytes() {
+        assert_eq!(super::round_output_chars("方案正文", &[]), 4);
+        assert_eq!(super::round_output_chars("", &[serde_json::json!({"function":{"arguments":"{\"a\":\"中文\"}"}})]), 10);
+        assert_eq!(super::round_output_chars("尾", &[serde_json::json!({})]), 1);
+    }
     use serde_json::json;
 
     fn env(rt: &str, status: &str, answer: &str) -> (String, String, String, bool) {

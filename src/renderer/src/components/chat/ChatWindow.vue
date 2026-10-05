@@ -269,15 +269,16 @@ watch(() => agent.isChatting.value, (busy) => {
 })
 const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 const fmtElapsed = () => `${Math.floor(elapsedSec.value / 60)}:${String(elapsedSec.value % 60).padStart(2, '0')}`
-// 当前子 Agent 进度口径（按 agent 分桶）：写工具参数=生成内容字数；工具执行=当前动作；交付型正文=生成字数
+// 当前子 Agent 进度口径（按 agent 分桶）：字数取轮末落定的 confirmed 按批叠加（provider 流式节奏无关）；
+// 无新心跳时按"动作"显示（工具执行=正在：X；参数流=正在生成内容）
 const wProgress = computed(() => {
   const a = agentRun.currentAgent
   if (!a) return ''
   const w = agentRun.writingByAgent[a.id]
   if (!w) return ''
-  if (w.stool || (w.pending ?? 0) > 400) return `正在生成内容 · ${fmtK(w.chars)} 字`
+  if (w.stool || (w.pending ?? 0) > 400) return w.confirmed ? `正在生成内容 · ${fmtK(w.confirmed)} 字` : '正在生成内容'
   if (w.cur) return `正在：${w.cur}`
-  if (w.deliverable) return w.chars > 0 ? `正在生成 · ${fmtK(w.chars)} 字` : ''
+  if (w.deliverable) return w.confirmed ? `正在生成 · ${fmtK(w.confirmed)} 字` : ''
   return ''
 })
 
