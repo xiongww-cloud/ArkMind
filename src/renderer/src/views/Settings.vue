@@ -376,8 +376,8 @@ async function loadAiConfig() {
     loadVecConfig(config)
     loadVisionConfig(config)
     webSearchKey.value = config.webSearch?.apiKey || ''
-    loadNotifyConfig()
     loadSpriteConfig()
+    loadNotifyConfig()
   loadHotkeyConfig()
   } catch (e) {
     console.warn('Failed to load AI config:', e)
@@ -757,7 +757,6 @@ const notifyIntervalOptions = [
   { value: 1440, label: '24 小时' },
 ]
 const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.value === notifyInterval.value)?.label || '1 小时')
-
 // ─── Sprite Settings ────────────────────────────────────────
 // 仅状态展示（设置页状态卡）；开关已从设置页与托盘菜单移除
 const spriteEnabled = ref(false)
@@ -767,6 +766,7 @@ async function loadSpriteConfig() {
     spriteEnabled.value = await getSpriteEnabled()
   } catch {}
 }
+
 
 // ─── 浮窗快呼快捷键 ─────────────────────────────────────────
 const isMacPlatform = typeof navigator !== 'undefined' && (
@@ -1723,8 +1723,8 @@ async function saveProfileEditor() {
               <AppIcon name="chat-ai" size="14" class="text-indigo-600" />
             </div>
             <span class="text-[11px] text-surface-400">桌面精灵</span>
-          </div>
           <div class="text-[18px] font-bold" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-300'">{{ spriteEnabled ? '已启用' : '已关闭' }}</div>
+          </div>
         </div>
         <!-- 知识管线 -->
         <div class="bg-white rounded-2xl border border-surface-200 p-3 shadow-sm hover:shadow-md transition-shadow">
@@ -2353,6 +2353,7 @@ async function saveProfileEditor() {
                     <!-- 系统提示词 -->
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-1">系统提示词 *</label>
+                      <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">只写角色与交付内容规范；向用户提问/进度引导/确认交互由系统框架自动处理（走上报卡片），提示词中勿写「请确认」「回复继续」类对话指令句</p>
                       <textarea v-model="agentForm.system_prompt" rows="8" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400 resize-y" placeholder="定义 Agent 的身份、目标和行为规则..."></textarea>
                     </div>
                     <!-- 最大迭代次数 -->
