@@ -33,10 +33,14 @@ watch(() => agent.isChatting.value, (busy) => {
 })
 const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 const fmtElapsed = () => `${Math.floor(elapsedSec.value / 60)}:${String(elapsedSec.value % 60).padStart(2, '0')}`
-// 当前子 Agent 的产出字数（按 agent 分桶，并行委托不串台）
-const wChars = computed(() => {
+// 当前子 Agent 进度口径（按 agent 分桶）：交付型显示产出字数，执行型显示已完成工具步数
+const wProgress = computed(() => {
   const a = agentRun.currentAgent
-  return a ? (agentRun.writingByAgent[a.id] || 0) : 0
+  if (!a) return ''
+  const w = agentRun.writingByAgent[a.id]
+  if (!w) return ''
+  if (w.deliverable) return w.chars > 0 ? `正在生成 · ${fmtK(w.chars)} 字` : ''
+  return w.tools > 0 ? `已处理 ${w.tools} 步` : ''
 })
 
 // ─── Attachments ─────────────────────────────────────────────────
@@ -820,7 +824,7 @@ onUnmounted(() => {
                 <div v-if="msg.isThinking && !renderedContent(msg.id || '') && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
                   <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
                   <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
-                  <span class="text-[12px] text-[#8e8e93]">· {{ wChars > 0 ? `正在生成 · ${fmtK(wChars)} 字` : '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
+                  <span class="text-[12px] text-[#8e8e93]">· {{ wProgress || '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
                 </div>
                 <div v-else-if="agent.isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>

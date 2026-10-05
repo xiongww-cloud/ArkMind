@@ -8,8 +8,8 @@ export interface AgentRunState {
   currentAgent: { id: string; name: string } | null
   /** 本轮参与过的子 Agent 名称（去重保序），agent:done 时由前端写入消息的 assistants 署名 */
   participants: string[]
-  /** 生成心跳：按子 Agent id 分桶的已产出字符数（并行委托不串台）；主流程记在 '' 桶 */
-  writingByAgent: Record<string, number>
+  /** 生成心跳：按子 Agent id 分桶的产出进度；展示口径按类别分流——交付型显示字数、执行型显示已完成步数 */
+  writingByAgent: Record<string, { chars: number; tools: number; deliverable: boolean }>
 }
 
 let listenersBound = false
@@ -57,11 +57,15 @@ export function initAgentRunListeners() {
   if (listenersBound) return
   listenersBound = true
   const store = useAgentRunStore()
-  listen<{ stage?: string; agent_id?: string; agent_name?: string; chars?: number }>('agent:status', (ev) => {
+  listen<{ stage?: string; agent_id?: string; agent_name?: string; chars?: number; tools?: number; class?: string }>('agent:status', (ev) => {
     const p = ev.payload
     if (p?.stage === 'writing') {
       // 生成心跳：按 agent_id 落桶，绝不触碰 currentAgent（无 agent_name 的 payload 会被 applyStatus 误清）
-      store.writingByAgent[p.agent_id || ''] = p.chars ?? 0
+      store.writingByAgent[p.agent_id || ''] = {
+        chars: p.chars ?? 0,
+        tools: p.tools ?? 0,
+        deliverable: p.class === 'deliverable',
+      }
     } else if (p?.stage === 'delegate-done') {
       store.clearAgent()
     } else {

@@ -194,7 +194,7 @@ function isFaded(m: ChatMessage): boolean { return !revealOlder.value && !!m.id 
 async function expandToOlder() {
   revealOlder.value = true
   // 展开全部：一次性分页拉完本会话更早的记录（每页 50，安全上限 20 页）
-  if (!hasMore.value) { scrollChat(); return }
+  if (!hasMore.value) { scrollChat(true); return }
   loadingMore.value = true
   try {
     let guard = 0
@@ -218,7 +218,7 @@ async function expandToOlder() {
     console.error('[Chat] 展开全部消息失败:', e)
   }
   loadingMore.value = false
-  scrollChat()
+  scrollChat(true)
 }
 
 function autoGrow(e: Event) {
@@ -269,10 +269,14 @@ watch(() => agent.isChatting.value, (busy) => {
 })
 const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 const fmtElapsed = () => `${Math.floor(elapsedSec.value / 60)}:${String(elapsedSec.value % 60).padStart(2, '0')}`
-// 当前子 Agent 的产出字数（按 agent 分桶，并行委托不串台）
-const wChars = computed(() => {
+// 当前子 Agent 进度口径（按 agent 分桶）：交付型显示产出字数，执行型显示已完成工具步数
+const wProgress = computed(() => {
   const a = agentRun.currentAgent
-  return a ? (agentRun.writingByAgent[a.id] || 0) : 0
+  if (!a) return ''
+  const w = agentRun.writingByAgent[a.id]
+  if (!w) return ''
+  if (w.deliverable) return w.chars > 0 ? `正在生成 · ${fmtK(w.chars)} 字` : ''
+  return w.tools > 0 ? `已处理 ${w.tools} 步` : ''
 })
 
 /// 加载当前对话历史（全局指针，后端兜底）——打开/召唤用，不做轮转判定
@@ -323,15 +327,22 @@ async function loadOlderMessages() {
   loadingMore.value = false
 }
 
+// ★ 滚动跟随状态机：scrollChat 原为无条件吸底，流式输出期间用户完全滚不动；
+//   距底 48px 内视为贴底，滚开即脱离跟随，用户主动动作（发送/停止/展开全部）强制回底
+const stickToBottom = ref(true)
 function onChatScroll() {
   const el = chatListRef.value
-  if (!el || el.scrollTop > 100) return
+  if (!el) return
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+  if (el.scrollTop > 100) return
   loadOlderMessages()
 }
 
-function scrollChat() {
+function scrollChat(force = false) {
+  if (force) stickToBottom.value = true
   nextTick(() => {
-    if (chatListRef.value) chatListRef.value.scrollTop = chatListRef.value.scrollHeight
+    const el = chatListRef.value
+    if (el && stickToBottom.value) el.scrollTop = el.scrollHeight
   })
 }
 
@@ -394,7 +405,7 @@ async function send() {
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', thinking: true, toolCalls: [], rawToolCalls: [], toolResults: [], timestamp: Date.now() }
   messages.value.push(aiMsg)
   while (messages.value.length > 20) { messages.value.shift() }
-  scrollChat()
+  scrollChat(true)
 
   await agent.startAgentChat(q, {
     getMessage: () => aiMsg,
@@ -434,7 +445,7 @@ function onComposerKey(e: KeyboardEvent) {
 
 async function stopAgent() {
   await agent.stopAgent(() => messages.value)
-  scrollChat()
+  scrollChat(true)
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────
@@ -494,7 +505,7 @@ onUnmounted(() => {
               <div v-else-if="m.thinking && !agent.rendered.value[m.id || ''] && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
                 <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
                 <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
-                <span class="text-[12px] text-[#8e8e93]">· {{ wChars > 0 ? `正在生成 · ${fmtK(wChars)} 字` : '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
+                <span class="text-[12px] text-[#8e8e93]">· {{ wProgress || '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
               </div>
               <div v-else class="msg-a__body markdown-body" :class="{ 'thinking-bubble': m.thinking }"
                 v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
