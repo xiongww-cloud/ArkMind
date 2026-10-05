@@ -373,13 +373,14 @@ async fn stream_once(
         st.buf.push_str(&String::from_utf8_lossy(&bytes));
         st.buf = st.buf.replace("\r\n", "\n");
         while try_process_one(&mut st, &app_handle) {}
-        // ★ 生成心跳：每 5s 且产出有增量即上报已产字符数（含工具参数——文档助手长文生成期的"活着"证据）
+        // ★ 生成心跳：每 1s 且产出有增量即上报已产字符数（含工具参数——文档助手长文生成期的"活着"证据；
+        //   有增量才发 → 静默等待期零开销，流式期上限每秒一条）
         // 在途未成行字节估算：部分 provider 把 tool_calls 参数攒成单个巨型 JSON 事件最后才吐，
         // 期间 produced 恒定 → 心跳冻结显示"固定字数"；把 buf 滞留量按 0.8 系数计入实时进度。
         // 增量下发型 provider 每行极短，此值恒≈0，不影响原口径。
         let inflight = st.buf.len().saturating_sub(160) * 8 / 10;
         let produced = st.full.len() + st.reasoning.len() + st.tca.iter().map(|(_, _, a)| a.len()).sum::<usize>() + inflight;
-        if !silent && produced > st.prog_last_chars && st.prog_last_at.elapsed().as_secs() >= 5 {
+        if !silent && produced > st.prog_last_chars && st.prog_last_at.elapsed().as_millis() >= 1000 {
             if let Some(ref h) = app_handle {
                 let tool_steps = messages.iter().filter(|m| matches!(m.role, MessageRole::Tool)).count();
                 // 当前正在流式写参数的工具调用（长文落盘期判据）：前端据此显示"正在生成内容 · N 字"
