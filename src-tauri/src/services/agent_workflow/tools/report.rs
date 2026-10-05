@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 pub(crate) const REPORT_TOOL: &str = "ext_tool_report";
 const MAX_GAPS: usize = 5;
-const MAX_CONFS: usize = 3;
+const MAX_CONFS: usize = 5;
 const MAX_OPTS: usize = 6;
 const MAX_LEN: usize = 120;
 
