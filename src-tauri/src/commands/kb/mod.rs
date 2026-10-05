@@ -137,14 +137,15 @@ pub(crate) fn decide_fab_rotation(now: i64, last: i64, has_pending_clarification
     FabAction::Rotate
 }
 
-fn read_fab_state() -> (Option<String>, Option<i64>) {
+/// 读浮窗指针：(会话 id, 最后提问时刻, force_new——用户已按"新会话"、下次发送强制轮换)
+fn read_fab_state() -> (Option<String>, Option<i64>, bool) {
     let row = database::get("SELECT value FROM system_settings WHERE key='fab_session_state'", &[])
         .ok().flatten();
-    let Some(v) = row.and_then(|r| r["value"].as_str().map(String::from)) else { return (None, None) };
-    let Ok(parsed) = serde_json::from_str::<Value>(&v) else { return (None, None) };
-    let id = parsed["id"].as_str().map(String::from);
+    let Some(v) = row.and_then(|r| r["value"].as_str().map(String::from)) else { return (None, None, false) };
+    let Ok(parsed) = serde_json::from_str::<Value>(&v) else { return (None, None, false) };
+    let id = parsed["id"].as_str().filter(|s| !s.is_empty()).map(String::from);
     let last = parsed["last"].as_i64();
-    (id, last)
+    (id, last, parsed["force"].as_bool().unwrap_or(false))
 }
 
 fn write_fab_state(id: &str, last: i64) {
@@ -220,7 +221,12 @@ fn backfill_fab_titles() {
 /// 会话状态综合判定（遗留接管 + 已删防御 + 窗口/冻结 decide）
 /// 返回 (当前会话 id, 动作)——Rotate 时 id 为既有会话（调用方决定是否新建）
 fn fab_evaluate(now: i64) -> (Option<String>, FabAction) {
-    let (mut cur_id, mut last) = read_fab_state();
+    let (mut cur_id, mut last, force) = read_fab_state();
+    // 显式新会话（懒实体化）：直接判轮换，跳过遗留接管与窗口计算；
+    // 新会话行只在用户真正发出下一条消息时由 fab_resolve_session 的 Rotate 分支创建
+    if force {
+        return (cur_id.filter(|id| session_row_exists(id)), FabAction::Rotate);
+    }
     // 升级迁移：无 KV 状态但存在遗留固定会话 → 接管（历史不丢）
     if cur_id.is_none() && legacy_fab_session_exists() {
         database::run(
@@ -257,6 +263,20 @@ pub async fn fab_resolve_session() -> Result<Value, String> {
         FabAction::Rotate => (create_fab_session(), true),
     };
     Ok(json!({"success": true, "sessionId": id, "rotated": rotated}))
+}
+
+/// 浮窗显式开新会话（"新会话"按钮）：**懒实体化**——只给指针打 force 标记，不建会话行；
+/// 下一条消息发送时由 fab_resolve_session 的 Rotate 分支建行（点而不发不留空白会话），
+/// 打开面板时经 load_history 的 Rotate 门槛显示为空；kb_agent_chat 落指针时自然清除标记
+#[tauri::command]
+pub async fn fab_new_session() -> Result<Value, String> {
+    let (cur, _, _) = read_fab_state();
+    database::run(
+        "INSERT OR REPLACE INTO system_settings(key, value, updated_at) VALUES('fab_session_state', ?1, datetime('now','localtime'))",
+        &[json!({"id": cur.unwrap_or_default(), "last": chrono::Local::now().timestamp(), "force": true})],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(json!({"success": true}))
 }
 
 /// 当前对话 id（只读；历史回放兜底——无状态时先看遗留固定会话）

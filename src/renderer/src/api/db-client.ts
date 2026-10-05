@@ -348,9 +348,9 @@ export interface KbHeatmapItem {
   source_id: string
   title?: string
   count?: number
+export interface KbEntityRelation {
   [key: string]: unknown
 }
-export interface KbEntityRelation {
   [key: string]: unknown
 }
 export interface KbParentItem {
@@ -790,10 +790,10 @@ export async function rebuildNoteFTS(): Promise<{ success: boolean }> {
   return invoke('notes_rebuild_fts')
 }
 export async function upgradeNoteFTSTriggers(): Promise<{ success: boolean }> {
-  return invoke('notes_upgrade_fts_triggers')
-}
 export async function getProjectKnowledgeGraph(projectId: string): Promise<KbDashboardStats> {
   return invoke('notes_get_project_knowledge_graph', { projectId })
+}
+  return invoke('notes_upgrade_fts_triggers')
 }
 export async function semanticRecall(data: unknown): Promise<{ results?: unknown[] }> {
   return invoke('notes_semantic_recall', { data })
@@ -1280,6 +1280,9 @@ export interface FabResolveResult { success: boolean; sessionId: string; rotated
 export async function fabResolveSession(): Promise<FabResolveResult> {
   return invoke('fab_resolve_session')
 }
+export async function fabNewSession(): Promise<{ success: boolean }> {
+  return invoke('fab_new_session')
+}
 export async function kbFabLoadHistory(
   sessionId?: string | null,
   limit?: number,
@@ -1354,8 +1357,6 @@ export async function kbMemoryParents(
   sourceType: string,
   sourceId: string
 ): Promise<{ success: boolean; parents: KbParentItem[] }> {
-  return invoke('kb_memory_parents', { sourceType, sourceId })
-}
 export async function kbMemoryEntityRelations(
   entityName?: string,
   sourceType?: string,
@@ -1370,6 +1371,8 @@ export async function kbMemoryEntityRelations(
     sourceType: sourceType || '',
     sourceId: sourceId || ''
   })
+}
+  return invoke('kb_memory_parents', { sourceType, sourceId })
 }
 export async function kbMemoryHeatmap(): Promise<{
   success: boolean

@@ -3,7 +3,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { fabResolveSession, kbFabLoadHistory } from '@/api/db-client'
+import { fabResolveSession, fabNewSession, kbFabLoadHistory } from '@/api/db-client'
 import { useAgentChat, type ChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata, parseClarificationMetadata } from '@/composables/useAgentChat'
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
@@ -331,12 +331,12 @@ async function loadOlderMessages() {
 }
 
 // ★ 滚动跟随状态机：scrollChat 原为无条件吸底，流式输出期间用户完全滚不动；
-//   距底 48px 内视为贴底，滚开即脱离跟随，用户主动动作（发送/停止/展开全部）强制回底
+//   距底 30px 内视为贴底，滚开即脱离跟随，用户主动动作（发送/停止/展开全部）强制回底
 const stickToBottom = ref(true)
 function onChatScroll() {
   const el = chatListRef.value
   if (!el) return
-  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 30
   if (el.scrollTop > 100) return
   loadOlderMessages()
 }
@@ -370,6 +370,30 @@ async function hideWindow() {
 }
 
 // ─── 发送 ───────────────────────────────────────────────────
+/// 面板清零（30min 轮转与显式新会话共用）
+function resetPanel() {
+  agent.stopAllTypewriters(messages.value)
+  messages.value = []
+  fadedIds.value = new Set()
+  lastRoundCount.value = 0
+  hasMore.value = false
+}
+
+/// 显式开新会话（不等 30 分钟轮转）：**懒实体化**——后端只打标记不建行，
+/// 下一条消息发送时才真正创建（点了不发消息不会堆积空白会话）；回答进行中不打断，旧回复落旧会话
+async function newSession() {
+  if (agent.isChatting.value) {
+    import('@/composables/useToast').then(m => m.toast({ message: '当前回复将在原会话完成', type: 'info' }))
+  }
+  try {
+    await fabNewSession()
+    sessionId.value = ''
+    resetPanel()
+    revealOlder.value = true
+    pendingAttachments.value = []
+  } catch (e) { console.error('[Chat] 新建会话失败:', e) }
+}
+
 async function send() {
   const q = inputText.value.trim()
   if (!q || agent.isChatting.value) return
@@ -379,16 +403,10 @@ async function send() {
     return
   }
 
-  // 发送前轮转判定（唯一判定点）：距上次提问 >30min（或会话已删/追问超时）→ 新会话并清面板
+  // 发送前轮转判定：距上次提问 >30min（或会话已删/追问超时）→ 新会话并清面板
   try {
     const r = await fabResolveSession()
-    if (r.rotated && messages.value.length) {
-      agent.stopAllTypewriters(messages.value)
-      messages.value = []
-      fadedIds.value = new Set()
-      lastRoundCount.value = 0
-      hasMore.value = false
-    }
+    if (r.rotated && messages.value.length) resetPanel()
     sessionId.value = r.sessionId
   } catch (e) { console.error('[Chat] 会话解析失败:', e) }
 
@@ -541,11 +559,16 @@ onUnmounted(() => {
         placeholder="问点什么…"
         @input="autoGrow" @keydown="onComposerKey" @paste="onPaste"></textarea>
       <div class="composer-bar">
-        <span class="composer-hint">⏎ 发送 · ⇧⏎ 换行 · Esc 关闭</span>
         <div class="flex items-center gap-1">
+          <button @click.stop="newSession" class="icon-btn" v-tooltip="'开始新会话'">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+          </button>
           <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" v-tooltip="'附加文件'">
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
           </button>
+        </div>
+        <span class="composer-hint">⏎ 发送 · ⇧⏎ 换行 · Esc 关闭</span>
+        <div class="flex items-center gap-1">
           <button v-if="agent.isChatting.value" @click.stop="stopAgent" class="icon-btn icon-btn--stop" v-tooltip="'停止'">
             <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
           </button>
