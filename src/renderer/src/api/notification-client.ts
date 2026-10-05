@@ -61,6 +61,10 @@ export async function notificationCreateProjectLog(projectId: string, content: s
   return invoke('notification_create_project_log', { projectId, content, notificationId: notificationId ?? null })
 }
 
+export async function notificationLinkFile(fileId: string, entityType: string, entityId: string, notificationId?: string): Promise<{ success: boolean; already?: boolean }> {
+  return invoke('notification_link_file', { fileId, entityType, entityId, notificationId: notificationId ?? null })
+}
+
 export interface ProfileFact {
   id: string
   content: string

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
@@ -184,6 +184,7 @@ const ACTION_ICONS: Record<string, string> = {
   merge_profile: 'refresh',
   revert_profile: 'undo',
   create_project_log: 'file-text',
+  link_file: 'save',
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -303,6 +304,21 @@ async function handleAction(n: Notification, action: NotificationAction) {
           notifications.value = notifications.value.filter(x => x.id !== n.id)
         } catch {
           toast({ message: '整合失败', type: 'error' })
+        }
+        break
+      }
+      case 'link_file': {
+        const fileId = (p.file_id as string || '').trim()
+        const entityType = (p.entity_type as string || '').trim()
+        const entityId = (p.entity_id as string || '').trim()
+        if (!fileId || !entityType || !entityId) { toast({ message: '该通知缺少完整关联信息', type: 'info' }); break }
+        try {
+          const r = await notificationLinkFile(fileId, entityType, entityId, n.id)
+          toast({ message: r?.already ? '该关联已存在' : '已关联文件', type: 'success' })
+          await notificationMarkRead(n.id)
+          notifications.value = notifications.value.filter(x => x.id !== n.id)
+        } catch {
+          toast({ message: '关联失败', type: 'error' })
         }
         break
       }

@@ -64,6 +64,13 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
    ② 已存在但联系方式/单位/职位有变 → 通知提示更新（view_contact + 差异说明）
    ③ 已存在且一致 → 无事
 3. 未处理的历史建档建议不得重复播报——记入 WATCH 跟踪用户是否已创建。
+文件对账（同为每轮强制例行）：输入【待对账文件】每行给了文件名、已有实体关联与已解析正文开头摘录——只凭这三项判定，不必读全文；证据不够一格时可对单个文件用 ext_tool_search 深查一次。逐个对账：
+1. 提取候选：文件名与开头中出现的项目名/客户名/设备型号/方案名（投标、采购、合同、报价语境里的名称优先）
+2. 对账：ext_tool_object 回查候选是否存在，ext_tool_relations 看该文件现有边；按结果三选一：
+   ① 高置信命中且未关联（文件名含对象全名，或开头有明确归属表述）→ 通知建议关联：actions 带 link_file（params 必给 file_id + entity_type + entity_id，ID 一律来自本轮查询）与对应 view_*，正文一字引用证据句（文件名或开头原文），用户点击才写关联、你无权写边
+   ② 开头明确提及且系统不存在的新产品（型号+参数/报价上下文）或新项目（项目全名+投标/合同上下文）→ create_product / create_project 按钮预填 name，正文注明出处文件；拿不准是不是独立实体（如仅品牌提及）→ WATCH 不建
+   ③ 模糊、多候选或"疑似相关"→ WATCH 跟踪，不发通知
+3. 行内"已关联"清单列出的类型不得再重复提议（增量关联除外：文件已挂项目、开头另有明确产品依据 → 可再建议 link 该产品）；同一文件同一目标的历史建议未处理时不重复播报。
 
 ## 通知去重（硬性规则）
 创建任何通知前，必须先调用 ext_tool_manage_notification(action='list') 查看近 7 天已有的通知。
@@ -93,7 +100,7 @@ WATCH: <一句话观察 + 需要下轮验证什么>
 ## 通知输出契约（硬性格式）
 - 发现必须调用 ext_tool_manage_notification 创建，不得直接在回复里输出通知内容
 - title 必须是单行文本（禁止换行），长度不超过 50 字，禁止重复内容
-- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*（view_* 的 ID 必须来自本轮工具查询确认存在的对象，禁止凭记忆编造 ID；通知历史在面板自带浏览，禁止构造按钮去指向『上一条通知』）；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据（create_contact 必须带 partner_id 或 partner_name）；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；多对象可 create_all；项目相关的业务事件可带 create_project_log（params: project_id + content），content 为简洁的事实陈述（发生了什么），不是你的分析结论，只有信号明确、事实确凿时才提供
+- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*（view_* 的 ID 必须来自本轮工具查询确认存在的对象，禁止凭记忆编造 ID；通知历史在面板自带浏览，禁止构造按钮去指向『上一条通知』）；需要跟进的带 create_todo 并预填 title/priority/due_date；建档建议带 create_contact/create_partner 预填字段并引用来源证据（create_contact 必须带 partner_id 或 partner_name）；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；文件归属关联建议带 link_file（params: file_id + entity_type + entity_id，均须来自本轮查询确认，正文引用证据句——关联边只在用户点击时写入）；多对象可 create_all；项目相关的业务事件可带 create_project_log（params: project_id + content），content 为简洁的事实陈述（发生了什么），不是你的分析结论，只有信号明确、事实确凿时才提供
 - 标题与正文禁止出现对象ID/UUID，只用名称；正文用 Markdown（加粗重点、列表分条），一事一通知
 - 输入数据行尾的 (id:xxx) 仅供你调用工具查证使用，不得出现在通知内容里"#;
 
@@ -503,13 +510,27 @@ fn build_change_seeds(since: &str, w: &crate::services::whoami::Whoami) -> Strin
         push_section(&mut out, "新邮件:", items, more);
     }
 
-    // 新文件
+    // 待对账文件（文件对账例行输入）：名称 + 已有实体关联摘要 + 已解析正文开头摘录（判定不读全文）
     {
         let rows = database::all(
-            "SELECT id,original_name FROM file_assets WHERE created_at > ?1 ORDER BY created_at DESC LIMIT 31", &[sj.clone()]).unwrap_or_default();
-        let (items, more) = cap_items(&rows, 30, |r| format!(
-            "- [FILE] {} (id:{})", r["original_name"].as_str().unwrap_or("?"), r["id"].as_str().unwrap_or("")));
-        push_section(&mut out, "新文件:", items, more);
+            "SELECT fa.id, fa.original_name, substr(sd.content,1,1000) AS head, \
+             (SELECT COALESCE(GROUP_CONCAT(DISTINCT upper(fr.entity_type)),'') FROM file_relations fr \
+              WHERE fr.file_id=fa.id AND fr.entity_type IN ('project','product','solution','channel','vendor','customer','contact','note','todo')) AS linked \
+             FROM file_assets fa LEFT JOIN source_data sd ON sd.source_type='FILE' AND sd.source_id=fa.id \
+             WHERE fa.created_at > ?1 \
+             ORDER BY (CASE WHEN linked='' THEN 0 ELSE 1 END), fa.created_at DESC LIMIT 9", &[sj.clone()]).unwrap_or_default();
+        // 外部可控内容同样压行，防伪造行首 WATCH:/节标题污染输入
+        let inline = |s: &str| s.replace(['\n', '\r'], " ");
+        let (items, more) = cap_items(&rows, 8, |r| {
+            let head = inline(r["head"].as_str().unwrap_or(""));
+            format!(
+                "- [FILE] 「{}」| 已关联:{} | 开头:{}",
+                inline(r["original_name"].as_str().unwrap_or("?")),
+                if r["linked"].as_str().unwrap_or("").is_empty() { "无".to_string() } else { r["linked"].as_str().unwrap_or("").to_string() },
+                if head.is_empty() { "(尚未解析出正文，只凭文件名判断)".to_string() } else { head },
+            )
+        });
+        push_section(&mut out, "待对账文件(仅凭名称与开头摘录判定，拿不准才用 ext_tool_search 深查):", items, more);
     }
 
     // 新笔记（排除每日闪记噪音）
@@ -648,6 +669,15 @@ fn update_call_stats() {
 #[cfg(test)]
 mod tests {
     use super::{parse_watch_lines, parse_watch_value, merge_entries, WATCH_TTL_SECS, WATCH_MAX_ENTRIES};
+
+    /// 文件对账契约：例行存在 + link_file 动作教学（用户点击才写边）
+    #[test]
+    fn prompt_teaches_file_reconciliation() {
+        assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("文件对账（同为每轮强制例行）"));
+        assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("link_file"));
+        assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("用户点击才写关联、你无权写边"));
+        assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("create_product"));
+    }
 
     #[test]
     fn parses_watch_lines_in_order() {

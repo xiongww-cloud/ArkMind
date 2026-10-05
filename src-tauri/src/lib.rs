@@ -375,6 +375,7 @@ pub fn run() {
             commands::notification_config_get, commands::notification_config_update, commands::memory_create_from_notification,
             commands::profile_fact_save, commands::profile_facts_list, commands::profile_fact_delete, commands::profile_fact_merge,
             commands::notification_create_project_log,
+            commands::notification_link_file,
             commands::notification_loop_status,
             // 邮件
             commands::email_add_account, commands::email_list_accounts,
