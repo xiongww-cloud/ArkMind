@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile, notificationLinkFiles, type FileLinkTarget } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile, notificationLinkFiles, notificationUpdateObject, type FileLinkTarget } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
@@ -185,6 +185,7 @@ const ACTION_ICONS: Record<string, string> = {
   revert_profile: 'undo',
   create_project_log: 'file-text',
   link_file: 'save',
+  update_object: 'edit',
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -316,6 +317,29 @@ async function handleAction(n: Notification, action: NotificationAction) {
         }
         break
       }
+      case 'update_object': {
+        const et = (p.entity_type as string || '').trim()
+        const eid = (p.entity_id as string || '').trim()
+        const ups = (p.updates && typeof p.updates === 'object' && !Array.isArray(p.updates)) ? p.updates as Record<string, unknown> : null
+        if (!et || !eid || !ups || Object.keys(ups).length === 0) { toast({ message: '该通知缺少完整更新信息', type: 'info' }); break }
+        const lines = Object.entries(ups).map(([k, v]) => `${UPD_FIELD_ZH[k] || k}：→ ${UPD_STATUS_ZH[String(v)] || String(v)}`)
+        const evid = (p.evidence as string || '').trim()
+        const ok = await dangerConfirm({
+          title: '按 AI 洞察更新对象信息',
+          message: `${UPD_ENTITY_ZH[et] || et}\n${lines.join('\n')}${evid ? `\n依据：${evid}` : ''}`,
+          confirmText: '更新',
+        })
+        if (!ok) break
+        try {
+          await notificationUpdateObject(et, eid, ups, n.id)
+          toast({ message: '已更新', type: 'success' })
+          await notificationMarkRead(n.id)
+          notifications.value = notifications.value.filter(x => x.id !== n.id)
+        } catch (e: any) {
+          toast({ message: `更新失败：${e?.message || e}`, type: 'error' })
+        }
+        break
+      }
       case 'create_project_log': {
         const projectId = (p.project_id as string || '').trim()
         const content = (p.content as string || '').trim()
@@ -375,6 +399,17 @@ async function runFileLink(p: Record<string, unknown>, notificationId?: string):
   } catch {
     return { ok: false, msg: '关联失败' }
   }
+}
+
+// update_object 确认弹窗的中文映射（字段/实体/阶段值）
+const UPD_FIELD_ZH: Record<string, string> = {
+  name: '名称', description: '描述', budget: '预算', bid_time: '投标时间', expected_order_date: '预计下单时间',
+  owner: '负责人', status: '阶段', full_specs: '参数规格', phone: '电话', address: '地址', remark: '备注',
+  contact_person: '联系人', contact_phone: '联系电话',
+}
+const UPD_ENTITY_ZH: Record<string, string> = { PROJECT: '项目', PRODUCT: '产品', CHANNEL: '渠道', VENDOR: '厂商', CUSTOMER: '客户' }
+const UPD_STATUS_ZH: Record<string, string> = {
+  Lead: '线索', Qualification: '立项', Bidding: '投标中', Won: '已中标', Lost: '已失标', Ordered: '已下单', Archived: '已归档',
 }
 
 // ── 一键创建确认弹窗 ──

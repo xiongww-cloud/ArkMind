@@ -9,6 +9,7 @@ import { toast } from '@/composables/useToast'
 import { STATUS_OPTIONS, STATUS_LABELS, STATUS_DOT_COLORS } from '@/composables/useProjectStatus'
 import { formatDateTime } from '@/utils/time'
 import Timeline from '@/components/project/Timeline.vue'
+import CalendarPicker from './CalendarPicker.vue'
 import FileManager from '@/components/project/FileManager.vue'
 import SolutionConfigurator from '@/components/project/SolutionConfigurator.vue'
 import ProjectDetailCustomer from '@/components/project/ProjectDetailCustomer.vue'
@@ -299,77 +300,32 @@ async function handleCustomerUpdate() {
 
 const showBidCalendar = ref(false)
 const bidCalendarRef = ref(null)
-const bidCalendarYear = ref(new Date().getFullYear())
-const bidCalendarMonth = ref(new Date().getMonth())
 
 function formatBidTime(v: string) {
   if (!v) return ''
   try {
     const d = new Date(v)
     if (isNaN(d.getTime())) return v
-    return d.getFullYear() + '-' +
+    const datePart = d.getFullYear() + '-' +
       String(d.getMonth() + 1).padStart(2, '0') + '-' +
       String(d.getDate()).padStart(2, '0')
+    // 带时分（且非零点整）时一并显示；历史纯日期值只显示日
+    if (/[T ]\d{2}:\d{2}/.test(v) && !(d.getHours() === 0 && d.getMinutes() === 0)) {
+      return datePart + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+    }
+    return datePart
   } catch { return v }
 }
 
 function startEditBidTime() {
-  const raw = (project.value?.bidTime || project.value?.bid_time || '')
-  if (raw) {
-    const d = new Date(raw)
-    if (!isNaN(d.getTime())) {
-      bidCalendarYear.value = d.getFullYear()
-      bidCalendarMonth.value = d.getMonth()
-    }
-  } else {
-    const now = new Date()
-    bidCalendarYear.value = now.getFullYear()
-    bidCalendarMonth.value = now.getMonth()
-  }
   showBidCalendar.value = !showBidCalendar.value
-}
-
-function prevMonth() {
-  if (bidCalendarMonth.value === 0) { bidCalendarMonth.value = 11; bidCalendarYear.value-- }
-  else { bidCalendarMonth.value-- }
-}
-
-function nextMonth() {
-  if (bidCalendarMonth.value === 11) { bidCalendarMonth.value = 0; bidCalendarYear.value++ }
-  else { bidCalendarMonth.value++ }
-}
-
-const calendarDays = computed(() => {
-  const year = bidCalendarYear.value
-  const month = bidCalendarMonth.value
-  const firstDay = new Date(year, month, 1).getDay()
-  const daysInMonth = new Date(year, month + 1, 0).getDate()
-  const days = []
-  for (let i = 0; i < firstDay; i++) days.push(null)
-  for (let d = 1; d <= daysInMonth; d++) days.push(d)
-  return days
-})
-
-const todayStr = computed(() => {
-  const now = new Date()
-  return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
-})
-
-function isSelectedDay(day: number) {
-  const y = bidCalendarYear.value
-  const m = String(bidCalendarMonth.value + 1).padStart(2, '0')
-  const d = String(day).padStart(2, '0')
-  return (project.value?.bidTime || project.value?.bid_time || '').startsWith(`${y}-${m}-${d}`)
 }
 
 function closeBidCalendar() { showBidCalendar.value = false }
 
-async function selectBidDay(day: number) {
-  const y = bidCalendarYear.value
-  const m = String(bidCalendarMonth.value + 1).padStart(2, '0')
-  const d = String(day).padStart(2, '0')
-  const displayTime = `${y}-${m}-${d}`
+async function selectBidTime(val: string) {
   showBidCalendar.value = false
+  const displayTime = val
   if (project.value) {
     project.value.bidTime = displayTime
     project.value.bid_time = displayTime
@@ -542,40 +498,18 @@ watch(
                   <button @click.stop="startEditBidTime" class="p-0.5 rounded text-gray-300 hover:text-[#007aff] transition-colors opacity-0 group-hover/bid-inline:opacity-100 flex-shrink-0" v-tooltip="'编辑投标时间'">
                     <AppIcon name="edit" class="w-2.5 h-2.5" />
                   </button>
-                  <div v-if="showBidCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80] bg-white/85 backdrop-blur-xl rounded-xl shadow-2xl border border-white/30 p-4 w-[260px]">
-                      <div class="flex items-center justify-between mb-3">
-                        <button @click="prevMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
-                          <AppIcon name="chevron-left" class="w-4 h-4 text-slate-500" />
-                        </button>
-                        <span class="text-sm font-medium text-slate-700">{{ bidCalendarYear }} 年 {{ bidCalendarMonth + 1 }} 月</span>
-                        <button @click="nextMonth" class="p-1 rounded-md hover:bg-slate-100 transition-colors">
-                          <AppIcon name="chevron-right" class="w-4 h-4 text-slate-500" />
-                        </button>
-                      </div>
-                      <div class="grid grid-cols-7 mb-1">
-                        <span v-for="w in ['日','一','二','三','四','五','六']" :key="w" class="text-center text-[11px] text-slate-400 py-1">{{ w }}</span>
-                      </div>
-                      <div class="grid grid-cols-7 gap-0.5">
-                        <div v-for="(day, idx) in calendarDays" :key="idx" class="aspect-square flex items-center justify-center">
-                          <button
-                            v-if="day !== null"
-                            @click="selectBidDay(day)"
-                            class="w-8 h-8 rounded-full text-xs transition-colors"
-                            :class="[
-                              isSelectedDay(day)
-                                ? 'bg-blue-600 text-white font-medium'
-                                : todayStr === (bidCalendarYear + '-' + String(bidCalendarMonth + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0'))
-                                  ? 'text-blue-600 font-medium hover:bg-blue-50'
-                                  : 'text-slate-600 hover:bg-slate-100'
-                            ]"
-                          >{{ day }}</button>
-                        </div>
-                      </div>
-                      <div class="mt-3 pt-3 border-t border-slate-100 flex justify-between">
-                        <button @click="clearBidTime" class="text-[11px] text-slate-400 hover:text-red-300 transition-colors">清除</button>
-                        <button @click="closeBidCalendar" class="text-[11px] text-slate-400 hover:text-slate-600 transition-colors">关闭</button>
-                      </div>
+                  <div v-if="showBidCalendar" @click.stop class="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[80]">
+                    <CalendarPicker
+                      :modelValue="(project.bidTime || project.bid_time || '')"
+                      :showRepeat="false"
+                      @update:modelValue="selectBidTime"
+                      @close="showBidCalendar = false"
+                    />
+                    <div class="flex justify-between mt-1 px-1">
+                      <button @click="clearBidTime" class="text-[11px] text-slate-400 hover:text-red-300 transition-colors">清除</button>
+                      <button @click="closeBidCalendar" class="text-[11px] text-slate-400 hover:text-slate-600 transition-colors">关闭</button>
                     </div>
+                  </div>
                 </span>
               </button>
               <Transition name="dropdown">

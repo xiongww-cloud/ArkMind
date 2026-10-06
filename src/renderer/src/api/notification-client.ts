@@ -70,6 +70,10 @@ export async function notificationLinkFiles(fileId: string, links: FileLinkTarge
   return invoke('notification_link_files', { fileId, links, notificationId: notificationId ?? null })
 }
 
+export async function notificationUpdateObject(entityType: string, entityId: string, updates: Record<string, unknown>, notificationId?: string): Promise<{ success: boolean }> {
+  return invoke('notification_update_object', { entityType, entityId, updates, notificationId: notificationId ?? null })
+}
+
 export interface ProfileFact {
   id: string
   content: string

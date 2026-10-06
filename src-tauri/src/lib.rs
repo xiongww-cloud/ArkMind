@@ -377,6 +377,7 @@ pub fn run() {
             commands::notification_create_project_log,
             commands::notification_link_file,
             commands::notification_link_files,
+            commands::notification_update_object,
             commands::notification_loop_status,
             // 邮件
             commands::email_add_account, commands::email_list_accounts,

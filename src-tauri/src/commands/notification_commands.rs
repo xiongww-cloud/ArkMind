@@ -311,6 +311,86 @@ pub(crate) fn strip_type_prefix(s: &str) -> String {
     }
 }
 
+/// update_object 按钮：各实体类型允许 AI 建议更新的字段白名单（键名即 updates 入参键）
+pub(crate) fn update_object_field_whitelist(et_upper: &str) -> &'static [&'static str] {
+    match et_upper {
+        "PROJECT" => &["name", "description", "budget", "bid_time", "expected_order_date", "owner", "status"],
+        "PRODUCT" => &["name", "description", "full_specs"],
+        "CHANNEL" | "VENDOR" | "CUSTOMER" => &["name", "phone", "address", "remark", "contact_person", "contact_phone"],
+        _ => &[],
+    }
+}
+
+/// 按白名单过滤 updates（纯函数）：剔除白名单外键、空串/null；evidence 透传供动态记录
+pub(crate) fn filter_update_fields(et_upper: &str, updates: &Value) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for key in update_object_field_whitelist(et_upper) {
+        if let Some(v) = updates.get(*key) {
+            if v.is_null() { continue; }
+            if v.is_string() && v.as_str().unwrap_or("").trim().is_empty() { continue; }
+            out.insert((*key).to_string(), v.clone());
+        }
+    }
+    out
+}
+
+/// 用户从通知的 update_object 按钮确认：按 AI 洞察建议更新对象信息（受信任落库，白名单字段）。
+/// PROJECT 的 status 走阶段状态机命令；项目类变更自动记一条项目动态（附证据）。
+#[tauri::command]
+pub async fn notification_update_object(entity_type: String, entity_id: String, updates: Value, notification_id: Option<String>) -> Result<Value, String> {
+    let et = entity_type.trim().to_uppercase();
+    let eid = strip_type_prefix(entity_id.trim());
+    if eid.is_empty() || !updates.is_object() { return Err("更新参数不完整".into()); }
+    let clean = filter_update_fields(&et, &updates);
+    if clean.is_empty() { return Err("没有可更新的有效字段".into()); }
+    let (table, id_col) = link_target_table(&et).ok_or_else(|| format!("该类型不支持一键更新：{}", et))?;
+    let exists = database::get(
+        &format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", table, id_col), &[json!(&eid)]
+    ).ok().flatten().is_some();
+    if !exists { return Err("目标对象不存在或已被删除".into()); }
+    let evidence = updates["evidence"].as_str().unwrap_or("").trim().to_string();
+    let summary: Vec<String> = clean.iter()
+        .map(|(k, v)| format!("{}→{}", k, v.as_str().unwrap_or("")))
+        .collect();
+    match et.as_str() {
+        "PROJECT" => {
+            let mut fields = clean.clone();
+            if let Some(st) = fields.remove("status") {
+                let s = st.as_str().unwrap_or("").trim().to_string();
+                if !s.is_empty() {
+                    crate::commands::project_commands::project_update_status(eid.clone(), s, "AI".into()).await?;
+                }
+            }
+            if !fields.is_empty() {
+                crate::commands::project_commands::project_update(eid.clone(), Value::Object(fields)).await?;
+            }
+            let content = if evidence.is_empty() {
+                format!("AI 洞察更新：{}", summary.join("；"))
+            } else {
+                format!("AI 洞察更新：{}（依据：{}）", summary.join("；"), evidence)
+            };
+            crate::commands::project_commands::project_dynamics_add(eid.clone(), json!({"type": "ai", "content": content, "operator": "AI"})).await.ok();
+        }
+        "PRODUCT" => {
+            let mut data = serde_json::Map::new();
+            if let Some(v) = clean.get("name") { data.insert("name".into(), v.clone()); }
+            if let Some(v) = clean.get("description") { data.insert("description".into(), v.clone()); }
+            if let Some(v) = clean.get("full_specs") { data.insert("fullSpecs".into(), v.clone()); }
+            crate::commands::product_commands::product_update(eid.clone(), Value::Object(data)).await?;
+        }
+        _ => {
+            let mut data = Value::Object(clean.clone());
+            data["id"] = json!(&eid);
+            crate::commands::partner_commands::partner_update(data).await.map(|_| ())?;
+        }
+    }
+    if let Some(nid) = notification_id.as_deref() {
+        database::run("UPDATE notifications SET read=1 WHERE id=?1", &[json!(nid)]).ok();
+    }
+    log::info!("[通知] update_object 已应用: {} {} → {:?}", et, eid, summary);
+    Ok(json!({"success": true}))
+}
+
 /// 画像事实列表（设置页"我的档案"卡用）
 #[tauri::command]
 pub async fn profile_facts_list() -> Result<Value, String> {
@@ -349,5 +429,22 @@ mod tests {
         assert_eq!(link_target_table("VENDOR"), Some(("partners", "id")));
         assert_eq!(link_target_table("EMAIL"), None, "邮件不走 link_file");
         assert_eq!(link_target_table("file"), None);
+    }
+
+    /// update_object 白名单过滤：越权字段剔除、空值剔除、evidence 不进 updates
+    #[test]
+    fn filter_update_fields_whitelists() {
+        use super::filter_update_fields;
+        let u = serde_json::json!({
+            "bid_time": "2026-10-20 09:30:00", "status": "Won", "id": "hacked", "created_at": "x",
+            "evidence": "邮件原文", "remark": "", "budget": null
+        });
+        let out = filter_update_fields("PROJECT", &u);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out["bid_time"], "2026-10-20 09:30:00");
+        assert_eq!(out["status"], "Won");
+        assert!(!out.contains_key("id") && !out.contains_key("evidence") && !out.contains_key("remark"));
+        assert!(filter_update_fields("CONTACT", &u).is_empty(), "未登记类型无白名单");
+        assert!(filter_update_fields("PRODUCT", &serde_json::json!({"phone": "1"})).is_empty(), "字段与类型不匹配剔除");
     }
 }

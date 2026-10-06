@@ -13,6 +13,35 @@ pub(crate) fn sanitize_actions_json(actions_raw: &str) -> (String, Vec<String>) 
     let mut dropped: Vec<String> = Vec::new();
     for mut item in parsed {
         let atype = item["type"].as_str().unwrap_or("").to_string();
+        // ★ update_object 创建侧校验：类型支持 + 目标存在 + 白名单内至少一个有效字段，
+        //   并把 updates 重写为过滤后的安全子集（防死按钮与越权字段）
+        if atype == "update_object" {
+            use crate::commands::notification_commands::{filter_update_fields, link_target_table};
+            let et = item["params"]["entity_type"].as_str().unwrap_or("").trim().to_uppercase();
+            let eid = item["params"]["entity_id"].as_str().unwrap_or("").trim().to_string();
+            let eid = match eid.find('-') {
+                Some(i) if i > 0 && eid[..i].chars().all(|c| c.is_ascii_uppercase()) => eid[i + 1..].to_string(),
+                _ => eid.clone(),
+            };
+            let target_ok = link_target_table(&et).map(|(t, c)| {
+                !eid.is_empty() && database::get(&format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", t, c), &[json!(&eid)])
+                    .ok().flatten().is_some()
+            }).unwrap_or(false);
+            let clean = filter_update_fields(&et, &item["params"]["updates"]);
+            if target_ok && !clean.is_empty() {
+                if let Some(o) = item.as_object_mut() {
+                    if let Some(pm) = o.get_mut("params").and_then(|p| p.as_object_mut()) {
+                        pm.insert("entity_id".into(), json!(eid));
+                        pm.insert("entity_type".into(), json!(et));
+                        pm.insert("updates".into(), Value::Object(clean));
+                    }
+                }
+                kept.push(item);
+            } else {
+                dropped.push(item["label"].as_str().filter(|s| !s.is_empty()).unwrap_or(&atype).to_string());
+            }
+            continue;
+        }
         // ★ link_file 创建侧校验：单目标(entity_type/entity_id)或批量(links[])，
         //   逐条验存在性、剔除坏条（全坏才删按钮）——死按钮不留到用户点击（与 view_* 同策略）
         if atype == "link_file" {

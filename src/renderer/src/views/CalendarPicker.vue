@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 
-const props = defineProps<{ modelValue: string; repeatValue?: string }>()
+const props = defineProps<{ modelValue: string; repeatValue?: string; showRepeat?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [v: string]; 'update:repeatValue': [v: string]; close: [] }>()
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
@@ -80,8 +80,9 @@ function confirmDateTime() {
   if (!selectedDay.value) return
   const y = cursor.value.getFullYear()
   const m = cursor.value.getMonth()
-  const iso = `${y}-${String(m + 1).padStart(2, '0')}-${String(selectedDay.value).padStart(2, '0')}T${String(selectedHour.value).padStart(2, '0')}:${String(selectedMinute.value).padStart(2, '0')}:00`
-  emit('update:modelValue', iso)
+  // 空格分隔的 SQLite 原生友好格式（与 now_db 约定一致；datetime() 比较兼容）
+  const val = `${y}-${String(m + 1).padStart(2, '0')}-${String(selectedDay.value).padStart(2, '0')} ${String(selectedHour.value).padStart(2, '0')}:${String(selectedMinute.value).padStart(2, '0')}:00`
+  emit('update:modelValue', val)
   emit('close')
 }
 
@@ -124,7 +125,7 @@ onMounted(() => { cursor.value = d(props.modelValue) })
 
     <div class="mt-3 pt-3 border-t border-slate-100 space-y-2">
       <!-- Repeat -->
-      <div class="flex items-center gap-1">
+      <div v-if="showRepeat !== false" class="flex items-center gap-1">
         <span class="text-[11px] text-slate-400 w-[28px] shrink-0">重复</span>
         <div class="flex gap-1 flex-1">
           <button v-for="ri in REPEAT_ITEMS" :key="ri.value" @click.stop="selectRepeat(ri.value)"

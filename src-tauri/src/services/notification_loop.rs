@@ -100,7 +100,7 @@ WATCH: <一句话观察 + 需要下轮验证什么>
 ## 通知输出契约（硬性格式）
 - 发现必须通过「通知管理」创建，不得直接在回复里输出通知内容
 - title 必须是单行文本（禁止换行），长度不超过 50 字，禁止重复内容
-- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*（view_* 的 ID 必须来自本轮工具查询确认存在的对象，禁止凭记忆编造 ID；通知历史在面板自带浏览，禁止构造按钮去指向『上一条通知』）；需要跟进的带 create_todo 并预填 title/priority/due_date——title 必须是 ≤10 字的动作短句（动词+对象，如"回访咸宁项目对接人"），背景、依据、来源全部写进 content；due_date 必须带时分（格式 YYYY-MM-DDTHH:MM:00，无具体线索时上午 09:30，材料里有时刻就照用），禁止只给日期；建档建议带 create_contact/create_partner 预填字段并引用来源证据（create_contact 必须带 partner_id 或 partner_name）；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；文件归属关联建议带 link_file（params: file_id + entity_type + entity_id + entity_name（目标短名，供确认弹窗展示），均须来自本轮查询确认，正文引用证据句——关联边只在用户点击时写入）；同一文件对多个目标各有据时，合并为**一个** link_file（params.links 数组，一目标一项，≤10，超出降级 WATCH），禁止按目标拆成多个 link_file 按钮；多对象可 create_all；项目相关的业务事件可带 create_project_log（params: project_id + content），content 为简洁的事实陈述（发生了什么），不是你的分析结论，只有信号明确、事实确凿时才提供
+- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*（view_* 的 ID 必须来自本轮工具查询确认存在的对象，禁止凭记忆编造 ID；通知历史在面板自带浏览，禁止构造按钮去指向『上一条通知』）；需要跟进的带 create_todo 并预填 title/priority/due_date——title 必须是 ≤10 字的动作短句（动词+对象，如"回访咸宁项目对接人"），背景、依据、来源全部写进 content；due_date 必须带时分（格式 YYYY-MM-DD HH:MM:00 空格分隔，无具体线索时上午 09:30，材料里有时刻就照用），禁止只给日期；建档建议带 create_contact/create_partner 预填字段并引用来源证据（create_contact 必须带 partner_id 或 partner_name）；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；文件归属关联建议带 link_file（params: file_id + entity_type + entity_id + entity_name（目标短名，供确认弹窗展示），均须来自本轮查询确认，正文引用证据句——关联边只在用户点击时写入）；同一文件对多个目标各有据时，合并为**一个** link_file（params.links 数组，一目标一项，≤10，超出降级 WATCH），禁止按目标拆成多个 link_file 按钮；多对象可 create_all；项目相关的业务事件可带 create_project_log（params: project_id + content），content 为简洁的事实陈述（发生了什么），不是你的分析结论，只有信号明确、事实确凿时才提供；对象信息有明确变更事实时（邮件/公告确认投标延期改期、中标失标、产品价格或规格变动、客户联系方式变更）可带 update_object（params: entity_type + entity_id + updates 仅含变更字段 + evidence 证据原句；时间字段必须带时分，格式 YYYY-MM-DD HH:MM:00）——用户点击才写入，你不直接改任何数据；证据含糊或仅疑似时禁止发 update_object 按钮，改记 WATCH
 - 标题与正文禁止出现对象ID/UUID，只用名称；正文用 Markdown（加粗重点、列表分条），一事一通知
 - 输入数据行尾的 (id:xxx) 仅供你调用工具查证使用，不得出现在通知内容里
 - 通知标题与正文、以及任何用户可见文字只使用中文业务称谓，禁止出现工具函数名（ext_tool_ 开头的标识符）与英文参数名"#;
@@ -631,7 +631,7 @@ fn build_baseline() -> String {
     // 高优待办全景（P1/高，按截止排序）
     {
         let rows = database::all(
-            "SELECT title,due_date,priority FROM todos WHERE done=0 AND (priority IN ('P1','高','high') OR due_date < datetime('now','localtime')) \
+            "SELECT title,due_date,priority FROM todos WHERE done=0 AND (priority IN ('P1','高','high') OR datetime(due_date) < datetime('now','localtime')) \
              ORDER BY due_date ASC LIMIT 15", &[]).unwrap_or_default();
         if !rows.is_empty() {
             let items: Vec<String> = rows.iter().map(|r| format!(

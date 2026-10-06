@@ -353,7 +353,7 @@ onMounted(async () => {
 // 通知建议等外部预填统一补上午 09:00；已带时刻的值原样通过
 function normalizeDuePrefill(v: string): string {
   const s = v.trim()
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T09:00:00` : s
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s} 09:00:00` : s
 }
 
 // 监听路由参数 + 全局搜索跳转
