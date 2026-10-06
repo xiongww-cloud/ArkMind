@@ -94,8 +94,8 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 ## 连续观察（WATCH）
 证据不足但值得盯的，不要放弃也不要报警——在最终回复的末尾逐行记录：
 WATCH: <一句话观察 + 需要下轮验证什么>
-观察由系统按时间维护：每条保留 7 天、全池至多 30 条（超出淘汰最旧），期间系统会自动带回后续轮次跟进；7 天内未升级为通知即自动过期。
-你只需输出**本轮新增**的观察，无需回显已有的观察（回显不会让它续命，也不会丢失）。已有观察累积验证成立后，才升级为通知。
+观察由你管理、系统代存：池中每条有稳定 id（如 w12），保留 7 天、全池至多 30 条。**验证出结果就必须关闭**：某观察已被核实、被证伪、或不再值得盯时，输出 WATCH-DONE: w12（多个 id 逗号分隔）——关闭的条目不再带回。输入中的遗留观察若本轮跟进无结果，不输出即自然保留，禁止为同一件事换措辞重复新增（先 DONE 再重写，或直接保留）。
+你只需输出**本轮的变化**（新增 WATCH / 关闭 WATCH-DONE），无需回显保留中的观察（回显不会让它续命，也不会丢失）。已有观察累积验证成立后，才升级为通知。
 
 ## 通知输出契约（硬性格式）
 - 发现必须调用 ext_tool_manage_notification 创建，不得直接在回复里输出通知内容
@@ -241,8 +241,11 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
 
     let w = crate::services::whoami::Whoami::load();
     let seeds = build_change_seeds(&since, &w);
-    // 观察池读取即过期过滤（7 天 TTL + 30 条上限）
-    let watch_effective = load_watch_entries().into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n");
+    // 观察池读取即过期过滤（7 天 TTL + 30 条上限）；带稳定 id 与年龄呈现，模型可精确关闭
+    let now_ts = now_secs();
+    let watch_effective = load_watch_entries().into_iter()
+        .map(|e| format!("- [w{}|{}] {}", e.id, watch_age_label(now_ts - e.t), e.text))
+        .collect::<Vec<_>>().join("\n");
 
     // 结构化跳过判断：无新线索且无遗留观察 → 不调 LLM（不再依赖魔法字符串哨兵）
     if seeds.is_empty() && watch_effective.is_empty() {
@@ -267,12 +270,10 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     let baseline = build_baseline();
     let recent = get_recent_notifications(3);
     let seeds_text = if seeds.is_empty() { "（本轮无新增变化，请重点跟进遗留观察）".to_string() } else { seeds };
-    let watch_text = if watch_effective.is_empty() { "（无）".to_string() } else {
-        watch_effective.lines().map(|l| format!("- {}", l.trim())).collect::<Vec<_>>().join("\n")
-    };
+    let watch_text = if watch_effective.is_empty() { "（无）".to_string() } else { watch_effective.clone() };
     let whoami_block = w.prompt_block(false); // 分析师只读：不给指向无写权限工具的 id 提示
     let query = format!(
-        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n\n## 上轮遗留观察（优先跟进验证）\n{}",
+        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n\n## 遗留观察池（每行 [w<id>|年龄]；优先跟进验证，已核实/证伪/不再值得盯的输出 WATCH-DONE: <id> 关闭）\n{}",
         if whoami_block.is_empty() { String::new() } else { format!("{}\n\n", whoami_block) },
         since, seeds_text, baseline, recent, watch_text
     );
@@ -313,11 +314,11 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
                 let iters = v["iterations"].as_i64().unwrap_or(0);
                 let preview: String = answer.chars().take(100).collect();
                 log::info!("[通知循环] 分析完成，迭代{}次，回复: {}", iters, preview);
-                // WATCH 池更新：时间驱动合并（同文去重、新条目新时间戳、过期淘汰）
-                // 模型本轮无 WATCH → 池保持原样（仅过期/超限清理），不再清空——条目活到 7 天 TTL
+                // WATCH 池更新：模型自主管理（WATCH-DONE 关闭 + 新增追加），系统只做存储与 TTL 兜底
                 let watch_lines = parse_watch_lines(answer);
-                let merged = merge_watch_entries(&watch_lines);
-                log::info!("[通知循环] 观察池合并完成：{} 条（本轮模型新增输出 {} 条）", merged.len(), watch_lines.len());
+                let done_ids = parse_watch_done(answer);
+                let (merged, closed) = merge_watch_entries(&watch_lines, &done_ids);
+                log::info!("[通知循环] 观察池合并完成：{} 条（新增 {}，关闭 {}）", merged.len(), watch_lines.len(), closed);
             }
             Err(e) => {
                 log::error!("[通知循环] 分析失败: {}", e);
@@ -330,56 +331,96 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     });
 }
 
-/// 观察池当前内容（供设置页只读展示；过期条目自动过滤，输出纯文本逐行）
+/// 观察池当前内容（供设置页只读展示；带 id 与年龄，过期条目自动过滤）
 pub fn get_watch_pool() -> String {
-    load_watch_entries().into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n")
+    let now = now_secs();
+    load_watch_entries().into_iter()
+        .map(|e| format!("[w{}|{}] {}", e.id, watch_age_label(now - e.t), e.text))
+        .collect::<Vec<_>>().join("\n")
 }
 
-/// 观察池条目：(创建时间 epoch 秒, 文本)
-type WatchEntry = (i64, String);
+/// 观察池条目：稳定 id（池内单调递增、删除不复用不重排——模型跨轮引用的锚点）、创建时间、文本
+#[derive(Clone, PartialEq, Debug)]
+pub struct WatchEntry {
+    pub id: u64,
+    pub t: i64,
+    pub text: String,
+}
 
 fn now_secs() -> i64 {
     chrono::Local::now().timestamp()
 }
 
-/// 解析观察池存储值（纯函数，便于测试）：JSON 数组格式；旧纯文本格式兼容（t=now）；
-/// 读出即按 TTL 过滤过期条目
+fn watch_age_label(age_secs: i64) -> String {
+    if age_secs < 86_400 { "今天".to_string() } else { format!("{}天前", age_secs / 86_400) }
+}
+
+/// 解析观察池存储值（纯函数，便于测试）：JSON 数组 [{i?,t,text}]；
+/// 无 id 的旧数据（含纯文本格式）加载时按序自动补发稳定 id；读出即按 TTL 过滤、限最新 N 条
 fn parse_watch_value(raw: &str, now: i64) -> Vec<WatchEntry> {
     if raw.trim().is_empty() {
         return Vec::new();
     }
-    let entries: Vec<WatchEntry> = if let Ok(arr) = serde_json::from_str::<Vec<Value>>(raw) {
-        arr.into_iter().filter_map(|v| {
-            let text = v.get("text").and_then(|t| t.as_str())?.to_string();
-            if text.trim().is_empty() { return None; }
-            let t = v.get("t").and_then(|t| t.as_i64()).unwrap_or(now);
-            Some((t, text))
-        }).collect()
+    let parsed: Vec<Value> = if let Ok(arr) = serde_json::from_str::<Vec<Value>>(raw) {
+        arr
     } else {
-        // 旧纯文本格式（无时间戳）→ 视为刚创建
-        raw.lines().map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .map(|l| (now, l))
-            .collect()
+        // 旧纯文本格式（无时间戳无 id）→ 视为刚创建
+        raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
+            .map(|l| json!({"text": l})).collect()
     };
+    let mut max_id = parsed.iter().filter_map(|v| v.get("i").and_then(|x| x.as_u64())).max().unwrap_or(0);
+    let rows: Vec<(Option<u64>, i64, String)> = parsed.into_iter().filter_map(|v| {
+        let text = v.get("text").and_then(|t| t.as_str())?.to_string();
+        if text.trim().is_empty() { return None; }
+        let t = v.get("t").and_then(|x| x.as_i64()).unwrap_or(now);
+        let id = v.get("i").and_then(|x| x.as_u64()).filter(|i| *i > 0);
+        if let Some(i) = id { max_id = max_id.max(i); }
+        Some((id, t, text))
+    }).collect();
+    let mut next = max_id + 1;
+    let entries: Vec<WatchEntry> = rows.into_iter().map(|(id, t, text)| WatchEntry {
+        id: id.unwrap_or_else(|| { let i = next; next += 1; i }),
+        t, text,
+    }).collect();
     entries.into_iter()
-        .filter(|(t, _)| now - *t <= WATCH_TTL_SECS)
+        .filter(|e| now - e.t <= WATCH_TTL_SECS)
         .rev().take(WATCH_MAX_ENTRIES).collect::<Vec<_>>().into_iter().rev().collect()
 }
 
-/// 合并（纯函数）：新观察去重追加到存活条目（旧条目时间戳不变=不续命）；超出条数上限按最旧淘汰
-fn merge_entries(alive: Vec<WatchEntry>, new_lines: &[String], now: i64) -> Vec<WatchEntry> {
-    let mut entries = alive;
+/// 从分析回复解析关闭行（纯函数）：`WATCH-DONE: w3` / `w3, w7` / `3、7`；无效 id 由 merge 端自然忽略
+pub(crate) fn parse_watch_done(answer: &str) -> Vec<u64> {
+    let mut out: Vec<u64> = Vec::new();
+    for line in answer.lines() {
+        let t = line.trim().trim_start_matches(['-', '*', '#', '>', ' ']);
+        let Some(rest) = t.strip_prefix("WATCH-DONE:").or_else(|| t.strip_prefix("WATCH-DONE：")) else { continue };
+        for tok in rest.split(|c| c == ',' || c == '，' || c == '、' || c == ' ') {
+            let w = tok.trim().trim_start_matches('w').trim_start_matches('W');
+            if let Ok(id) = w.parse::<u64>() {
+                if id > 0 && !out.contains(&id) { out.push(id); }
+            }
+        }
+    }
+    out
+}
+
+/// 合并（纯函数）：先按 done_ids 关闭（返回关闭数），再把新观察去重追加（旧条目时间戳不变=不续命）；
+/// 新条目 id 取池内最大值递增；超出条数上限按最旧淘汰
+fn merge_entries(alive: Vec<WatchEntry>, new_lines: &[String], done_ids: &[u64], now: i64) -> (Vec<WatchEntry>, usize) {
+    let before = alive.len();
+    let mut entries: Vec<WatchEntry> = alive.into_iter().filter(|e| !done_ids.contains(&e.id)).collect();
+    let closed = before - entries.len();
+    let mut next_id = entries.iter().map(|e| e.id).max().unwrap_or(0) + 1;
     for line in new_lines {
-        if !entries.iter().any(|(_, existing)| existing == line) {
-            entries.push((now, line.clone()));
+        if !entries.iter().any(|e| &e.text == line) {
+            entries.push(WatchEntry { id: next_id, t: now, text: line.clone() });
+            next_id += 1;
         }
     }
     if entries.len() > WATCH_MAX_ENTRIES {
         let excess = entries.len() - WATCH_MAX_ENTRIES;
         entries.drain(0..excess);
     }
-    entries
+    (entries, closed)
 }
 
 /// 读取观察池并按 TTL 过滤过期条目
@@ -388,24 +429,23 @@ fn load_watch_entries() -> Vec<WatchEntry> {
     parse_watch_value(&raw, now_secs())
 }
 
-/// 写回观察池（JSON 数组）；空池删 key
+/// 写回观察池（JSON 数组，含稳定 id）；空池删 key
 fn save_watch_entries(entries: &[WatchEntry]) {
     if entries.is_empty() {
         clear_watch_pool();
         return;
     }
-    let arr: Vec<Value> = entries.iter().map(|(t, text)| json!({"t": t, "text": text})).collect();
+    let arr: Vec<Value> = entries.iter().map(|e| json!({"i": e.id, "t": e.t, "text": e.text})).collect();
     set_config(WATCH_KEY, &serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into()));
 }
 
-/// 合并写入：新观察去重追加（不刷新旧条目时间戳=不续命），过期/超限条目顺带清理（读时过滤+写回）。
-/// 模型本轮无 WATCH 也调用——仅做淘汰，不再清空观察池。
-fn merge_watch_entries(new_lines: &[String]) -> Vec<WatchEntry> {
+/// 合并写入：关闭 done → 去重追加 new → 过期/超限清理；模型本轮无输出也调用（仅清理）。
+/// 返回（新池，本轮关闭数）
+fn merge_watch_entries(new_lines: &[String], done_ids: &[u64]) -> (Vec<WatchEntry>, usize) {
     let now = now_secs();
-    let merged = merge_entries(load_watch_entries(), new_lines, now);
+    let (merged, closed) = merge_entries(load_watch_entries(), new_lines, done_ids, now);
     save_watch_entries(&merged);
-    log::info!("[通知循环] 观察池合并后共 {} 条（本轮新增 {}）", merged.len(), new_lines.len());
-    merged
+    (merged, closed)
 }
 
 /// 从分析回复中解析 `WATCH:` 行（保序、单条截断 120 字；池级限制在合并时执行：7 天 TTL + 30 条上限）
@@ -669,7 +709,7 @@ fn update_call_stats() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_watch_lines, parse_watch_value, merge_entries, WATCH_TTL_SECS, WATCH_MAX_ENTRIES};
+    use super::{parse_watch_done, parse_watch_lines, parse_watch_value, merge_entries, WatchEntry, WATCH_TTL_SECS, WATCH_MAX_ENTRIES};
 
     /// 文件对账契约：例行存在 + link_file 动作教学（用户点击才写边）
     #[test]
@@ -679,6 +719,7 @@ mod tests {
         assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("用户点击才写关联、你无权写边"));
         assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("create_product"));
         assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("这是核对已有通知的唯一途径"), "去重须锁 list 独占通道，防 search 空转烧轮");
+        assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("WATCH-DONE: w12"), "观察池须教学关闭协议（模型自主管理）");
     }
 
     #[test]
@@ -709,23 +750,29 @@ mod tests {
     #[test]
     fn merge_caps_to_max_entries_dropping_oldest() {
         let now = 1_000_000_000_i64;
-        let alive: Vec<(i64, String)> = (0..WATCH_MAX_ENTRIES as i64).map(|i| (now - (100 - i), format!("旧{i}"))).collect();
+        let alive: Vec<WatchEntry> = (0..WATCH_MAX_ENTRIES as u64)
+            .map(|i| WatchEntry { id: i + 1, t: now - (100 - i as i64), text: format!("旧{}", i + 1) })
+            .collect();
         assert_eq!(alive.len(), WATCH_MAX_ENTRIES);
-        let merged = merge_entries(alive, &["新观察".to_string()], now);
+        let (merged, closed) = merge_entries(alive, &["新观察".to_string()], &[], now);
+        assert_eq!(closed, 0);
         assert_eq!(merged.len(), WATCH_MAX_ENTRIES);
-        assert!(!merged.iter().any(|(_, t)| t == "旧0"), "最旧条目应被淘汰");
-        assert_eq!(merged[WATCH_MAX_ENTRIES - 1].1, "新观察");
+        assert!(!merged.iter().any(|e| e.text == "旧1"), "最旧条目应被淘汰");
+        assert_eq!(merged[WATCH_MAX_ENTRIES - 1].text, "新观察");
     }
 
     #[test]
     fn read_trims_over_cap_keeping_newest() {
         let now = 1_000_000_000_i64;
-        let arr: Vec<serde_json::Value> = (0..40i64).map(|i| serde_json::json!({"t": now - (400 - i * 10), "text": format!("观察{i}")})).collect();
+        let arr: Vec<serde_json::Value> = (0..40i64).map(|i| serde_json::json!({"t": now - (400 - i * 10), "text": format!("观察{}", i)})).collect();
         let raw = serde_json::to_string(&arr).unwrap();
         let alive = parse_watch_value(&raw, now);
         assert_eq!(alive.len(), WATCH_MAX_ENTRIES);
-        assert_eq!(alive[alive.len() - 1].1, "观察39", "保留最新条目");
-        assert_eq!(alive[0].1, "观察10", "最旧 10 条被裁掉");
+        assert_eq!(alive[alive.len() - 1].text, "观察39", "保留最新条目");
+        assert_eq!(alive[0].text, "观察10", "最旧 10 条被裁掉");
+        // 无 id 旧数据加载即补发连续稳定 id
+        assert_eq!(alive[0].id, 11);
+        assert_eq!(alive[alive.len() - 1].id, 40);
     }
 
     #[test]
@@ -737,55 +784,86 @@ mod tests {
     #[test]
     fn merge_dedups_and_keeps_old_timestamps() {
         let now = 1_000_000_000_i64;
-        let alive = vec![(now - 500, "观察A".to_string()), (now - 400, "观察B".to_string())];
-        // 下轮：A 回显（不续命）、新增 C
-        let merged = merge_entries(alive, &["观察A".into(), "观察C".into()], now);
+        let alive = vec![
+            WatchEntry { id: 1, t: now - 500, text: "观察A".into() },
+            WatchEntry { id: 2, t: now - 400, text: "观察B".into() },
+        ];
+        // 下轮：A 回显（不续命不重复入池）、新增 C（id 单调递增到 3）
+        let (merged, closed) = merge_entries(alive, &["观察A".into(), "观察C".into()], &[], now);
+        assert_eq!(closed, 0);
         assert_eq!(merged.len(), 3);
-        assert_eq!(merged[0].0, now - 500, "回显的旧条目时间戳不刷新（不续命）");
-        assert_eq!(merged[2], (now, "观察C".to_string()));
+        assert_eq!(merged[0].t, now - 500, "回显的旧条目时间戳不刷新（不续命）");
+        assert_eq!(merged[2], WatchEntry { id: 3, t: now, text: "观察C".to_string() });
         // 同文重复追加两次也只进一条
-        let again = merge_entries(merged, &["观察C".into(), "观察C".into()], now + 10);
+        let (again, _) = merge_entries(merged, &["观察C".into(), "观察C".into()], &[], now + 10);
         assert_eq!(again.len(), 3);
+    }
+
+    #[test]
+    fn done_closes_by_id_and_new_ids_never_reuse() {
+        let now = 1_000_000_000_i64;
+        let alive = vec![
+            WatchEntry { id: 3, t: now - 900, text: "已核实事项".into() },
+            WatchEntry { id: 7, t: now - 800, text: "仍在跟进".into() },
+        ];
+        // 关闭 w3；新观察的 id 从池内最大值+1（=8）继续，绝不被删除过的 3 复用
+        let (merged, closed) = merge_entries(alive, &["新线索".into()], &[3, 999], now);
+        assert_eq!(closed, 1, "无效 id(999) 自然忽略，只关命中项");
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().all(|e| e.id != 3), "已关闭条目必须消失");
+        assert_eq!(merged[1], WatchEntry { id: 8, t: now, text: "新线索".into() });
+    }
+
+    #[test]
+    fn parses_watch_done_lines() {
+        let answer = "已核实。\nWATCH-DONE: w3\nWATCH-DONE: w7，9、12\nWATCH: 新增观察\n正文里 WATCH-DONE: 5 不算";
+        assert_eq!(parse_watch_done(answer), vec![3, 7, 9, 12]);
+        assert!(parse_watch_done("WATCH-DONE:\nWATCH-DONE: wX").is_empty());
     }
 
     #[test]
     fn empty_model_output_keeps_pool() {
         let now = 1_000_000_000_i64;
-        let alive = vec![(now - 100, "持续观察X".to_string())];
-        // 模型本轮无 WATCH → 池保留（时间驱动，非回显驱动）
-        let merged = merge_entries(alive, &[], now);
+        let alive = vec![WatchEntry { id: 5, t: now - 100, text: "持续观察X".into() }];
+        // 模型本轮无 WATCH/DONE → 池保留（时间驱动，非回显驱动）
+        let (merged, closed) = merge_entries(alive, &[], &[], now);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].1, "持续观察X");
+        assert_eq!(closed, 0);
+        assert_eq!(merged[0].text, "持续观察X");
     }
 
     #[test]
     fn ttl_expires_old_entries_on_read() {
         let now = 1_000_000_000_i64;
         let raw = serde_json::to_string(&vec![
-            serde_json::json!({"t": now - WATCH_TTL_SECS - 86400, "text": "过期观察"}),
-            serde_json::json!({"t": now - 100, "text": "新鲜观察"}),
+            serde_json::json!({"i": 1, "t": now - WATCH_TTL_SECS - 86400, "text": "过期观察"}),
+            serde_json::json!({"i": 2, "t": now - 100, "text": "新鲜观察"}),
         ]).unwrap();
         let alive = parse_watch_value(&raw, now);
         assert_eq!(alive.len(), 1);
-        assert_eq!(alive[0].1, "新鲜观察");
+        assert_eq!(alive[0].text, "新鲜观察");
     }
 
     #[test]
     fn legacy_plain_text_fallback() {
         let now = 1_000_000_000_i64;
-        // 旧格式：纯文本换行 → 按新条目迁移（t=now，无损）
+        // 旧格式：纯文本换行 → 按新条目迁移（t=now，自动补 id 1/2，无损）
         let alive = parse_watch_value("旧观察一\n旧观察二", now);
         assert_eq!(alive.len(), 2);
-        assert_eq!(alive[0], (now, "旧观察一".to_string()));
-        assert_eq!(alive[1], (now, "旧观察二".to_string()));
+        assert_eq!(alive[0], WatchEntry { id: 1, t: now, text: "旧观察一".into() });
+        assert_eq!(alive[1], WatchEntry { id: 2, t: now, text: "旧观察二".into() });
         assert!(parse_watch_value("", now).is_empty());
     }
 
     #[test]
-    fn json_roundtrip() {
+    fn json_roundtrip_preserves_ids() {
         let now = 1_000_000_000_i64;
-        let entries = vec![(now, "观察A".to_string()), (now - 10, "观察B".to_string())];
-        let arr: Vec<serde_json::Value> = entries.iter().map(|(t, text)| serde_json::json!({"t": t, "text": text})).collect();
+        let entries = vec![
+            WatchEntry { id: 41, t: now, text: "观察A".into() },
+            WatchEntry { id: 7, t: now - 10, text: "观察B".into() },
+        ];
+        let arr: Vec<serde_json::Value> = entries.iter()
+            .map(|e| serde_json::json!({"i": e.id, "t": e.t, "text": e.text})).collect();
         let raw = serde_json::to_string(&arr).unwrap();
         assert_eq!(parse_watch_value(&raw, now), entries);
     }
