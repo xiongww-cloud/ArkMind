@@ -205,11 +205,31 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true, None).await
 }
 
-/// 一轮 LLM 产出落定的字符数（正文 + 全部工具调用参数）——轮末记账用
+/// 一轮 LLM 产出落定的字符数——正文口径（轮末记账用）：
+/// 文本按字符计；工具参数中「文档生成」的 content JSON **只累计字符串值**（剔除结构键/转义噪音，
+/// 实测 JSON 骨架占 20-30% 虚高），其余工具按参数字符计；非法 JSON 退回字符数
 pub(crate) fn round_output_chars(text: &str, tool_calls: &[Value]) -> usize {
+    fn json_text_chars(v: &Value) -> usize {
+        match v {
+            Value::String(s) => s.chars().count(),
+            Value::Array(a) => a.iter().map(json_text_chars).sum(),
+            Value::Object(o) => o.values().map(json_text_chars).sum(),
+            _ => 0,
+        }
+    }
     text.chars().count()
         + tool_calls.iter()
-            .map(|t| t["function"]["arguments"].as_str().map(|a| a.chars().count()).unwrap_or(0))
+            .map(|t| {
+                let args = t["function"]["arguments"].as_str().unwrap_or("");
+                if t["function"]["name"].as_str() == Some("ext_tool_write_document") {
+                    match serde_json::from_str::<Value>(args) {
+                        Ok(v) => json_text_chars(&v),
+                        Err(_) => args.chars().count(),
+                    }
+                } else {
+                    args.chars().count()
+                }
+            })
             .sum::<usize>()
 }
 
@@ -262,6 +282,40 @@ pub fn attach_confirmation_cards(v: &mut Value) {
     if let Some(card) = build_confirmation_cards(&confs) {
         log::info!("[Agent] 自动发卡：{} 条确认事项", card["questions"].as_array().map_or(0, |a| a.len()));
         v["clarification"] = card;
+    }
+}
+
+/// 轮末历史压缩：已成功执行的「文档生成」大参数调用在 messages 里换为摘要占位——
+/// 正文已落盘，第 k 章起输入无需再背前 k-1 章全文（长文委托防逐轮膨胀、越写越慢）。
+/// 幂等（带 _compressed 标记跳过）；只处理文档生成（其余工具参数体量小）；信封结果消息不动。
+fn compress_doc_tool_history(messages: &mut [ChatMessage]) {
+    const THRESHOLD: usize = 1500;
+    let mut done: std::collections::HashMap<String, String> = std::collections::HashMap::new(); // tool_call_id → file_id（仅成功落盘轮）
+    for m in messages.iter() {
+        if m.role != MessageRole::Tool || m.name.as_deref() != Some("ext_tool_write_document") { continue; }
+        let Some(cid) = m.tool_call_id.as_deref() else { continue };
+        let Ok(env) = serde_json::from_str::<Value>(m.content.as_deref().unwrap_or("")) else { continue };
+        if env["data"]["success"] != serde_json::Value::Bool(true) { continue; }
+        if let Some(fid) = env["data"]["file_id"].as_str().filter(|s| !s.is_empty()) {
+            done.insert(cid.to_string(), fid.to_string());
+        }
+    }
+    if done.is_empty() { return; }
+    for m in messages.iter_mut() {
+        let Some(tcs) = m.tool_calls.as_mut() else { continue };
+        for tc in tcs.iter_mut() {
+            if tc.function.name != "ext_tool_write_document" { continue; }
+            let Some(fid) = done.get(tc.id.as_str()) else { continue };
+            let n = tc.function.arguments.chars().count();
+            if n < THRESHOLD || tc.function.arguments.contains("\"_compressed\"") { continue; }
+            let action = serde_json::from_str::<Value>(&tc.function.arguments).ok()
+                .and_then(|v| v["action"].as_str().map(String::from))
+                .unwrap_or_else(|| "create".into());
+            tc.function.arguments = format!(
+                "{{\"action\":\"{}\",\"source_file_id\":\"{}\",\"_compressed\":\"原 {} 字符正文已交付落盘，不再回显\"}}",
+                action, fid, n
+            );
+        }
     }
 }
 
@@ -437,6 +491,10 @@ pub async fn agent_chat_workflow_internal(
     if !is_delegate_run {
         session.prev_visited_chunks = session.visited_chunks.clone();
         session.prev_visited_sources = session.visited_sources.clone();
+    }
+    // ★ 归属会话身份：生成文档 relation 行写 entity_id（委托子循环经共享 main_session 自动继承）
+    if session.owner_session_id.is_none() {
+        session.owner_session_id = session_id.clone();
     }
 
     // ★ 从 DB 加载历史消息
@@ -868,12 +926,16 @@ pub async fn agent_chat_workflow_internal(
             }
             Err(e) => {
                 log::error!("[Agent] call_llm_streaming 失败: {}", e);
+                // ★ 取消必须显式传播：子 Agent 被用户停止时若伪装成普通失败，
+                //   主 Agent 会按"失败重试"教条重新委托——用户停止意图被覆盖（重复委托事故根因）
+                let was_cancelled = respond_cancel && e == "cancelled";
                 // ★ 仅根工作流上报 agent:error：子 Agent（delegate_depth≥1）失败由委托信封回传，
                 // 若直接发 error 会让前端提前拆掉 done/token 监听，导致父流程最终回复丢失（仅刷新可见）
-                if !silent && delegate_depth == 0 { if let Some(ref h) = app_handle {
+                // 取消例外：走 done 的 cancelled 通道，不弹错误
+                if !silent && delegate_depth == 0 && !was_cancelled { if let Some(ref h) = app_handle {
                     let _ = h.emit("agent:error", json!({"error": e}));
                 } }
-                return Ok(json!({"success":false,"answer":format!("LLM 调用失败: {}", e),"iterations":iters}));
+                return Ok(json!({"success":false,"answer":format!("LLM 调用失败: {}", e),"iterations":iters,"cancelled":was_cancelled}));
             }
         };
         // ★ 轮末落定即记账并广播（子 Agent 多轮逐批叠加；主 Agent 无分桶消费者不发事件）
@@ -1429,6 +1491,10 @@ pub async fn agent_chat_workflow_internal(
                             (tools::notification::execute(&a, &app_handle), vec![])
                         }
                         "ext_tool_write_document" => {
+                            let mut a = a;
+                            if let Some(ref sid) = session.owner_session_id {
+                                a["__session_id"] = json!(sid);
+                            }
                             (tools::write_document::execute(&a), vec![])
                         }
                         "ext_tool_delegate_agent" => {
@@ -1525,6 +1591,8 @@ pub async fn agent_chat_workflow_internal(
                     let tool_name = t["tool"].as_str().unwrap_or("");
                     session.update_from_tool_result(tool_name, &result_str);
                 }
+                // ★ 轮末历史压缩：已成功落盘的文档生成大参数换占位（长方案逐轮防膨胀）
+                compress_doc_tool_history(&mut messages);
                 // ★ 本轮早退判定（信封一次性解析）：追问优先 > 委托直出
                 let parsed_envelopes: Vec<Value> = all_results.iter()
                     .filter_map(|(_, result, _)| serde_json::from_str::<Value>(result).ok())
@@ -1704,6 +1772,39 @@ mod tests {
         assert_eq!(super::round_output_chars("方案正文", &[]), 4);
         assert_eq!(super::round_output_chars("", &[serde_json::json!({"function":{"arguments":"{\"a\":\"中文\"}"}})]), 10);
         assert_eq!(super::round_output_chars("尾", &[serde_json::json!({})]), 1);
+    }
+
+    /// 文档生成参数按"正文字符"口径计（JSON 结构键与转义不计入），其他工具仍按字符计
+    #[test]
+    fn round_output_chars_content_basis_for_docs() {
+        let args = serde_json::json!({"action":"append","content":{"children":[{"type":"paragraph","text":"一二三"},{"text":"四五六"}]}}).to_string();
+        let tcs = [serde_json::json!({"function":{"name":"ext_tool_write_document","arguments":args}})];
+        // 字符串值全计入：append(6)+paragraph(9)+一二三(3)+四五六(3)=21；JSON 结构与键名(约 70 字符)不计
+        assert_eq!(super::round_output_chars("", &tcs), 21);
+        assert!(super::round_output_chars("", &tcs) < args.chars().count(), "内容口径应低于原始 JSON 字符数");
+    }
+
+    /// 轮末历史压缩：成功的文档生成大参数换占位、幂等、失败轮/小参数不动
+    #[test]
+    fn compress_doc_tool_history_replaces_and_is_idempotent() {
+        use super::compress_doc_tool_history;
+        use crate::services::agent_workflow::{ChatMessage, FunctionCall, MessageRole, ToolCall};
+        let big = format!("{{\"action\":\"append\",\"content\":\"{}\"}}", "长".repeat(1600));
+        let mut msgs = vec![
+            ChatMessage { role: MessageRole::Assistant, content: None, tool_calls: Some(vec![
+                ToolCall { id: "c1".into(), call_type: "function".into(), function: FunctionCall { name: "ext_tool_write_document".into(), arguments: big.clone() } },
+                ToolCall { id: "c2".into(), call_type: "function".into(), function: FunctionCall { name: "ext_tool_write_document".into(), arguments: "{\"action\":\"read\"}".into() } },
+            ]), tool_call_id: None, name: None, reasoning_content: None },
+            ChatMessage { role: MessageRole::Tool, content: Some(r#"{"result_type":"document_write_result","data":{"success":true,"file_id":"FID-1"}}"#.into()), tool_calls: None, tool_call_id: Some("c1".into()), name: Some("ext_tool_write_document".into()), reasoning_content: None },
+            ChatMessage { role: MessageRole::Tool, content: Some(r#"{"result_type":"document_write_result","data":{"success":false,"error":"boom"}}"#.into()), tool_calls: None, tool_call_id: Some("c2".into()), name: Some("ext_tool_write_document".into()), reasoning_content: None },
+        ];
+        compress_doc_tool_history(&mut msgs);
+        let tcs = msgs[0].tool_calls.as_ref().unwrap();
+        assert!(tcs[0].function.arguments.contains("_compressed") && tcs[0].function.arguments.contains("FID-1") && tcs[0].function.arguments.contains("\"append\""));
+        assert!(!tcs[1].function.arguments.contains("_compressed"), "失败轮不压缩");
+        let snapshot = tcs[0].function.arguments.clone();
+        compress_doc_tool_history(&mut msgs);
+        assert_eq!(msgs[0].tool_calls.as_ref().unwrap()[0].function.arguments, snapshot, "幂等：占位不再二次处理");
     }
 
     /// confirmations→卡片：有 options 单选、无 options 文本、空问题跳过、上限 5

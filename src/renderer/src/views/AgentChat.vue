@@ -15,6 +15,7 @@ import DocumentObject from '@/components/chat/DocumentObject.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
+import { useLiveProgress } from '@/composables/useLiveProgress'
 
 const agent = useAgentChat()
 const agentRun = useAgentRunStore()
@@ -33,16 +34,26 @@ watch(() => agent.isChatting.value, (busy) => {
 })
 const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 const fmtElapsed = () => `${Math.floor(elapsedSec.value / 60)}:${String(elapsedSec.value % 60).padStart(2, '0')}`
+const liveChars = useLiveProgress(
+  () => { const a = agentRun.currentAgent; return a ? (agentRun.writingByAgent[a.id]?.confirmed ?? 0) : 0 },
+  () => agent.isChatting.value,
+  () => {
+    const a = agentRun.currentAgent
+    const w = a && agentRun.writingByAgent[a.id]
+    return !!w && !w.cur && !!(w.stool || (w.pending ?? 0) > 400 || w.deliverable)
+  }
+)
 // 当前子 Agent 进度口径（按 agent 分桶）：字数取轮末落定的 confirmed 按批叠加（provider 流式节奏无关）；
-// 无新心跳时按"动作"显示（工具执行=正在：X；参数流=正在生成内容）
+// 批间由 useLiveProgress 保守外推保持"在生长"观感；无新心跳时按"动作"显示（工具执行=正在：X；参数流=正在生成内容）
 const wProgress = computed(() => {
   const a = agentRun.currentAgent
   if (!a) return ''
   const w = agentRun.writingByAgent[a.id]
   if (!w) return ''
-  if (w.stool || (w.pending ?? 0) > 400) return w.confirmed ? `正在生成内容 · ${fmtK(w.confirmed)} 字` : '正在生成内容'
+  const shown = Math.max(Math.round(liveChars.value), w.confirmed ?? 0)
+  if (w.stool || (w.pending ?? 0) > 400) return shown > 0 ? `正在生成内容 · ${fmtK(shown)} 字` : '正在生成内容'
   if (w.cur) return `正在：${w.cur}`
-  if (w.deliverable) return w.confirmed ? `正在生成 · ${fmtK(w.confirmed)} 字` : ''
+  if (w.deliverable) return shown > 0 ? `正在生成 · ${fmtK(shown)} 字` : ''
   return ''
 })
 
@@ -386,8 +397,8 @@ async function selectSession(id: string) {
 }
 const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
 
-function saveToStorage(target?: ChatSession) { 
     const isCurrent = s === currentSession.value
+function saveToStorage(target?: ChatSession) { 
   // 可显式传入提问时的会话：AI 回答期间用户切会话/新建后，回复必须存回原会话而非当前会话
   const s = target || currentSession.value; 
   if (s && s.messages.length > 0) {
@@ -414,8 +425,8 @@ async function loadFromStorage() {
   if (s) {
     for (const m of s.messages) {
       if (m.role === 'assistant') {
-        m.isThinking = false
     lastSavedContent = JSON.stringify(s.messages)
+        m.isThinking = false
         m.typewriterDone = true
       }
     }
