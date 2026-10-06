@@ -349,13 +349,20 @@ onMounted(async () => {
   await loadTodos()
 })
 
+// 到期日归一化：仅日期的 due_date 死线语义会退化（00:00 当天一早就过期、前后端口径分叉），
+// 通知建议等外部预填统一补上午 09:00；已带时刻的值原样通过
+function normalizeDuePrefill(v: string): string {
+  const s = v.trim()
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T09:00:00` : s
+}
+
 // 监听路由参数 + 全局搜索跳转
 function handleRouteQuery() {
   const q = route.query
   if (q.create === 'true' || q.action === 'create') {
     const title = q.title as string || ''
     const priority = q.priority as string || ''
-    const dueDate = q.due_date as string || ''
+    const dueDate = normalizeDuePrefill(q.due_date as string || '')
     const content = q.content as string || ''
     router.replace('/todos').then(() => setTimeout(() => handleCreatePrefilled(title, priority, dueDate, content), 50))
   }
