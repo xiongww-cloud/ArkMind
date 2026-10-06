@@ -541,7 +541,8 @@ pub(crate) fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end:
         if !obj_type.is_empty() && st != obj_type.to_uppercase() { continue; }
         let sid = r.entity_id.trim().to_string();
         if !seen.insert(format!("{}-{}", st, sid)) { continue; }
-        if let Ok(Some(row)) = database::get("SELECT title, content, updated_at FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(sid)]) {
+        // 预览截断与 LIKE fallback 同口径：命中长文档时不整篇灌入上下文（token 炸弹防御，需要更多走 chunk 通道）
+        if let Ok(Some(row)) = database::get("SELECT title, substr(content,1,800) AS content, updated_at FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(sid)]) {
             matched.push(json!({"st": st, "sid": sid, "name": row["title"], "preview": row["content"], "ts": row["updated_at"]}));
         }
     }
