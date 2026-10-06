@@ -514,7 +514,7 @@ fn build_change_seeds(since: &str, w: &crate::services::whoami::Whoami) -> Strin
     {
         let rows = database::all(
             "SELECT fa.id, fa.original_name, substr(sd.content,1,1000) AS head, \
-             (SELECT COALESCE(GROUP_CONCAT(DISTINCT upper(fr.entity_type)),'') FROM file_relations fr \
+             (SELECT COALESCE(GROUP_CONCAT(DISTINCT upper(fr.entity_type)||':'||substr(fr.entity_id,1,8)),'') FROM file_relations fr \
               WHERE fr.file_id=fa.id AND fr.entity_type IN ('project','product','solution','channel','vendor','customer','contact','note','todo')) AS linked \
              FROM file_assets fa LEFT JOIN source_data sd ON sd.source_type='FILE' AND sd.source_id=fa.id \
              WHERE fa.created_at > ?1 \
@@ -524,10 +524,11 @@ fn build_change_seeds(since: &str, w: &crate::services::whoami::Whoami) -> Strin
         let (items, more) = cap_items(&rows, 8, |r| {
             let head = inline(r["head"].as_str().unwrap_or(""));
             format!(
-                "- [FILE] 「{}」| 已关联:{} | 开头:{}",
+                "- [FILE] 「{}」| 已关联:{} | 开头:{} (id:{})",
                 inline(r["original_name"].as_str().unwrap_or("?")),
                 if r["linked"].as_str().unwrap_or("").is_empty() { "无".to_string() } else { r["linked"].as_str().unwrap_or("").to_string() },
                 if head.is_empty() { "(尚未解析出正文，只凭文件名判断)".to_string() } else { head },
+                r["id"].as_str().unwrap_or(""),
             )
         });
         push_section(&mut out, "待对账文件(仅凭名称与开头摘录判定，拿不准才用 ext_tool_search 深查):", items, more);

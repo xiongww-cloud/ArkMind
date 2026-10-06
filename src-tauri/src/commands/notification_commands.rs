@@ -222,6 +222,20 @@ pub async fn notification_create_project_log(project_id: String, content: String
     Ok(json!({"success": true, "dynamic": result}))
 }
 
+/// link_file 目标类型白名单→(表, ID 列)（按钮创建侧 sanitize 与点击落库校验共用）
+pub(crate) fn link_target_table(et_upper: &str) -> Option<(&'static str, &'static str)> {
+    match et_upper {
+        "PROJECT" => Some(("projects", "id")),
+        "PRODUCT" => Some(("products", "id")),
+        "SOLUTION" => Some(("solutions", "id")),
+        "CHANNEL" | "VENDOR" | "CUSTOMER" => Some(("partners", "id")),
+        "CONTACT" => Some(("partner_contacts", "id")),
+        "NOTE" => Some(("notes", "note_id")),
+        "TODO" => Some(("todos", "id")),
+        _ => None,
+    }
+}
+
 /// 用户从通知的 link_file 按钮确认：把文件关联到业务对象（分析师建议、用户点击才写边）。
 /// 幂等：已存在的关联返回 already=true 不重复写；文件/对象任一不存在拒绝（防死按钮）。
 #[tauri::command]
@@ -230,16 +244,7 @@ pub async fn notification_link_file(file_id: String, entity_type: String, entity
     let et = entity_type.trim().to_uppercase();
     let eid = strip_type_prefix(entity_id.trim());
     if fid.is_empty() || eid.is_empty() { return Err("关联参数不完整".into()); }
-    let (table, id_col) = match et.as_str() {
-        "PROJECT" => ("projects", "id"),
-        "PRODUCT" => ("products", "id"),
-        "SOLUTION" => ("solutions", "id"),
-        "CHANNEL" | "VENDOR" | "CUSTOMER" => ("partners", "id"),
-        "CONTACT" => ("partner_contacts", "id"),
-        "NOTE" => ("notes", "note_id"),
-        "TODO" => ("todos", "id"),
-        _ => return Err(format!("不支持的关联目标类型：{}", et)),
-    };
+    let (table, id_col) = link_target_table(&et).ok_or_else(|| format!("不支持的关联目标类型：{}", et))?;
     let file_exists = database::get("SELECT original_name FROM file_assets WHERE id=?1", &[json!(&fid)])
         .ok().flatten().map(|r| r["original_name"].as_str().unwrap_or("").to_string());
     let Some(fname) = file_exists.filter(|s| !s.is_empty()) else { return Err("来源文件不存在".into()); };
@@ -260,7 +265,7 @@ pub async fn notification_link_file(file_id: String, entity_type: String, entity
     Ok(json!({"success": true, "already": false}))
 }
 
-fn strip_type_prefix(s: &str) -> String {
+pub(crate) fn strip_type_prefix(s: &str) -> String {
     match s.find('-') {
         Some(i) if i > 0 && s[..i].chars().all(|c| c.is_ascii_uppercase()) => s[i + 1..].to_string(),
         _ => s.to_string(),
@@ -283,4 +288,27 @@ pub async fn profile_fact_delete(id: String) -> Result<Value, String> {
     database::run("DELETE FROM memories WHERE id=?1 AND source='profile'", &[json!(&id)])
         .map_err(|e| e.to_string())?;
     Ok(json!({ "success": true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{link_target_table, strip_type_prefix};
+
+    #[test]
+    fn strip_type_prefix_only_for_uppercase_head() {
+        assert_eq!(strip_type_prefix("FILE-abc"), "abc");
+        assert_eq!(strip_type_prefix("PROJECT-abc"), "abc");
+        assert_eq!(strip_type_prefix("abc-def"), "abc-def");
+        assert_eq!(strip_type_prefix("abc"), "abc");
+        assert_eq!(strip_type_prefix("-abc"), "-abc");
+    }
+
+    #[test]
+    fn link_target_whitelist() {
+        assert_eq!(link_target_table("PROJECT"), Some(("projects", "id")));
+        assert_eq!(link_target_table("NOTE"), Some(("notes", "note_id")));
+        assert_eq!(link_target_table("VENDOR"), Some(("partners", "id")));
+        assert_eq!(link_target_table("EMAIL"), None, "邮件不走 link_file");
+        assert_eq!(link_target_table("file"), None);
+    }
 }

@@ -13,6 +13,24 @@ pub(crate) fn sanitize_actions_json(actions_raw: &str) -> (String, Vec<String>) 
     let mut dropped: Vec<String> = Vec::new();
     for item in parsed {
         let atype = item["type"].as_str().unwrap_or("").to_string();
+        // ★ link_file 创建侧校验：文件与目标对象任一不存在即剔除（与 view_* 同策略，死按钮不留到用户点击）
+        if atype == "link_file" {
+            let strip = crate::commands::notification_commands::strip_type_prefix;
+            let fid = strip(item["params"]["file_id"].as_str().unwrap_or("").trim());
+            let et = item["params"]["entity_type"].as_str().unwrap_or("").trim().to_uppercase();
+            let eid = strip(item["params"]["entity_id"].as_str().unwrap_or("").trim());
+            let obj_ok = crate::commands::notification_commands::link_target_table(&et).map(|(t, c)| {
+                !eid.is_empty() && database::get(
+                    &format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", t, c), &[json!(&eid)]
+                ).ok().flatten().is_some()
+            }).unwrap_or(false);
+            let file_ok = !fid.is_empty() && database::get(
+                "SELECT 1 FROM file_assets WHERE id=?1 LIMIT 1", &[json!(&fid)]
+            ).ok().flatten().is_some();
+            if file_ok && obj_ok { kept.push(item); }
+            else { dropped.push(item["label"].as_str().filter(|s| !s.is_empty()).unwrap_or(&atype).to_string()); }
+            continue;
+        }
         let target = match atype.strip_prefix("view_") {
             Some(t) => t,
             None => { kept.push(item); continue; }
