@@ -265,27 +265,9 @@ pub fn attach_confirmation_cards(v: &mut Value) {
     }
 }
 
-/// 工具名 → 中文能力标签（单一真相源：agent 清单注入与进度事件共用）
+/// 工具名 → 中文能力标签（消费 tools 层 TOOL_LABELS 单一真相源：弹窗/ticker/注入共用同一称谓）
 pub(crate) fn tool_display_label(name: &str) -> &'static str {
-    match name {
-        "ext_tool_object" => "业务对象查询",
-        "ext_tool_search" => "知识库检索",
-        "ext_tool_chunk_navigate" => "文档翻页",
-        "ext_tool_web_search" => "联网搜索",
-        "ext_tool_manage_product" => "产品管理(读写)",
-        "ext_tool_manage_project" => "项目管理(读写)",
-        "ext_tool_manage_todo" => "待办管理(读写)",
-        "ext_tool_manage_partner" => "合作伙伴管理(读写)",
-        "ext_tool_manage_contact" => "联系人管理(读写)",
-        "ext_tool_manage_note" => "笔记管理(读写)",
-        "ext_tool_relations" => "关联查询",
-        "ext_tool_memory" => "记忆管理",
-        "ext_tool_report" => "上报缺口/确认",
-        "ext_tool_write_document" => "文档生成",
-        "ext_tool_delegate_agent" => "委托专业助手",
-        "ext_tool_ask_user" => "向用户提问",
-        _ => "其他",
-    }
+    crate::services::agent_workflow::tools::tool_display_name(name)
 }
 
 /// 委托运行上下文（共享历史模式专用）：

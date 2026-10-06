@@ -375,8 +375,8 @@ async function loadAiConfig() {
     }
     loadVecConfig(config)
     loadVisionConfig(config)
-    webSearchKey.value = config.webSearch?.apiKey || ''
     loadSpriteConfig()
+    webSearchKey.value = config.webSearch?.apiKey || ''
     loadNotifyConfig()
   loadHotkeyConfig()
   } catch (e) {
@@ -756,7 +756,6 @@ const notifyIntervalOptions = [
   { value: 720, label: '12 小时' },
   { value: 1440, label: '24 小时' },
 ]
-const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.value === notifyInterval.value)?.label || '1 小时')
 // ─── Sprite Settings ────────────────────────────────────────
 // 仅状态展示（设置页状态卡）；开关已从设置页与托盘菜单移除
 const spriteEnabled = ref(false)
@@ -767,6 +766,7 @@ async function loadSpriteConfig() {
   } catch {}
 }
 
+const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.value === notifyInterval.value)?.label || '1 小时')
 
 // ─── 浮窗快呼快捷键 ─────────────────────────────────────────
 const isMacPlatform = typeof navigator !== 'undefined' && (
@@ -1149,23 +1149,6 @@ function applyDescriptionTemplate(text: string) {
   }
 }
 
-const toolLabels: Record<string, { name: string; brief: string }> = {
-  ext_tool_search: { name: '知识搜索', brief: '全文+语义检索文档、笔记、技术资料' },
-  ext_tool_object: { name: '数据查询', brief: '查看/筛选/统计业务对象' },
-  ext_tool_chunk_navigate: { name: '文档翻页', brief: '在知识块间前后翻页阅读' },
-  ext_tool_relations: { name: '关联查询', brief: '查看实体间的关联关系' },
-  ext_tool_manage_project: { name: '项目管理', brief: '创建/编辑/删除项目及动态' },
-  ext_tool_manage_todo: { name: '待办管理', brief: '创建/编辑/删除待办事项' },
-  ext_tool_manage_partner: { name: '合作伙伴', brief: '管理渠道/厂商/客户' },
-  ext_tool_manage_contact: { name: '联系人', brief: '管理合作伙伴下的联系人' },
-  ext_tool_manage_product: { name: '产品管理', brief: '管理产品及产品目录' },
-  ext_tool_manage_note: { name: '笔记管理', brief: '创建/编辑/删除笔记' },
-  ext_tool_manage_notification: { name: '通知管理', brief: '创建/查看系统通知' },
-  ext_tool_write_document: { name: '文档生成', brief: '创建 Word/Excel 文档并返回可预览/下载的文件' },
-  ext_tool_memory: { name: '记忆管理', brief: '记录/检索长期记忆与用户画像' },
-  ext_tool_web_search: { name: '联网搜索', brief: '搜索公开互联网信息' },
-  ext_tool_web_fetch: { name: '网页抓取', brief: '抓取网页全文转为 Markdown' },
-}
 
 async function saveAgent() {
   const f = agentForm.value
@@ -2398,11 +2381,11 @@ async function saveProfileEditor() {
                             ]"
                             @click="!(agentForm.presetTools || []).includes(tool.name) && toggleAgentTool(tool.name)">
                             <div class="flex items-start justify-between">
-                              <span class="text-[11px] font-medium leading-tight" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-700' : 'text-surface-700'">{{ toolLabels[tool.name]?.name || tool.name }}</span>
+                              <span class="text-[11px] font-medium leading-tight" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-700' : 'text-surface-700'">{{ tool.display || tool.name }}</span>
                               <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0 ml-1" v-tooltip="tool.description">?</span>
                             </div>
                             <span v-if="(agentForm.presetTools || []).includes(tool.name)" class="text-[8px] px-1 py-0.5 rounded bg-surface-100 text-surface-400 w-fit mt-0.5">预设</span>
-                            <p class="text-[9px] mt-0.5 leading-relaxed line-clamp-2" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-500' : 'text-surface-400'">{{ toolLabels[tool.name]?.brief || '' }}</p>
+                            <p class="text-[9px] mt-0.5 leading-relaxed line-clamp-2" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-500' : 'text-surface-400'">{{ tool.brief || '' }}</p>
                             <span v-if="(agentForm.tools || []).includes(tool.name)" class="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-brand-600 flex items-center justify-center">
                               <AppIcon name="check" size="10" class="text-white" />
                             </span>

@@ -123,7 +123,9 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(query, attachments, max_iter, Some(app_handle.clone()), false, session_id.clone(), Some(main_agent_tools)).await;
         match result {
-            Ok(v) => {
+            Ok(mut v) => {
+                // ★ 框架自动发卡：本轮委托上报的 confirmations（主 Agent 未自行追问时）
+                crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v);
                 // ★ 保存 assistant 消息到 DB（纯内容，无 metadata）
                 if let Some(ref sid) = session_id {
                     let mut answer = v["answer"].as_str().unwrap_or("").to_string();
@@ -131,7 +133,7 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                     // 不过滤 ext_tool_ 文本（工具名可合法出现在答案中）
                     // "<tool_call" 同时匹配 <tool_call> 和 <tool_calls>（前缀覆盖）
                     if answer.contains("<tool_call") || answer.contains("<invoke") || answer.contains("DSML") {
-                        answer = crate::services::agent_workflow::clean_tool_markers(&answer, false);
+                        answer = crate::services::agent_workflow::clean_tool_markers(&answer, true);
                     }
                     // ★ 提取本轮生成的文档对象写入消息 metadata（重启后恢复文档卡片）
                     let docs = crate::services::agent_workflow::tools::write_document::extract_created_documents(
@@ -191,7 +193,7 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(query, vec![], None, Some(app_handle.clone()), false, None, Some(tools)).await;
         match result {
-            Ok(v) => { let _ = app_handle.emit("agent:done", &v); }
+            Ok(mut v) => { crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v); let _ = app_handle.emit("agent:done", &v); }
             Err(e) => {
                 if e == "cancelled" {
                     let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true}));

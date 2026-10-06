@@ -30,10 +30,13 @@ pub async fn agent_available_tools() -> Result<Vec<Value>, String> {
         .filter(|(name, _, _)| !MAIN_AGENT_ONLY.contains(name))
         .filter(|(name, _, _)| web_ready || !name.starts_with("ext_tool_web_"))
         .map(|(name, desc, category)| {
+            let (display, brief) = crate::services::agent_workflow::tools::tool_label(name);
             json!({
                 "name": name,
                 "description": desc,
                 "category": category,
+                "display": display,
+                "brief": brief,
             })
         })
         .collect();
@@ -359,4 +362,24 @@ fn save_agent_tools(agent_id: &str, tools: &[Value]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::services::agent_workflow::tools::{MAIN_AGENT_ONLY, SUB_AGENT_AUTO_TOOLS, TOOL_LABELS, tool_label};
+
+    /// 中文称谓单一真相源覆盖：所有注册/治理清单里的工具都必须已登记中文名，
+    /// 新增工具漏登即红（弹窗 display、ticker、提示词教学共用此表）
+    #[test]
+    fn tool_labels_cover_all_registered_tools() {
+        let registered = |names: &[&str]| {
+            for n in names {
+                assert!(TOOL_LABELS.iter().any(|(t, _, _)| t == n), "工具 {} 未登记 TOOL_LABELS 中文称谓", n);
+                assert_ne!(tool_label(n).0, "其他");
+            }
+        };
+        registered(&super::AVAILABLE_TOOLS.iter().map(|(n, _, _)| *n).collect::<Vec<_>>());
+        registered(MAIN_AGENT_ONLY);
+        registered(SUB_AGENT_AUTO_TOOLS);
+    }
 }

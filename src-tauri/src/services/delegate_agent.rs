@@ -601,10 +601,10 @@ mod tests {
         assert!(d.contains("【执行任务】把定稿转为 Word"));
         assert!(d.contains("【补充上下文】"));
         assert!(d.contains("【期望输出格式】review"));
-        assert!(d.contains("ext_tool_report"), "上报通道必须教学");
+        assert!(d.contains("缺口与确认上报"), "上报通道必须以中文称谓教学");
         assert!(d.contains("没有委托能力"));
         // 结构化上报协议：缺口/确认走 ext_tool_report，禁止文字标记暗号与"先向用户确认"死路
-        assert!(d.contains("ext_tool_report 上报 confirmations（附候选）"));
+        assert!(d.contains("「缺口与确认上报」登记确认事项（附候选）"));
         assert!(d.contains("不要在正文里写 MISSING:/NEED_USER: 等文字标记"));
         assert!(d.contains("完全同名由工具层自动复用"));
         assert!(!d.contains("先向用户确认"), "子 Agent 无提问用户通道，不应再出现该指令");
@@ -622,7 +622,7 @@ mod tests {
         assert!(d.contains("执行协议（交付型产出）"));
         assert!(d.contains("你的回答就是最终交付文档"));
         assert!(d.contains("不要在正文写 MISSING:/NEED_USER: 等状态文字标记"));
-        assert!(d.contains("ext_tool_report"), "交付型确认/缺口须有结构上报通道");
+        assert!(d.contains("缺口与确认上报"), "交付型确认/缺口须有结构上报通道");
         assert!(d.contains("系统会自动转为交互卡片"), "确认事项框架自动发卡");
         assert!(d.contains("本协议优先于角色提示词"));
         assert!(!d.contains("单起一行输出"), "不得再教学文字标记格式");
