@@ -96,21 +96,31 @@ impl SessionMemory {
 
     /// 记录一个对象被访问/命中，并根据 score_delta 更新注意力分数，然后淘汰过期。
     /// 白名单：仅 SCOPE_TYPES（有检索语义的业务对象）可进注意力——EMAIL/MEMORY 等系统类型过滤；
-    /// 空 name 不覆盖已有名字（上游信封偶发无 name，不得反向清洗掉已知名字）
+    /// obj_id 入口统一规范为裸 uuid（防 "FILE-FILE-x" 双前缀）；
+    /// name：调用方缺名时查 source_data.title 兜底；空 name 不覆盖已有名字
     pub(crate) fn update(&mut self, obj_type: &str, obj_id: &str, name: &str, score_delta: f64) {
-        use crate::services::agent_workflow::tools::entity_ref::SCOPE_TYPES;
-        if !SCOPE_TYPES.iter().any(|t| t.eq_ignore_ascii_case(obj_type)) { return; }
+        use crate::services::agent_workflow::tools::entity_ref::{bare_id, SCOPE_TYPES};
+        let st = match SCOPE_TYPES.iter().find(|t| t.eq_ignore_ascii_case(obj_type)) { Some(t) => *t, None => return };
+        let st = st.to_lowercase();
+        let oid = bare_id(obj_id);
+        let mut nm = name.trim().to_string();
+        if nm.is_empty() {
+            if let Ok(Some(r)) = crate::database::get(
+                "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
+                &[serde_json::json!(st.to_uppercase()), serde_json::json!(&oid)],
+            ) { nm = r["title"].as_str().unwrap_or("").trim().to_string(); }
+        }
         self.access_counter += 1;
-        if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == obj_type && o.obj_id == obj_id) {
-            if !name.is_empty() { existing.name = name.to_string(); }
+        if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == st && o.obj_id == oid) {
+            if !nm.is_empty() { existing.name = nm; }
             existing.access_order = self.access_counter;
             existing.hits += 1;
             existing.score = (existing.score * 0.95 + score_delta).clamp(0.0, 1.0);
         } else {
             self.active_objects.push(ActiveObject {
-                obj_type: obj_type.to_string(),
-                obj_id: obj_id.to_string(),
-                name: name.to_string(),
+                obj_type: st,
+                obj_id: oid,
+                name: nm,
                 access_order: self.access_counter,
                 hits: 1,
                 score: (0.3_f64 * 0.95 + score_delta).clamp(0.0, 1.0),
@@ -325,8 +335,9 @@ impl SessionMemory {
             let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().filter(|o| o.score > 0.0).collect();
             sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
             for (i, o) in sorted.iter().take(5).enumerate() {
-                let r = crate::services::agent_workflow::tools::entity_ref::fmt(&o.obj_type, &o.obj_id);
-                let label = if o.name.is_empty() { r } else { format!("{} [{}]", o.name, r) };
+                // bare_id 兜底存量持久化中的带前缀 obj_id（本改动前写入的数据），防 FILE-FILE- 双前缀
+                let r = crate::services::agent_workflow::tools::entity_ref::fmt(&o.obj_type, &crate::services::agent_workflow::tools::entity_ref::bare_id(&o.obj_id));
+                let label = if o.name.is_empty() { format!("[{}]", r) } else { format!("{} [{}]", o.name, r) };
                 lines.push(format!("  {} {} score: {:.2}", CIRCLED[i], label, o.score));
             }
         }
@@ -387,10 +398,10 @@ impl SessionMemory {
 /// 从 session 的 active_objects 计算 scope（用于限定搜索范围）
 /// 取 top 5 高分对象 + 所有新加来源（score < 1 的新进入注意力的对象）；引用串经 entity_ref 统一构造
 pub(crate) fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collections::HashSet<i64>> {
-    use crate::services::agent_workflow::tools::entity_ref::{fmt, SCOPE_TYPES};
+    use crate::services::agent_workflow::tools::entity_ref::{bare_id, fmt, SCOPE_TYPES};
     let mut scope_ids: Vec<String> = Vec::new();
     let as_ref = |t: &str, id: &str| -> Option<String> {
-        if SCOPE_TYPES.iter().any(|s| s.eq_ignore_ascii_case(t)) { Some(fmt(t, id)) } else { None }
+        if SCOPE_TYPES.iter().any(|s| s.eq_ignore_ascii_case(t)) { Some(fmt(t, &bare_id(id))) } else { None }
     };
     // 1. top 5 高分对象
     let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
@@ -416,19 +427,31 @@ pub(crate) fn compute_scope_from_session(session: &SessionMemory) -> Option<std:
 mod tests {
     use super::SessionMemory;
 
-    /// 注意力：类型白名单过滤、空名不覆盖、渲染带 EntityRef 且序号递增
+    /// 注意力：类型白名单过滤、空名回查兜底、前缀 id 规范防双前缀、无名条目引用串兜底渲染
     #[test]
     fn attention_whitelist_names_and_rendering() {
+        let (_dir, _guard) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|conn| crate::database::db_schema::create_schema(conn)).unwrap();
+        // 测试 schema 为 fresh-create 形态（id INTEGER，text-id 迁移未跑），用数字 id + source 键查询
+        crate::database::run(
+            "INSERT INTO source_data(id, source_type, source_id, title, content) VALUES(99,'FILE','f-2','回查正名.pdf','x')",
+            &[],
+        ).map_err(|e| format!("seed source_data failed: {}", e)).unwrap();
+
         let mut s = SessionMemory::new();
         s.update("file", "f-1", "方案书.pdf", 0.9);
-        s.update("email", "e-1", "催办邮件", 0.9);
-        s.update("project", "p-1", "咸宁校园网", 0.8);
-        s.update("file", "f-1", "", 0.5);
+        s.update("email", "e-1", "催办邮件", 0.9);            // 白名单外 → 过滤
+        s.update("project", "PROJECT-p-1", "咸宁校园网", 0.8); // 带前缀 id → 规范为裸 id
+        s.update("file", "FILE-f-2", "", 0.5);                 // 新条目空名 → 回查 source_data.title 兜底
+        s.update("note", "n-1", "", 0.5);                      // 空名且无行可查 → 渲染以引用串兜底
         let out = s.generate_scratchpad();
         assert!(out.contains("方案书.pdf [FILE-f-1]"), "{}", out);
-        assert!(out.contains("咸宁校园网 [PROJECT-p-1]"));
+        assert!(out.contains("咸宁校园网 [PROJECT-p-1]"), "前缀 id 不得产出双前缀: {}", out);
+        assert!(out.contains("回查正名.pdf [FILE-f-2]"), "空名应回查标题兜底: {}", out);
+        assert!(out.contains("[NOTE-n-1]"), "无名条目至少显示引用串: {}", out);
+        assert!(!out.contains("FILE-FILE-") && !out.contains("PROJECT-PROJECT-"));
         assert!(!out.contains("催办邮件") && !out.contains("EMAIL"), "EMAIL 类不得进注意力");
-        assert!(out.contains("①") && out.contains("②") && !out.contains("③"), "两条记录用①②，序号递增不重复: {}", out);
+        assert!(out.contains("①") && out.contains("④") && !out.contains("⑤"), "四条记录序号递增: {}", out);
     }
 }
 
