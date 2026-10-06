@@ -65,6 +65,11 @@ export async function notificationLinkFile(fileId: string, entityType: string, e
   return invoke('notification_link_file', { fileId, entityType, entityId, notificationId: notificationId ?? null })
 }
 
+export interface FileLinkTarget { entity_type: string; entity_id: string; entity_name?: string }
+export async function notificationLinkFiles(fileId: string, links: FileLinkTarget[], notificationId?: string): Promise<{ success: boolean; linked: number; already: number; failed: Array<{ entity_type: string; entity_id: string; error: string }> }> {
+  return invoke('notification_link_files', { fileId, links, notificationId: notificationId ?? null })
+}
+
 export interface ProfileFact {
   id: string
   content: string

@@ -376,6 +376,7 @@ pub fn run() {
             commands::profile_fact_save, commands::profile_facts_list, commands::profile_fact_delete, commands::profile_fact_merge,
             commands::notification_create_project_log,
             commands::notification_link_file,
+            commands::notification_link_files,
             commands::notification_loop_status,
             // 邮件
             commands::email_add_account, commands::email_list_accounts,

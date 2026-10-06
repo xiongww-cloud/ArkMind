@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile, notificationLinkFiles, type FileLinkTarget } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
@@ -308,17 +308,11 @@ async function handleAction(n: Notification, action: NotificationAction) {
         break
       }
       case 'link_file': {
-        const fileId = (p.file_id as string || '').trim()
-        const entityType = (p.entity_type as string || '').trim()
-        const entityId = (p.entity_id as string || '').trim()
-        if (!fileId || !entityType || !entityId) { toast({ message: '该通知缺少完整关联信息', type: 'info' }); break }
-        try {
-          const r = await notificationLinkFile(fileId, entityType, entityId, n.id)
-          toast({ message: r?.already ? '该关联已存在' : '已关联文件', type: 'success' })
+        const res = await runFileLink(p, n.id)
+        toast({ message: res.msg, type: res.ok ? 'success' : 'error' })
+        if (res.ok) {
           await notificationMarkRead(n.id)
           notifications.value = notifications.value.filter(x => x.id !== n.id)
-        } catch {
-          toast({ message: '关联失败', type: 'error' })
         }
         break
       }
@@ -360,6 +354,28 @@ async function handleAction(n: Notification, action: NotificationAction) {
 // ── 快捷建联系人：就地弹窗（不跳转页面） ──
 const quickContactVisible = ref(false)
 const quickContactPrefill = ref<{ name?: string; position?: string; email?: string; phone?: string; partnerId?: string; partnerName?: string }>({})
+
+// link_file 统一执行：单目标(entity_type/entity_id)或批量(params.links[])——一个文件一个按钮
+async function runFileLink(p: Record<string, unknown>, notificationId?: string): Promise<{ ok: boolean; msg: string }> {
+  const fileId = (p.file_id as string || '').trim()
+  if (!fileId) return { ok: false, msg: '该通知缺少完整关联信息' }
+  const links = Array.isArray(p.links) ? (p.links as FileLinkTarget[]) : null
+  try {
+    if (links && links.length) {
+      const r = await notificationLinkFiles(fileId, links, notificationId)
+      const parts: string[] = []
+      if (r?.linked) parts.push(`新增 ${r.linked} 条关联`)
+      if (r?.already) parts.push(`${r.already} 条已存在`)
+      if (r?.failed?.length) parts.push(`${r.failed.length} 条失败`)
+      const msg = parts.join('，')
+      return { ok: !!r?.success, msg: msg || '关联失败' }
+    }
+    const r = await notificationLinkFile(fileId, (p.entity_type as string || '').trim(), (p.entity_id as string || '').trim(), notificationId)
+    return { ok: true, msg: r?.already ? '该关联已存在' : '已关联文件' }
+  } catch {
+    return { ok: false, msg: '关联失败' }
+  }
+}
 
 // ── 一键创建确认弹窗 ──
 const createAllDialogVisible = ref(false)
@@ -464,9 +480,9 @@ async function executeCreate(type: string, params: Record<string, unknown>, ctx:
       return r?.id
     }
     case 'link_file': {
-      // 批量场景不传 notification_id（executeCreateAll 统一标记已读）；已存在边视为成功
-      const r: any = await notificationLinkFile((p.file_id as string) || '', (p.entity_type as string) || '', (p.entity_id as string) || '')
-      if (!r?.success) throw new Error('关联失败')
+      // 批量场景不逐条标记已读（executeCreateAll 循环后统一处理）
+      const res = await runFileLink(p)
+      if (!res.ok) throw new Error(res.msg)
       return null
     }
     default:
@@ -687,7 +703,7 @@ const priorityDot: Record<string, string> = {
         <div v-if="createAllDialogVisible" class="fixed inset-0 z-[110] bg-black/30 flex items-center justify-center" @click.self="createAllDialogVisible = false">
           <div class="bg-white rounded-2xl shadow-2xl w-[400px] max-w-[90vw] p-6">
             <h3 class="text-[14px] font-semibold text-surface-800 mb-3">确认执行以下操作</h3>
-            <div class="space-y-2 mb-5">
+            <div class="space-y-2 mb-5 max-h-[50vh] overflow-y-auto pr-1">
               <div v-for="(item, idx) in createAllItems" :key="item.type + idx" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-50">
                 <span class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-surface-200 text-surface-600">
                   {{ CREATE_KIND_LABELS[item.type] || item.type }}

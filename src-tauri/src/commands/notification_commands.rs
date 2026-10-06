@@ -236,6 +236,30 @@ pub(crate) fn link_target_table(et_upper: &str) -> Option<(&'static str, &'stati
     }
 }
 
+/// 单条 文件↔对象 关联的落库核心（单条与批量命令共用）。
+/// Ok(true)=新写边，Ok(false)=已存在（幂等跳过），Err=校验拒绝（不落库）
+fn apply_file_link(fid: &str, fname: &str, et_upper: &str, eid: &str) -> Result<bool, String> {
+    let (table, id_col) = link_target_table(et_upper).ok_or_else(|| format!("不支持的关联目标类型：{}", et_upper))?;
+    let obj_ok = database::get(
+        &format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", table, id_col), &[json!(eid)]
+    ).ok().flatten().is_some();
+    if !obj_ok { return Err("关联目标对象不存在".into()); }
+    let dup = database::get(
+        "SELECT 1 FROM file_relations WHERE file_id=?1 AND upper(entity_type)=?2 AND entity_id=?3 LIMIT 1",
+        &[json!(fid), json!(et_upper), json!(eid)]
+    ).ok().flatten().is_some();
+    if dup { return Ok(false); }
+    crate::commands::file_commands::add_relation(fid, &et_upper.to_lowercase(), eid, fname, "AI", None);
+    crate::services::knowledge_lifecycle::notify_changed(et_upper, eid); // 关联变化尽力通知下游（失败无害）
+    Ok(true)
+}
+
+fn file_name_if_exists(fid: &str) -> Option<String> {
+    database::get("SELECT original_name FROM file_assets WHERE id=?1", &[json!(fid)])
+        .ok().flatten()
+        .and_then(|r| r["original_name"].as_str().filter(|s| !s.is_empty()).map(String::from))
+}
+
 /// 用户从通知的 link_file 按钮确认：把文件关联到业务对象（分析师建议、用户点击才写边）。
 /// 幂等：已存在的关联返回 already=true 不重复写；文件/对象任一不存在拒绝（防死按钮）。
 #[tauri::command]
@@ -244,25 +268,40 @@ pub async fn notification_link_file(file_id: String, entity_type: String, entity
     let et = entity_type.trim().to_uppercase();
     let eid = strip_type_prefix(entity_id.trim());
     if fid.is_empty() || eid.is_empty() { return Err("关联参数不完整".into()); }
-    let (table, id_col) = link_target_table(&et).ok_or_else(|| format!("不支持的关联目标类型：{}", et))?;
-    let file_exists = database::get("SELECT original_name FROM file_assets WHERE id=?1", &[json!(&fid)])
-        .ok().flatten().map(|r| r["original_name"].as_str().unwrap_or("").to_string());
-    let Some(fname) = file_exists.filter(|s| !s.is_empty()) else { return Err("来源文件不存在".into()); };
-    let obj_exists = database::get(
-        &format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", table, id_col), &[json!(&eid)]
-    ).ok().flatten().is_some();
-    if !obj_exists { return Err("关联目标对象不存在".into()); }
-    let dup = database::get(
-        "SELECT 1 FROM file_relations WHERE file_id=?1 AND upper(entity_type)=?2 AND entity_id=?3 LIMIT 1",
-        &[json!(&fid), json!(&et), json!(&eid)]
-    ).ok().flatten().is_some();
+    let fname = file_name_if_exists(&fid).ok_or_else(|| "来源文件不存在".to_string())?;
+    let created = apply_file_link(&fid, &fname, &et, &eid)?;
     if let Some(nid) = notification_id.as_deref() {
         database::run("UPDATE notifications SET read=1 WHERE id=?1", &[json!(nid)]).ok();
     }
-    if dup { return Ok(json!({"success": true, "already": true})); }
-    crate::commands::file_commands::add_relation(&fid, &et.to_lowercase(), &eid, &fname, "AI", None);
-    crate::services::knowledge_lifecycle::notify_changed(&et, &eid); // 关联变化尽力通知下游（失败无害）
-    Ok(json!({"success": true, "already": false}))
+    Ok(json!({"success": true, "already": !created}))
+}
+
+/// 批量版：一个按钮一次确认写多条边（link_file params.links 数组形态）。
+/// 逐条独立校验幂等，坏条不连累好条；至少落一条即标记通知已读。
+#[tauri::command]
+pub async fn notification_link_files(file_id: String, links: Vec<Value>, notification_id: Option<String>) -> Result<Value, String> {
+    let fid = strip_type_prefix(file_id.trim());
+    if fid.is_empty() || links.is_empty() { return Err("关联参数不完整".into()); }
+    let fname = file_name_if_exists(&fid).ok_or_else(|| "来源文件不存在".to_string())?;
+    let (mut linked, mut already) = (0usize, 0usize);
+    let mut failed: Vec<Value> = Vec::new();
+    for l in links.iter().take(10) {
+        let et = l["entity_type"].as_str().unwrap_or("").trim().to_uppercase();
+        let eid = strip_type_prefix(l["entity_id"].as_str().unwrap_or("").trim());
+        if eid.is_empty() { continue; }
+        match apply_file_link(&fid, &fname, &et, &eid) {
+            Ok(true) => linked += 1,
+            Ok(false) => already += 1,
+            Err(e) => failed.push(json!({"entity_type": et, "entity_id": eid, "error": e})),
+        }
+    }
+    if linked + already > 0 {
+        if let Some(nid) = notification_id.as_deref() {
+            database::run("UPDATE notifications SET read=1 WHERE id=?1", &[json!(nid)]).ok();
+        }
+    }
+    let all_failed = linked == 0 && already == 0 && !failed.is_empty();
+    Ok(json!({"success": !all_failed, "linked": linked, "already": already, "failed": failed}))
 }
 
 pub(crate) fn strip_type_prefix(s: &str) -> String {

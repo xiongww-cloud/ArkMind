@@ -11,23 +11,46 @@ pub(crate) fn sanitize_actions_json(actions_raw: &str) -> (String, Vec<String>) 
     let parsed: Vec<Value> = match serde_json::from_str(actions_raw) { Ok(v) => v, Err(_) => return (actions_raw.to_string(), vec![]) };
     let mut kept: Vec<Value> = Vec::new();
     let mut dropped: Vec<String> = Vec::new();
-    for item in parsed {
+    for mut item in parsed {
         let atype = item["type"].as_str().unwrap_or("").to_string();
-        // ★ link_file 创建侧校验：文件与目标对象任一不存在即剔除（与 view_* 同策略，死按钮不留到用户点击）
+        // ★ link_file 创建侧校验：单目标(entity_type/entity_id)或批量(links[])，
+        //   逐条验存在性、剔除坏条（全坏才删按钮）——死按钮不留到用户点击（与 view_* 同策略）
         if atype == "link_file" {
-            let strip = crate::commands::notification_commands::strip_type_prefix;
-            let fid = strip(item["params"]["file_id"].as_str().unwrap_or("").trim());
-            let et = item["params"]["entity_type"].as_str().unwrap_or("").trim().to_uppercase();
-            let eid = strip(item["params"]["entity_id"].as_str().unwrap_or("").trim());
-            let obj_ok = crate::commands::notification_commands::link_target_table(&et).map(|(t, c)| {
-                !eid.is_empty() && database::get(
-                    &format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", t, c), &[json!(&eid)]
-                ).ok().flatten().is_some()
-            }).unwrap_or(false);
+            use crate::commands::notification_commands::{link_target_table, strip_type_prefix};
+            let exists = |t: &str, id: &str| -> bool {
+                link_target_table(t).map(|(tab, col)| {
+                    !id.is_empty() && database::get(
+                        &format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", tab, col), &[json!(id)]
+                    ).ok().flatten().is_some()
+                }).unwrap_or(false)
+            };
+            let strip = |s: &str| strip_type_prefix(s.trim()).to_string();
+            let fid = strip(item["params"]["file_id"].as_str().unwrap_or(""));
             let file_ok = !fid.is_empty() && database::get(
                 "SELECT 1 FROM file_assets WHERE id=?1 LIMIT 1", &[json!(&fid)]
             ).ok().flatten().is_some();
-            if file_ok && obj_ok { kept.push(item); }
+            if !file_ok { dropped.push(item["label"].as_str().filter(|s| !s.is_empty()).unwrap_or(&atype).to_string()); continue; }
+            if let Some(arr) = item["params"]["links"].as_array().cloned() {
+                let good: Vec<Value> = arr.into_iter().filter_map(|mut l| {
+                    let et = l["entity_type"].as_str().unwrap_or("").trim().to_uppercase();
+                    let eid = strip(l["entity_id"].as_str().unwrap_or(""));
+                    if eid.is_empty() { return None; }
+                    if !exists(&et, &eid) { return None; }
+                    if let Some(o) = l.as_object_mut() { o.insert("entity_id".into(), json!(eid)); o.insert("entity_type".into(), json!(et)); }
+                    Some(l)
+                }).collect();
+                if good.is_empty() { dropped.push(item["label"].as_str().filter(|s| !s.is_empty()).unwrap_or(&atype).to_string()); }
+                else {
+                    if let Some(o) = item.as_object_mut() {
+                        if let Some(p) = o.get_mut("params").and_then(|p| p.as_object_mut()) { p.insert("links".into(), Value::Array(good)); }
+                    }
+                    kept.push(item);
+                }
+                continue;
+            }
+            let et = item["params"]["entity_type"].as_str().unwrap_or("").trim().to_uppercase();
+            let eid = strip(item["params"]["entity_id"].as_str().unwrap_or(""));
+            if exists(&et, &eid) { kept.push(item); }
             else { dropped.push(item["label"].as_str().filter(|s| !s.is_empty()).unwrap_or(&atype).to_string()); }
             continue;
         }
