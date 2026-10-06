@@ -98,11 +98,8 @@ pub(crate) fn sanitize_actions_json(actions_raw: &str) -> (String, Vec<String>) 
             _ => { kept.push(item); continue; }
         };
         let raw = item["params"][id_param].as_str().unwrap_or("").trim().to_string();
-        // 剥离 TYPE- 前缀（首段全大写才剥，避免切坏裸 UUID）
-        let bare = match raw.find('-') {
-            Some(i) if i > 0 && raw[..i].chars().all(|c| c.is_ascii_uppercase()) => raw[i + 1..].to_string(),
-            _ => raw.clone(),
-        };
+        // 剥已知 TYPE- 前缀（entity_ref 单一入口，非注册前缀不误剥）
+        let bare = crate::services::agent_workflow::tools::entity_ref::bare_id(&raw);
         let exists = !bare.is_empty() && database::get(
             &format!("SELECT 1 FROM {} WHERE {}=?1 LIMIT 1", table, id_col), &[json!(&bare)]
         ).ok().flatten().is_some();

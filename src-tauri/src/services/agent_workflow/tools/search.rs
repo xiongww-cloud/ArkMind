@@ -13,10 +13,11 @@ use crate::services::agent_workflow::*;
 pub(crate) fn resolve_scope_to_rowids(scope: &[String]) -> std::collections::HashSet<i64> {
     let mut all_rowids = std::collections::HashSet::new();
     for s in scope {
-        let parts: Vec<&str> = s.splitn(2, '-').collect();
-        if parts.len() != 2 { log::info!("[Scope] 无法解析 scope key: {}", s); continue; }
-        let st = parts[0].to_uppercase();
-        let sid = parts[1];
+        let (st, sid) = match super::entity_ref::parse(s) {
+            Some((t, id)) => (t.to_string(), id),
+            None => { log::info!("[Scope] 无法解析 scope key: {}", s); continue; }
+        };
+        let sid = sid.as_str();
         // source_data.id 是 TEXT 类型（= source_id），不能用 as_i64()
         match database::get("SELECT id FROM source_data WHERE source_type=?1 AND source_id=?2",&[json!(st), json!(sid)]) {
             Ok(Some(row)) => {
@@ -193,58 +194,11 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
     // ★ 双路结果：非MEMORY top 3
     let non_memory: Vec<_> = candidates.iter().filter(|(_, _, st, _, _, _, _, _, _, _, _)| st != "MEMORY").take(3).collect();
 
-    // ── 知识检索区 ──
-    let mut search_out = String::new();
-    if !non_memory.is_empty() {
-        search_out.push_str("## 📄 知识检索");
-        for (idx, (score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)) in non_memory.iter().enumerate() {
-            let rrf_tag = &format!("{:.3}", score);
-            let boost_tag = if *is_obj_match { "🔥" } else { "" };
-            let source_id_str = format!("{}-{}", st, sid);
-            let meta_json = build_chunk_metadata(&source_id_str);
-            let mut meta = if meta_json["found"].as_bool().unwrap_or(false) {
-                format!("来源：{} · {}", 
-                    match st.as_str() { "FILE" => "文件", "PRODUCT" => "产品", "PROJECT" => "项目", "NOTE" => "笔记", "TODO" => "待办", _ => st },
-                    meta_json["name"].as_str().unwrap_or(sid)
-                )
-            } else {
-                String::new()
-            };
-            if *total_parents > 1 {
-                if !meta.is_empty(){meta.push('\n');}
-                meta.push_str(&format!("父块：{}/{}", chunk_index + 1, total_parents));
-            }
-            if !chunk_id.is_empty() {
-                let short: String = chunk_id.chars().take(8).collect();
-                if !meta.is_empty(){meta.push('\n');}
-                meta.push_str(&format!("ChunkID：{}", short));
-            }
-            if *is_scope_path {
-                meta.push_str("\n📍 该段落属于当前工作区");
-            } else {
-                meta.push_str("\n💡 该段落来自全库发现（不属于当前工作区）");
-            }
-            let _source_label = match st.as_str() {
-                "FILE" => "FILE",
-                "PRODUCT" => "PRODUCT",
-                "PROJECT" => "PROJECT",
-                "NOTE" => "NOTE",
-                "TODO" => "TODO",
-                _ => st,
-            };
-            let created_at: String = database::get(
-                "SELECT created_at FROM knowledge_chunks WHERE id=?1", &[json!(cr)],
-            ).ok().flatten().and_then(|r| r["created_at"].as_str().map(String::from)).unwrap_or_default();
-            let time_info = relative_time(&created_at);
-            if !time_info.is_empty() {
-                if !meta.is_empty() { meta.push('\n'); }
-                meta.push_str(&time_info);
-            }
-            let preview = content.clone();
-            if meta.is_empty() { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}", idx + 1, rrf_tag, boost_tag, preview)); }
-            else { search_out.push_str(&format!("\n\n--- [父块{}|RRF={}]{} ---\n{}\n--------\n{}", idx + 1, rrf_tag, boost_tag, meta, preview)); }
-
-            found_sources.push(format!("{}-{}", st, sid));
+    // ★ 命中来源登记与图谱扩展（引用串统一 entity_ref::fmt）
+    {
+        for (score, cr, st, sid, chunk_id, _content, _h, _chunk_index, _total_parents, _is_scope_path, _is_obj_match) in non_memory.iter() {
+            let _ = (score, cr);
+            found_sources.push(super::entity_ref::fmt(st, sid));
 
             // ★ 关联对象自动进入 workspace（统一从 business_relations 查询）
             match st.as_str() {
@@ -316,10 +270,16 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
         }
     }
 
-    // 构建 chunks 数组
+    // 构建 chunks 数组（★ source 带 name 与 EntityRef 引用串——模型必须知道片段来自哪个文件，
+    // 且抄下 id 即可作为对象工具入参；name 查询按 source 去重缓存）
+    let mut name_cache: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
     let chunks: Vec<Value> = non_memory.iter().map(|(score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)| {
         let short_chunk_id: String = chunk_id.chars().take(8).collect();
         let preview = content.clone();
+        let source_name = name_cache.entry((st.clone(), sid.clone())).or_insert_with(|| {
+            database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(sid)])
+                .ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default()
+        }).clone();
         // 查询时间信息
         let created_at: String = database::get(
             "SELECT created_at FROM knowledge_chunks WHERE id=?1",
@@ -330,7 +290,8 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
             "rrf_score": score,
             "source": {
                 "type": st,
-                "id": sid
+                "id": super::entity_ref::fmt(st, sid),
+                "name": source_name
             },
             "chunk_index": chunk_index,
             "total_parents": total_parents,
@@ -349,7 +310,7 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
         ).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
         json!({
             "type": st,
-            "id": sid,
+            "id": super::entity_ref::fmt(st, sid),
             "name": name
         })
     }).collect();

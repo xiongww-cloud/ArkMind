@@ -105,15 +105,6 @@ pub(crate) fn cn_now_str() -> String {
     cn_datetime_str(chrono::Local::now().naive_local())
 }
 
-pub(crate) fn relative_time(created_at: &str) -> String {
-    if created_at.is_empty() { return String::new(); }
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    let ts = chrono::NaiveDateTime::parse_from_str(created_at, "%Y-%m-%d %H:%M:%S").map(|dt| dt.and_utc().timestamp()).unwrap_or(0);
-    let delta = (now - ts).max(0);
-    let rel = if delta < 60 { "刚刚".to_string() } else if delta < 3600 { format!("{}分钟前", delta / 60) } else if delta < 86400 { format!("{}小时前", delta / 3600) } else if delta < 2592000 { format!("{}天前", delta / 86400) } else if delta < 77760000 { format!("{}个月前", delta / 2592000) } else { format!("{}年前", delta / 31104000) };
-    format!("{} ({})", rel, crate::preview(created_at, 16))
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // Main Agent Loop
 // ═══════════════════════════════════════════════════════════════════

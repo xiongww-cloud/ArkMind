@@ -94,11 +94,15 @@ impl SessionMemory {
         }
     }
 
-    /// 记录一个对象被访问/命中，并根据 score_delta 更新注意力分数，然后淘汰过期的
+    /// 记录一个对象被访问/命中，并根据 score_delta 更新注意力分数，然后淘汰过期。
+    /// 白名单：仅 SCOPE_TYPES（有检索语义的业务对象）可进注意力——EMAIL/MEMORY 等系统类型过滤；
+    /// 空 name 不覆盖已有名字（上游信封偶发无 name，不得反向清洗掉已知名字）
     pub(crate) fn update(&mut self, obj_type: &str, obj_id: &str, name: &str, score_delta: f64) {
+        use crate::services::agent_workflow::tools::entity_ref::SCOPE_TYPES;
+        if !SCOPE_TYPES.iter().any(|t| t.eq_ignore_ascii_case(obj_type)) { return; }
         self.access_counter += 1;
         if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == obj_type && o.obj_id == obj_id) {
-            existing.name = name.to_string();
+            if !name.is_empty() { existing.name = name.to_string(); }
             existing.access_order = self.access_counter;
             existing.hits += 1;
             existing.score = (existing.score * 0.95 + score_delta).clamp(0.0, 1.0);
@@ -313,20 +317,17 @@ impl SessionMemory {
         let mut lines: Vec<String> = Vec::new();
 
         // 1. Attention（注意力排序，按 score 降序，只保留 top 5）
+        //    每行带 EntityRef 引用串：模型从这里抄到的 id 可直接作为对象工具入参（引用语法与工具返回统一）
         if !self.active_objects.is_empty() {
             lines.push(String::new());
             lines.push("## Attention（注意力排序）".to_string());
+            const CIRCLED: [&str; 5] = ["①", "②", "③", "④", "⑤"];
             let mut sorted: Vec<&ActiveObject> = self.active_objects.iter().filter(|o| o.score > 0.0).collect();
             sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-            for (_i, o) in sorted.iter().take(5).enumerate() {
-                let label = match o.obj_type.as_str() {
-                    "product" => format!("PRODUCT: {}", o.name),
-                    "project" => format!("PROJECT: {}", o.name),
-                    "file" => format!("FILE: {}", o.name),
-                    "note" => format!("NOTE: {}", o.name),
-                    t => format!("{}: {}", t, o.name),
-                };
-                lines.push(format!("  ① {}  score: {:.2}", label, o.score));
+            for (i, o) in sorted.iter().take(5).enumerate() {
+                let r = crate::services::agent_workflow::tools::entity_ref::fmt(&o.obj_type, &o.obj_id);
+                let label = if o.name.is_empty() { r } else { format!("{} [{}]", o.name, r) };
+                lines.push(format!("  {} {} score: {:.2}", CIRCLED[i], label, o.score));
             }
         }
 
@@ -384,32 +385,24 @@ impl SessionMemory {
 }
 
 /// 从 session 的 active_objects 计算 scope（用于限定搜索范围）
-/// 取 top 5 高分对象 + 所有新加来源（score < 1 的新进入注意力的对象）
+/// 取 top 5 高分对象 + 所有新加来源（score < 1 的新进入注意力的对象）；引用串经 entity_ref 统一构造
 pub(crate) fn compute_scope_from_session(session: &SessionMemory) -> Option<std::collections::HashSet<i64>> {
+    use crate::services::agent_workflow::tools::entity_ref::{fmt, SCOPE_TYPES};
     let mut scope_ids: Vec<String> = Vec::new();
-    let type_prefix = |t: &str| -> Option<&str> {
-        match t.to_lowercase().as_str() {
-            "product" => Some("PRODUCT"), "project" => Some("PROJECT"),
-            "file" => Some("FILE"), "note" => Some("NOTE"), "todo" => Some("TODO"),
-            "contact" => Some("CONTACT"), "chat" => Some("CHAT"),
-            "channel" => Some("CHANNEL"), "vendor" => Some("VENDOR"), "customer" => Some("CUSTOMER"),
-            _ => None
-        }
+    let as_ref = |t: &str, id: &str| -> Option<String> {
+        if SCOPE_TYPES.iter().any(|s| s.eq_ignore_ascii_case(t)) { Some(fmt(t, id)) } else { None }
     };
     // 1. top 5 高分对象
     let mut sorted: Vec<&ActiveObject> = session.active_objects.iter().collect();
     sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     for o in sorted.iter().take(5) {
-        if let Some(p) = type_prefix(&o.obj_type) {
-            scope_ids.push(format!("{}-{}", p, o.obj_id));
-        }
+        if let Some(k) = as_ref(&o.obj_type, &o.obj_id) { scope_ids.push(k); }
     }
     // 2. 新加入的来源（score < 1 的，来自 MEMORY 引用等）
     for o in session.active_objects.iter() {
         if o.score < 1.0 {
-            if let Some(p) = type_prefix(&o.obj_type) {
-                let key = format!("{}-{}", p, o.obj_id);
-                if !scope_ids.contains(&key) { scope_ids.push(key); }
+            if let Some(k) = as_ref(&o.obj_type, &o.obj_id) {
+                if !scope_ids.contains(&k) { scope_ids.push(k); }
             }
         }
     }
@@ -417,5 +410,25 @@ pub(crate) fn compute_scope_from_session(session: &SessionMemory) -> Option<std:
     let s = resolve_scope_to_rowids(&scope_ids);
     log::info!("[Scope] scope_ids={:?}, resolved_rowids={}", scope_ids, s.len());
     if s.is_empty() { log::info!("[Scope] scope_rowids 解析为空，scope=None"); None } else { Some(s) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionMemory;
+
+    /// 注意力：类型白名单过滤、空名不覆盖、渲染带 EntityRef 且序号递增
+    #[test]
+    fn attention_whitelist_names_and_rendering() {
+        let mut s = SessionMemory::new();
+        s.update("file", "f-1", "方案书.pdf", 0.9);
+        s.update("email", "e-1", "催办邮件", 0.9);
+        s.update("project", "p-1", "咸宁校园网", 0.8);
+        s.update("file", "f-1", "", 0.5);
+        let out = s.generate_scratchpad();
+        assert!(out.contains("方案书.pdf [FILE-f-1]"), "{}", out);
+        assert!(out.contains("咸宁校园网 [PROJECT-p-1]"));
+        assert!(!out.contains("催办邮件") && !out.contains("EMAIL"), "EMAIL 类不得进注意力");
+        assert!(out.contains("①") && out.contains("②") && !out.contains("③"), "两条记录用①②，序号递增不重复: {}", out);
+    }
 }
 

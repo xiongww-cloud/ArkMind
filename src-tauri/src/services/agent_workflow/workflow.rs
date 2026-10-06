@@ -1123,13 +1123,9 @@ pub async fn agent_chat_workflow_internal(
                                         let mut effects = vec![SessionEffect::RecordSearch(kw)];
                                         for s in &fb.1 {
                                             effects.push(SessionEffect::MarkSourceVisited(s.clone()));
-                                            if let Some(dash) = s.find('-') {
-                                                let (ot, oi) = s.split_at(dash);
-                                                let oi = &oi[1..];
-                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
-                                                if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
-                                                    effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name, score_delta: 0.0 });
-                                                }
+                                            if let Some((ot, oid)) = crate::services::agent_workflow::tools::entity_ref::parse(s) {
+                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(&oid)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                                effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oid, name, score_delta: 0.0 });
                                             }
                                         }
                                         (res, effects)
@@ -1137,13 +1133,9 @@ pub async fn agent_chat_workflow_internal(
                                         let mut effects = vec![SessionEffect::RecordSearch(kw)];
                                         for s in &new_sources {
                                             effects.push(SessionEffect::MarkSourceVisited(s.clone()));
-                                            if let Some(dash) = s.find('-') {
-                                                let (ot, oi) = s.split_at(dash);
-                                                let oi = &oi[1..];
-                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot.to_uppercase()), json!(oi)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
-                                                if !ot.is_empty() && !oi.is_empty() && !name.is_empty() {
-                                                    effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oi.to_string(), name, score_delta: 0.0 });
-                                                }
+                                            if let Some((ot, oid)) = crate::services::agent_workflow::tools::entity_ref::parse(s) {
+                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(&oid)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                                effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oid, name, score_delta: 0.0 });
                                             }
                                         }
                                         (res, effects)

@@ -5,17 +5,13 @@ use serde_json::json;
 
 // ═══════════════════════════════════════════════════════════════════
 
-/// 从 source_id 字符串解析出 source_type 和 source_id
-/// 支持格式：PROJECT-uuid 或裸 UUID
+/// 从引用串解析 source_type 与裸 source_id（委托 entity_ref 单一入口）。
+/// 兼容格式：TYPE-uuid；无法识别类型的输入整体视为裸 uuid（__raw__ 分支，向后兼容）。
 pub(crate) fn parse_source_id(source_id_str: &str) -> (String, String) {
-    let known_types = ["PROJECT", "PRODUCT", "FILE", "NOTE", "TODO", "CHANNEL", "VENDOR", "CONTACT", "CUSTOMER"];
-    if let Some(dash) = source_id_str.find('-') {
-        let prefix = &source_id_str[..dash];
-        if known_types.contains(&prefix.to_uppercase().as_str()) {
-            return (prefix.to_uppercase(), source_id_str[dash+1..].to_string());
-        }
+    match super::entity_ref::parse(source_id_str) {
+        Some((t, id)) => (t.to_string(), id),
+        None => ("__raw__".to_string(), source_id_str.trim().to_string()),
     }
-    ("__raw__".to_string(), source_id_str.to_string())
 }
 
 /// 查询 source_data 表获取来源信息，返回 JSON 对象

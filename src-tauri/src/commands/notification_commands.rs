@@ -304,11 +304,9 @@ pub async fn notification_link_files(file_id: String, links: Vec<Value>, notific
     Ok(json!({"success": !all_failed, "linked": linked, "already": already, "failed": failed}))
 }
 
+/// 剥已知 TYPE- 前缀取裸 id（entity_ref 单一入口的薄包装，保持既有调用与测试稳定）
 pub(crate) fn strip_type_prefix(s: &str) -> String {
-    match s.find('-') {
-        Some(i) if i > 0 && s[..i].chars().all(|c| c.is_ascii_uppercase()) => s[i + 1..].to_string(),
-        _ => s.to_string(),
-    }
+    crate::services::agent_workflow::tools::entity_ref::bare_id(s)
 }
 
 /// update_object 按钮：各实体类型允许 AI 建议更新的字段白名单（键名即 updates 入参键）
