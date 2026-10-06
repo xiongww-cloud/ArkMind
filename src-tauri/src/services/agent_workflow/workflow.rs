@@ -1660,7 +1660,10 @@ pub async fn agent_chat_workflow_internal(
                     }
                 }
 
-                if !circuit_break_reason.is_empty() {
+                // ★ 熔断是交互体验保护（别让用户干等空转），对 silent 后台自主运行体不适用——
+                //   其交付物就是工具调用本身（如分析师创建通知），掐工具=掐产出；
+                //   后台失控风险已由 max_iters+预算双重兜底
+                if !circuit_break_reason.is_empty() && !silent {
                     messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel, &llm_overrides).await.unwrap_or_else(|e| { log::warn!("[Agent] 熔断总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();

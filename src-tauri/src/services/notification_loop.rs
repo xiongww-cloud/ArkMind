@@ -73,7 +73,7 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 3. 行内"已关联"清单列出的类型不得再重复提议（增量关联除外：文件已挂项目、开头另有明确产品依据 → 可再建议 link 该产品）；同一文件同一目标的历史建议未处理时不重复播报。
 
 ## 通知去重（硬性规则）
-创建任何通知前，必须先调用 ext_tool_manage_notification(action='list') 查看近 7 天已有的通知。
+创建任何通知前，必须先调用 ext_tool_manage_notification(action='list') 查看近 7 天已有的通知——这是核对已有通知的唯一途径；禁止用 ext_tool_search 搜"通知"等关键词替代（搜到的是已入库正文的旧块，既不是通知清单，又白烧轮次）。
 逐条比对：如果已有通知的内容与本次拟创建的通知在语义上重复（同一事件、同一建议、同一观察），则跳过不创建。
 即使标题措辞不同，只要核心信息一致就算重复。
 
@@ -678,6 +678,7 @@ mod tests {
         assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("link_file"));
         assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("用户点击才写关联、你无权写边"));
         assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("create_product"));
+        assert!(super::DEFAULT_ANALYSIS_PROMPT.contains("这是核对已有通知的唯一途径"), "去重须锁 list 独占通道，防 search 空转烧轮");
     }
 
     #[test]
