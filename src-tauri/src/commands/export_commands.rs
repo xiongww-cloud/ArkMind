@@ -812,38 +812,10 @@ fn import_products(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
         for s in series { database::run("INSERT OR IGNORE INTO product_series(id,name,parent_id,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6)", &[json!(s["id"]),json!(s["name"]),json!(s["parent_id"]),json!(s["sort_order"]),json!(s["created_at"]),json!(s["updated_at"])]).ok(); }
     }
     // 物料附件：先恢复 file_assets 行（二进制复制依赖 content_hash 查询）
-    if let Some(assets) = data["file_assets"].as_array() {
-        for a in assets {
-            let id = a["id"].as_str().unwrap_or("");
-            if id.is_empty() { continue; }
-            database::run("INSERT OR IGNORE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
-                json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
-                json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
-            ]).ok();
-        }
-    }
-    if let Some(rels) = data["file_relations"].as_array() {
-        for r in rels { database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
-    }
+    let file_id_map = restore_file_assets(data);
+    remap_file_relations(data, &file_id_map);
     // 复制物料文件
-    let files_dir = tmp.join("product_files");
-    if files_dir.exists() {
-        for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
-            if let Ok(entry) = entry {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if let Some(dot) = fname.rfind('.') {
-                    let fid = &fname[..dot];
-                    if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(fid)]).ok().flatten() {
-                        if let Some(hash) = fa["content_hash"].as_str() {
-                            let dst = crate::commands::file_commands::flat_disk_path(hash);
-                            if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
-                            std::fs::copy(entry.path(), &dst).ok();
-                        }
-                    }
-                }
-            }
-        }
-    }
+    copy_imported_files(tmp, "product_files", &file_id_map);
     Ok(())
 }
 
@@ -863,38 +835,10 @@ fn import_notes(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
         }
     }
     // 笔记附件：先恢复 file_assets 行（二进制复制依赖 content_hash 查询）
-    if let Some(assets) = data["file_assets"].as_array() {
-        for a in assets {
-            let id = a["id"].as_str().unwrap_or("");
-            if id.is_empty() { continue; }
-            database::run("INSERT OR IGNORE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
-                json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
-                json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
-            ]).ok();
-        }
-    }
-    if let Some(rels) = data["file_relations"].as_array() {
-        for r in rels { database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
-    }
+    let file_id_map = restore_file_assets(data);
+    remap_file_relations(data, &file_id_map);
     // 复制笔记附件
-    let files_dir = tmp.join("note_files");
-    if files_dir.exists() {
-        for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
-            if let Ok(entry) = entry {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if let Some(dot) = fname.rfind('.') {
-                    let fid = &fname[..dot];
-                    if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(fid)]).ok().flatten() {
-                        if let Some(hash) = fa["content_hash"].as_str() {
-                            let dst = crate::commands::file_commands::flat_disk_path(hash);
-                            if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
-                            std::fs::copy(entry.path(), &dst).ok();
-                        }
-                    }
-                }
-            }
-        }
-    }
+    copy_imported_files(tmp, "note_files", &file_id_map);
     Ok(())
 }
 
@@ -919,79 +863,86 @@ fn import_todos(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
         }
     }
     // 待办附件：先恢复 file_assets 行（二进制复制依赖 content_hash 查询）
+    let file_id_map = restore_file_assets(data);
+    remap_file_relations(data, &file_id_map);
+    // 复制待办附件
+    copy_imported_files(tmp, "todo_files", &file_id_map);
+    Ok(())
+}
+
+/// 导入恢复 file_assets（CAS 语义）：本库已有同内容文件（hash 命中）→ 复用既有 id，
+/// 杜绝 INSERT OR IGNORE 整行静默丢弃后 file_relations/复制引用悬空。
+/// 返回「包内 id → 本库实际 id」映射。
+fn restore_file_assets(data: &Value) -> std::collections::HashMap<String, String> {
+    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Some(assets) = data["file_assets"].as_array() {
         for a in assets {
             let id = a["id"].as_str().unwrap_or("");
             if id.is_empty() { continue; }
+            let hash = a["content_hash"].as_str().unwrap_or("").to_string();
+            if !hash.is_empty() {
+                if let Some(existing) = database::get(
+                    "SELECT id FROM file_assets WHERE content_hash=?1 AND id<>?2", &[json!(&hash), json!(id)],
+                ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from)) {
+                    map.insert(id.to_string(), existing);
+                    continue;
+                }
+            }
             database::run("INSERT OR IGNORE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
                 json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
                 json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
             ]).ok();
+            map.insert(id.to_string(), id.to_string());
         }
     }
+    map
+}
+
+/// file_relations 恢复：file_id 一律经 remap 替换为本库实际 id
+fn remap_file_relations(data: &Value, id_map: &std::collections::HashMap<String, String>) {
     if let Some(rels) = data["file_relations"].as_array() {
-        for r in rels { database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
+        for r in rels {
+            let fid = r["file_id"].as_str().unwrap_or("");
+            let mapped = id_map.get(fid).map(|s| s.as_str()).unwrap_or(fid);
+            database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[
+                json!(r["id"]), json!(mapped), json!(r["entity_type"]), json!(r["entity_id"]), json!(r["custom_name"]), json!(r["remark"]), json!(r["creator"]), json!(r["description"]), json!(r["folder_id"]), json!(r["created_at"]),
+            ]).ok();
+        }
     }
-    // 复制待办附件
-    let files_dir = tmp.join("todo_files");
-    if files_dir.exists() {
-        for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
-            if let Ok(entry) = entry {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if let Some(dot) = fname.rfind('.') {
-                    let fid = &fname[..dot];
-                    if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(fid)]).ok().flatten() {
-                        if let Some(hash) = fa["content_hash"].as_str() {
-                            let dst = crate::commands::file_commands::flat_disk_path(hash);
-                            if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
-                            std::fs::copy(entry.path(), &dst).ok();
-                        }
+}
+
+/// 复制导入包内附件二进制：包内文件名（<id>.<ext>）经 remap 找本库行的 hash 落盘
+fn copy_imported_files(tmp: &std::path::Path, subdir: &str, id_map: &std::collections::HashMap<String, String>) {
+    let files_dir = tmp.join(subdir);
+    if !files_dir.exists() { return; }
+    for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
+        if let Ok(entry) = entry {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if let Some(dot) = fname.rfind('.') {
+                let fid = &fname[..dot];
+                let mapped = id_map.get(fid).map(|s| s.as_str()).unwrap_or(fid);
+                if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(mapped)]).ok().flatten() {
+                    if let Some(hash) = fa["content_hash"].as_str() {
+                        let dst = crate::commands::file_commands::flat_disk_path(hash);
+                        if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
+                        std::fs::copy(entry.path(), &dst).ok();
                     }
                 }
             }
         }
     }
-    Ok(())
 }
 
 fn import_files(data: &Value, tmp: &std::path::Path) -> Result<(), String> {
-    let mut imported_ids: Vec<String> = Vec::new();
-    if let Some(assets) = data["file_assets"].as_array() {
-        for a in assets {
-            let id = a["id"].as_str().unwrap_or("");
-            if id.is_empty() { continue; }
-            database::run("INSERT OR IGNORE INTO file_assets(id,file_ext,file_size,content_hash,original_name,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[
-                json!(id), json!(a["file_ext"]), json!(a["file_size"]), json!(a["content_hash"]),
-                json!(a["original_name"]), json!(a["created_at"]), json!(a["updated_at"]),
-            ]).ok();
-            imported_ids.push(id.to_string());
-        }
-    }
-    if let Some(rels) = data["file_relations"].as_array() {
-        for r in rels { database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,remark,creator,description,folder_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", &[json!(r["id"]),json!(r["file_id"]),json!(r["entity_type"]),json!(r["entity_id"]),json!(r["custom_name"]),json!(r["remark"]),json!(r["creator"]),json!(r["description"]),json!(r["folder_id"]),json!(r["created_at"])]).ok(); }
-    }
+    let file_id_map = restore_file_assets(data);
+    remap_file_relations(data, &file_id_map);
+    // 解析入队按映射后的本库 id（hash 复用场景下包内 id 不指向真实行）
+    let imported_ids: Vec<String> = file_id_map.values().cloned().collect();
     if let Some(folders) = data["library_folders"].as_array() {
         for f in folders { database::run("INSERT OR IGNORE INTO library_folders(id,name,parent_id,project_id,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", &[json!(f["id"]),json!(f["name"]),json!(f["parent_id"]),json!(f["project_id"]),json!(f["sort_order"]),json!(f["created_at"]),json!(f["updated_at"])]).ok(); }
     }
     // 复制资料库文件
-    let files_dir = tmp.join("library_files");
-    if files_dir.exists() {
-        for entry in std::fs::read_dir(&files_dir).ok().into_iter().flatten() {
-            if let Ok(entry) = entry {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if let Some(dot) = fname.rfind('.') {
-                    let fid = &fname[..dot];
-                    if let Some(fa) = database::get("SELECT content_hash FROM file_assets WHERE id=?1", &[json!(fid)]).ok().flatten() {
-                        if let Some(hash) = fa["content_hash"].as_str() {
-                            let dst = crate::commands::file_commands::flat_disk_path(hash);
-                            if let Some(parent) = std::path::Path::new(&dst).parent() { std::fs::create_dir_all(parent).ok(); }
-                            std::fs::copy(entry.path(), &dst).ok();
-                        }
-                    }
-                }
-            }
-        }
-    }
+    copy_imported_files(tmp, "library_files", &file_id_map);
     // 入队解析正文（与上传路径一致；必须在文件复制完成后入队）：否则导入的文件只落盘不进知识库
     for fid in &imported_ids {
         crate::services::knowledge_lifecycle::notify_file_upload(fid);

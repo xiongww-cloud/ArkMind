@@ -44,17 +44,27 @@ pub fn fts5_search_content(query: &str, limit: i64) -> SqliteResult<Vec<Fts5Resu
 /// 返回 Err 时调用方必须失败重试——此前吞错导致解析成果蒸发且队列照常删除
 pub fn file_sync_to_source_data(file_id: &str, parsed_text: &str) -> Result<(), String> {
     if parsed_text.is_empty() { return Err("source_data 写入跳过：文本为空".to_string()); }
-    // 从 file_assets 获取原始文件名作为 title
-    let title = with_db(|c| {
-        c.query_row(
+    // title 兜底链：正名 → 该文件任一上下文名（file_relations.custom_name）→ FILE-{id前8}，
+    // 保证知识库永不出现匿名文件（search source.name / 注意力渲染依赖此名）
+    let title = with_db(|c| -> rusqlite::Result<String> {
+        let name: String = c.query_row(
             "SELECT original_name FROM file_assets WHERE id=?1",
             rusqlite::params![file_id],
             |row| row.get::<_, String>(0),
-        )
+        ).unwrap_or_default();
+        if !name.trim().is_empty() { return Ok(name); }
+        let alias: String = c.query_row(
+            "SELECT custom_name FROM file_relations WHERE file_id=?1 AND trim(COALESCE(custom_name,''))<>'' LIMIT 1",
+            rusqlite::params![file_id],
+            |row| row.get::<_, String>(0),
+        ).unwrap_or_default();
+        if !alias.trim().is_empty() { return Ok(alias); }
+        Ok(format!("FILE-{}", file_id.chars().take(8).collect::<String>()))
     }).unwrap_or_default();
+    let title = if title.trim().is_empty() { format!("FILE-{}", file_id.chars().take(8).collect::<String>()) } else { title };
     let result = with_db(|c| {
         c.execute(
-            "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'FILE',?1,?2,?3,datetime('now', 'localtime')) ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
+            "INSERT INTO source_data(id,source_type,source_id,title,content,updated_at) VALUES(?1,'FILE',?1,?2,?3,datetime('now', 'localtime')) ON CONFLICT(source_type,source_id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at, title=CASE WHEN trim(COALESCE(source_data.title,''))='' THEN excluded.title ELSE source_data.title END",
             rusqlite::params![file_id, title, parsed_text],
         ).map(|_|())
     });

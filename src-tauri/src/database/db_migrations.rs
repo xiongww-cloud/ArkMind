@@ -1057,6 +1057,30 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         }
     }
 
+    // ★ 存量自愈：文件名空链——导入 hash 冲突等历史路径曾致 file_assets.original_name 与
+    //   source_data(FILE).title 为空，知识检索命中"匿名文件"（AI 无法按名引用/回答）。
+    //   兜底链：正名 → file_relations 上下文名 → FILE-{id前8}；幂等（只动空行，不碰已有名）。
+    {
+        let n1 = conn.execute(
+            "UPDATE file_assets SET original_name = COALESCE(\
+               NULLIF((SELECT TRIM(fr.custom_name) FROM file_relations fr WHERE fr.file_id=file_assets.id AND TRIM(COALESCE(fr.custom_name,''))<>'' LIMIT 1), ''),\
+               'FILE-'||substr(file_assets.id,1,8)) \
+             WHERE TRIM(COALESCE(original_name,''))=''",
+            [],
+        ).unwrap_or(0);
+        let n2 = conn.execute(
+            "UPDATE source_data SET title = COALESCE(\
+               NULLIF((SELECT TRIM(fa.original_name) FROM file_assets fa WHERE fa.id=source_data.source_id), ''),\
+               NULLIF((SELECT TRIM(fr.custom_name) FROM file_relations fr WHERE fr.file_id=source_data.source_id AND TRIM(COALESCE(fr.custom_name,''))<>'' LIMIT 1), ''),\
+               'FILE-'||substr(source_data.source_id,1,8)) \
+             WHERE source_type='FILE' AND TRIM(COALESCE(title,''))=''",
+            [],
+        ).unwrap_or(0);
+        if n1 > 0 || n2 > 0 {
+            log::info!("[数据库] 文件名自愈: file_assets 回填 {} 条空名, source_data 回填 {} 条空 title", n1, n2);
+        }
+    }
+
     // ★ 存量修复：OOXML 曾被 infer 嗅探降级为 zip（docx/xlsx/pptx 本质是 zip 容器）——
     //   file_ext=zip 导致预览打开资源管理器（ARK-xxx.docx.zip）、下载保存名变 .zip。
     //   按文件名后缀修正回特异扩展名（幂等；此类文件名后缀与内容一致——生成/上传时均已校验）。
@@ -1070,6 +1094,41 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         if n > 0 {
             log::info!("[数据库] file_ext 存量修复: {} 个 .{} 被降级为 zip，已修正回 {}", n, suffix, target);
         }
+    }
+
+    // ★ 物料类型归一：产品物料不再区分类型（彩页/白皮书/检测报告等），统一记"其他"（前端已移除
+    //   类型选择与展示，file_upload 对 product 域恒写"其他"，此处收敛存量）。幂等：已归一行不再命中。
+    let n = conn
+        .execute(
+            "UPDATE file_relations SET description='其他' WHERE entity_type='product' AND description IS NOT '其他'",
+            [],
+        )
+        .unwrap_or(0);
+    if n > 0 {
+        log::info!("[数据库] 物料类型归一: {} 条产品关联 description 已统一为'其他'", n);
+    }
+
+    // ★ 邮件内嵌图判定存量修复（同步端 email_polling 已同样处理新邮件）：
+    //   1) 发件端用 cid:<filename> 引用但 part 无 Content-ID 头（OA/企业系统常见）——此前判成附件、
+    //      正文渲染留裸 cid: 报 ERR_UNKNOWN_URL_SCHEME 图丢失；渲染端已支持文件名回退，行改 is_inline=1。
+    let n_ref = conn
+        .execute(
+            "UPDATE email_attachments SET is_inline=1 WHERE is_inline=0 AND COALESCE(filename,'')!='' \
+             AND EXISTS (SELECT 1 FROM emails e WHERE e.id=email_attachments.email_id AND instr(lower(COALESCE(e.body_html,'')), 'cid:'||lower(email_attachments.filename))>0)",
+            [],
+        )
+        .unwrap_or(0);
+    //   2) Outlook 每张内嵌图发两份 part（cid 版 + 文件名版），内容相同经 CAS 去重同 file_asset_id——
+    //      文件名版被误判附件重复显示，按内嵌副本归并隐藏。幂等：已归一行不再命中。
+    let n_dup = conn
+        .execute(
+            "UPDATE email_attachments SET is_inline=1 WHERE is_inline=0 AND mime_type LIKE 'image/%' AND file_asset_id IS NOT NULL \
+             AND EXISTS (SELECT 1 FROM email_attachments b WHERE b.email_id=email_attachments.email_id AND b.is_inline=1 AND b.file_asset_id=email_attachments.file_asset_id)",
+            [],
+        )
+        .unwrap_or(0);
+    if n_ref + n_dup > 0 {
+        log::info!("[数据库] 邮件内嵌图存量修复: {} 条按正文cid引用改判内嵌, {} 条Outlook同资产副本隐藏", n_ref, n_dup);
     }
 
     // ★ 项目 canonical ID 迁移：阶段 A —— 仅准备状态字段与审计表。
