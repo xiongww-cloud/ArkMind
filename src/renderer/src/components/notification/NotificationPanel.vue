@@ -367,9 +367,9 @@ const createAllTarget = ref<Notification | null>(null)
 const createAllItems = ref<Array<{ type: string; label: string; preview: string; params: Record<string, unknown> }>>([])
 
 function showCreateAllConfirm(n: Notification) {
-  const creates = parseActions(n).filter(a => a.type.startsWith('create_') && a.type !== 'create_all')
+  const creates = parseActions(n).filter(a => (a.type.startsWith('create_') && a.type !== 'create_all') || a.type === 'link_file')
   if (creates.length === 0) {
-    toast({ message: '没有可创建的对象', type: 'info' })
+    toast({ message: '没有可执行的操作', type: 'info' })
     return
   }
   createAllItems.value = creates.map(a => ({
@@ -389,6 +389,7 @@ const CREATE_KIND_LABELS: Record<string, string> = {
   create_product: '产品',
   create_contact: '联系人',
   create_partner: '合作伙伴',
+  link_file: '关联',
 }
 
 async function executeCreateAll() {
@@ -409,9 +410,9 @@ async function executeCreateAll() {
     }
   }
   if (successCount > 0) {
-    toast({ message: `已创建 ${successCount} 个对象${failCount > 0 ? `，${failCount} 个失败` : ''}`, type: 'success' })
+    toast({ message: `已完成 ${successCount} 项操作${failCount > 0 ? `，${failCount} 项失败` : ''}`, type: 'success' })
   } else {
-    toast({ message: '创建失败', type: 'error' })
+    toast({ message: '执行失败', type: 'error' })
   }
   await markRead(createAllTarget.value.id)
   createAllTarget.value = null
@@ -461,6 +462,12 @@ async function executeCreate(type: string, params: Record<string, unknown>, ctx:
       const r: any = await createPartnerContact({ partnerId: pid, name: p.name || '新建联系人', email: p.email || '', phone: p.phone || '', position: p.position || '', remark: p.remark || '' })
       if (!r?.id && !r?.success) throw new Error('create contact failed')
       return r?.id
+    }
+    case 'link_file': {
+      // 批量场景不传 notification_id（executeCreateAll 统一标记已读）；已存在边视为成功
+      const r: any = await notificationLinkFile((p.file_id as string) || '', (p.entity_type as string) || '', (p.entity_id as string) || '')
+      if (!r?.success) throw new Error('关联失败')
+      return null
     }
     default:
       throw new Error(`Unknown create type: ${type}`)
@@ -679,9 +686,9 @@ const priorityDot: Record<string, string> = {
       <Transition name="modal-fade">
         <div v-if="createAllDialogVisible" class="fixed inset-0 z-[110] bg-black/30 flex items-center justify-center" @click.self="createAllDialogVisible = false">
           <div class="bg-white rounded-2xl shadow-2xl w-[400px] max-w-[90vw] p-6">
-            <h3 class="text-[14px] font-semibold text-surface-800 mb-3">确认创建以下对象</h3>
+            <h3 class="text-[14px] font-semibold text-surface-800 mb-3">确认执行以下操作</h3>
             <div class="space-y-2 mb-5">
-              <div v-for="item in createAllItems" :key="item.type" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-50">
+              <div v-for="(item, idx) in createAllItems" :key="item.type + idx" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-50">
                 <span class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-surface-200 text-surface-600">
                   {{ CREATE_KIND_LABELS[item.type] || item.type }}
                 </span>
@@ -690,7 +697,7 @@ const priorityDot: Record<string, string> = {
             </div>
             <div class="flex justify-end gap-2">
               <button @click="createAllDialogVisible = false" class="px-4 py-1.5 text-[12px] rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50">取消</button>
-              <button @click="executeCreateAll" class="px-4 py-1.5 text-[12px] rounded-lg bg-brand-600 text-white hover:bg-brand-700">确认创建</button>
+              <button @click="executeCreateAll" class="px-4 py-1.5 text-[12px] rounded-lg bg-brand-600 text-white hover:bg-brand-700">确认执行</button>
             </div>
           </div>
         </div>
