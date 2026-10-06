@@ -44,9 +44,14 @@ pub struct SessionMemory {
     pub(crate) completion_tokens: i64,  // 累计 cached tokens
     pub(crate) cached_tokens: i64,  // 累计 cached tokens
     #[serde(skip)]
-    pub(crate) prev_visited_chunks: std::collections::HashSet<String>,  // 本次提问开始时的快照（不持久化）
+    pub(crate) prev_visited_chunks: std::collections::HashSet<String>,  // 本轮访问开始时的快照（不持久化）
     #[serde(skip)]
     pub(crate) prev_visited_sources: std::collections::HashSet<String>,  // 同上
+    /// 归属会话 id（主 workflow 注入；委托子循环经共享 main_session 自动继承）。
+    /// 生成文档 file_relations(entity_type='generated').entity_id 写此值——
+    /// 删除会话时与项目/笔记等域同构回收（collect + release），不再解析消息 metadata。
+    #[serde(skip)]
+    pub(crate) owner_session_id: Option<String>,
 }
 
 // ★ Session 状态缓存：从 chat_sessions.session_state 加载/保存 SessionMemory
@@ -91,6 +96,7 @@ impl SessionMemory {
             cached_tokens: 0,
             prev_visited_chunks: std::collections::HashSet::new(),
             prev_visited_sources: std::collections::HashSet::new(),
+            owner_session_id: None,
         }
     }
 
@@ -105,10 +111,18 @@ impl SessionMemory {
         let oid = bare_id(obj_id);
         let mut nm = name.trim().to_string();
         if nm.is_empty() {
+            // 回查兜底链：source_data 正名 → FILE 类的 file_relations 上下文名（custom_name 语义即"该文件的名字"，
+            // 其他实体类型不适用此表）；仍拿不到则留给渲染层引用串兜底
             if let Ok(Some(r)) = crate::database::get(
                 "SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2",
                 &[serde_json::json!(st.to_uppercase()), serde_json::json!(&oid)],
             ) { nm = r["title"].as_str().unwrap_or("").trim().to_string(); }
+            if nm.is_empty() && st == "file" {
+                if let Ok(Some(r)) = crate::database::get(
+                    "SELECT custom_name FROM file_relations WHERE file_id=?1 AND trim(COALESCE(custom_name,''))<>'' LIMIT 1",
+                    &[serde_json::json!(&oid)],
+                ) { nm = r["custom_name"].as_str().unwrap_or("").trim().to_string(); }
+            }
         }
         self.access_counter += 1;
         if let Some(existing) = self.active_objects.iter_mut().find(|o| o.obj_type == st && o.obj_id == oid) {
@@ -437,21 +451,32 @@ mod tests {
             "INSERT INTO source_data(id, source_type, source_id, title, content) VALUES(99,'FILE','f-2','回查正名.pdf','x')",
             &[],
         ).map_err(|e| format!("seed source_data failed: {}", e)).unwrap();
+        // f-3：无 source_data 行，但有项目下的上下文名（relations 兜底级）
+        crate::database::run(
+            "INSERT INTO file_assets(id, file_ext, content_hash, original_name) VALUES('f-3','pdf','h-f-3','')",
+            &[],
+        ).map_err(|e| format!("seed file_assets failed: {}", e)).unwrap();
+        crate::database::run(
+            "INSERT INTO file_relations(id, file_id, entity_type, entity_id, custom_name) VALUES('r-3','f-3','project','pj-3','项目内叫这个名字.pdf')",
+            &[],
+        ).map_err(|e| format!("seed file_relations failed: {}", e)).unwrap();
 
         let mut s = SessionMemory::new();
         s.update("file", "f-1", "方案书.pdf", 0.9);
         s.update("email", "e-1", "催办邮件", 0.9);            // 白名单外 → 过滤
         s.update("project", "PROJECT-p-1", "咸宁校园网", 0.8); // 带前缀 id → 规范为裸 id
         s.update("file", "FILE-f-2", "", 0.5);                 // 新条目空名 → 回查 source_data.title 兜底
+        s.update("file", "f-3", "", 0.5);                      // title 无行 → 回查 file_relations 上下文名
         s.update("note", "n-1", "", 0.5);                      // 空名且无行可查 → 渲染以引用串兜底
         let out = s.generate_scratchpad();
         assert!(out.contains("方案书.pdf [FILE-f-1]"), "{}", out);
         assert!(out.contains("咸宁校园网 [PROJECT-p-1]"), "前缀 id 不得产出双前缀: {}", out);
         assert!(out.contains("回查正名.pdf [FILE-f-2]"), "空名应回查标题兜底: {}", out);
+        assert!(out.contains("项目内叫这个名字.pdf [FILE-f-3]"), "title 缺失应回查 relations 上下文名: {}", out);
         assert!(out.contains("[NOTE-n-1]"), "无名条目至少显示引用串: {}", out);
         assert!(!out.contains("FILE-FILE-") && !out.contains("PROJECT-PROJECT-"));
         assert!(!out.contains("催办邮件") && !out.contains("EMAIL"), "EMAIL 类不得进注意力");
-        assert!(out.contains("①") && out.contains("④") && !out.contains("⑤"), "四条记录序号递增: {}", out);
+        assert!(out.contains("①") && out.contains("⑤") && !out.contains("⑥"), "五条记录序号递增: {}", out);
     }
 }
 
