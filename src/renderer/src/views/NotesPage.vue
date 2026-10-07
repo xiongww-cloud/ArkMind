@@ -12,6 +12,7 @@ import UploadModal from '@/components/shared/UploadModal.vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import RichTextToolbar from '@/components/common/RichTextToolbar.vue'
 import { getTiptapExtensions } from '@/composables/useTiptapConfig'
+import { richContentToHtml } from '@/utils/rtContent'
 import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 import {
@@ -410,12 +411,12 @@ function selectNote(id: string) {
       noteContentLoading.value = true
       try {
         const r = await notesV2Get(id)
+        const fullContent = await richContentToHtml(r?.note?.content || '')
         if (seq !== selectNoteSeq) return // 快速切换时丢弃旧响应
-        const fullContent = r?.note?.content || ''
         editContent.value = fullContent
       } catch (e) {
         console.error('[Notes] fetch trash note content failed:', e)
-        editContent.value = n.excerpt || ''
+        editContent.value = await richContentToHtml(n.excerpt || '')
       } finally {
         noteContentLoading.value = false
       }
@@ -425,8 +426,8 @@ function selectNote(id: string) {
     noteContentLoading.value = true
     try {
       const r = await notesV2Get(id)
+      const fullContent = await richContentToHtml(r?.note?.content || '')
       if (seq !== selectNoteSeq) return // 快速切换时丢弃旧响应
-      const fullContent = r?.note?.content || ''
       editContent.value = fullContent
       lastSavedSnapshot.value = JSON.stringify({ title: n.title || '', content: fullContent })
       await nextTick()
@@ -478,9 +479,10 @@ async function createNotePrefilled(title: string, content: string) {
     const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: title || '', excerpt: '', is_daily: 0, notebook_id: payload.notebookId || null, project_ids: payload.projectIds?.join(',') || '', updated_at: nowLocalDb(), created_at: nowLocalDb(), tags: [] }
     notes.value.unshift(newNote)
     selectedNoteId.value = newNote.note_id
-    editTitle.value = title || ''; editContent.value = content || ''; isDirty.value = false
+    const prefilled = await richContentToHtml(content || '')
+    editTitle.value = title || ''; editContent.value = prefilled; isDirty.value = false
     await nextTick()
-    if (content) editor.value?.commands.setContent(content)
+    if (prefilled) editor.value?.commands.setContent(prefilled, false)
     editor.value?.commands.focus()
   } catch (e) { console.error('[Notes] create note prefilled failed:', e) }
 }

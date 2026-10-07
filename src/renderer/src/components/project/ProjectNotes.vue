@@ -6,6 +6,7 @@ import { useProjectStore } from '@/stores/project'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { formatDateTime, nowLocalDb, tsMillis } from '@/utils/time'
+import { richContentToHtml } from '@/utils/rtContent'
 import { fetchProjectNotes, createNote, updateNote, deleteNote, fetchProjects, notesV2Get } from '@/api/db-client'
 import AppIcon from '@/components/common/AppIcon.vue'
 import RichTextToolbar from '@/components/common/RichTextToolbar.vue'
@@ -134,9 +135,9 @@ watch(selectedNote, async (note) => {
   try {
     const targetId = note.note_id
     const r = await notesV2Get(targetId)
+    const fullContent = await richContentToHtml(r?.note?.content || '')
     // 防止快速切换时旧响应覆盖新选中的笔记
     if (selectedNote.value?.note_id !== targetId) return
-    const fullContent = r?.note?.content || ''
     lastSavedContent.value = fullContent
     nextTick(() => { noteEditor.value?.commands.setContent(fullContent, false) })
   } catch { nextTick(() => { noteEditor.value?.commands.setContent('', false) }) }

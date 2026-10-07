@@ -11,6 +11,7 @@ import { useNavigation } from '@/composables/useNavigation'
 import { notesV2Create, notesV2Update, notesV2ListDaily, notesV2Get, fetchTodos, kbMemoryObjects, searchBusiness, searchSourceData, lookupObjectNames } from '@/api/db-client'
 import { notificationStats, notificationMarkAllRead } from '@/api/notification-client'
 import { toast } from '@/composables/useToast'
+import { richContentToHtml } from '@/utils/rtContent'
 
 defineProps({})
 
@@ -310,7 +311,7 @@ async function saveQuickNote() {
     if (todayNoteId.value) {
       // Fetch full content before appending
       const existingR: any = await notesV2Get(todayNoteId.value)
-      const oldContent = existingR?.note?.content || ''
+      const oldContent = await richContentToHtml(existingR?.note?.content || '')
       const newContent = oldContent ? `${block}${oldContent}` : `${block}`
       await notesV2Update({ noteId: todayNoteId.value, title: today, content: newContent })
     } else {

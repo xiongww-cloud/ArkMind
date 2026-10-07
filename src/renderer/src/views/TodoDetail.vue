@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onUnmounted } from 'vue'
+import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import { getTiptapExtensions } from '@/composables/useTiptapConfig'
+import { richContentToHtml } from '@/utils/rtContent'
 import AppIcon from '@/components/common/AppIcon.vue'
 import RichTextToolbar from '@/components/common/RichTextToolbar.vue'
 import ProjectDetail from '@/views/ProjectDetail.vue'
@@ -125,15 +126,21 @@ function insertFileAtCursor(fileId: string, fileName: string) {
 }
 defineExpose({ insertFileAtCursor })
 
-// Editor
+// Editor（内容统一经 applyContent 归一注入：AI 写入的 Markdown 转 HTML 后进 Tiptap）
 const editor = useEditor({
-  content: props.todo?.content || '',
+  content: '',
   extensions: getTiptapExtensions({ placeholder: '添加描述...' }),
   onUpdate: ({ editor: ed }) => { debouncedEmit({ content: ed.getHTML() }) },
   editorProps: { attributes: { class: 'tiptap-editor text-left' } },
 })
 
-watch(() => props.todo?.id, () => { flushPending(); nextTick(() => editor.value?.commands.setContent(props.todo?.content || '')); dateInput.value = props.todo?.dueDate || '' })
+async function applyContent() {
+  const html = await richContentToHtml(props.todo?.content || '')
+  nextTick(() => { editor.value?.commands.setContent(html, false) })
+}
+
+onMounted(applyContent)
+watch(() => props.todo?.id, () => { flushPending(); applyContent(); dateInput.value = props.todo?.dueDate || '' })
 
 // 防抖保存：3秒内多次编辑只触发一次 update
 // ★ pending 记录捕获时的 todo id：切换/卸载先 flush，杜绝"A 的内容写进 B"
