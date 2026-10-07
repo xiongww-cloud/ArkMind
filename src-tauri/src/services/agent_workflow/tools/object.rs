@@ -17,8 +17,11 @@ pub(crate) fn execute_object_catalog(entity: &str, field_filters: &[Value], sort
         "SOLUTION_ITEM" => ("(SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit_price, si.description AS params, si.row_type, si.sort_order, si.created_at, si.updated_at, sv.version, sv.status AS version_status, s.name AS solution_name, s.project_id, p.name AS project_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN projects p ON p.id=s.project_id)", &["id","solution_version_id","product_id","product_name","device_name","quantity","unit_price","params","row_type","sort_order","created_at","updated_at","version","version_status","solution_name","project_id","project_name"]),
         "PROJECT_DYNAMIC" => ("project_dynamics", &["id","project_id","type","content","operator","created_at"]),
         "EMAIL" => ("emails", &["id","account_id","folder","from_addr","from_name","to_addr","cc_addr","subject","received_at","has_attachments","ai_category","created_at"]),
-        "CHAT" | "FILE" => return format!("{} 不支持结构化筛选，请使用 query 关键词搜索。", entity),
-        _ => return format!("不支持的实体类型: {}。可用: PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/PROJECT_DYNAMIC/EMAIL", entity),
+        "CHAT" => return format!("{} 不支持结构化筛选，请使用 query 关键词搜索。", entity),
+        "FILE" => ("(SELECT fa.id, fa.original_name AS name, COALESCE(sd.title,'') AS title, fa.file_ext, fa.file_size, fa.status, lfl.folder_id, COALESCE(lf.name,'') AS folder_name, COALESCE(pf.name,'') AS parent_folder_name, COALESCE(p.name,'') AS project_name, fa.created_at, fa.updated_at FROM file_assets fa LEFT JOIN library_file_locations lfl ON lfl.file_id=fa.id LEFT JOIN library_folders lf ON lf.id=lfl.folder_id LEFT JOIN library_folders pf ON pf.id=lf.parent_id LEFT JOIN projects p ON p.id=lf.project_id LEFT JOIN source_data sd ON sd.source_type='FILE' AND sd.source_id=fa.id)", &["id","name","title","file_ext","file_size","status","folder_id","folder_name","parent_folder_name","project_name","created_at","updated_at"]),
+        "NOTEBOOK" => ("(SELECT nb.id, nb.name, nb.color, nb.sort_order, (SELECT COUNT(*) FROM notes n WHERE n.notebook_id=nb.id AND n.deleted_at IS NULL) AS note_count, nb.created_at, nb.updated_at FROM notebooks nb)", &["id","name","color","sort_order","note_count","created_at","updated_at"]),
+        "FOLDER" => ("(SELECT lf.id, lf.name, lf.parent_id, COALESCE(pf.name,'') AS parent_name, lf.project_id, COALESCE(p.name,'') AS project_name, lf.sort_order, (SELECT COUNT(*) FROM library_file_locations lfl WHERE lfl.folder_id=lf.id) AS file_count, lf.created_at, lf.updated_at FROM library_folders lf LEFT JOIN library_folders pf ON pf.id=lf.parent_id LEFT JOIN projects p ON p.id=lf.project_id)", &["id","name","parent_id","parent_name","project_id","project_name","sort_order","file_count","created_at","updated_at"]),
+        _ => return format!("不支持的实体类型: {}。可用: PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/FILE/NOTEBOOK/FOLDER/SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/PROJECT_DYNAMIC/EMAIL", entity),
     };
     let mut conditions: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
@@ -31,7 +34,13 @@ pub(crate) fn execute_object_catalog(entity: &str, field_filters: &[Value], sort
         let field = filter["field"].as_str().unwrap_or("");
         let op = filter["op"].as_str().unwrap_or("=");
         let value = &filter["value"];
-        if !allowed_fields.contains(&field) { continue; }
+        if !allowed_fields.contains(&field) {
+            return ToolResultEnvelope {
+                result_type: "object_catalog_result".to_string(),
+                data: json!({"success": false, "error": format!("字段 '{}' 不存在", field)}),
+                summary: Some(format!("过滤字段 '{}' 不存在——条件已整体作废（未执行查询），{} 可用字段: {}", field, upper, allowed_fields.join(", "))),
+            }.to_json();
+        }
         match op {
             "IS_NULL" => { conditions.push(format!("{} IS NULL", field)); }
             "IS_NOT_NULL" => { conditions.push(format!("{} IS NOT NULL", field)); }
@@ -473,6 +482,20 @@ pub(crate) fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize
                 extra = Some(json!({"partner_names": c["partner_names"].as_str().unwrap_or("")}));
             }
         }
+        // FILE/NOTE 归属回显：笔记本/目录名——AI 回答"在哪个笔记本/目录"不需二次查询
+        if st == "FILE" || st == "NOTE" {
+            let attribution = if st == "FILE" {
+                database::get("SELECT CASE WHEN lfl.file_id IS NULL OR lfl.folder_id IS NULL THEN '未归类' ELSE COALESCE(lf.name,'未归类') END AS n FROM library_file_locations lfl LEFT JOIN library_folders lf ON lf.id=lfl.folder_id WHERE lfl.file_id=?1", &[json!(sid)])
+                    .ok().flatten().and_then(|r| r["n"].as_str().map(String::from)).unwrap_or_else(|| "未归类".to_string())
+            } else {
+                database::get("SELECT COALESCE(nb.name,'未归类') AS n FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1", &[json!(sid)])
+                    .ok().flatten().and_then(|r| r["n"].as_str().map(String::from)).unwrap_or_else(|| "未归类".to_string())
+            };
+            extra = Some(match extra {
+                Some(mut e) => { e["attribution"] = json!(attribution); e }
+                None => json!({"attribution": attribution}),
+            });
+        }
         
         let mut item = json!({
             "source_type": st,
@@ -629,6 +652,20 @@ pub(crate) fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end:
                 &[json!(sid)]) {
                 extra = Some(json!({"partner_names": c["partner_names"].as_str().unwrap_or("")}));
             }
+        }
+        // FILE/NOTE 归属回显：笔记本/目录名——AI 回答"在哪个笔记本/目录"不需二次查询
+        if st == "FILE" || st == "NOTE" {
+            let attribution = if st == "FILE" {
+                database::get("SELECT CASE WHEN lfl.file_id IS NULL OR lfl.folder_id IS NULL THEN '未归类' ELSE COALESCE(lf.name,'未归类') END AS n FROM library_file_locations lfl LEFT JOIN library_folders lf ON lf.id=lfl.folder_id WHERE lfl.file_id=?1", &[json!(sid)])
+                    .ok().flatten().and_then(|r| r["n"].as_str().map(String::from)).unwrap_or_else(|| "未归类".to_string())
+            } else {
+                database::get("SELECT COALESCE(nb.name,'未归类') AS n FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1", &[json!(sid)])
+                    .ok().flatten().and_then(|r| r["n"].as_str().map(String::from)).unwrap_or_else(|| "未归类".to_string())
+            };
+            extra = Some(match extra {
+                Some(mut e) => { e["attribution"] = json!(attribution); e }
+                None => json!({"attribution": attribution}),
+            });
         }
         
         let mut item = json!({

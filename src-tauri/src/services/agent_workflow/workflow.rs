@@ -1176,32 +1176,44 @@ pub async fn agent_chat_workflow_internal(
                                         .unwrap_or_default();
                                     let time_range = a["start_time"].as_str()
                                         .and_then(|s| a["end_time"].as_str().map(|e| (resolve_time(s), resolve_time(e))));
-                                    let (mut res, new_sources) = execute_search_knowledge(
-                                        &kw, scope.clone(), &vs, &vc, time_range.clone(), &shown_mem
-                                    ).await;
-                                    if new_sources.len() < 2 && scope.is_some() {
-                                        let fb = execute_search_knowledge(&kw, None, &vs, &vc, time_range, &shown_mem).await;
-                                        res = fb.0;
-                                        let mut effects = vec![SessionEffect::RecordSearch(kw)];
-                                        for s in &fb.1 {
-                                            effects.push(SessionEffect::MarkSourceVisited(s.clone()));
-                                            if let Some((ot, oid)) = crate::services::agent_workflow::tools::entity_ref::parse(s) {
-                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(&oid)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
-                                                effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oid, name, score_delta: 0.0 });
-                                            }
+                                    // ★ scope 入参：显式引用串（FILE/NOTE/NOTEBOOK/FOLDER/PROJECT-…）→ 硬过滤
+                                    let scope_refs: Vec<String> = a["scope"].as_array()
+                                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                        .unwrap_or_default();
+                                    let mut explicit: Option<std::collections::HashSet<i64>> = None;
+                                    let mut scope_note = String::new();
+                                    if !scope_refs.is_empty() {
+                                        let (rids, failed, labels) = crate::services::agent_workflow::tools::search::resolve_scope_param(&scope_refs);
+                                        let mut shown = labels.clone();
+                                        if shown.len() > 8 { let n = shown.len(); shown.truncate(8); shown.push(format!("…等{}项", n)); }
+                                        scope_note = format!("[scope 硬过滤·{}个来源] {}", labels.len(), shown.join("、"));
+                                        if !failed.is_empty() { scope_note.push_str(&format!("；⚠ 未解析已忽略：{}", failed.join("、"))); }
+                                        if rids.is_empty() {
+                                            return (orig_idx, format!(
+                                                "范围检索失败：scope 指定的 {} 个引用均无已入库可检索内容。{}请先用「数据查询」（type=NOTEBOOK/FOLDER/FILE）核对对象是否入库，或去掉 scope 改为全库检索。",
+                                                scope_refs.len(),
+                                                if failed.is_empty() { "范围内没有已导入知识库的文档。".to_string() } else { format!("无效引用：{}。", failed.join("、")) }
+                                            ), vec![SessionEffect::RecordSearch(kw)]);
                                         }
-                                        (res, effects)
-                                    } else {
-                                        let mut effects = vec![SessionEffect::RecordSearch(kw)];
-                                        for s in &new_sources {
-                                            effects.push(SessionEffect::MarkSourceVisited(s.clone()));
-                                            if let Some((ot, oid)) = crate::services::agent_workflow::tools::entity_ref::parse(s) {
-                                                let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(&oid)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
-                                                effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oid, name, score_delta: 0.0 });
-                                            }
-                                        }
-                                        (res, effects)
+                                        explicit = Some(rids);
                                     }
+                                    let (mut res, mut new_sources, _hits) = execute_search_knowledge(
+                                        &kw, scope.clone(), explicit.clone(), &scope_note, &vs, &vc, time_range.clone(), &shown_mem
+                                    ).await;
+                                    // 软注意力回退：仅在无显式 scope 且注意力范围内来源命中不足时全库重查
+                                    if explicit.is_none() && new_sources.len() < 2 && scope.is_some() {
+                                        let fb = execute_search_knowledge(&kw, scope.clone(), None, "⚠ 会话注意力范围内命中不足，已扩展为全库检索（范围内命中以 is_in_workspace=true 标记）", &vs, &vc, time_range, &shown_mem).await;
+                                        res = fb.0; new_sources = fb.1;
+                                    }
+                                    let mut effects = vec![SessionEffect::RecordSearch(kw)];
+                                    for s in &new_sources {
+                                        effects.push(SessionEffect::MarkSourceVisited(s.clone()));
+                                        if let Some((ot, oid)) = crate::services::agent_workflow::tools::entity_ref::parse(s) {
+                                            let name = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(ot), json!(&oid)]).ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+                                            effects.push(SessionEffect::UpdateObject { obj_type: ot.to_lowercase(), obj_id: oid, name, score_delta: 0.0 });
+                                        }
+                                    }
+                                    (res, effects)
                                 }
                                 "ext_tool_batch_search" => {
                                     let queries_raw = a["queries"].as_array();

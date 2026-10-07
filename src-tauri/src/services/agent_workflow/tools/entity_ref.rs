@@ -12,6 +12,8 @@
 pub(crate) const ENTITY_TYPES: &[&str] = &[
     "PROJECT", "PRODUCT", "FILE", "NOTE", "TODO", "CHANNEL", "VENDOR", "CUSTOMER", "CONTACT",
     "SOLUTION", "SOLUTION_VERSION", "SOLUTION_ITEM", "PROJECT_DYNAMIC", "EMAIL", "CHAT",
+    // 容器引用（只读定位用，可作 ext_tool_search scope 入参自动展开；不进注意力管线）
+    "NOTEBOOK", "FOLDER",
 ];
 
 /// 可进入注意力/scope 的实体类型（有 source_data 检索语义的业务对象）

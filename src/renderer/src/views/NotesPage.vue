@@ -16,7 +16,7 @@ import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 import {
   notesV2ListAll, notesV2ListDaily, notesV2ListTrash,
-  notesV2ListByNotebook, notesV2Get, notesV2GetForTrash,
+  notesV2ListByNotebook, notesV2ListByProject, notesV2Get, notesV2GetForTrash,
   notesV2Create, notesV2Update, notesV2Delete, notesV2Restore, notesV2PermanentDelete,
   fetchNotebooks, createNotebook, updateNotebook, deleteNotebook,
   countNotesByNotebook,
@@ -27,7 +27,7 @@ import { useLinkModals } from '@/composables/useLinkModals'
 import { nowLocalDb, tsMillis } from '@/utils/time'
 import { sanitizeHtmlSync } from '@/utils/sanitize'
 
-type ViewType = 'all'|'daily'|'notebook'|'trash'
+type ViewType = 'all'|'daily'|'notebook'|'projectNote'|'trash'
 interface Note { note_id:string; id:string; title:string; excerpt:string; content?:string; is_daily:number; notebook_id?:string; notebook_name?:string; project_ids?:string; deleted_at?:string; updated_at:string; created_at:string; tags?:any[] }
 interface Notebook { id:string; name:string; color:string; parentId?:string|null }
 interface Project { id:string; name:string }
@@ -38,6 +38,9 @@ const selectionStore = useSelectionStore()
 const currentView = ref<ViewType>('all')
 const selectedProjectId = ref<string|null>(null)
 const selectedNotebookId = ref<string|null>(null)
+// ★ 项目笔记视图（侧栏两级树：项目笔记→项目名；null=顶层聚合=所有项目笔记）
+const selectedProjectNoteId = ref<string|null>(null)
+const projectNotesExpanded = ref(false)
 const selectedNoteId = ref<string|null>(null)
 const notes = ref<Note[]>([])
 const trashNotes = ref<Note[]>([])
@@ -48,8 +51,9 @@ const editContent = ref('')
 const lastSavedSnapshot = ref('')
 const isDirty = ref(false)
 const noteContentLoading = ref(false)
-const notebookSearch = ref('')
-const searchQuery = ref('')
+// ★ 筛选按层级分离：左栏=导航结构（笔记本名+项目名）；中栏顶部=笔记内容（标题/摘要）
+const navFilterQuery = ref('')
+const noteFilterQuery = ref('')
 
 
 const editingNotebookId = ref<string|null>(null)
@@ -120,8 +124,23 @@ async function loadNotes() {
   try {
     let r:any
     switch (currentView.value) {
-      case 'all': r = await notesV2ListAll(); break
+      case 'all': {
+        // "全部"只显示库内常规笔记/闪记，项目笔记不混入（项目笔记视图专览）
+        const rr: any = await notesV2ListAll()
+        r = { notes: ((rr?.notes || []) as any[]).filter((n: any) => !(n.project_ids && String(n.project_ids).trim())) }
+        break
+      }
       case 'daily': r = await notesV2ListDaily(); break
+      case 'projectNote': {
+        if (selectedProjectNoteId.value) {
+          r = await notesV2ListByProject(selectedProjectNoteId.value)
+        } else {
+          // 顶层聚合：所有带项目关联的笔记（无笔记本归属的每日闪记不含项目关联，天然不混入）
+          const rr:any = await notesV2ListAll()
+          r = { notes: ((rr?.notes||[]) as any[]).filter(n => !!n.project_ids) }
+        }
+        break
+      }
       case 'notebook': if (selectedNotebookId.value) { r = await notesV2ListByNotebook(selectedNotebookId.value); } else { notes.value=[]; return }; break
       case 'trash': r = await notesV2ListTrash(); trashNotes.value = (r?.notes||[]).map((n:any)=>({...n,id:n.note_id,note_id:n.note_id})); return
       default: notes.value = []; return
@@ -160,12 +179,16 @@ watch(() => selectionStore.current.seq, async () => {
     note = (r?.notes || []).find((n: any) => n.note_id === id || n.id === id)
   }
   if (!note) { toast({ message: '笔记不存在或已删除', type: 'warning' }); selectionStore.clear(); return }
-  // 切到对应视图
+  // 切到对应视图（"全部"已排除项目笔记：带项目关联的笔记深链进来时落到项目笔记视图）
   if (note.notebook_id) {
     currentView.value = 'notebook'
     selectedNotebookId.value = note.notebook_id
   } else if (note.is_daily) {
     currentView.value = 'daily'
+  } else if (note.project_ids && String(note.project_ids).trim()) {
+    currentView.value = 'projectNote'
+    selectedProjectNoteId.value = null
+    projectNotesExpanded.value = true
   } else {
     currentView.value = 'all'
   }
@@ -231,9 +254,20 @@ function toggleNotebook(nbId: string) {
 }
 
 const notebookTree = computed(() => {
-  const roots = notebooks.value.filter(n => !n.parentId)
-  const children = notebooks.value.filter(n => n.parentId)
-  const collapsed = collapsedNotebooks.value
+  // 左栏导航筛选：命中笔记本保留其祖先链；筛选期间忽略折叠态（自动展开命中路径）
+  const q = navFilterQuery.value.toLowerCase().trim()
+  const matchSet = new Set<string>()
+  if (q) {
+    const byId = new Map(notebooks.value.map(n => [n.id, n]))
+    for (const n of notebooks.value) if ((n.name || '').toLowerCase().includes(q)) {
+      let cur: string | null | undefined = n.id
+      while (cur) { matchSet.add(cur); cur = byId.get(cur)?.parentId || null }
+    }
+  }
+  const keep = (n: any) => !q || matchSet.has(n.id)
+  const roots = notebooks.value.filter(n => !n.parentId && keep(n))
+  const children = notebooks.value.filter(n => n.parentId && keep(n))
+  const collapsed = q ? new Set<string>() : collapsedNotebooks.value
   function hasChildren(parentId: string): boolean {
     return children.some(c => c.parentId === parentId)
   }
@@ -250,7 +284,7 @@ const notebookTree = computed(() => {
 // ─── Filtered notes ─────────────────────────────────────────────────
 const displayedNotes = computed(() => {
   let result = currentView.value === 'trash' ? trashNotes.value : notes.value
-  const q = notebookSearch.value.toLowerCase().trim()
+  const q = noteFilterQuery.value.toLowerCase().trim()
   if (q) result = result.filter(n => n.title.toLowerCase().includes(q) || (n.excerpt||'').toLowerCase().includes(q))
   if (currentView.value === 'daily') result = [...result].sort((a,b) => tsMillis(b.created_at) - tsMillis(a.created_at))
   else if (currentView.value === 'trash') result = [...result].sort((a,b) => tsMillis(b.deleted_at || b.updated_at) - tsMillis(a.deleted_at || a.updated_at))
@@ -322,10 +356,38 @@ async function doSave() {
 }
 function switchView(view: ViewType) {
   saveBeforeSwitch()
-  currentView.value = view; selectedNoteId.value = null; selectedNotebookId.value = null
+  currentView.value = view; selectedNoteId.value = null; selectedNotebookId.value = null; selectedProjectNoteId.value = null
   if (view === 'daily') { loadAll().then(() => ensureDailyNote()) }
   else loadAll()
 }
+// ★ 项目笔记视图：null=顶层聚合（全部项目笔记），pid=该项目的笔记
+function selectProjectNote(pid: string|null) {
+  saveBeforeSwitch()
+  currentView.value = 'projectNote'
+  selectedProjectNoteId.value = pid
+  projectNotesExpanded.value = true
+  selectedNoteId.value = null; selectedNotebookId.value = null
+  clearMultiSelect()
+  loadAll()
+}
+/// 项目关联笔记的卡片副标题：project_ids(GROUP_CONCAT) → 项目名
+function projectNamesOf(ids?: string): string {
+  if (!ids) return ''
+  return ids.split(',').map(pid => projects.value.find(p => p.id === pid)?.name || '').filter(Boolean).join('、')
+}
+// 项目过多时按名称筛选侧栏项目列表（与笔记本共用左栏导航筛选框）
+const filteredProjectNotes = computed(() => {
+  const q = navFilterQuery.value.toLowerCase().trim()
+  return q ? projects.value.filter(p => p.name.toLowerCase().includes(q)) : projects.value
+})
+const listHeaderTitle = computed(() => {
+  if (currentView.value === 'daily') return '闪记'
+  if (currentView.value === 'all') return '全部'
+  if (currentView.value === 'projectNote') {
+    return selectedProjectNoteId.value ? (projects.value.find(p => p.id === selectedProjectNoteId.value)?.name || '项目笔记') : '项目笔记'
+  }
+  return '笔记'
+})
 function selectNotebook(nid: string) {
   saveBeforeSwitch()
   selectedNotebookId.value = nid; currentView.value = 'notebook'
@@ -393,9 +455,10 @@ async function createNote() {
   await saveBeforeSwitch()
   const payload: any = { title: '', content: '', isDaily: currentView.value === 'daily' }
   if (currentView.value === 'notebook' && selectedNotebookId.value) payload.notebookId = selectedNotebookId.value
+  if (currentView.value === 'projectNote' && selectedProjectNoteId.value) payload.projectIds = [selectedProjectNoteId.value]
   try {
     const r: any = await notesV2Create(payload)
-    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', excerpt: '', is_daily: payload.isDaily ? 1 : 0, notebook_id: payload.notebookId || null, updated_at: nowLocalDb(), created_at: nowLocalDb(), tags: [] }
+    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: '', excerpt: '', is_daily: payload.isDaily ? 1 : 0, notebook_id: payload.notebookId || null, project_ids: payload.projectIds?.join(',') || '', updated_at: nowLocalDb(), created_at: nowLocalDb(), tags: [] }
     notes.value.unshift(newNote)
     selectedNoteId.value = newNote.note_id
     editTitle.value = ''; editContent.value = ''; isDirty.value = false
@@ -409,9 +472,10 @@ async function createNotePrefilled(title: string, content: string) {
   await saveBeforeSwitch()
   const payload: any = { title: title || '', content: content || '', isDaily: false }
   if (currentView.value === 'notebook' && selectedNotebookId.value) payload.notebookId = selectedNotebookId.value
+  if (currentView.value === 'projectNote' && selectedProjectNoteId.value) payload.projectIds = [selectedProjectNoteId.value]
   try {
     const r: any = await notesV2Create(payload)
-    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: title || '', excerpt: '', is_daily: 0, notebook_id: payload.notebookId || null, updated_at: nowLocalDb(), created_at: nowLocalDb(), tags: [] }
+    const newNote = { note_id: r?.noteId || '', id: r?.noteId || '', title: title || '', excerpt: '', is_daily: 0, notebook_id: payload.notebookId || null, project_ids: payload.projectIds?.join(',') || '', updated_at: nowLocalDb(), created_at: nowLocalDb(), tags: [] }
     notes.value.unshift(newNote)
     selectedNoteId.value = newNote.note_id
     editTitle.value = title || ''; editContent.value = content || ''; isDirty.value = false
@@ -731,7 +795,7 @@ const restoreNotebookList = computed(() => {
     <div class="shrink-0 px-3 py-1.5 border-b border-surface-100">
       <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
         <AppIcon name="search" size="12" class="text-surface-400 flex-shrink-0"/>
-        <input v-model="notebookSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索笔记..."/>
+        <input v-model="navFilterQuery" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="筛选笔记本 / 项目..."/>
       </div>
     </div>
 
@@ -778,6 +842,25 @@ const restoreNotebookList = computed(() => {
         <div v-if="isDragging && dragType==='notebook' && dragInsert?.targetId===nb.id && dragInsert?.side==='below'" class="insertion-line" :style="{ marginLeft: `${4 + (nb._depth || 0) * 16}px` }"></div>
       </template>
 
+      <!-- 分隔：项目笔记 -->
+      <div class="mb-2 mt-1 border-t border-surface-100"></div>
+
+      <!-- 项目笔记（两级树：顶层=聚合所有项目笔记；项目名=该项目笔记。"全部"已排除项目笔记） -->
+      <div @click="selectProjectNote(null)" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden cursor-pointer select-none" :class="currentView==='projectNote'&&!selectedProjectNoteId?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+        <div v-if="currentView==='projectNote'&&!selectedProjectNoteId" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
+        <span @click.stop="projectNotesExpanded=!projectNotesExpanded" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 -ml-4">
+          <svg class="w-2.5 h-2.5 transition-transform duration-150" :class="projectNotesExpanded?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
+        </span>
+        <AppIcon name="folder-open" size="14" class="flex-shrink-0" :class="currentView==='projectNote'&&!selectedProjectNoteId?'text-blue-500':'text-surface-400'"/>项目笔记
+      </div>
+      <template v-if="projectNotesExpanded">
+        <div v-for="p in filteredProjectNotes" :key="p.id" @click="selectProjectNote(p.id)" v-tooltip.auto="p.name" class="flex items-center gap-1.5 w-full pr-2 py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" :class="currentView==='projectNote'&&selectedProjectNoteId===p.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'" style="padding-left:34px">
+          <div v-if="currentView==='projectNote'&&selectedProjectNoteId===p.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
+          <AppIcon name="folder" size="12" class="flex-shrink-0 text-surface-400"/>
+          <span class="truncate flex-1 min-w-0">{{ p.name }}</span>
+        </div>
+      </template>
+
       <!-- 分隔：回收站 -->
       <div class="mt-2 pt-1.5 border-t border-surface-100">
         <button @click="switchView('trash')" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :class="currentView==='trash'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
@@ -792,8 +875,14 @@ const restoreNotebookList = computed(() => {
   <div class="flex-shrink-0 flex flex-col overflow-hidden border-r border-surface-200 relative" :style="{width:listWidth+'px'}" v-if="currentView!=='trash'">
     <div class="absolute right-[-3px] top-0 bottom-0 w-[6px] cursor-col-resize z-10 select-none" @mousedown="onResizeStart('list', $event)"></div>
     <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0">
-      <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">{{ currentView==='daily' ? '闪记' : currentView==='all' ? '全部' : '笔记' }}</span>
-      <button v-if="currentView!=='daily'" @click="createNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建'"><AppIcon name="plus" size="12" stroke="2.5"/></button>
+      <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">{{ listHeaderTitle }}</span>
+      <button v-if="currentView!=='daily' && !(currentView==='projectNote' && !selectedProjectNoteId)" @click="createNote" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors" v-tooltip="'新建'"><AppIcon name="plus" size="12" stroke="2.5"/></button>
+    </div>
+    <div class="shrink-0 px-3 py-1.5 border-b border-surface-100">
+      <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
+        <AppIcon name="search" size="12" class="text-surface-400 flex-shrink-0"/>
+        <input v-model="noteFilterQuery" type="text" class="flex-1 min-w-0 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="筛选笔记（标题/内容）..."/>
+      </div>
     </div>
     <div class="flex-1 overflow-y-auto p-2 space-y-1.5">
       <div v-for="note in displayedNotes" :key="note.note_id" @mousedown="onNoteMouseDown($event, note.note_id||note.id)" class="flex items-center px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden hover:scale-[1.02] hover:z-10 select-none" :class="[selectedNoteId===(note.note_id||note.id)||isSelected(note.note_id||note.id)?'bg-blue-50/70 border-brand-200 shadow-none scale-100':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragNoteId===(note.note_id||note.id)?'opacity-50':'']" @click="onNoteCardClick($event, note.note_id||note.id)">
@@ -801,7 +890,7 @@ const restoreNotebookList = computed(() => {
         <div class="flex-1 min-w-0">
           <p class="text-[12px] font-medium text-surface-800 truncate">{{ currentView==='daily' ? (note.title||(note.created_at||'').slice(0,10)) : (note.title||'未命名笔记') }}</p>
           <p class="text-[10px] text-surface-400 line-clamp-1 mt-0.5">{{ (note.excerpt||'').replace(/<[^>]*>/g,'').slice(0,40) || '暂无内容' }}</p>
-          <p class="text-[9px] text-surface-300 mt-0.5"><span v-if="currentView==='all'" class="text-surface-400">{{ note.notebook_name || (note.is_daily ? '闪记' : (note.project_ids ? '项目笔记' : '未归类')) }} · </span>{{ formatNoteTime(note.updated_at || note.created_at || '') }}</p>
+          <p class="text-[9px] text-surface-300 mt-0.5"><span v-if="currentView==='all'" class="text-surface-400">{{ note.notebook_name || (note.is_daily ? '闪记' : (note.project_ids ? (projectNamesOf(note.project_ids) || '项目笔记') : '未归类')) }} · </span><span v-else-if="currentView==='projectNote'" class="text-surface-400">{{ projectNamesOf(note.project_ids) || '项目笔记' }} · </span>{{ formatNoteTime(note.updated_at || note.created_at || '') }}</p>
         </div>
         <button @click.stop="deleteNote(note.note_id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"><AppIcon name="trash" size="13"/></button>
       </div>

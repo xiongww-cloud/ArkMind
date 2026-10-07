@@ -337,15 +337,17 @@ pub fn extract_email(email_id: &str) -> (String, String) {
         from_name, from_addr, to_addr, received_at, folder
     );
 
-    // 优先使用 HTML 转换为 Markdown（保留表格、列表、链接等结构）
+    // 优先使用 HTML 转换为 Markdown（保留表格、列表、链接等结构；cid 图留占位）
     // 降级使用纯文本
     let body = if !body_html.is_empty() {
-        crate::services::file_parser::html_to_markdown_v2(body_html)
+        crate::services::file_parser::html_to_markdown_email(body_html)
     } else if !body_text.is_empty() {
         body_text.to_string()
     } else {
         String::new()
     };
+    // 内嵌图（含 data:URI 转成的附件）OCR 文字就地并入正文
+    let body = inject_inline_image_ocr(body, email_id);
 
     // 附加附件解析文本
     let mut attachment_parts = Vec::new();
@@ -370,6 +372,61 @@ pub fn extract_email(email_id: &str) -> (String, String) {
     }
 
     (title, content)
+}
+
+/// 附件 MIME：优先记录值，缺失/异常时按扩展名猜（默认 png）
+fn guess_image_mime(mime: &str, filename: &str) -> String {
+    if mime.starts_with("image/") { return mime.to_string(); }
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
+    }.to_string()
+}
+
+/// 把正文中的 [图片:{cid}] 占位替换为内嵌图 OCR 文字（无数量上限）。
+/// 未配置视觉模型/识别为空/资产丢失 → 剔除占位（正文干净，绝不留 base64 或悬挂引用）。
+/// 仅在队列 worker（sync_entity）与 reprocess 命令里执行，OCR 阻塞由 block_in_place 消化，不卡数据中台主循环。
+fn inject_inline_image_ocr(body: String, email_id: &str) -> String {
+    if !body.contains("[图片:") { return body; }
+    let atts = crate::database::all(
+        "SELECT filename, content_id, file_asset_id, mime_type FROM email_attachments WHERE email_id=?1 AND is_inline=1",
+        &[serde_json::json!(email_id)],
+    ).unwrap_or_default();
+    // cid 与 filename 双键（对应 html 中 src="cid:xxx" 可能是 content_id 也可能是裸文件名）
+    let mut by_key: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+    for a in &atts {
+        let asset = a["file_asset_id"].as_str().unwrap_or("");
+        if asset.is_empty() { continue; }
+        let mime = guess_image_mime(a["mime_type"].as_str().unwrap_or(""), a["filename"].as_str().unwrap_or(""));
+        if let Some(cid) = a["content_id"].as_str().filter(|c| !c.is_empty()) {
+            by_key.insert(cid.to_string(), (asset.to_string(), mime.clone()));
+        }
+        let fname = a["filename"].as_str().unwrap_or("");
+        if !fname.is_empty() { by_key.entry(fname.to_string()).or_insert((asset.to_string(), mime)); }
+    }
+    if by_key.is_empty() {
+        // 无可用内嵌资产 → 仅清占位
+        let re = regex::Regex::new(r"\[图片:[^\]]+\]").unwrap();
+        return re.replace_all(&body, "").trim().to_string();
+    }
+    let re = regex::Regex::new(r"\[图片:([^\]]+)\]").unwrap();
+    let out = re.replace_all(&body, |caps: &regex::Captures| {
+        let key = caps[1].trim();
+        let Some((asset, mime)) = by_key.get(key) else { return String::new() };
+        let Some(path) = crate::commands::file_commands::get_physical_path(asset) else { return String::new() };
+        let Some(uri) = crate::services::file_parser::file_to_data_uri(&path, mime) else { return String::new() };
+        let text = crate::services::file_parser::ocr_image_sync(&uri);
+        let text = text.trim();
+        if text.is_empty() { String::new() } else { format!("（图片文字：{}）", text) }
+    }).to_string();
+    // 占位替换后可能留下连续空行
+    let re_blank = regex::Regex::new(r"\n{3,}").unwrap();
+    re_blank.replace_all(&out, "\n\n").trim().to_string()
 }
 
 fn extract_contact(contact_id: &str) -> (String, String) {

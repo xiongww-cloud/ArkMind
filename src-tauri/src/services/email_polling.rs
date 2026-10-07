@@ -27,6 +27,18 @@ pub fn safe_attachment_ext(filename: &str) -> String {
     }
 }
 
+/// 自动化发件人判定（收件箱黑名单）：noreply 类机器邮件不入知识库（ai_category='ignore' 终态）。
+/// 只匹配 @ 前的本地部分前缀，误伤概率低；已发送邮件不受此限制。
+pub fn is_automated_sender(from_addr: &str) -> bool {
+    const PREFIXES: [&str; 11] = [
+        "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
+        "auto-reply", "autoreply", "postmaster", "mailer-daemon", "bounce", "returns",
+    ];
+    let local = from_addr.split('@').next().unwrap_or("").to_ascii_lowercase();
+    let local = local.trim();
+    PREFIXES.iter().any(|p| local.starts_with(p))
+}
+
 
 
 /// 启动邮件轮询服务（幂等）
@@ -62,7 +74,7 @@ pub fn start_email_loop() {
     });
 }
 
-/// 单次轮询
+/// 单次轮询（节奏固定：每 1 分钟一次，不提供可配置间隔）
 async fn tick() -> Result<u64, String> {
     let enabled = get_config("enabled").unwrap_or_else(|| "1".to_string());
     if !crate::database::is_truthy_flag(&enabled) {
@@ -122,17 +134,11 @@ async fn run_sync() -> Result<(), String> {
             }
         } else {
             match email_client::fetch_new_emails(account, "INBOX", account.last_sync_inbox_uid) {
-                Ok(emails) => {
+                Ok(mut emails) => {
                     if !emails.is_empty() {
                         let max_uid = emails.iter().map(|e| e.uid).max().unwrap_or(0);
-                        for email in &emails {
-                            let eid = store_email(account, "INBOX", email).await;
-                            // 标记为knowledge，跳过AI分析
-                            database::run(
-                                "UPDATE emails SET ai_category='knowledge', ai_summary='' WHERE id=?",
-                                &[json!(eid)],
-                            ).ok();
-                            crate::services::knowledge_lifecycle::notify_changed("EMAIL", &eid);
+                        for email in emails.iter_mut() {
+                            store_email(account, "INBOX", email).await;
                         }
                         update_last_uid(&account.id, "inbox", max_uid);
                         log::info!("[邮件轮询] 收件箱同步完成: {} 封新邮件，已写入知识库", emails.len());
@@ -159,17 +165,11 @@ async fn run_sync() -> Result<(), String> {
             }
         } else {
             match email_client::fetch_new_emails(account, &sent_folder, account.last_sync_sent_uid) {
-                Ok(emails) => {
+                Ok(mut emails) => {
                     if !emails.is_empty() {
                         let max_uid = emails.iter().map(|e| e.uid).max().unwrap_or(0);
-                        for email in &emails {
-                            let eid = store_email(account, "Sent", email).await;
-                            // 标记为knowledge，跳过AI分析
-                            database::run(
-                                "UPDATE emails SET ai_category='knowledge', ai_summary='' WHERE id=?",
-                                &[json!(eid)],
-                            ).ok();
-                            crate::services::knowledge_lifecycle::notify_changed("EMAIL", &eid);
+                        for email in emails.iter_mut() {
+                            store_email(account, "Sent", email).await;
                         }
                         update_last_uid(&account.id, "sent", max_uid);
                         log::info!("[邮件轮询] 已发送同步完成: {} 封新邮件", emails.len());
@@ -185,15 +185,40 @@ async fn run_sync() -> Result<(), String> {
     Ok(())
 }
 
-/// 存储邮件到数据库（异步，含附件落盘入库）
+/// 知识化收尾：黑名单外的收件/任何发件 → knowledge 并入队；自动化发件人 → ignore 终态不入队。
+/// 幂等可重放（notify_changed 队列侧同实体合并），用于统一手动/自动两条入库路径。
+fn finalize_email_knowledge(email_id: &str, from_addr: &str, folder: &str) {
+    let automated = folder == "INBOX" && is_automated_sender(from_addr);
+    let cat = if automated { "ignore" } else { "knowledge" };
+    database::run(
+        "UPDATE emails SET ai_category=?, ai_summary='' WHERE id=?",
+        &[json!(cat), json!(email_id)],
+    ).ok();
+    if !automated {
+        crate::services::knowledge_lifecycle::notify_changed("EMAIL", email_id);
+    } else {
+        log::info!("[邮件轮询] 自动化发件人命中黑名单，跳过知识库: {} ({})", from_addr, crate::preview(email_id, 8));
+    }
+}
+
+/// 存储邮件到数据库（唯一入库口径：轮询与手动同步共用；异步，含附件落盘入库）
 /// 顺序：查重 → 邮件行落库成功 → 才处理附件（防冲突忽略后附件挂到不存在的 email_id 成幽灵行）
-async fn store_email(account: &EmailAccount, folder: &str, email: &ParsedEmail) -> String {
+pub(crate) async fn store_email(account: &EmailAccount, folder: &str, email: &mut ParsedEmail) -> String {
+    // data:URI 内联 base64 图统一为内嵌附件 + src 改写 cid 引用（base64 不进文本层）
+    let n_datauri = email_client::extract_data_uri_images(email);
+    if n_datauri > 0 {
+        log::info!("[邮件轮询] data:URI 内联图转附件: {} 张 ({})", n_datauri, crate::preview(&email.subject, 20));
+    }
+
     // 同封邮件（account+folder+uid 唯一）已存在 → 复用现有 id，跳过重复落附件
     let existing: Option<String> = database::get(
         "SELECT id FROM emails WHERE account_id=?1 AND folder=?2 AND uid=?3",
         &[json!(&account.id), json!(folder), json!(email.uid)],
     ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from));
-    if let Some(eid) = existing { return eid; }
+    if let Some(eid) = existing {
+        finalize_email_knowledge(&eid, &email.from_addr, folder);
+        return eid;
+    }
 
     let id = uuid::Uuid::new_v4().to_string();
 
@@ -214,7 +239,9 @@ async fn store_email(account: &EmailAccount, folder: &str, email: &ParsedEmail) 
                 "SELECT id FROM emails WHERE account_id=?1 AND folder=?2 AND uid=?3",
                 &[json!(&account.id), json!(folder), json!(email.uid)],
             ).ok().flatten().and_then(|r| r["id"].as_str().map(String::from));
-            return real.unwrap_or(id);
+            let eid = real.unwrap_or(id);
+            finalize_email_knowledge(&eid, &email.from_addr, folder);
+            return eid;
         }
         Ok(_) => {}
         Err(e) => {
@@ -227,9 +254,10 @@ async fn store_email(account: &EmailAccount, folder: &str, email: &ParsedEmail) 
     for att in &email.attachments {
         let att_id = uuid::Uuid::new_v4().to_string();
 
-        // 将附件原始字节写入临时文件，然后存入资料库
+        // 将附件原始字节写入临时文件，然后存入资料库；
+        // 内嵌图（is_inline）只存渲染用资产、不触发 FILE 知识摄入——其 OCR 文字在 extract_email 并入邮件正文，避免双份来源
         let file_asset_id = if !att.raw_bytes.is_empty() {
-            save_attachment_to_library(&att.raw_bytes, &att.filename, &att.mime_type, &id).await
+            save_attachment_to_library(&att.raw_bytes, &att.filename, &att.mime_type, &id, att.is_inline).await
         } else {
             None
         };
@@ -244,15 +272,49 @@ async fn store_email(account: &EmailAccount, folder: &str, email: &ParsedEmail) 
         ) { log::warn!("[邮件轮询] 附件行写入失败 ({}): {}", att.filename, e); }
     }
 
+    // 内嵌判定修正（渲染端 email_cid_map 已支持按 filename 回退解析 cid: 引用）：
+    // 先选出将被改判为内嵌、且已产生 FILE 知识源的附件 → 修正后逐出知识（保持"内嵌图不进 FILE 源"不变式）
+    let to_revoke: Vec<String> = database::all(
+        "SELECT file_asset_id FROM email_attachments ea WHERE email_id=?1 AND is_inline=0 AND file_asset_id IS NOT NULL AND ( \
+           (COALESCE(filename,'')!='' AND EXISTS (SELECT 1 FROM emails e WHERE e.id=?1 AND instr(lower(COALESCE(e.body_html,'')), 'cid:'||lower(ea.filename))>0)) \
+           OR (mime_type LIKE 'image/%' AND EXISTS (SELECT 1 FROM email_attachments b WHERE b.email_id=?1 AND b.is_inline=1 AND b.file_asset_id=ea.file_asset_id)) \
+         )",
+        &[json!(id)],
+    ).unwrap_or_default().iter()
+     .filter_map(|r| r["file_asset_id"].as_str().map(String::from))
+     .collect();
+
+    // 1) 正文引用了 cid:<filename> 的附件 part（发件端未带 Content-ID 头）→ 按内嵌处理，不再显示为附件
+    let n_inline = database::run(
+        "UPDATE email_attachments SET is_inline=1 WHERE email_id=?1 AND is_inline=0 AND COALESCE(filename,'')!='' \
+         AND EXISTS (SELECT 1 FROM emails e WHERE e.id=?1 AND instr(lower(COALESCE(e.body_html,'')), 'cid:'||lower(email_attachments.filename))>0)",
+        &[json!(id)],
+    ).map(|r| r.changes).unwrap_or(0);
+    // 2) Outlook 双份 part：无 cid 图片附件与某内嵌附件同资产（内容哈希去重同 file_asset_id）→ 隐藏副本
+    let n_dup = database::run(
+        "UPDATE email_attachments SET is_inline=1 WHERE email_id=?1 AND is_inline=0 AND mime_type LIKE 'image/%' AND file_asset_id IS NOT NULL \
+         AND EXISTS (SELECT 1 FROM email_attachments b WHERE b.email_id=?1 AND b.is_inline=1 AND b.file_asset_id=email_attachments.file_asset_id)",
+        &[json!(id)],
+    ).map(|r| r.changes).unwrap_or(0);
+    if n_inline + n_dup > 0 {
+        log::info!("[邮件轮询] 内嵌判定修正: cid引用文件名匹配 {} 行, 同资产副本 {} 行 (邮件 {})", n_inline, n_dup, crate::preview(&id, 8));
+    }
+    for aid in &to_revoke {
+        crate::services::knowledge_lifecycle::notify_deleted("FILE", aid);
+    }
+
+    finalize_email_knowledge(&id, &email.from_addr, folder);
     id
 }
 
 /// 将邮件附件保存到资料库，返回 file_asset_id
+/// inline=true（内嵌图）只存渲染用资产、不触发知识解析摄入（其 OCR 文字由 extract_email 并入邮件正文）
 async fn save_attachment_to_library(
     raw_bytes: &[u8],
     filename: &str,
     _mime_type: &str,
     email_id: &str,
+    is_inline: bool,
 ) -> Option<String> {
     let ext = safe_attachment_ext(filename);
 
@@ -274,6 +336,7 @@ async fn save_attachment_to_library(
         "",
         "",
         None,
+        !is_inline,
     )
     .await
     {
@@ -391,4 +454,27 @@ pub fn get_loop_status() -> Value {
         "next_check_at": next_check,
         "interval_minutes": 1,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_automated_sender;
+
+    #[test]
+    fn automated_sender_prefixes() {
+        assert!(is_automated_sender("noreply@acme.com"));
+        assert!(is_automated_sender("No-Reply@x.cn"));
+        assert!(is_automated_sender(" MAILER-DAEMON@mx "));
+        assert!(is_automated_sender("do-not-reply@mail.io"));
+        assert!(is_automated_sender("postmaster@localhost"));
+    }
+
+    #[test]
+    fn human_senders_not_flagged() {
+        assert!(!is_automated_sender("zhang@acme.com"));
+        assert!(!is_automated_sender("sales@acme.com"));
+        assert!(!is_automated_sender("notify@acme.com"));
+        assert!(is_automated_sender("noreply-not-usual@x")); // 前缀语义：noreply 开头视为自动化（保守可接受）
+        assert!(!is_automated_sender(""));
+    }
 }

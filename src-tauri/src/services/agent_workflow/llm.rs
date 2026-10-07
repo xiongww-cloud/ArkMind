@@ -82,9 +82,54 @@ struct StreamFail {
     tool_args_chars: usize,
 }
 
+/// 增量 UTF-8 解码：chunk 可能在多字节字符（如汉字 3 字节）中间断包，
+/// 逐 chunk 独立 from_utf8_lossy 会把半个字符替换成 U+FFFD（Word 中显示为 "?" 乱码）。
+/// 有效前缀入 buf；"某完整字符的前缀但被截断"（error_len=None）残字节续传到下轮；
+/// 真坏字节（error_len=Some）与 lossy 语义等价写一个 U+FFFD 并跳过，保证不卡死。
+fn push_utf8_incremental(buf: &mut String, pending: &mut Vec<u8>, bytes: &[u8]) {
+    pending.extend_from_slice(bytes);
+    loop {
+        match std::str::from_utf8(pending) {
+            Ok(s) => {
+                buf.push_str(s);
+                pending.clear();
+                return;
+            }
+            Err(e) => {
+                let up = e.valid_up_to();
+                if up > 0 {
+                    if let Ok(s) = std::str::from_utf8(&pending[..up]) {
+                        buf.push_str(s);
+                    }
+                    pending.drain(..up);
+                }
+                match e.error_len() {
+                    Some(n) => {
+                        buf.push('\u{FFFD}');
+                        pending.drain(..n.min(pending.len()));
+                    }
+                    // None = 截断前缀：保留在 pending，等待后续 chunk 补全
+                    None => return,
+                }
+            }
+        }
+    }
+}
+
+/// 流终止时冲刷 pending 残字节（≤3 字节的不完整前缀，与旧 lossy 行为对齐）
+fn flush_pending_utf8(buf: &mut String, pending: &mut Vec<u8>) {
+    if pending.is_empty() {
+        return;
+    }
+    buf.push_str(&String::from_utf8_lossy(pending));
+    pending.clear();
+}
+
 /// SSE 解析状态
 struct SseState {
     buf: String,
+    /// 未完成的 UTF-8 序列字节（chunk 断包续传，见 push_utf8_incremental）
+    pending: Vec<u8>,
     full: String,
     reasoning: String,
     tca: Vec<(String, String, String)>, // (id, name, arguments)
@@ -253,7 +298,7 @@ async fn stream_once(
     }
 
     let mut st = SseState {
-        buf: String::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(),
+        buf: String::new(), pending: Vec::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(),
         usage: None, count: 0, token_buf: String::new(), token_buf_start: 0,
         suppress_tokens: false, done: false, got_finish: false, finish: None,
         server_err: None, prog_last_chars: 0, prog_last_at: std::time::Instant::now(),
@@ -381,7 +426,7 @@ async fn stream_once(
             Ok(b) => b,
             Err(e) => { fail!(format!("stream: {e}"), false); }
         };
-        st.buf.push_str(&String::from_utf8_lossy(&bytes));
+        push_utf8_incremental(&mut st.buf, &mut st.pending, &bytes);
         st.buf = st.buf.replace("\r\n", "\n");
         while try_process_one(&mut st, &app_handle) {}
         // ★ 生成心跳：每 1s 且产出有增量即上报已产字符数（含工具参数——文档助手长文生成期的"活着"证据；
@@ -410,7 +455,8 @@ async fn stream_once(
             fail!("cancelled".to_string(), true);
         }
     }
-    // 流结束后处理剩余数据（最后一行可能无换行结尾，补一个再解析）
+    // 流结束后处理剩余数据（续传缓冲冲刷 + 最后一行可能无换行结尾，补一个再解析）
+    flush_pending_utf8(&mut st.buf, &mut st.pending);
     if !st.buf.is_empty() { st.buf.push('\n'); }
     while try_process_one(&mut st, &app_handle) {}
     // 流结束后 flush 残余 buffer
@@ -483,7 +529,7 @@ pub(crate) async fn call_llm_without_tools(messages: &[ChatMessage], app_handle:
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_sse_data, stream_end_error, chunk_error_message, build_resume_messages};
+    use super::{extract_sse_data, stream_end_error, chunk_error_message, build_resume_messages, push_utf8_incremental, flush_pending_utf8};
     use crate::services::agent_workflow::{ChatMessage, MessageRole};
     use serde_json::json;
 
@@ -557,5 +603,59 @@ mod tests {
         assert!(msgs[2].content.as_deref().unwrap().contains("继续"));
         // base 未被修改
         assert_eq!(base.len(), 1);
+    }
+
+    /// 三字节汉字按 1+2 字节断包：修复前每半各产 U+FFFD，修复后拼回无损
+    #[test]
+    fn push_utf8_char_split_across_chunks_roundtrip() {
+        let mut buf = String::new();
+        let mut pending = Vec::new();
+        let bytes = "文".as_bytes(); // E6 96 87
+        assert_eq!(bytes.len(), 3);
+        push_utf8_incremental(&mut buf, &mut pending, &bytes[..1]);
+        push_utf8_incremental(&mut buf, &mut pending, &bytes[1..]);
+        assert_eq!(buf, "文", "断包续传不得产生替换字符");
+        assert!(pending.is_empty());
+    }
+
+    /// 混合内容按任意小块切分（含 ascii/中文/emoji 边界）：整体 round-trip
+    #[test]
+    fn push_utf8_mixed_small_chunks_roundtrip() {
+        let mut buf = String::new();
+        let mut pending = Vec::new();
+        for part in ["数据清单 📦 表格：网络方案😀\n", "second 行 文本 文档", "🚀end"] {
+            let raw = part.as_bytes();
+            let mut off = 0;
+            while off < raw.len() {
+                let n = 7.min(raw.len() - off); // 质数步长制造各种断包位置
+                push_utf8_incremental(&mut buf, &mut pending, &raw[off..off + n]);
+                off += n;
+            }
+        }
+        flush_pending_utf8(&mut buf, &mut pending);
+        assert_eq!(buf, "数据清单 📦 表格：网络方案😀\nsecond 行 文本 文档🚀end");
+    }
+
+    /// 真坏字节（不可能是任何字符前缀）：与 from_utf8_lossy 语义等价（各产一个 U+FFFD）
+    #[test]
+    fn push_utf8_genuinely_invalid_bytes_matches_lossy() {
+        let mut buf = String::new();
+        let mut pending = Vec::new();
+        push_utf8_incremental(&mut buf, &mut pending, b"ok\xFF\xFEgood");
+        flush_pending_utf8(&mut buf, &mut pending);
+        assert_eq!(buf, String::from_utf8_lossy(b"ok\xFF\xFEgood"), "坏字节处理必须与 lossy 对齐");
+    }
+
+    /// 截断流尾：pending 残留的半字符按 lossy 冲刷（与旧行为对齐，不静默吞掉）
+    #[test]
+    fn flush_pending_utf8_tail_is_lossy() {
+        let mut buf = String::new();
+        let mut pending = Vec::new();
+        push_utf8_incremental(&mut buf, &mut pending, "好".as_bytes());
+        push_utf8_incremental(&mut buf, &mut pending, &[0xE6]); // 断流的半字符
+        flush_pending_utf8(&mut buf, &mut pending);
+        assert!(buf.starts_with('好'));
+        assert!(buf.contains('\u{FFFD}'));
+        assert!(pending.is_empty());
     }
 }

@@ -348,9 +348,6 @@ export interface KbHeatmapItem {
   source_id: string
   title?: string
   count?: number
-export interface KbEntityRelation {
-  [key: string]: unknown
-}
   [key: string]: unknown
 }
 export interface KbParentItem {
@@ -777,6 +774,10 @@ export async function fetchProjectNotes(projectId: string): Promise<FetchNotesRe
 export async function fetchOrphanNotes(): Promise<FetchNotesResponse> {
   return invoke('notes_list_orphan')
 }
+// 项目文件聚合（资料库"项目文件"树）：projectId 省略=全部项目文件
+export async function fileListProjectFiles(projectId?: string | null): Promise<{ success: boolean; files: any[] }> {
+  return invoke('file_list_project_files', { projectId: projectId || null })
+}
 export async function createNote(data: Record<string, unknown>): Promise<{ noteId: string }> {
   return invoke('notes_create', { data })
 }
@@ -790,9 +791,6 @@ export async function rebuildNoteFTS(): Promise<{ success: boolean }> {
   return invoke('notes_rebuild_fts')
 }
 export async function upgradeNoteFTSTriggers(): Promise<{ success: boolean }> {
-export async function getProjectKnowledgeGraph(projectId: string): Promise<KbDashboardStats> {
-  return invoke('notes_get_project_knowledge_graph', { projectId })
-}
   return invoke('notes_upgrade_fts_triggers')
 }
 export async function semanticRecall(data: unknown): Promise<{ results?: unknown[] }> {
@@ -1357,21 +1355,6 @@ export async function kbMemoryParents(
   sourceType: string,
   sourceId: string
 ): Promise<{ success: boolean; parents: KbParentItem[] }> {
-export async function kbMemoryEntityRelations(
-  entityName?: string,
-  sourceType?: string,
-  sourceId?: string
-): Promise<{
-  success: boolean
-  entities: KbEntityRelation[]
-  related_objects: KbEntityRelation[]
-}> {
-  return invoke('kb_memory_entity_relations', {
-    entityName: entityName || '',
-    sourceType: sourceType || '',
-    sourceId: sourceId || ''
-  })
-}
   return invoke('kb_memory_parents', { sourceType, sourceId })
 }
 export async function kbMemoryHeatmap(): Promise<{
@@ -1384,6 +1367,37 @@ export async function kbMemoryHeatmap(): Promise<{
 }
 export async function kbDashboardStats(): Promise<KbDashboardStats> {
   return invoke('kb_memory_dashboard_stats')
+}
+
+// ─── 对象关系图谱（知识观测台） ─────────────────────────────────
+export interface KbGraphNode {
+  id: string
+  bizId: string
+  type: string
+  label: string
+  degree: number
+}
+export interface KbGraphLink {
+  source: string
+  target: string
+  relation: string
+}
+export interface KbGraphData {
+  success: boolean
+  nodes: KbGraphNode[]
+  links: KbGraphLink[]
+  stats?: {
+    objectTotal?: number
+    connectedTotal?: number
+    orphanFiltered?: number
+    nodeCount?: number
+    edgeCount?: number
+    nodesTruncated?: boolean
+    edgesTruncated?: boolean
+  }
+}
+export async function kbGraphData(): Promise<KbGraphData> {
+  return invoke('kb_graph_data')
 }
 export async function kbProjectNoteIds(): Promise<{ ids: string[] }> {
   return invoke('kb_project_note_ids')
@@ -1635,15 +1649,7 @@ export async function batchExportProjects(
   return invoke('projects_batch_export', { projectIds, filePath })
 }
 
-// Pipeline Debug
-export async function kbPipelineDebug(): Promise<{
-  success: boolean
-  stats: PipelineStatus
-  sync_queue: PipelineSourceItem[]
-  push_queue: PipelineSourceItem[]
-}> {
-  return invoke('kb_pipeline_debug')
-}
+// Pipeline Debug（真实实现见 pipelineDebugStatus；旧 kb_pipeline_debug 命令不存在已移除）
 
 // ─── Agent Profiles ─────────────────────────────────────────────
 

@@ -230,6 +230,8 @@ function autoGrow(e: Event) {
 
 function focusComposer() {
   nextTick(() => { composerRef.value?.focus() })
+  // 召唤时序：chat:reset 先于 show()/set_focus() 发出，此刻的 focus 可能被 OS 吞掉，窗口真正出现后补一刀
+  setTimeout(() => { composerRef.value?.focus({ preventScroll: true }) }, 150)
 }
 
 // ─── History ────────────────────────────────────────────────
@@ -502,6 +504,8 @@ onMounted(async () => {
       if (payload) focusComposer()
     })
   } catch {}
+  // 首开兜底：chat 窗口刚创建时 listen 尚未注册，Rust 的 chat:reset 会丢失——mount 完成后主动聚焦
+  focusComposer()
 })
 
 onUnmounted(() => {

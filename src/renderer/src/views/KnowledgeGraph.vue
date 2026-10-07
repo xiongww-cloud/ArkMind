@@ -1,138 +1,195 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onDeactivated, nextTick } from 'vue'
+import { ref, computed, onActivated, onDeactivated } from 'vue'
+import { useRouter } from 'vue-router'
 import VueApexCharts from 'vue3-apexcharts'
-import {
-  kbDashboardStats,
-  kbPipelineDebug,
-} from '@/api/db-client'
+import { kbDashboardStats, pipelineDebugStatus } from '@/api/db-client'
+import { knowledgeTypeLabel, knowledgeTypeColor } from '@/utils/knowledgeTypes'
+import RelationGraph from '@/components/knowledge/RelationGraph.vue'
+import AppIcon from '@/components/common/AppIcon.vue'
 
+const router = useRouter()
+
+// ─── 统计图表（与图谱互补：图谱看关联，这里看分布/健康度） ───
 const stats = ref<any>(null)
-const growthDays = ref(30)
-const chartVersion = ref(0)
-async function loadStats() { try { const r = await kbDashboardStats(); if (r?.success) { stats.value = r; chartVersion.value++ } } catch (e) { console.error('[KG] loadStats failed:', e) } }
-function setGrowthDays(d: number) { growthDays.value = d }
+const statsLoading = ref(true)
+const statsError = ref('')
+async function loadStats() {
+  try {
+    const r = await kbDashboardStats()
+    if (!r?.success) throw new Error('统计加载失败')
+    stats.value = r
+    statsError.value = ''
+  } catch (e: any) {
+    statsError.value = String(e?.message || e)
+  } finally {
+    statsLoading.value = false
+  }
+}
 
-const growthChart = computed(() => {
-  if (!stats.value?.daily_growth?.length) return null
-  const d = stats.value.daily_growth
-  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - growthDays.value)
-  const cutoffStr = cutoff.toISOString().slice(0, 10)
-  const filtered = d.filter((x: any) => (x.label || '') >= cutoffStr)
-  const data = filtered.length > 0 ? filtered : d.slice(-growthDays.value)
-  let cumulative = 0
-  const cumulativeData = data.map((x: any) => { cumulative += x.cnt || 0; return cumulative })
-  return { series: [{ name: '累计碎片', data: cumulativeData }], categories: data.map((x: any) => (x.label || '').slice(5)) }
-})
 const byTypeChart = computed(() => {
-  if (!stats.value?.by_type?.length) return null
-  const d = stats.value.by_type
-  const colors = d.map((x: any) => typeColor(x.label))
-  return { series: d.map((x: any) => x.cnt), labels: d.map((x: any) => typeLabel(x.label)), colors }
+  const d: any[] = stats.value?.by_type || []
+  if (!d.length) return null
+  return {
+    series: d.map((x) => x.cnt),
+    labels: d.map((x) => knowledgeTypeLabel(x.label)),
+    colors: d.map((x) => knowledgeTypeColor(x.label)),
+  }
 })
-const weightDistChart = computed(() => {
-  if (!stats.value?.weight_dist?.length) return null
-  const d = stats.value.weight_dist
-  return { series: [{ name: '碎片数', data: d.map((x: any, i: number) => ({ x: i * 5, y: x.cnt || 0 })) }], categories: d.map((x: any) => x.label) }
-})
-const chartColors = ['#60a5fa','#fbbf24','#a78bfa','#34d399','#94a3b8','#f59e0b','#ec4899','#14b8a6']
 
-const debugData = ref<any>(null)
-async function loadDebug() { try { debugData.value = await kbPipelineDebug() } catch (e) { console.error('[KG] loadDebug failed:', e) } }
-function typeLabel(st: string): string { const m: Record<string,string> = { FILE:'文件',NOTE:'笔记',PRODUCT:'产品',PROJECT:'项目',TODO:'待办',MEMORY:'记忆',POLICY:'策略',CHANNEL:'渠道',VENDOR:'供应商',CONTACT:'联系人',CUSTOMER:'客户' }; return m[st] || st || '通用' }
-function typeColor(st: string): string { const m: Record<string,string> = { FILE:'#60a5fa',NOTE:'#fbbf24',PRODUCT:'#a78bfa',PROJECT:'#34d399',TODO:'#94a3b8',MEMORY:'#f59e0b',POLICY:'#ec4899',CHANNEL:'#06b6d4',VENDOR:'#8b5cf6',CONTACT:'#14b8a6',CUSTOMER:'#f43f5e' }; return m[st] || '#94a3b8' }
-let refreshTimer: ReturnType<typeof setInterval> | null = null
-function saveScroll() {
-  const el = document.querySelector('#kg-root .overflow-y-auto')
-  return el ? el.scrollTop : 0
+const weightDistChart = computed(() => {
+  const d: any[] = stats.value?.weight_dist || []
+  if (!d.length) return null
+  return { series: [{ name: '碎片数', data: d.map((x: any, i: number) => ({ x: i * 5, y: x.cnt || 0 })) }] }
+})
+
+// ─── 增长趋势：本地时区日切（toISOString 在 UTC+8 早8点前会错一天）───
+const growthDays = ref(30)
+function fmtLocalDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
-function restoreScroll(pos: number) {
-  const el = document.querySelector('#kg-root .overflow-y-auto')
-  if (el) el.scrollTop = pos
+function setGrowthDays(d: number) { growthDays.value = d }
+const growthChart = computed(() => {
+  const d: any[] = stats.value?.daily_growth || []
+  if (!d.length) return null
+  const cutoff = fmtLocalDate(new Date(Date.now() - growthDays.value * 864e5))
+  const filtered = d.filter((x) => (x.label || '') >= cutoff)
+  const data = filtered.length > 0 ? filtered : d.slice(-Math.min(growthDays.value, d.length))
+  let cumulative = 0
+  return {
+    series: [{ name: '窗口累计', data: data.map((x) => { cumulative += x.cnt || 0; return cumulative }) }],
+    categories: data.map((x) => (x.label || '').slice(5)),
+  }
+})
+
+// ─── 管线健康（原「清理队列」死代码块的正名替换：命令真实存在、自动加载）───
+const pipe = ref<any>(null)
+const pipeOpen = ref(false)
+const pipeError = ref('')
+async function loadPipe() {
+  try {
+    pipe.value = await pipelineDebugStatus()
+    pipeError.value = ''
+  } catch (e: any) {
+    pipeError.value = String(e?.message || e)
+  }
 }
-onActivated(() => {
+const vecPct = computed(() => {
+  const k = pipe.value?.knowledge
+  if (!k?.childrenNonempty) return null
+  return Math.round(((k.vectorizedValid || 0) / k.childrenNonempty) * 100)
+})
+const pipeBad = computed(() => {
+  const k = pipe.value?.knowledge, f = pipe.value?.fileParse
+  return (k?.embedPending || 0) > 0 || (f?.failed || 0) > 0 || !!k?.lastEmbedError
+})
+
+// ─── 图谱刷新 ───
+const graphRef = ref<InstanceType<typeof RelationGraph> | null>(null)
+function refreshAll() {
   loadStats()
-  refreshTimer = setInterval(() => {
-    const scrollPos = saveScroll()
-    loadStats().then(() => nextTick(() => restoreScroll(scrollPos)))
-  }, 5000)
+  loadPipe()
+  graphRef.value?.reload()
+}
+
+// ─── 60s 轮询（原 5s 全量重建太激进；数据未变不再销毁图表）───
+let timer: ReturnType<typeof setInterval> | null = null
+onActivated(() => {
+  refreshAll()
+  timer = setInterval(() => { loadStats(); loadPipe(); graphRef.value?.reload() }, 60000)
 })
-onDeactivated(() => {
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
-})
+onDeactivated(() => { if (timer) { clearInterval(timer); timer = null } })
+
+const isEmptyKb = computed(() => stats.value && (stats.value.health?.total || 0) === 0 && (stats.value.object_counts?.total || 0) === 0)
 </script>
+
 <template>
   <div id="kg-root" class="h-full flex flex-col bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
-    <div class="flex-1 overflow-y-auto p-6 space-y-5">
-      <!-- 统计卡片 -->
-      <div class="grid grid-cols-4 gap-3">
-        <div class="rounded-xl border border-surface-200 p-4 stat-card"><div class="text-[22px] font-bold text-surface-900">{{ stats?.object_counts?.total ?? '-' }}</div><div class="text-[11px] text-surface-400">知识对象</div></div>
-        <div class="rounded-xl border border-surface-200 p-4 stat-card"><div class="text-[22px] font-bold text-indigo-600">{{ stats?.health?.total ?? '-' }}</div><div class="text-[11px] text-surface-400">知识碎片</div></div>
-        <div class="rounded-xl border border-surface-200 p-4 stat-card"><div class="text-[22px] font-bold text-orange-600">{{ stats?.health?.hot_count ?? '-' }}</div><div class="text-[11px] text-surface-400">热点碎片</div></div>
-        <div class="rounded-xl border border-surface-200 p-4 stat-card"><div class="text-[22px] font-bold text-blue-600">{{ stats?.health?.cold_count ?? '-' }}</div><div class="text-[11px] text-surface-400">冷碎片</div></div>
+    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+      <!-- 统计全局错误/加载 -->
+      <div v-if="statsError" class="rounded-xl border border-red-100 bg-red-50/50 px-4 py-3 flex items-center justify-between">
+        <p class="text-[11px] text-red-400">知识统计加载失败：{{ statsError }}</p>
+        <button @click="loadStats" class="btn-secondary text-xs">重试</button>
       </div>
-      <!-- 图表 -->
-      <div class="grid grid-cols-2 gap-4">
-        <div class="bg-white rounded-2xl border border-surface-200 p-4 content-card flex flex-col">
-          <h3 class="text-[12px] font-semibold text-surface-600 mb-3">对象分布</h3>
-          <div class="flex-1 flex items-end gap-3 h-[120px]">
-            <div v-for="item in (stats?.object_counts?.by_type || [])" :key="item.label" class="flex-1 flex flex-col items-center justify-end h-full group cursor-pointer">
-              <div class="text-[18px] font-bold text-surface-800">{{ item.cnt }}</div>
-              <div class="w-full rounded-t mt-1 transition-all duration-200 group-hover:opacity-80 group-hover:shadow-lg" :style="{ background: typeColor(item.label), height: Math.max(4, (item.cnt / Math.max(...(stats?.object_counts?.by_type || []).map((x: any) => x.cnt), 1)) * 100) + '%' }"></div>
-              <div class="text-[10px] text-surface-400 mt-1">{{ typeLabel(item.label) }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-          <h3 class="text-[12px] font-semibold text-surface-600 mb-3">知识分布</h3>
-          <VueApexCharts v-if="byTypeChart" :key="'bytype-' + chartVersion" type="donut" height="260" :series="byTypeChart.series" :options="{ labels: byTypeChart.labels, colors: byTypeChart.colors, legend: { position: 'bottom', fontSize: '12px', labels: { colors: '#64748b' } }, dataLabels: { enabled: true, formatter: (v: number) => v.toFixed(0) + '%' }, plotOptions: { pie: { donut: { size: '65%', labels: { show: true, total: { show: true, label: '总计', fontSize: '13px', color: '#334155' } } } } }, chart: { fontFamily: 'inherit' } }" />
-          <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
+      <div v-else-if="statsLoading && !stats" class="grid grid-cols-3 gap-4">
+        <div v-for="i in 3" :key="i" class="h-40 rounded-2xl bg-surface-50 animate-pulse"></div>
+      </div>
+      <div v-else-if="isEmptyKb" class="rounded-2xl border border-surface-200 p-8 text-center">
+        <p class="text-[13px] text-surface-600 font-medium">知识库还是空的</p>
+        <p class="text-[11px] text-surface-400 mt-1.5 leading-relaxed">先到「资料库」上传文件，或在「设置」配置向量模型——有了知识，观测台才有东西可看。</p>
+        <div class="flex items-center justify-center gap-2 mt-4">
+          <button @click="router.push('/assets')" class="btn-primary text-xs">去上传资料</button>
+          <button @click="router.push('/settings')" class="btn-secondary text-xs">去设置</button>
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-          <h3 class="text-[12px] font-semibold text-surface-600 mb-3">遗忘曲线</h3>
-          <VueApexCharts v-if="weightDistChart" :key="'weight-' + chartVersion" type="area" height="260" :series="weightDistChart.series" :options="{ xaxis: { type: 'numeric', min: 0, max: 100, title: { text: '有效权重', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' }, formatter: (v: string) => { const n = parseFloat(v); if (n === 0) return '0%'; if (n === 100) return '100%'; return '' } }, tickAmount: 1 }, yaxis: { title: { text: '碎片数', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#6366f1'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 0 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false } } }" />
-          <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
+
+      <!-- 对象关系图谱（主视图） -->
+      <div class="rounded-2xl border border-surface-200 bg-white overflow-hidden flex flex-col" style="height: 500px">
+        <div class="flex items-center justify-between px-4 pt-3 pb-0">
+          <h3 class="text-[12px] font-semibold text-surface-600">对象关系图谱</h3>
+          <button @click="refreshAll" class="btn-secondary text-[10px] !py-0.5"><AppIcon name="refresh" size="11"/>刷新</button>
         </div>
-        <div class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="text-[12px] font-semibold text-surface-600">知识增长趋势</h3>
+        <div class="flex-1 min-h-0">
+          <RelationGraph ref="graphRef" />
+        </div>
+      </div>
+
+      <!-- 三块统计图 -->
+      <div class="grid grid-cols-3 gap-4">
+        <div class="rounded-2xl border border-surface-200 bg-white p-4">
+          <h3 class="text-[12px] font-semibold text-surface-600 mb-2">知识分布</h3>
+          <VueApexCharts v-if="byTypeChart" type="donut" height="220" :series="byTypeChart.series" :options="{ labels: byTypeChart.labels, colors: byTypeChart.colors, legend: { position: 'bottom', fontSize: '11px', labels: { colors: '#64748b' } }, dataLabels: { enabled: true, formatter: (v: number) => v.toFixed(0) + '%' }, plotOptions: { pie: { donut: { size: '65%', labels: { show: true, total: { show: true, label: '总计', fontSize: '12px', color: '#334155' } } } } }, chart: { fontFamily: 'inherit', toolbar: { show: false } } }" />
+          <p v-else class="text-[11px] text-surface-300 text-center py-16">暂无数据</p>
+        </div>
+        <div class="rounded-2xl border border-surface-200 bg-white p-4">
+          <h3 class="text-[12px] font-semibold text-surface-600 mb-2">遗忘曲线 <span class="text-[9px] font-normal text-surface-300">有效权重分布</span></h3>
+          <VueApexCharts v-if="weightDistChart" type="area" height="220" :series="weightDistChart.series" :options="{ xaxis: { type: 'numeric', min: 0, max: 100, title: { text: '有效权重', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' }, formatter: (v: string) => { const n = parseFloat(v); return n === 0 ? '0%' : n === 100 ? '100%' : '' } }, tickAmount: 1 }, yaxis: { title: { text: '碎片数', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#6366f1'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.35, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 0 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false } } }" />
+          <p v-else class="text-[11px] text-surface-300 text-center py-16">暂无数据</p>
+        </div>
+        <div class="rounded-2xl border border-surface-200 bg-white p-4 flex flex-col">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-[12px] font-semibold text-surface-600">知识增长</h3>
             <div class="flex items-center gap-0.5">
-              <button v-for="opt in [{d:7,l:'7天'},{d:30,l:'30天'},{d:90,l:'90天'},{d:180,l:'半年'},{d:365,l:'一年'}]" :key="opt.d" @click="setGrowthDays(opt.d)" class="px-2 py-0.5 rounded text-[10px] transition-colors" :class="growthDays===opt.d ? 'bg-blue-50 text-blue-600 font-medium' : 'text-surface-500 hover:bg-surface-50'">{{ opt.l }}</button>
+              <button v-for="opt in [{d:7,l:'7天'},{d:30,l:'30天'},{d:90,l:'90天'},{d:180,l:'半年'},{d:365,l:'一年'}]" :key="opt.d" @click="setGrowthDays(opt.d)" class="px-1.5 py-0.5 rounded text-[9px] transition-colors" :class="growthDays===opt.d ? 'bg-blue-50 text-blue-600 font-medium' : 'text-surface-500 hover:bg-surface-50'">{{ opt.l }}</button>
             </div>
           </div>
-          <VueApexCharts v-if="growthChart" :key="'growth-' + chartVersion" type="area" height="240" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 15 }, yaxis: { title: { text: '累计碎片', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 3, strokeWidth: 1.5 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false, mouseWheel: { enabled: false } } } }" />
-          <p v-else class="text-[11px] text-surface-300 text-center py-12">暂无数据</p>
+          <VueApexCharts v-if="growthChart" type="area" height="220" :series="growthChart.series" :options="{ xaxis: { categories: growthChart.categories, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, tickAmount: 8 }, yaxis: { title: { text: '累计碎片（窗口内）', style: { fontSize: '11px', color: '#94a3b8' } }, labels: { style: { fontSize: '10px', colors: '#94a3b8' } }, min: 0 }, colors: ['#06b6d4'], stroke: { curve: 'smooth', width: 2.5 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } }, dataLabels: { enabled: false }, markers: { size: 0 }, chart: { fontFamily: 'inherit', toolbar: { show: false }, zoom: { enabled: false } } }" />
+          <p v-else class="text-[11px] text-surface-300 text-center py-16">暂无数据</p>
         </div>
       </div>
-      <!-- 清理队列调试 -->
-      <div v-if="debugData" class="bg-white rounded-2xl border border-surface-200 p-5 content-card">
-        <h3 class="text-[12px] font-semibold text-surface-600 mb-3">清理队列状态</h3>
-        <div class="grid grid-cols-3 gap-2 mb-2">
-          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-amber-600">{{ debugData.stats.push_pending }}</div><div class="text-[9px] text-surface-400">待推送</div></div>
-          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-blue-500">{{ debugData.stats.push_processing }}</div><div class="text-[9px] text-surface-400">处理中</div></div>
-          <div class="rounded border border-surface-200 p-2 text-center"><div class="text-[14px] font-bold text-red-500">{{ debugData.stats.push_failed }}</div><div class="text-[9px] text-surface-400">失败</div></div>
-        </div>
-        <div v-if="debugData.push_queue?.length">
-          <h4 class="text-[10px] text-surface-400 mb-1">push_queue (最近 30 条)</h4>
-          <div class="max-h-[200px] overflow-auto text-[8px] rounded border border-surface-200">
-            <div v-for="r in debugData.push_queue" :key="r.id" class="px-1.5 py-0.5 border-b border-surface-100 flex items-center gap-1"
-              :class="r.status==='failed'?'text-red-500':r.status==='processing'?'text-blue-500':'text-amber-600'">
-              <span class="font-mono">{{ r.id }}</span>
-              <span>{{ r.source_type }}/{{ r.source_id?.slice(0,8) }}...</span>
-              <span class="text-[7px] text-surface-400">{{ r.operation }}</span>
-              <span class="ml-auto">{{ r.status==='failed'?'✗':r.status==='processing'?'⟳':'⏳' }}</span>
-            </div>
+
+      <!-- 管线健康（数据源 pipeline_debug_status，此前是永远显示不出来的死代码） -->
+      <div class="rounded-2xl border border-surface-200 bg-white overflow-hidden">
+        <button @click="pipeOpen = !pipeOpen" class="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-surface-50/50 transition-colors">
+          <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" :class="pipeBad ? 'bg-amber-400' : 'bg-emerald-500'"></span>
+          <h3 class="text-[12px] font-semibold text-surface-600 flex-shrink-0">管线健康</h3>
+          <span v-if="pipe" class="flex items-center gap-3 text-[10px] text-surface-400 min-w-0">
+            <span>向量化 <span class="tabular-nums" :class="vecPct !== null && vecPct < 95 ? 'text-amber-500 font-medium' : 'text-emerald-600'">{{ vecPct === null ? '-' : vecPct + '%' }}</span></span>
+            <span v-if="(pipe.knowledge?.embedPending || 0) > 0" class="text-amber-500">积压 {{ pipe.knowledge.embedPending }}</span>
+            <span v-if="(pipe.fileParse?.failed || 0) > 0" class="text-red-400">解析失败 {{ pipe.fileParse.failed }}</span>
+            <span v-if="(pipe.fileParse?.unsupported || 0) > 0">不支持 {{ pipe.fileParse.unsupported }}</span>
+          </span>
+          <span v-if="pipeError" class="text-[10px] text-red-400">管线状态加载失败</span>
+          <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 transition-transform ml-auto flex-shrink-0" :class="pipeOpen ? 'rotate-180' : ''" />
+        </button>
+        <div v-if="pipeOpen && pipe" class="px-4 pb-3 border-t border-surface-100 pt-2.5">
+          <div class="grid grid-cols-4 gap-2 mb-2">
+            <div class="rounded-lg border border-surface-200 p-2 text-center"><div class="text-[13px] font-bold text-surface-700 tabular-nums">{{ pipe.source?.total ?? '-' }}</div><div class="text-[9px] text-surface-400">知识对象</div></div>
+            <div class="rounded-lg border border-surface-200 p-2 text-center"><div class="text-[13px] font-bold text-indigo-600 tabular-nums">{{ pipe.knowledge?.children ?? '-' }}</div><div class="text-[9px] text-surface-400">子碎片</div></div>
+            <div class="rounded-lg border border-surface-200 p-2 text-center"><div class="text-[13px] font-bold" :class="(pipe.knowledge?.embedPending || 0) > 0 ? 'text-amber-500' : 'text-emerald-600'">{{ pipe.knowledge?.vectorizedValid ?? '-' }}</div><div class="text-[9px] text-surface-400">已向量化</div></div>
+            <div class="rounded-lg border border-surface-200 p-2 text-center"><div class="text-[13px] font-bold" :class="(pipe.fileParse?.failed || 0) > 0 ? 'text-red-500' : 'text-surface-700'">{{ pipe.fileParse?.failed ?? '-' }}</div><div class="text-[9px] text-surface-400">解析失败</div></div>
+          </div>
+          <p v-if="pipe.knowledge?.lastEmbedError" class="text-[10px] text-red-400 truncate mb-2" v-tooltip="pipe.knowledge.lastEmbedError">向量化错误：{{ pipe.knowledge.lastEmbedError }}</p>
+          <div class="flex items-center justify-between">
+            <p class="text-[9px] text-surface-300">解析中 {{ pipe.fileParse?.processing ?? 0 }} · 待解析 {{ pipe.fileParse?.pending ?? 0 }} · 完成 {{ pipe.fileParse?.done ?? 0 }}/{{ pipe.fileParse?.total ?? 0 }}</p>
+            <button @click="router.push('/settings')" class="btn-secondary text-[10px]">去设置页处理</button>
           </div>
         </div>
-        <button @click="loadDebug" class="mt-2 px-2 py-1 text-[10px] rounded border border-surface-200 text-surface-500 hover:bg-surface-50">加载调试数据</button>
       </div>
     </div>
   </div>
 </template>
+
 <style scoped>
-#kg-root .stat-card,
-#kg-root .content-card { box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05); transition-property: box-shadow, transform; transition-timing-function: ease; transition-duration: 200ms; }
-#kg-root .stat-card:hover,
-#kg-root .content-card:hover { transform: translateY(-2px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1); }
+#kg-root .rounded-2xl { box-shadow: 0 1px 2px 0 rgba(0,0,0,0.04); }
 </style>

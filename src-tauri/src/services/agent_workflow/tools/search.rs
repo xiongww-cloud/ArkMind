@@ -39,9 +39,135 @@ pub(crate) fn resolve_scope_to_rowids(scope: &[String]) -> std::collections::Has
     all_rowids
 }
 
-/// 执行 search 并同时返回发现的来源列表
-pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std::collections::HashSet<i64>>, _visited_sources: &std::collections::HashSet<String>, visited_chunks: &std::collections::HashSet<String>, time_range: Option<(String, String)>, _shown_memory_ids: &std::collections::HashSet<String>) -> (String, Vec<String>) {
-    if keywords.is_empty() || keywords.join(" ").trim().is_empty() { return ("no keywords".into(), vec![]); }
+/// (source_type, source_id) 对批量解析为 child chunk rowid 集合（单次 SQL，支持上千叶子）
+fn rowids_for_pairs(pairs: &[(String, String)]) -> std::collections::HashSet<i64> {
+    let mut out = std::collections::HashSet::new();
+    for chunk in pairs.chunks(100) {
+        let mut sql = String::from("SELECT c.id AS cid FROM source_data sd JOIN knowledge_chunks c ON c.source_data_id=sd.id AND c.chunk_type='child' WHERE ");
+        let mut values: Vec<Value> = Vec::new();
+        for (i, (st, sid)) in chunk.iter().enumerate() {
+            if i > 0 { sql.push_str(" OR "); }
+            let (a, b) = (values.len() + 1, values.len() + 2);
+            sql.push_str(&format!("(sd.source_type=?{} AND sd.source_id=?{})", a, b));
+            values.push(json!(st)); values.push(json!(sid));
+        }
+        if let Ok(rows) = database::all(&sql, &values) {
+            for r in &rows { if let Some(cid) = r["cid"].as_i64() { out.insert(cid); } }
+        }
+    }
+    out
+}
+
+/// 解析显式 scope 引用串 → (可检索 child rowid 集合, 未解析列表, 可读标签列表)。
+/// 展开规则：FILE/NOTE/EMAIL/TODO/PROJECT/…=直通（source_data 登记过才可检索）；
+/// NOTEBOOK=展开笔记本内笔记；FOLDER=递归展开目录树（含子目录）内文件；
+/// PROJECT=自身+business_relations 双向关联的文件/笔记。静默失败禁止：解析失败必回传 failed 列表。
+pub(crate) fn resolve_scope_param(refs: &[String]) -> (std::collections::HashSet<i64>, Vec<String>, Vec<String>) {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+    for r in refs.iter().take(20) {
+        let (t, id) = match super::entity_ref::parse(r) {
+            Some((ty, iid)) => (ty.to_string(), iid),
+            None => { failed.push(r.clone()); continue; }
+        };
+        match t.as_str() {
+            "NOTEBOOK" => {
+                let name = database::get("SELECT name FROM notebooks WHERE id=?1", &[json!(&id)])
+                    .ok().flatten().and_then(|x| x["name"].as_str().map(String::from)).unwrap_or_default();
+                if name.is_empty() { failed.push(r.clone()); continue; }
+                labels.push(format!("笔记本《{}》", name));
+                if let Ok(rows) = database::all("SELECT note_id FROM notes WHERE notebook_id=?1 AND deleted_at IS NULL LIMIT 1000", &[json!(&id)]) {
+                    for row in &rows { if let Some(nid) = row["note_id"].as_str() { pairs.push(("NOTE".to_string(), nid.to_string())); } }
+                }
+            }
+            "FOLDER" => {
+                let name = database::get("SELECT name FROM library_folders WHERE id=?1", &[json!(&id)])
+                    .ok().flatten().and_then(|x| x["name"].as_str().map(String::from)).unwrap_or_default();
+                if name.is_empty() { failed.push(r.clone()); continue; }
+                labels.push(format!("目录《{}》(含子目录)", name));
+                if let Ok(rows) = database::all(
+                    "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION ALL SELECT f.id FROM library_folders f JOIN tree t ON f.parent_id=t.id) SELECT lfl.file_id AS fid FROM tree JOIN library_file_locations lfl ON lfl.folder_id=tree.id LIMIT 2000",
+                    &[json!(&id)]) {
+                    for row in &rows { if let Some(fid) = row["fid"].as_str() { pairs.push(("FILE".to_string(), fid.to_string())); } }
+                }
+            }
+            "PROJECT" => {
+                let name = database::get("SELECT name FROM projects WHERE id=?1", &[json!(&id)])
+                    .ok().flatten().and_then(|x| x["name"].as_str().map(String::from)).unwrap_or_default();
+                if name.is_empty() { failed.push(r.clone()); continue; }
+                labels.push(format!("项目《{}》及关联文件/笔记", name));
+                pairs.push(("PROJECT".to_string(), id.clone()));
+                if let Ok(rows) = database::all(
+                    "SELECT target_type tt, target_id tid FROM business_relations WHERE source_type='PROJECT' AND source_id=?1 AND target_type IN ('FILE','NOTE')
+                     UNION SELECT source_type, source_id FROM business_relations WHERE target_type='PROJECT' AND target_id=?1 AND source_type IN ('FILE','NOTE')",
+                    &[json!(&id)]) {
+                    for row in &rows {
+                        let tt = row["tt"].as_str().unwrap_or("").to_string();
+                        let tid = row["tid"].as_str().unwrap_or("").to_string();
+                        if !tt.is_empty() && !tid.is_empty() { pairs.push((tt, tid)); }
+                    }
+                }
+            }
+            _ => {
+                // 直通型：source_data 未登记（引用错/从未入库）→ 计入 failed，不静默吞
+                let exists = database::get("SELECT 1 AS x FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(&t), json!(&id)])
+                    .ok().flatten().is_some();
+                if !exists { failed.push(r.clone()); continue; }
+                let title = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(&t), json!(&id)])
+                    .ok().flatten().and_then(|x| x["title"].as_str().map(String::from)).unwrap_or_default();
+                labels.push(format!("{}《{}》", t, if title.is_empty() { "<无题>" } else { &title }));
+                pairs.push((t.clone(), id));
+            }
+        }
+    }
+    let rowids = rowids_for_pairs(&pairs);
+    (rowids, failed, labels)
+}
+
+/// 执行 search 并同时返回发现的来源列表；hits=最终 chunks 数（workflow 判定是否触发对照回退）。
+/// explicit_rowids=scope 参数硬过滤（命中集之外的候选直接丢弃）；scope_note=硬过滤头部说明（注入 summary）。
+pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: Option<std::collections::HashSet<i64>>, explicit_rowids: Option<std::collections::HashSet<i64>>, scope_note: &str, visited_sources: &std::collections::HashSet<String>, visited_chunks: &std::collections::HashSet<String>, time_range: Option<(String, String)>, shown_memory_ids: &std::collections::HashSet<String>) -> (String, Vec<String>, usize) {
+    let (res, sources, hits) = search_once(keywords, scope_rowids, explicit_rowids.clone(), visited_sources, visited_chunks, time_range.clone(), shown_memory_ids).await;
+    if explicit_rowids.is_none() {
+        // 软回退也要有头部说明：不传 note 就维持原样
+        if scope_note.is_empty() { return (res, sources, hits); }
+        if let Ok(mut v) = serde_json::from_str::<Value>(&res) {
+            if v["summary"].is_string() {
+                let old = v["summary"].as_str().unwrap_or("").to_string();
+                v["summary"] = json!(format!("{}｜{}", scope_note, old));
+                return (v.to_string(), sources, hits);
+            }
+        }
+        return (res, sources, hits);
+    }
+    if hits > 0 {
+        if scope_note.is_empty() { return (res, sources, hits); }
+        if let Ok(mut v) = serde_json::from_str::<Value>(&res) {
+            if v["summary"].is_string() {
+                let old = v["summary"].as_str().unwrap_or("").to_string();
+                v["summary"] = json!(format!("{}｜{}", scope_note, old));
+                return (v.to_string(), sources, hits);
+            }
+        }
+        return (res, sources, hits);
+    }
+    // ★ 范围内 0 命中：自动全局对照——不让模型"没查到=不存在"的错误结论逃逸，
+    //   但语义约束必须显式：对照结果只是定位真实来源，禁止当作范围内内容引用
+    let (gres, gsrcs, ghits) = search_once(keywords, None, None, visited_sources, visited_chunks, time_range, shown_memory_ids).await;
+    if ghits > 0 {
+        if let Ok(mut v) = serde_json::from_str::<Value>(&gres) {
+            let old = v["summary"].as_str().unwrap_or("").to_string();
+            v["summary"] = json!(format!("⚠ 指定范围内 0 命中（{}）；以下为全库对照结果，仅用于定位内容实际所在来源，禁止当作范围内内容引用。{}", scope_note, old));
+            if let Some(d) = v.get_mut("data").and_then(|d| d.as_object_mut()) { d.insert("scope_fallback".to_string(), json!(true)); }
+            return (v.to_string(), gsrcs, 0);
+        }
+    }
+    (gres, gsrcs, 0)
+}
+
+async fn search_once(keywords: &[String], scope_rowids: Option<std::collections::HashSet<i64>>, explicit_rowids: Option<std::collections::HashSet<i64>>, _visited_sources: &std::collections::HashSet<String>, visited_chunks: &std::collections::HashSet<String>, time_range: Option<(String, String)>, _shown_memory_ids: &std::collections::HashSet<String>) -> (String, Vec<String>, usize) {
+    if keywords.is_empty() || keywords.join(" ").trim().is_empty() { return ("no keywords".into(), vec![], 0); }
 
     // ★ 停用词过滤：避免"项目""产品"等类型词污染 FTS5/Vector 搜索（对象名精确匹配也使用过滤后关键词）
     let filtered_keywords: Vec<String> = {
@@ -85,13 +211,15 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
     // ★ 始终走双路（FTS5 + Vector），不再因 scope 而跳过向量检索
     // ★ 始终走双路（FTS5 + Vector），不再因 scope 而跳过向量检索
 
+    // ★ 硬过滤模式 top-30 会被范围外块吃光名额，双路各超采样到 200 再过滤
+    let cand_limit: usize = if explicit_rowids.is_some() { 200 } else { 30 };
     let vec_rowids: Vec<(String,f64)> = {
         match crate::services::embedding_client::get_embedding_with_caller(&query, "agent_workflow").await {
             Ok(qv) => {
                 match crate::services::lancedb_client::get_lancedb() {
                     Ok(g) => match g.as_ref() {
                         Some(c) => {
-                            let raw = c.search_vectors_with_parent(&qv, 30).unwrap_or_default();
+                            let raw = c.search_vectors_with_parent(&qv, cand_limit).unwrap_or_default();
                             raw.into_iter().map(|(r,s,_,_,_)|(r.to_string(),s)).collect()
                         }
                         None => vec![]
@@ -102,7 +230,7 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
             Err(_e) => vec![]
         }
     };
-    let fts_limit = 30;
+    let fts_limit = cand_limit as i64;
     let fts_q = keywords.iter().map(|k| format!("\"{}\"", k.replace('"',""))).collect::<Vec<_>>().join(" OR ");
     let fts_rowids: Vec<(String,f64)> = database::fts5_search_chunks(&fts_q, fts_limit).unwrap_or_default().iter()
         .map(|fr| (fr.rowid.to_string(), fr.rank)).collect();
@@ -115,7 +243,7 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
     if fused.is_empty() {
         let kw_display = keywords.join("、");
         let diag = format!("未找到关键词「{}」的匹配切片。\n\n💡 已在全库范围搜索，无匹配结果。建议：\n1. 使用更简短或不同的关键词重试（如去掉型号只留品牌）\n2. 使用 object 工具先查看知识库中的文件与产品范围\n3. 确认相关文件已导入知识库", kw_display);
-        return (diag, vec![]);
+        return (diag, vec![], 0);
     }
     let mut seen_hashes = std::collections::HashSet::new();
     let mut disc_sources: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -127,6 +255,8 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
 
     for (rowid_str, rrf) in fused.iter() {
         let Ok(cr) = rowid_str.parse::<i64>() else { continue; };
+        // ★ scope 硬过滤：不在显式来源集合内的候选直接丢弃
+        if let Some(ex) = &explicit_rowids { if !ex.contains(&cr) { continue; } }
         if let Ok(Some(r)) = database::get("SELECT p.content,p.content_hash,p.doc_title,p.chunk_index,p.chunk_id,p.source_data_id as parent_sdid,sd.source_type,sd.source_id,sd.id as source_data_id FROM knowledge_chunks c JOIN knowledge_chunks p ON p.chunk_id=c.parent_id LEFT JOIN source_data sd ON sd.id=p.source_data_id WHERE c.rowid=?1",&[json!(cr)]) {
             let st = r["source_type"].as_str().unwrap_or("").to_string();
             let sid = r["source_id"].as_str().unwrap_or("").to_string();
@@ -151,7 +281,8 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
             let chunk_id = r["chunk_id"].as_str().unwrap_or("").to_string();
             let chunk_index = r["chunk_index"].as_i64().unwrap_or(0);
             let sdid = r["source_data_id"].as_str().unwrap_or("").to_string();
-            let is_in_scope = scope_rowids.as_ref().map(|sids| sids.contains(&cr)).unwrap_or(false);
+            // 硬过滤命中的块天然在范围内（不走 discovery 降权与每源2块限额）
+            let is_in_scope = explicit_rowids.is_some() || scope_rowids.as_ref().map(|sids| sids.contains(&cr)).unwrap_or(false);
 
             let base_rrf = if matched_sources.contains(&(st.clone(), sid.clone())) { rrf * 1.5 } else { *rrf };
             let syn_mult = crate::services::synapse::rrf_weight_multiplier(cr);
@@ -272,13 +403,22 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
 
     // 构建 chunks 数组（★ source 带 name 与 EntityRef 引用串——模型必须知道片段来自哪个文件，
     // 且抄下 id 即可作为对象工具入参；name 查询按 source 去重缓存）
-    let mut name_cache: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+    let mut name_cache: std::collections::HashMap<(String, String), (String, String)> = std::collections::HashMap::new();
     let chunks: Vec<Value> = non_memory.iter().map(|(score, cr, st, sid, chunk_id, content, _h, chunk_index, total_parents, is_scope_path, is_obj_match)| {
         let short_chunk_id: String = chunk_id.chars().take(8).collect();
         let preview = content.clone();
-        let source_name = name_cache.entry((st.clone(), sid.clone())).or_insert_with(|| {
-            database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(sid)])
-                .ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default()
+        // ★ 归属回显（笔记本/目录）：模型答"这段在哪个笔记本/目录"零额外查询
+        let (source_name, attribution) = name_cache.entry((st.clone(), sid.clone())).or_insert_with(|| {
+            let title = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(sid)])
+                .ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
+            let attrib = match st.as_str() {
+                "NOTE" => database::get("SELECT COALESCE(nb.name,'未归类') AS n FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1", &[json!(sid)])
+                    .ok().flatten().and_then(|r| r["n"].as_str().map(|s| format!("笔记本：{}", s))).unwrap_or_default(),
+                "FILE" => database::get("SELECT CASE WHEN lfl.folder_id IS NULL THEN '未归类' ELSE COALESCE(lf.name,'未归类') END AS n FROM library_file_locations lfl LEFT JOIN library_folders lf ON lf.id=lfl.folder_id WHERE lfl.file_id=?1", &[json!(sid)])
+                    .ok().flatten().and_then(|r| r["n"].as_str().map(|s| format!("目录：{}", s))).unwrap_or_default(),
+                _ => String::new(),
+            };
+            (title, attrib)
         }).clone();
         // 查询时间信息
         let created_at: String = database::get(
@@ -291,7 +431,8 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
             "source": {
                 "type": st,
                 "id": super::entity_ref::fmt(st, sid),
-                "name": source_name
+                "name": source_name,
+                "attribution": attribution
             },
             "chunk_index": chunk_index,
             "total_parents": total_parents,
@@ -337,7 +478,7 @@ pub(crate) async fn execute_search_knowledge(keywords: &[String], scope_rowids: 
         summary: Some(summary),
     };
     
-    (envelope.to_json(), found_sources)
+    (envelope.to_json(), found_sources, total_hits)
 }
 
 

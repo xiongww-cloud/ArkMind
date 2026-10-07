@@ -250,7 +250,7 @@ pub fn get_vision_config() -> Option<VisionConfig> {
 }
 
 /// 读取文件为 base64 编码的 data URI
-fn file_to_data_uri(path: &str, mime: &str) -> Option<String> {
+pub(crate) fn file_to_data_uri(path: &str, mime: &str) -> Option<String> {
     let mut f = std::fs::File::open(path).ok()?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
@@ -1050,6 +1050,30 @@ pub fn html_to_markdown_v2(html: &str) -> String {
     let re_empty_lines = regex::Regex::new(r"\n{3,}").unwrap();
     let result = re_empty_lines.replace_all(&result, "\n\n");
     
+    result.trim().to_string()
+}
+
+/// 邮件正文专用 HTML→Markdown：与 v2 的区别是 cid 图片不删除而是留 [图片:{cid}] 占位，
+/// 供 extract_email 就地注入 OCR 文字；顺手剔除 data:URI 残留（存量未转附件的老邮件）。
+pub fn html_to_markdown_email(html: &str) -> String {
+    let re_style = regex::Regex::new(r"(?is)<style[^>]*>.*?</style>").unwrap();
+    let cleaned = re_style.replace_all(html, "");
+
+    // data:URI 内联图（存量老邮件）：整标签删除，base64 绝不进文本
+    let re_data_img = regex::Regex::new(r#"(?i)<img[^>]*src\s*=\s*["']?data:[^"'>\s]+["']?[^>]*?/?>"#).unwrap();
+    let cleaned = re_data_img.replace_all(&cleaned, "").to_string();
+
+    // cid 图片 → 纯文本占位（html2md 会原样保留文本节点），extract_email 负责替换为 OCR 文字或剔除
+    let re_cid_img = regex::Regex::new(r#"(?i)<img[^>]*src\s*=\s*"cid:([^"]*)"[^>]*/?>"#).unwrap();
+    let cleaned = re_cid_img.replace_all(&cleaned, "[图片:$1]").to_string();
+
+    let result = html2md::parse_html(&cleaned);
+    let re_empty_lines = regex::Regex::new(r"\n{3,}").unwrap();
+    let result = re_empty_lines.replace_all(&result, "\n\n");
+    // html2md 对未知结构可能产出的 base64 data URI 兜底剥离（![x](data:...) / [x](data:...)）
+    let re_md_data = regex::Regex::new(r"!?\[[^\]]*\]\(data:[^)]*\)").unwrap();
+    let result = re_md_data.replace_all(&result, "").to_string();
+
     result.trim().to_string()
 }
 

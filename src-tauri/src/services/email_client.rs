@@ -439,4 +439,104 @@ fn parse_from(from: &str) -> (String, String) {
     }
 }
 
+/// 把 HTML 正文里 data:URI 内联 base64 图统一为内嵌附件：
+/// 解码 → 挂到 attachments（is_inline=1，合成 content_id `dataimg-N`）→ body_html 的 src 改写为 `cid:dataimg-N`。
+/// 目的：base64 大串永不进入 body_html/source_data 文本层；图片走与 cid 附件相同的 OCR/渲染管线。
+/// 返回转换数量。解码失败的单个图片跳过（正文保持原样引用也无 base64 危害？不——失败的仍残留，
+/// 但无合法 base64 的 data: 本就损坏，入库前 html_to_markdown_email 会兜底剔除）。
+pub fn extract_data_uri_images(email: &mut ParsedEmail) -> usize {
+    use base64::Engine as _;
+    if email.body_html.is_empty() || !email.body_html.to_lowercase().contains("data:image") {
+        return 0;
+    }
+    let re = regex::Regex::new(
+        r#"(?i)<img[^>]*?src\s*=\s*["']?data:(image/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)["']?[^>]*?/?>"#
+    ).unwrap();
+
+    let mut count = 0usize;
+    let mut html = email.body_html.clone();
+    for caps in re.captures_iter(&email.body_html.clone()) {
+        let (whole, (mime, b64)) = match (caps.get(0), caps.get(1).zip(caps.get(2))) {
+            (Some(w), Some((m, b))) => (w.as_str(), (m.as_str(), b.as_str())),
+            _ => continue,
+        };
+        let compact: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(&compact) {
+            Ok(b) if !b.is_empty() => b,
+            _ => continue,
+        };
+        count += 1;
+        let sub = mime.rsplit('/').next().unwrap_or("png").to_lowercase();
+        let ext: String = sub.chars().take(8).filter(|c| c.is_ascii_alphanumeric()).collect();
+        let ext = if ext.is_empty() { "png".to_string() } else { ext };
+        let cid = format!("dataimg-{}", count);
+        email.attachments.push(EmailAttachment {
+            filename: format!("内嵌图-{}.{}", count, ext),
+            mime_type: mime.to_string(),
+            size: bytes.len(),
+            parsed_text: String::new(),
+            raw_bytes: bytes,
+            content_id: Some(cid.clone()),
+            is_inline: true,
+        });
+        if !email.has_attachments { email.has_attachments = true; }
+        let replacement = format!("<img alt=\"\" src=\"cid:{}\">", cid);
+        html = html.replace(whole, &replacement);
+    }
+    if count > 0 {
+        email.body_html = html;
+    }
+    count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_email(html: &str) -> ParsedEmail {
+        ParsedEmail {
+            uid: 1, message_id: "m".into(), from_addr: "a@b.c".into(), from_name: "".into(),
+            to_addr: "".into(), cc_addr: "".into(), subject: "t".into(), body_text: "".into(),
+            body_html: html.into(), received_at: "2026-01-01".into(), has_attachments: false,
+            attachments: vec![],
+        }
+    }
+
+    #[test]
+    fn data_uri_image_becomes_attachment_and_cid_ref() {
+        // 1x1 PNG
+        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let mut e = sample_email(&format!("<p>hi</p><img src=\"data:image/png;base64,{}\" width=1>", b64));
+        let n = extract_data_uri_images(&mut e);
+        assert_eq!(n, 1);
+        assert_eq!(e.attachments.len(), 1);
+        assert!(e.attachments[0].is_inline);
+        assert_eq!(e.attachments[0].content_id.as_deref(), Some("dataimg-1"));
+        assert!(!e.body_html.contains("base64"), "base64 不应残留在正文");
+        assert!(e.body_html.contains("cid:dataimg-1"));
+        assert!(e.has_attachments);
+    }
+
+    #[test]
+    fn multi_images_get_distinct_cids_and_decode_fail_skipped() {
+        let ok = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let mut e = sample_email(&format!(
+            "<img src=\"data:image/png;base64,{}\"><img src=\"data:image/png;base64,!!!bad!!!\"><img src=\"data:image/jpeg;base64,{}\">",
+            ok, ok
+        ));
+        let n = extract_data_uri_images(&mut e);
+        assert_eq!(n, 2, "损坏的 base64 应跳过");
+        assert!(e.body_html.contains("cid:dataimg-1"));
+        assert!(e.body_html.contains("cid:dataimg-2"));
+        assert!(e.body_html.contains("!!!bad!!!"), "解码失败的保持原样由渲染端处理");
+    }
+
+    #[test]
+    fn no_data_uri_is_noop() {
+        let mut e = sample_email("<p>plain</p>");
+        assert_eq!(extract_data_uri_images(&mut e), 0);
+        assert_eq!(e.body_html, "<p>plain</p>");
+    }
+}
+
 

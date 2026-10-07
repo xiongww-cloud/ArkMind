@@ -20,14 +20,14 @@ const DOC_PRESET_FONT: &str = "宋体";
 const DOC_PRESET_BODY_HALF_PT: u16 = 24;
 /// 附注/图注 text_type=caption 小五 9pt（half-pt=18）
 const DOC_PRESET_CAPTION_HALF_PT: u16 = 18;
-/// 表格五号 10.5pt（half-pt=21）
-const DOC_PRESET_TABLE_HALF_PT: u16 = 21;
+/// 表格小四 12pt（half-pt=24，与正文一致；caption 仍小五）
+const DOC_PRESET_TABLE_HALF_PT: u16 = 24;
 /// 页眉页脚小五 9pt（half-pt=18）
 const DOC_PRESET_RUNNING_HALF_PT: u16 = 18;
 /// 正文行距 1.5 倍（rwml line_pct ×240 → w:line=360 lineRule=auto）
 const DOC_PRESET_LINE_PCT: f32 = 1.5;
 /// 标题 1-6 级字号（half-pt）：小二18/三号16/四号14/12/11/11 pt，字体同宋体
-/// （覆盖 rwml 内置西文惯例 32/28/…；标题行距保持单倍）
+/// （覆盖 rwml 内置西文惯例 32/28/…；标题行距与正文同为 1.5 倍）
 const DOC_PRESET_HEADING_HALF_PT: [u16; 6] = [36, 32, 28, 24, 22, 22];
 
 // ── xlsx 预设 ──
@@ -207,16 +207,17 @@ pub struct GeneratedDoc {
 // 公共 API
 // ═══════════════════════════════════════════════════════════════
 
-/// 生成 Word 文档并入库，返回文档对象
-pub fn write_docx(filename: &str, content: &Value, metadata: Option<&Value>) -> Result<GeneratedDoc, String> {
+/// 生成 Word 文档并入库，返回文档对象。owner_session：归属会话 id（relation 行 entity_id），
+/// 无会话上下文传空串（由 sweep 的 metadata 兜底分支保护）。
+pub fn write_docx(filename: &str, content: &Value, metadata: Option<&Value>, owner_session: &str) -> Result<GeneratedDoc, String> {
     let bytes = build_docx(content, metadata)?;
-    save_bytes(&bytes, filename, "docx", content)
+    save_bytes(&bytes, filename, "docx", content, owner_session)
 }
 
 /// 生成 Excel 文档并入库，返回文档对象
-pub fn write_xlsx(filename: &str, content: &Value) -> Result<GeneratedDoc, String> {
+pub fn write_xlsx(filename: &str, content: &Value, owner_session: &str) -> Result<GeneratedDoc, String> {
     let bytes = build_xlsx(content)?;
-    save_bytes(&bytes, filename, "xlsx", content)
+    save_bytes(&bytes, filename, "xlsx", content, owner_session)
 }
 
 /// 回读已生成文档的原始 content JSON（多轮修改：AI 先 read 结构再整体重新生成）
@@ -327,14 +328,24 @@ fn save_overwrite(bytes: &[u8], file_id: &str, file_name: &str, content: &Value)
 
 /// 向已生成的 docx 追加章节块并原地重建（长方案分块成文的组装端）。
 /// 文档属性（metadata）未持久化于 generated_docs，追加后按系统默认重建——可接受降级。
-pub fn append_docx(source_file_id: &str, new_content: &Value) -> Result<GeneratedDoc, String> {
+pub fn append_docx(source_file_id: &str, new_content: &Value, owner_session: &str) -> Result<GeneratedDoc, String> {
     let cur = read_content(source_file_id)?;
     if cur["file_type"].as_str() != Some("docx") {
         return Err("append 目前仅支持 docx；xlsx 请读取结构后整体重新 create".to_string());
     }
     let merged = merge_docx_children(&cur["content"], new_content)?;
     let bytes = build_docx(&merged, None)?;
-    save_overwrite(&bytes, cur["file_id"].as_str().unwrap_or(source_file_id), cur["file_name"].as_str().unwrap_or("文档"), &merged)
+    let doc = save_overwrite(&bytes, cur["file_id"].as_str().unwrap_or(source_file_id), cur["file_name"].as_str().unwrap_or("文档"), &merged)?;
+    // 跨会话续写：为当前会话补挂 generated 归属行（unique(file_id,entity_type,entity_id) 幂等），
+    // 保证删除本会话时该资产引用计数正确（他会话仍引用则资产保留）
+    if !owner_session.is_empty() {
+        let _ = database::run(
+            "INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator) \
+             VALUES(?1,?2,'generated',?3,?4,'AI')",
+            &[json!(uuid::Uuid::new_v4().to_string()), json!(doc.file_id), json!(owner_session), json!(doc.file_name)],
+        );
+    }
+    Ok(doc)
 }
 
 /// 回合末定稿翻正：本轮持久化到消息卡片的生成文档置 ready 并首次进解析管道。
@@ -396,11 +407,60 @@ pub fn delete_generated_doc(file_id: &str) {
     crate::commands::file_commands::release_asset_if_orphan(file_id);
 }
 
+/// 按归属会话收集生成的文档资产 id（在删除会话行/消息之前调用——与 collect_entity_asset_ids 同构）
+pub fn collect_generated_file_ids(session_ids: &[String]) -> Vec<String> {
+    if session_ids.is_empty() {
+        return vec![];
+    }
+    let ph = session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut vals: Vec<Value> = Vec::with_capacity(session_ids.len() + 1);
+    vals.extend(session_ids.iter().map(|s| json!(s)));
+    database::all(
+        &format!("SELECT DISTINCT file_id FROM file_relations WHERE entity_type='generated' AND entity_id IN ({})", ph),
+        &vals,
+    )
+    .unwrap_or_default()
+    .iter()
+    .filter_map(|r| r["file_id"].as_str().filter(|s| !s.is_empty()).map(String::from))
+    .collect()
+}
+
+/// 会话域统一释放（会话/消息已删后调用）：删这批会话的 generated 关系行 →
+/// 资产再无 generated 引用时清 content 快照 → release_asset_if_orphan 按剩余引用
+/// （他会话 generated 行 / 资料库 / 项目 / 邮件等）决定物理文件与资产行是否回收。
+pub fn release_generated_for_sessions(session_ids: &[String], file_ids: &[String]) {
+    if session_ids.is_empty() || file_ids.is_empty() {
+        return;
+    }
+    let ph = session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    for fid in file_ids {
+        let mut vals: Vec<Value> = vec![json!(fid)];
+        vals.extend(session_ids.iter().map(|s| json!(s)));
+        let _ = database::run(
+            &format!("DELETE FROM file_relations WHERE file_id=? AND entity_type='generated' AND entity_id IN ({})", ph),
+            &vals,
+        );
+        let remains: i64 = database::get(
+            "SELECT COUNT(*) AS c FROM file_relations WHERE file_id=?1 AND entity_type='generated'",
+            &[json!(fid)],
+        )
+        .ok()
+        .flatten()
+        .and_then(|r| r["c"].as_i64())
+        .unwrap_or(0);
+        if remains == 0 {
+            let _ = database::run("DELETE FROM generated_docs WHERE file_id=?1", &[json!(fid)]);
+        }
+        crate::commands::file_commands::release_asset_if_orphan(fid);
+    }
+    log::info!("[文档回收] {} 个会话释放处理了 {} 个生成文档资产", session_ids.len(), file_ids.len());
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 入库：CAS 落盘 + file_assets + file_relations + generated_docs
 // ═══════════════════════════════════════════════════════════════
 
-fn save_bytes(bytes: &[u8], filename: &str, ext: &str, content: &Value) -> Result<GeneratedDoc, String> {
+fn save_bytes(bytes: &[u8], filename: &str, ext: &str, content: &Value, owner_session: &str) -> Result<GeneratedDoc, String> {
     if bytes.is_empty() {
         return Err("生成的文件内容为空".to_string());
     }
@@ -456,12 +516,13 @@ fn save_bytes(bytes: &[u8], filename: &str, ext: &str, content: &Value) -> Resul
         }
     };
 
-    // file_relations(entity_type='generated')：预览/下载/复制的解析依赖此关系。
+    // file_relations(entity_type='generated')：预览/下载/复制的解析依赖此关系；
+    // entity_id=归属会话（删除会话与项目/笔记等域同构回收；无会话上下文为空由 sweep 兜底）。
     // 不走 add_relation：避免 upsert 进业务关系图谱（生成文档不是业务实体）。
     database::run(
         "INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator) \
-         VALUES(?1,?2,'generated','',?3,'AI')",
-        &[json!(uuid::Uuid::new_v4().to_string()), json!(&file_id), json!(&file_name)],
+         VALUES(?1,?2,'generated',?4,?3,'AI')",
+        &[json!(uuid::Uuid::new_v4().to_string()), json!(&file_id), json!(&file_name), json!(owner_session)],
     )
     .map_err(|e| e.to_string())?;
     // CAS 复用同内容时刷新显示名（同内容不同文件名的边界场景）
@@ -629,7 +690,9 @@ fn build_docx(content: &Value, metadata: Option<&Value>) -> Result<Vec<u8>, Stri
             return Err("content 缺少 children 数组（或 title/text 兜底字段）".to_string());
         }
         if let Some(t) = title {
-            builder = builder.heading_runs(1, vec![heading_run(t.as_str(), 1)]);
+            builder = builder.rich_paragraph(
+                rwml::ParagraphBuilder::new().runs(vec![heading_run(t.as_str(), 1)]).heading_level(1).line_pct(DOC_PRESET_LINE_PCT).build(),
+            );
         }
         for line in text.split('\n') {
             if !line.trim().is_empty() {
@@ -694,21 +757,16 @@ fn apply_docx_blocks(
                 }
                 let align = parse_docx_align(child);
                 let shading = docx_shading_color(child);
-                // 标题预设：宋体 + 级别字号（预设表唯一真相源，不接受外部字号字段）；heading_level 保留大纲/目录能力
+                // 标题预设：宋体 + 级别字号 + 1.5 倍行距（预设表唯一真相源）；heading_level 保留大纲/目录能力
                 let hrun = heading_run(&text, level);
-                if align.is_some() || shading.is_some() {
-                    // 带样式 → ParagraphBuilder（对齐/底纹）
-                    let mut pb = rwml::ParagraphBuilder::new().runs(vec![hrun]).heading_level(level);
-                    if let Some(a) = align {
-                        pb = pb.align(a);
-                    }
-                    if let Some((r, g, b)) = shading {
-                        pb = pb.shading(rwml::Color::rgb(r, g, b));
-                    }
-                    builder = builder.rich_paragraph(pb.build());
-                } else {
-                    builder = builder.heading_runs(level, vec![hrun]);
+                let mut pb = rwml::ParagraphBuilder::new().runs(vec![hrun]).heading_level(level).line_pct(DOC_PRESET_LINE_PCT);
+                if let Some(a) = align {
+                    pb = pb.align(a);
                 }
+                if let Some((r, g, b)) = shading {
+                    pb = pb.shading(rwml::Color::rgb(r, g, b));
+                }
+                builder = builder.rich_paragraph(pb.build());
             }
             "paragraph" | "p" => {
                 let align = parse_docx_align(child);
@@ -2581,7 +2639,7 @@ mod tests {
         assert!(xml.contains(r#"w:line="360""#), "正文应为 1.5 倍行距(w:line=360): {}", &xml[..xml.len().min(600)]);
     }
 
-    /// 标题：级别字号预设（H1=小二 36half/18pt）且保留 Heading 样式引用（大纲/目录能力）；标题行距单倍
+    /// 标题：级别字号预设（H1=小二 36half/18pt）且保留 Heading 样式引用（大纲/目录能力）；标题 1.5 倍行距
     #[test]
     fn docx_heading_preset_size_keeps_style() {
         let xml = docx_part(&json!({"children": [
@@ -2592,6 +2650,7 @@ mod tests {
         assert!(xml.contains(r#"w:sz w:val="32""#), "H2 应为 32half(16pt)");
         assert!(xml.contains("Heading1") || xml.contains("outlineLvl"), "标题应保留样式/大纲引用");
         assert!(xml.contains("宋体"), "标题字体应为宋体");
+        assert!(xml.contains(r#"w:line="360""#), "标题应为 1.5 倍行距(w:line=360)");
     }
 
     /// text_type 选择文本类型（caption=小五）；自由 font/size 字段已废除（传了忽略）
@@ -2617,7 +2676,7 @@ mod tests {
         let xml = docx_part(&json!({"children": [
             {"type": "table", "headers": ["列"], "rows": [["值"]]},
         ]}), "document.xml");
-        assert!(xml.contains(r#"w:sz w:val="21""#), "表格单元格应为五号 21half");
+        assert!(xml.contains(r#"w:sz w:val="24""#), "表格单元格应为小四 24half");
         assert!(xml.contains("宋体"), "表格单元格应为宋体");
     }
 

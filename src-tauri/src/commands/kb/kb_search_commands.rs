@@ -31,7 +31,7 @@ use serde_json::{json, Value};
     let project_id = data["projectId"].as_str().map(|s| s.to_string());
     if path.is_empty() || !std::path::Path::new(&path).exists() { return Ok(json!({"success":false,"error":"文件不存在"})); }
     // upload_file_core 内部已调用 notify_file_upload，文件进入推送管线处理
-    let (file_id, object_id) = crate::commands::file_commands::upload_file_core(&path, "library", &[], &name, "", "KB导入", None).await.map_err(|e| e.to_string())?;
+    let (file_id, object_id) = crate::commands::file_commands::upload_file_core(&path, "library", &[], &name, "", "KB导入", None, true).await.map_err(|e| e.to_string())?;
     if let Some(pid) = project_id.filter(|p| !p.is_empty()) {
         let _ = crate::database::run("INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id) VALUES(?1,?2,'project',?3)", &[serde_json::json!(uuid::Uuid::new_v4().to_string()), serde_json::json!(&object_id), serde_json::json!(&pid)]);
     }

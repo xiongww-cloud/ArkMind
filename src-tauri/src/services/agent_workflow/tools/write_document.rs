@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 pub(crate) fn execute(a: &Value) -> String {
     let file_type = a["file_type"].as_str().unwrap_or("").trim().to_lowercase();
     let action = a["action"].as_str().unwrap_or("create").trim().to_lowercase();
+    // 归属会话（workflow dispatch 注入）：generated relation 行 entity_id，删会话时同构回收
+    let owner_session = a["__session_id"].as_str().unwrap_or("");
 
     // ── read：回读原文档结构（多轮修改第一步）──
     if action == "read" {
@@ -44,7 +46,7 @@ pub(crate) fn execute(a: &Value) -> String {
         if content.is_null() {
             return err("append 需要 content：{children:[新章节块]}，只传本次新增内容。".to_string());
         }
-        return match doc_writer::append_docx(source_id, content) {
+        return match doc_writer::append_docx(source_id, content, owner_session) {
             Ok(doc) => ToolResultEnvelope {
                 result_type: "document_write_result".to_string(),
                 data: json!({
@@ -90,9 +92,9 @@ pub(crate) fn execute(a: &Value) -> String {
     }
 
     let result = if file_type == "docx" {
-        doc_writer::write_docx(filename, content, a.get("metadata"))
+        doc_writer::write_docx(filename, content, a.get("metadata"), owner_session)
     } else {
-        doc_writer::write_xlsx(filename, content)
+        doc_writer::write_xlsx(filename, content, owner_session)
     };
 
     match result {

@@ -15,22 +15,29 @@ pub use kb_memory_commands::*;
     for s in sessions.iter() {
         let id = s["id"].as_str().ok_or("missing session id")?;
         let _title = s["title"].as_str().or_else(|| s["name"].as_str()).unwrap_or("");
-        let updated_at = s["updatedAt"].as_str().or_else(|| s["updated_at"].as_str())
-            .unwrap_or(&chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string())
-            .to_string();
-        database::run("INSERT INTO chat_sessions(id,title,created_at,updated_at) VALUES(?1,?2,?3,?3) ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
+        // ★ 前端未传 updatedAt 时不写时间戳（重命名等元数据操作不得污染会话时间）；
+        //   仅新会话 INSERT 路径用当前时间兜底 created_at/updated_at
+        let updated_at = s["updatedAt"].as_str().or_else(|| s["updated_at"].as_str()).unwrap_or("").to_string();
+        database::run("INSERT INTO chat_sessions(id,title,created_at,updated_at) \
+             VALUES(?1,?2,COALESCE(NULLIF(?3,''),datetime('now','localtime')),COALESCE(NULLIF(?3,''),datetime('now','localtime'))) \
+             ON CONFLICT(id) DO UPDATE SET title=excluded.title, \
+             updated_at=COALESCE(NULLIF(excluded.updated_at,''), chat_sessions.updated_at)",
             &[json!(id), json!(_title), json!(updated_at)]).map_err(|e| e.to_string())?;
     }
     Ok(json!({"success":true}))
 }
 #[tauri::command] pub async fn kb_load_sessions() -> Result<Value, String> {
+    // ★ 会话时间权威口径 = 最后一条消息时间（last_msg_at）：updated_at 可被历史操作污染，
+    //   展示与排序都用消息时间；无消息会话回退 updated_at/created_at
     let mut rows = database::all(
-        "SELECT s.id, s.title, s.created_at, s.updated_at, \
+        "SELECT s.id, s.title, s.created_at, s.updated_at, lm.last_msg AS last_msg_at, \
          (SELECT json_group_array(json_object('id', m.id, 'role', m.role, 'content', m.content, 'status', m.status, 'created_at', m.created_at, 'metadata', m.metadata)) \
           FROM chat_messages m \
           WHERE m.id IN (SELECT id FROM chat_messages WHERE session_id=s.id ORDER BY id DESC LIMIT 10) \
           ORDER BY m.id ASC) as messages \
-         FROM chat_sessions s ORDER BY s.updated_at DESC LIMIT 100",
+         FROM chat_sessions s \
+         LEFT JOIN (SELECT session_id, MAX(created_at) AS last_msg FROM chat_messages GROUP BY session_id) lm ON lm.session_id = s.id \
+         ORDER BY COALESCE(lm.last_msg, s.updated_at, s.created_at) DESC LIMIT 100",
         &[],
     ).unwrap_or_default();
     for row in &mut rows {
@@ -65,50 +72,15 @@ pub use kb_memory_commands::*;
 }
 
 #[tauri::command] pub async fn kb_delete_session(session_id: String) -> Result<Value, String> {
-    // ★ 删除前收集本会话 AI 生成文档的 file_id（存于消息 metadata，会话删除后即失联）
-    let doc_file_ids = collect_session_document_ids(&session_id);
-    // 级联删除会话与消息
+    // ★ 生成文档联动：与项目/笔记等域同构——删除前按归属收集（file_relations entity_id=会话id），
+    //   会话删除（CASCADE 消息）后释放。跨会话同内容复用/转存资料库等引用由 release 计数天然保护。
+    let doc_file_ids = crate::services::doc_writer::collect_generated_file_ids(&[session_id.clone()]);
     database::run("DELETE FROM chat_sessions WHERE id=?", &[json!(&session_id)]).ok();
-    // ★ 联动删除生成的文档（本会话消息已删，此时剩余的 metadata 引用均来自其他会话）
-    for fid in &doc_file_ids {
-        let other_refs: i64 = database::get(
-            "SELECT COUNT(*) as cnt FROM chat_messages WHERE metadata IS NOT NULL AND metadata LIKE ?1",
-            &[json!(format!("%{}%", fid))],
-        ).ok().flatten().and_then(|r| r["cnt"].as_i64()).unwrap_or(0);
-        if other_refs > 0 {
-            // 同字节内容被其他会话复用（CAS 同 hash）→ 保留，避免他处文档卡片失效
-            log::info!("[删除会话] 文档 {} 仍被其他会话引用，保留", fid);
-            continue;
-        }
-        crate::services::doc_writer::delete_generated_doc(fid);
-    }
+    crate::services::doc_writer::release_generated_for_sessions(&[session_id.clone()], &doc_file_ids);
     if !doc_file_ids.is_empty() {
         log::info!("[删除会话] {} 联动处理了 {} 个生成文档", session_id, doc_file_ids.len());
     }
     Ok(json!({"success":true}))
-}
-
-/// 从会话消息的 metadata 中提取 AI 生成文档的 file_id 列表（去重）
-fn collect_session_document_ids(session_id: &str) -> Vec<String> {
-    let mut ids: Vec<String> = Vec::new();
-    let rows = database::all(
-        "SELECT metadata FROM chat_messages WHERE session_id=?1 AND metadata IS NOT NULL",
-        &[json!(session_id)],
-    ).unwrap_or_default();
-    for r in &rows {
-        let Some(meta) = r["metadata"].as_str() else { continue };
-        let Ok(v) = serde_json::from_str::<Value>(meta) else { continue };
-        if let Some(arr) = v["documents"].as_array() {
-            for d in arr {
-                if let Some(fid) = d["file_id"].as_str().filter(|s| !s.is_empty()) {
-                    ids.push(fid.to_string());
-                }
-            }
-        }
-    }
-    ids.sort();
-    ids.dedup();
-    ids
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -291,9 +263,18 @@ fn current_fab_session_id() -> Option<String> {
 /// 清空全部快呼会话（含轮换前的旧会话与遗留 fab-main-session）
 #[tauri::command]
 pub async fn kb_clear_fab_sessions() -> Result<Value, String> {
+    // ★ 生成文档联动：与 kb_delete_session 同构（此前直接删消息导致 fab 生成的文档成孤儿泄漏）
+    let fab_sids: Vec<String> = database::all(
+        "SELECT id FROM chat_sessions WHERE id LIKE 'fab-%'", &[],
+    )
+    .unwrap_or_default().iter()
+    .filter_map(|r| r["id"].as_str().map(String::from))
+    .collect();
+    let doc_file_ids = crate::services::doc_writer::collect_generated_file_ids(&fab_sids);
     database::run("DELETE FROM chat_messages WHERE session_id LIKE 'fab-%'", &[]).map_err(|e| e.to_string())?;
     database::run("DELETE FROM chat_sessions WHERE id LIKE 'fab-%'", &[]).map_err(|e| e.to_string())?;
     database::run("DELETE FROM system_settings WHERE key='fab_session_state'", &[]).map_err(|e| e.to_string())?;
+    crate::services::doc_writer::release_generated_for_sessions(&fab_sids, &doc_file_ids);
     Ok(json!({"success": true}))
 }
 

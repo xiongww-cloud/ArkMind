@@ -151,6 +151,7 @@ pub(crate) async fn upload_file_core(
     creator: &str,
     note: &str,
     folder_id: Option<&str>,
+    ingest_knowledge: bool,
 ) -> Result<(String, String), String> {
     // ★ 内容权威：魔数嗅探优先决定 file_ext，文件名（含 Outlook CID 垃圾后缀）仅作回退
     let fp0 = file_path.to_string();
@@ -181,6 +182,10 @@ pub(crate) async fn upload_file_core(
         }
         if entity_ids.is_empty() {
             add_relation_with_desc(&existing_id, entity_type, "", custom_name, creator, note);
+        }
+        // 复用分支：若本次要求知识摄入（首次由内嵌等旁路入库、此次经 UI 上传同内容文件），同样触发
+        if ingest_knowledge {
+            crate::services::knowledge_lifecycle::notify_file_upload(&existing_id);
         }
         return Ok((existing_id.clone(), existing_id));
     }
@@ -240,8 +245,10 @@ pub(crate) async fn upload_file_core(
         }
     }
 
-    // 通知知识库：解析 → 清洗 → 写入 source_data → 触发同步
-    crate::services::knowledge_lifecycle::notify_file_upload(&file_id);
+    // 通知知识库：解析 → 清洗 → 写入 source_data → 触发同步（内嵌图等渲染用资产 ingest_knowledge=false 跳过）
+    if ingest_knowledge {
+        crate::services::knowledge_lifecycle::notify_file_upload(&file_id);
+    }
 
     Ok((file_id.clone(), file_id))
 }
@@ -276,9 +283,13 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
     } else { vec![] };
     let custom_name = data["customName"].as_str().or(data["fileName"].as_str()).unwrap_or("");
     let creator = data["creator"].as_str().unwrap_or("");
-    let note = data["note"].as_str().or(data["description"].as_str()).unwrap_or("");
+    let mut note = data["note"].as_str().or(data["description"].as_str()).unwrap_or("").to_string();
+    // 产品物料不再区分类型：后端恒按"其他"落库（前端已移除类型选择，此处兜底防旧调用/外部注入）
+    if entity_type == "product" {
+        note = "其他".to_string();
+    }
     let folder_id = data["folderId"].as_str();
-    let (file_id, _) = upload_file_core(file_path, entity_type, &entity_ids, custom_name, creator, note, folder_id).await?;
+    let (file_id, _) = upload_file_core(file_path, entity_type, &entity_ids, custom_name, creator, &note, folder_id, true).await?;
     Ok(json!({"success":true,"fileId":file_id,"objectId":file_id,"id":file_id}))
 }
 
@@ -442,8 +453,13 @@ pub(crate) fn sweep_orphans() -> (usize, usize, usize) {
              WHEN 'partner' THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
              WHEN 'channel' THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
              WHEN 'vendor'  THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
-             WHEN 'customer' THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
-             ELSE 1 END = 0", &[])
+              WHEN 'customer' THEN EXISTS(SELECT 1 FROM partners pa WHERE pa.id=fr.entity_id) \
+              WHEN 'generated' THEN CASE \
+                  WHEN COALESCE(fr.entity_id,'')='' THEN \
+                      EXISTS(SELECT 1 FROM chat_messages m WHERE instr(COALESCE(m.metadata,''), fr.file_id)>0) \
+                      OR fr.created_at >= datetime('now','localtime','-30 minutes') \
+                  ELSE EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=fr.entity_id) END \
+              ELSE 1 END = 0", &[])
         .unwrap_or_default().iter()
         .filter_map(|r| Some((r["id"].as_str()?.to_string(), r["file_id"].as_str()?.to_string())))
         .collect();

@@ -1067,9 +1067,12 @@ fn ingest_pending_todos() {
     }
 }
 
+/// 兜底补漏：知识化但从未入过 source 的邮件（notify 丢失/崩溃窗口）→ 重新入队走统一队列路径。
+/// 不再直接 extract+INSERT：避免绕过队列的清洗/幂等 upsert，且内嵌图 OCR（extract_email 现含）
+/// 属重 IO，绝不能跑在数据中台主循环里。
 fn ingest_pending_emails() {
     let rows = match crate::database::all(
-        "SELECT e.id FROM emails e WHERE e.ai_category='knowledge' AND e.id NOT IN (SELECT source_id FROM source_data WHERE source_type='EMAIL') LIMIT 20",
+        "SELECT e.id FROM emails e WHERE e.ai_category='knowledge' AND e.is_deleted=0 AND NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type='EMAIL' AND sd.source_id=e.id) LIMIT 20",
         &[],
     ) {
         Ok(r) => r,
@@ -1082,40 +1085,13 @@ fn ingest_pending_emails() {
         return;
     }
     for row in &rows {
-        let id = row["id"].as_str().unwrap_or("").to_string();
+        let id = row["id"].as_str().unwrap_or("");
         if id.is_empty() {
             continue;
         }
-        
-        // 统一调用 source_doc_sync::extract_email() 获取邮件内容
-        let (title, content) = crate::services::source_doc_sync::extract_email(&id);
-        if content.is_empty() {
-            continue;
-        }
-        
-        // 检查是否已存在
-        if crate::database::get(
-            "SELECT 1 FROM source_data WHERE source_type='EMAIL' AND source_id=?1",
-            &[serde_json::json!(&id)],
-        )
-        .ok()
-        .flatten()
-        .is_some()
-        {
-            continue;
-        }
-        
-        // 写入 source_data（id = source_id）
-        crate::database::run(
-            "INSERT INTO source_data(id, source_type, source_id, title, content, updated_at) VALUES(?1, 'EMAIL', ?1, ?2, ?3, datetime('now','localtime'))",
-            &[serde_json::json!(&id), serde_json::json!(&title), serde_json::json!(&content)],
-        ).ok();
-        log::info!(
-            "[数据中台] 📧 邮件 {} 已摄入 ({} 字符)",
-            crate::preview(id, 8),
-            content.len()
-        );
+        crate::services::knowledge_lifecycle::notify_changed("EMAIL", id);
     }
+    log::info!("[数据中台] 📧 邮件补漏重新入队 {} 封（原直插路径已废弃，统一走队列）", rows.len());
 }
 
 // ═══════════════════════════════════════════════════════════════

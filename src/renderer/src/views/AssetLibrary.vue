@@ -11,10 +11,11 @@ import {
   exportFile, deleteFileFromDomain, previewFile, updateFileMeta, copyFileToClipboard,
   moveFileToFolder,
   createFolder, renameFolder, deleteFolder, moveFolder, reorderFolder,
+  fetchProjects, fileListProjectFiles,
 } from '@/api/db-client'
 
 interface Folder { id: string; name: string; node_type: string; allow_children: boolean; file_count: number; parent_id?: string|null; _depth?: number; _hasChildren?: boolean }
-interface AssetFile { id: string; file_ext?: string; file_size: number; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_remark?: string; lib_folder?: string|null }
+interface AssetFile { id: string; file_ext?: string; file_size: number; parsed_text?: string; updated_at: string; created_at: string; lib_gn?: string; lib_cn?: string; lib_remark?: string; lib_folder?: string|null; in_library?: boolean; project_names?: string }
 
 const UNCATEGORIZED = '未分类' as const
 
@@ -50,7 +51,8 @@ function buildTree(dirs: Folder[], collapsed: Set<string>, q: string): Folder[] 
   }
   function hasChildren(pid: string) { return children.some(c => c.parent_id === pid && (!q || matchSet.has(c.id))) }
   function buildChildren(pid: string, depth: number): Folder[] {
-    if (collapsed.has(pid)) return []
+    // 筛选期间忽略折叠态（命中路径自动展开，否则命中节点被折叠吞掉）
+    if (!q && collapsed.has(pid)) return []
     const direct = children.filter(c => c.parent_id === pid && (!q || matchSet.has(c.id)))
     return [...direct].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || (a.name || '').localeCompare(b.name || '')).flatMap(c => {
       const subs = buildChildren(c.id, depth + 1)
@@ -64,14 +66,143 @@ function buildTree(dirs: Folder[], collapsed: Set<string>, q: string): Folder[] 
   })
 }
 
-const folderTree = computed(() => buildTree(allFolders.value, collapsedFolders.value, ''))
+const folderTree = computed(() => buildTree(allFolders.value, collapsedFolders.value, navFilterQuery.value.toLowerCase().trim()))
 
-function selectFolder(id: string|null) { selectedFolderId.value = id; clearMultiSelect() }
+function selectFolder(id: string|null) { projectFilesMode.value = null; selectedFolderId.value = id; clearMultiSelect() }
+
+// ─── 项目文件（只读聚合视图；项目文件的增删/改名在项目详情管理） ─────────
+interface ProjectLite { id: string; name: string }
+interface ProjFolder { id: string; name: string; parent_id: string; sort_order: number; node_type: string; allow_children: boolean; file_count: number; _depth?: number; _hasChildren?: boolean }
+const projects = ref<ProjectLite[]>([])
+// null=非项目模式；{projectId:null}=顶层聚合；{projectId:id}=某项目（含其目录树）
+const projectFilesMode = ref<{ projectId: string|null }|null>(null)
+const selectedProjectFolderId = ref<string|null>(null)
+const projectTreeCache = ref<Record<string, { folders: ProjFolder[]; files: AssetFile[] }>>({})
+const allProjectFiles = ref<AssetFile[]>([])
+const projectSectionOpen = ref(false)
+const expandedProjects = ref<Set<string>>(new Set())
+
+function toggleProjectSection() {
+  projectSectionOpen.value = !projectSectionOpen.value
+  if (projectSectionOpen.value && projects.value.length === 0) { loadProjects() }
+}
+function toggleProjectExpanded(pid: string) {
+  const s = new Set(expandedProjects.value)
+  if (s.has(pid)) s.delete(pid); else s.add(pid)
+  expandedProjects.value = s
+  if (s.has(pid)) ensureProjectTree(pid)
+}
+async function loadProjects() { try { projects.value = await fetchProjects() as any } catch { projects.value = [] } }
+
+function normalizeProjFile(f: any): AssetFile {
+  return {
+    id: f.file_id, file_ext: f.file_ext, file_size: f.file_size,
+    created_at: f.created_at, updated_at: f.updated_at || f.created_at,
+    lib_gn: f.name || f.lib_gn || '', lib_remark: f.remark || '',
+    lib_folder: f.folder_id || null,
+    ...({ project_id: f.project_id, project_name: f.project_name } as any),
+  } as AssetFile
+}
+async function ensureProjectTree(pid: string) {
+  if (projectTreeCache.value[pid]) return
+  try {
+    const r: any = await fetchFileTree(pid)
+    const folders: ProjFolder[] = (r?.folders || []).map((f: any) => ({
+      id: f.id, name: f.name || '', parent_id: f.parent_id || '', sort_order: f.sort_order || 0,
+      node_type: '', allow_children: true, file_count: 0,
+    }))
+    const files: AssetFile[] = (r?.files || []).map((f: any) => normalizeProjFile({
+      ...f, project_id: pid, project_name: projects.value.find(p => p.id === pid)?.name || '',
+    }))
+    projectTreeCache.value = { ...projectTreeCache.value, [pid]: { folders, files } }
+  } catch { /* 保持无缓存，下次重试 */ }
+}
+async function selectProjectNode(pid: string|null) {
+  projectFilesMode.value = { projectId: pid }
+  selectedProjectFolderId.value = null
+  selectedFolderId.value = null
+  clearMultiSelect()
+  if (pid === null) {
+    try {
+      const r: any = await fileListProjectFiles()
+      allProjectFiles.value = ((r?.files || []) as any[]).map(normalizeProjFile)
+    } catch { allProjectFiles.value = [] }
+  } else {
+    if (!expandedProjects.value.has(pid)) toggleProjectExpanded(pid)
+    await ensureProjectTree(pid)
+  }
+}
+function selectProjectFolder(pid: string, fid: string|null) {
+  projectFilesMode.value = { projectId: pid }
+  selectedProjectFolderId.value = fid
+  clearMultiSelect()
+}
+// 项目目录树：完全展开平铺（buildTree 空折叠集），缩进渲染
+function projectFolderTree(pid: string): ProjFolder[] {
+  const t = projectTreeCache.value[pid]
+  if (!t) return []
+  return buildTree(t.folders as any, new Set<string>(), '') as any
+}
+const projectModeFiles = computed<AssetFile[]|null>(() => {
+  const m = projectFilesMode.value
+  if (!m) return null
+  if (m.projectId === null) return allProjectFiles.value
+  const t = projectTreeCache.value[m.projectId]
+  if (!t) return []
+  // 选项目名=该项目全部文件（含子目录）；选目录=该目录直属文件（与库侧精确匹配语义一致）
+  if (selectedProjectFolderId.value) return t.files.filter(f => (f as any).lib_folder === selectedProjectFolderId.value)
+  return t.files
+})
+const projectHeaderTitle = computed(() => {
+  const m = projectFilesMode.value
+  if (!m) return '文件'
+  if (m.projectId === null) return '项目文件'
+  const p = projects.value.find(x => x.id === m.projectId)
+  if (selectedProjectFolderId.value) {
+    const d = projectTreeCache.value[m.projectId]?.folders.find(f => f.id === selectedProjectFolderId.value)
+    return `${p?.name || '项目'} / ${d?.name || '目录'}`
+  }
+  return p?.name || '项目文件'
+})
+/// 文件行项目徽标：项目模式聚合行带 project_name；库列表（超集）里带项目关联的行有 project_names
+function fileProjectBadge(f: any): string {
+  if (projectFilesMode.value && projectFilesMode.value.projectId === null && f.project_name) return f.project_name
+  return f.project_names || ''
+}
+// 项目列表共用左栏导航筛选框（navFilterQuery）
+const filteredSectionProjects = computed(() => {
+  const q = navFilterQuery.value.toLowerCase().trim()
+  return q ? projects.value.filter(p => p.name.toLowerCase().includes(q)) : projects.value
+})
 
 // ─── Data load ────────────────────────────────────────────────────────
 onMounted(async () => { await loadFolders(); await loadFiles() })
 async function loadFolders() { try { const r: any = await fetchFileTree(); allFolders.value = r?.folders || []; rootFileCount.value = r?.rootFileCount || 0; collapsedFolders.value = new Set(allFolders.value.map(f => f.id)) } catch { allFolders.value = [] } }
-async function loadFiles() { loading.value = true; try { const r: any = await listGlobalFiles(); allFiles.value = Array.isArray(r) ? r : (r?.files || []) } catch { allFiles.value = [] }; loading.value = false }
+// 库列表只加载库域文件——项目文件不混入库视图（含"全部"），项目关联仅以徽标形式标注在库文件行上；
+// 项目域文件走左侧"项目"导航独立数据源（fileListProjectFiles → allProjectFiles / projectTreeCache）
+async function loadFiles() {
+  loading.value = true
+  try {
+    const [libR, projR] = await Promise.all([listGlobalFiles(), fileListProjectFiles()])
+    const libFiles: any[] = Array.isArray(libR) ? libR : ((libR as any)?.files || [])
+    const projFiles: any[] = ((projR as any)?.files || []) as any[]
+    const merged: any[] = libFiles.map(f => ({ ...f, in_library: true }))
+    const projNames = new Map<string, string[]>()
+    for (const pf of projFiles) {
+      const key = pf.file_id
+      if (!key) continue
+      const names = projNames.get(key) || []
+      if (pf.project_name && !names.includes(pf.project_name)) names.push(pf.project_name)
+      projNames.set(key, names)
+    }
+    for (const m of merged) {
+      const names = projNames.get(m.file_id || m.id)
+      if (names && names.length) m.project_names = names.join('、')
+    }
+    allFiles.value = merged
+  } catch { allFiles.value = [] }
+  loading.value = false
+}
 
 // ─── File display name ────────────────────────────────────────────────
 function fileDisplayName(f: AssetFile): string { return f.lib_gn || f.lib_cn || '未命名' }
@@ -133,14 +264,18 @@ function onPanelClick() { filterDropdownOpen.value = false }
 
 const filteredFiles = computed(() => {
   let result = allFiles.value
-  if (selectedFolderId.value) {
+  const pm = projectModeFiles.value
+  if (pm) {
+    result = pm
+  } else if (selectedFolderId.value) {
     if (selectedFolderId.value === '__uncategorized__') {
-      result = result.filter(f => !(f as any).lib_folder)
+      // 未分类=库域未归档文件；仅项目域的文件（无库位置）不混入
+      result = result.filter(f => !(f as any).lib_folder && (f as any).in_library !== false)
     } else {
       result = result.filter(f => (f as any).lib_folder === selectedFolderId.value)
     }
   }
-  const q = folderSearch.value.toLowerCase().trim()
+  const q = fileFilterQuery.value.toLowerCase().trim()
   if (q) result = result.filter(a => fileDisplayName(a).toLowerCase().includes(q))
   if (fileTypeFilter.value !== 'all') {
     const exts = filterCategoryMap[fileTypeFilter.value] || []
@@ -158,7 +293,10 @@ const filteredFiles = computed(() => {
 const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(filteredFiles as any)
 const pendingShiftDown = ref(false)
 
-function onFileMouseDown(e: MouseEvent, fid: string) {
+function onFileMouseDown(e: MouseEvent, f: AssetFile) {
+  // 项目模式只读；仅项目域的文件（无库位置）不启用多选与拖拽（批量移动/删除仅库域）
+  if (projectFilesMode.value || (f as any).in_library === false) return
+  const fid = f.id
   if ((e.target as HTMLElement).closest('input')) return
   if (e.shiftKey) {
     e.preventDefault()
@@ -208,7 +346,9 @@ const folderEditName = ref('')
 const addingNew = ref(false)
 const addingParentId = ref<string|null>(null)
 const newFolderName = ref('')
-const folderSearch = ref('')
+// ★ 筛选分离：左栏=导航结构（目录名+项目名）；右栏顶部=文件名（搜索文件名框）
+const navFilterQuery = ref('')
+const fileFilterQuery = ref('')
 
 function startAddFolder() { let name = '新文件夹'; let i = 1; while (isDuplicateFolderName(name, undefined, null)) { name = '新文件夹 ' + (++i) }; addingNew.value = true; addingParentId.value = null; newFolderName.value = name; setTimeout(() => { const el = document.querySelector<HTMLInputElement>('[data-folder-add]'); el?.focus(); el?.select() }, 50) }
 function startAddSubFolder(parentId: string) { let name = '新文件夹'; let i = 1; while (isDuplicateFolderName(name, undefined, parentId)) { name = '新文件夹 ' + (++i) }; addingNew.value = true; addingParentId.value = parentId; newFolderName.value = name; setTimeout(() => { const el = document.querySelector<HTMLInputElement>('[data-folder-add]'); el?.focus(); el?.select() }, 50) }
@@ -373,6 +513,12 @@ async function handleDelete(id: string) {
       <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">目录</span>
       <button @click="startAddFolder()" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="plus" size="12" stroke="2.5"/></button>
     </div>
+    <div class="px-2 py-1.5 border-b border-surface-100 shrink-0">
+      <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
+        <AppIcon name="search" size="12" class="text-surface-400 flex-shrink-0"/>
+        <input v-model="navFilterQuery" type="text" class="flex-1 min-w-0 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="筛选目录 / 项目..."/>
+      </div>
+    </div>
     <div class="flex-1" style="overflow-y:auto;overflow-x:clip">
       <div class="px-2 py-1">
         <!-- 全部文件 -->
@@ -433,6 +579,32 @@ async function handleDelete(id: string) {
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>未分类
           </button>
         </div>
+
+        <!-- 项目文件（只读聚合视图；项目文件的上传/改名/删除在项目详情管理） -->
+        <div class="mt-2 pt-1.5 border-t border-surface-100">
+          <div class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" style="padding-left:12px" :class="projectFilesMode && projectFilesMode.projectId===null ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-600 hover:bg-surface-100'" @click="selectProjectNode(null)">
+            <div v-if="projectFilesMode && projectFilesMode.projectId===null" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
+            <span @click.stop="toggleProjectSection()" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="projectSectionOpen?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
+            <AppIcon name="folder-open" size="13" class="flex-shrink-0 text-surface-400"/>项目文件
+          </div>
+          <template v-if="projectSectionOpen">
+            <div v-if="projects.length===0" class="py-1 text-[11px] text-surface-400" style="padding-left:32px">暂无项目</div>
+            <template v-for="p in filteredSectionProjects" :key="'pj-'+p.id">
+              <div class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" :style="{ paddingLeft: '28px' }" :class="projectFilesMode && projectFilesMode.projectId===p.id ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-600 hover:bg-surface-100'" @click="selectProjectNode(p.id)">
+                <div v-if="projectFilesMode && projectFilesMode.projectId===p.id && !selectedProjectFolderId" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
+                <span @click.stop="toggleProjectExpanded(p.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="expandedProjects.has(p.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
+                <AppIcon name="folder-open" size="13" class="flex-shrink-0 text-surface-400"/>
+                <span class="truncate flex-1 min-w-0" v-tooltip.auto="p.name">{{ p.name }}</span>
+              </div>
+              <template v-if="expandedProjects.has(p.id)">
+                <div v-for="d in projectFolderTree(p.id)" :key="'pfd-'+d.id" class="flex items-center gap-1.5 w-full py-1 text-xs text-left transition-colors rounded-lg cursor-pointer select-none" :style="{ paddingLeft: `${46+(d._depth||0)*14}px` }" :class="projectFilesMode && projectFilesMode.projectId===p.id && selectedProjectFolderId===d.id ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-500 hover:bg-surface-100'" @click="selectProjectFolder(p.id, d.id)">
+                  <AppIcon name="folder" size="12" class="flex-shrink-0 text-surface-400"/>
+                  <span class="truncate flex-1 min-w-0" v-tooltip.auto="d.name">{{ d.name }}</span>
+                </div>
+              </template>
+            </template>
+          </template>
+        </div>
       </div>
     </div>
   </aside>
@@ -442,11 +614,11 @@ async function handleDelete(id: string) {
   <!-- File list -->
   <div class="flex-1 flex flex-col overflow-hidden">
     <div class="flex items-center justify-between px-3 h-10 border-b border-surface-100 shrink-0">
-      <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">文件</span>
+      <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">{{ projectHeaderTitle }}</span>
       <div class="flex items-center gap-1.5">
         <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
           <AppIcon name="search" size="12" class="text-surface-400"/>
-          <input v-model="folderSearch" type="text" class="w-[120px] bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索文件名..."/>
+          <input v-model="fileFilterQuery" type="text" class="w-[120px] bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索文件名..."/>
         </div>
         <div class="relative">
           <button
@@ -464,14 +636,14 @@ async function handleDelete(id: string) {
             </template>
           </div>
         </div>
-        <button @click="handleUpload" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors"><AppIcon name="plus" size="10" stroke="2.5"/>上传文件</button>
+        <button v-if="!projectFilesMode" @click="handleUpload" class="flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors"><AppIcon name="plus" size="10" stroke="2.5"/>上传文件</button>
       </div>
     </div>
     <div class="flex-1 overflow-y-auto p-2 space-y-1">
       <div v-for="f in filteredFiles" :key="f.id"
         class="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200"
         :class="[isSelected(f.id) ? 'bg-blue-50/70 border-blue-200' : '', isDragging && dragFileId===f.id ? 'select-none' : '']"
-        @mousedown="onFileMouseDown($event, f.id)"
+        @mousedown="onFileMouseDown($event, f)"
       >
         <div class="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[9px] font-bold tracking-wider" :class="fileTypeColor(f.file_ext)">{{ (f.file_ext || '').toUpperCase() || 'FILE' }}</div>
         <div class="flex-1 min-w-0">
@@ -488,24 +660,32 @@ async function handleDelete(id: string) {
             />
           </template>
           <template v-else>
-            <span class="text-[12px] text-surface-800 truncate inline-block max-w-full hover:text-blue-600 transition-colors cursor-pointer" v-tooltip.auto="fileDisplayName(f)" @click="onFileCardClick($event, f.id)">{{ fileDisplayName(f) }}</span>
+            <div class="flex items-center gap-1 min-w-0">
+              <span class="text-[12px] text-surface-800 truncate hover:text-blue-600 transition-colors cursor-pointer min-w-0" v-tooltip.auto="fileDisplayName(f)" @click="onFileCardClick($event, f.id)">{{ fileDisplayName(f) }}</span>
+              <span v-if="fileProjectBadge(f)" class="flex-shrink-0 px-1 py-px rounded bg-blue-50 text-brand-600 text-[9px] leading-none" v-tooltip="fileProjectBadge(f)">项目</span>
+            </div>
           </template>
-          <div v-if="editingRemarkFileId === f.id" class="mt-1">
+          <div v-if="editingRemarkFileId === f.id && !projectFilesMode" class="mt-1">
             <input v-model="editingRemarkValue" data-lib-remark-input class="w-full text-[11px] text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text" placeholder="输入备注..." @keyup.enter="saveRemark(f)" @blur="saveRemark(f)" @mousedown.stop @keyup.escape="cancelEditRemark()"/>
           </div>
-          <div v-else class="mt-0.5 flex items-center gap-1">
-            <p v-if="f.lib_remark" class="text-[10px] text-surface-400 truncate cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">{{ f.lib_remark }}</p>
-            <p v-else class="text-[10px] text-surface-300 cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">无备注</p>
-            <button @mousedown.stop @click.stop="startEditRemark(f)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" v-tooltip="'编辑备注'"><AppIcon name="edit" size="10"/></button>
+          <div v-else class="mt-0.5 flex items-center gap-1 min-w-0">
+            <template v-if="projectFilesMode || (f as any).in_library === false">
+              <p class="text-[10px] truncate" :class="f.lib_remark ? 'text-surface-400' : 'text-surface-300'">{{ f.lib_remark || '无备注' }}</p>
+            </template>
+            <template v-else>
+              <p v-if="f.lib_remark" class="text-[10px] text-surface-400 truncate cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">{{ f.lib_remark }}</p>
+              <p v-else class="text-[10px] text-surface-300 cursor-pointer hover:text-blue-600" @click="startEditRemark(f)">无备注</p>
+              <button @mousedown.stop @click.stop="startEditRemark(f)" class="shrink-0 w-4 h-4 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors opacity-0 group-hover:opacity-100" v-tooltip="'编辑备注'"><AppIcon name="edit" size="10"/></button>
+            </template>
           </div>
         </div>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatSize(f.file_size) }}</span>
         <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ (f.updated_at||f.created_at||'').slice(0,10) }}</span>
         <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-            <button @mousedown.stop @click.stop="startFileRename(f)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="edit" size="13"/></button>
+            <button v-if="!projectFilesMode && (f as any).in_library !== false" @mousedown.stop @click.stop="startFileRename(f)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600"><AppIcon name="edit" size="13"/></button>
           <button @click.stop="handleDownload(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'下载'"><AppIcon name="download" size="13"/></button>
           <button @click.stop="handleCopyFile(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'复制文件到剪贴板'"><AppIcon name="copy" size="13"/></button>
-          <button @click.stop="handleDelete(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="trash" size="13"/></button>
+          <button v-if="!projectFilesMode && (f as any).in_library !== false" @click.stop="handleDelete(f.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="trash" size="13"/></button>
         </div>
       </div>
       <div v-if="filteredFiles.length === 0" class="text-center py-8"><p class="text-xs text-surface-400">暂无文件</p></div>

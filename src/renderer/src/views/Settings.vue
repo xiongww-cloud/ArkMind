@@ -375,7 +375,6 @@ async function loadAiConfig() {
     }
     loadVecConfig(config)
     loadVisionConfig(config)
-    loadSpriteConfig()
     webSearchKey.value = config.webSearch?.apiKey || ''
     loadNotifyConfig()
   loadHotkeyConfig()
@@ -730,22 +729,17 @@ const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
 import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, profileFactSave, type LoopStatus, type ProfileFact } from '@/api/notification-client'
-import { getSpriteEnabled, getChatHotkey, setChatHotkey, fetchUserProfile, updateUserProfile } from '@/api/db-client'
+import { getChatHotkey, setChatHotkey, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
 const notifyInterval = ref(60)
 const notifyIntervalOpen = ref(false)
-// ─── 分析师配置（附加要求=单主体弹窗编辑；核心规则与观察池=弹窗只读）───
+// ─── 分析师配置（附加要求=单主体弹窗编辑；核心规则与观察池对用户隐藏，不提供查看入口）───
 const focusText = ref('')                 // analysis_focus 正文（整体一段提示词）
 const focusModalOpen = ref(false)         // 编辑弹窗
 const focusDraft = ref('')                // 弹窗草稿
 const focusSaving = ref(false)
 const FOCUS_MAX = 2000
-const coreRulesText = ref('')             // 后端下发的内核提示词（只读）
-const coreRulesModalOpen = ref(false)     // 核心规则查看弹窗
-const watchText = ref('')                 // 当前观察池（只读）
-const watchModalOpen = ref(false)         // 观察池查看弹窗
-const watchCount = computed(() => watchText.value ? watchText.value.split('\n').filter(l => l.trim()).length : 0)
 const loopStatus = ref<LoopStatus>({ success: true, running: false, last_check_at: '', next_check_at: '' })
 let loopStatusTimer: ReturnType<typeof setInterval> | null = null
 
@@ -756,16 +750,6 @@ const notifyIntervalOptions = [
   { value: 720, label: '12 小时' },
   { value: 1440, label: '24 小时' },
 ]
-// ─── Sprite Settings ────────────────────────────────────────
-// 仅状态展示（设置页状态卡）；开关已从设置页与托盘菜单移除
-const spriteEnabled = ref(false)
-
-async function loadSpriteConfig() {
-  try {
-    spriteEnabled.value = await getSpriteEnabled()
-  } catch {}
-}
-
 const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.value === notifyInterval.value)?.label || '1 小时')
 
 // ─── 浮窗快呼快捷键 ─────────────────────────────────────────
@@ -860,8 +844,6 @@ async function loadNotifyConfig() {
       notifyInterval.value = r.config.startup_only === '1' ? 0 : (parseInt(r.config.interval_minutes) || 60)
       focusText.value = (r.config.analysis_focus || '').trim()
     }
-    coreRulesText.value = (r as any).analysis_prompt_default || ''
-    watchText.value = ((r as any).analyst_watch || '').trim()
   } catch {}
 }
 
@@ -1699,14 +1681,17 @@ async function saveProfileEditor() {
             <span v-if="notifyEnabled && loopStatus.running && loopStatus.next_check_at" class="text-[10px] text-surface-400 shrink-0">下次 {{ loopStatus.next_check_at.slice(11) || loopStatus.next_check_at }}</span>
           </div>
         </div>
-        <!-- 桌面精灵 -->
+        <!-- 数据概览 -->
         <div class="bg-white rounded-2xl border border-surface-200 p-3 shadow-sm hover:shadow-md transition-shadow">
           <div class="flex items-center gap-1.5 mb-1.5">
-            <div class="w-6 h-6 rounded-lg bg-indigo-50 flex items-center justify-center">
-              <AppIcon name="chat-ai" size="14" class="text-indigo-600" />
+            <div class="w-6 h-6 rounded-lg bg-sky-50 flex items-center justify-center">
+              <AppIcon name="archive" size="14" class="text-sky-600" />
             </div>
-            <span class="text-[11px] text-surface-400">桌面精灵</span>
-          <div class="text-[18px] font-bold" :class="spriteEnabled ? 'text-indigo-600' : 'text-surface-300'">{{ spriteEnabled ? '已启用' : '已关闭' }}</div>
+            <span class="text-[11px] text-surface-400">数据概览</span>
+          </div>
+          <div class="flex items-baseline justify-between">
+            <div class="text-[18px] font-bold text-surface-900">{{ pipelineData?.source?.total ?? '-' }}<span class="text-[10px] font-normal text-surface-400 ml-1">知识对象</span></div>
+            <span class="text-[10px] text-surface-400 shrink-0">{{ pipelineData?.knowledge?.children ?? 0 }} 碎片</span>
           </div>
         </div>
         <!-- 知识管线 -->
@@ -1945,7 +1930,7 @@ async function saveProfileEditor() {
                 </div>
               </div>
               </div>
-              <!-- 附加分析要求：单主体弹窗编辑；核心规则/观察池均为弹窗只读查看 -->
+              <!-- 附加分析要求：单主体弹窗编辑（核心规则/观察池对用户隐藏，无查看入口） -->
               <div class="border-t border-surface-100 pt-3">
                 <div class="flex items-center justify-between gap-2">
                   <div class="min-w-0">
@@ -1953,8 +1938,6 @@ async function saveProfileEditor() {
                     <p class="text-[10px] text-surface-400">
                       <span v-if="focusText">已添加 · 下次分析生效</span>
                       <span v-else>可选：给分析师添加定制要求，核心规则不变</span>
-                      <button v-if="coreRulesText" @click="coreRulesModalOpen = true" class="ml-2 text-brand-600 hover:underline">查看核心规则</button>
-                      <button v-if="watchText" @click="watchModalOpen = true" class="ml-2 text-brand-600 hover:underline">查看观察池</button>
                     </p>
                   </div>
                   <div class="flex items-center gap-2 flex-shrink-0">
@@ -1983,46 +1966,6 @@ async function saveProfileEditor() {
                       <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
                         <button @click="closeFocusModal" class="btn-secondary text-xs">取消</button>
                         <button @click="saveFocusModal" :disabled="focusSaving" class="btn-primary text-xs">{{ focusSaving ? '保存中...' : '保存' }}</button>
-                      </div>
-                    </div>
-                  </div>
-                </Transition>
-              </Teleport>
-
-              <!-- 观察池查看弹窗（只读） -->
-              <Teleport to="body">
-                <Transition name="modal-fade">
-                  <div v-if="watchModalOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="watchModalOpen = false">
-                    <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] flex flex-col">
-                      <div class="px-5 pt-4 pb-2 border-b border-surface-100 flex items-center justify-between gap-2">
-                        <h3 class="text-[14px] font-semibold text-surface-800">观察池</h3>
-                        <span class="text-[10px] text-surface-400">{{ watchCount }} 条 · 每条保留 7 天、至多 30 条，未升级为通知自动过期/淘汰</span>
-                      </div>
-                      <div class="px-5 py-3 max-h-[60vh] overflow-y-auto">
-                        <pre class="w-full whitespace-pre-wrap text-[11px] leading-relaxed bg-amber-50/50 border border-amber-100 rounded-lg px-2.5 py-2 text-surface-600">{{ watchText }}</pre>
-                      </div>
-                      <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end">
-                        <button @click="watchModalOpen = false" class="btn-secondary text-xs">关闭</button>
-                      </div>
-                    </div>
-                  </div>
-                </Transition>
-              </Teleport>
-
-              <!-- 核心规则查看弹窗（只读） -->
-              <Teleport to="body">
-                <Transition name="modal-fade">
-                  <div v-if="coreRulesModalOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="coreRulesModalOpen = false">
-                    <div class="bg-white rounded-2xl shadow-2xl w-[640px] max-w-[90vw] flex flex-col">
-                      <div class="px-5 pt-4 pb-2 border-b border-surface-100 flex items-center justify-between gap-2">
-                        <h3 class="text-[14px] font-semibold text-surface-800">分析师核心规则</h3>
-                        <span class="text-[10px] text-surface-400">系统内置硬规则，不可修改；「附加分析要求」仅可调整关注面与语气</span>
-                      </div>
-                      <div class="px-5 py-3 max-h-[65vh] overflow-y-auto">
-                        <pre class="w-full whitespace-pre-wrap text-[10px] leading-relaxed bg-surface-50 border border-surface-100 rounded-lg px-2.5 py-2 text-surface-500">{{ coreRulesText }}</pre>
-                      </div>
-                      <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end">
-                        <button @click="coreRulesModalOpen = false" class="btn-secondary text-xs">关闭</button>
                       </div>
                     </div>
                   </div>

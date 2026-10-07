@@ -17,8 +17,8 @@ pub(crate) const SUB_AGENT_AUTO_TOOLS: &[&str] = &["ext_tool_report"];
 /// 【可用专业 Agent】注入清单、提示词教学句全部消费此表。
 /// 用户写自定义 Agent 提示词时照弹窗中文名即可，无需接触真实函数名；新增工具必须在此登记（有测试兜底）。
 pub(crate) const TOOL_LABELS: &[(&str, &str, &str)] = &[
-    ("ext_tool_search", "知识搜索", "全文+语义检索文档、笔记、技术资料"),
-    ("ext_tool_object", "数据查询", "查看/筛选/统计业务对象"),
+    ("ext_tool_search", "知识搜索", "语义检索正文，可用 scope 限定笔记本/目录/文件/项目"),
+    ("ext_tool_object", "数据查询", "查看/筛选/统计业务对象（含文件目录笔记本）"),
     ("ext_tool_chunk_navigate", "文档翻页", "在知识块间前后翻页阅读"),
     ("ext_tool_relations", "关联查询", "查看实体间的关联关系"),
     ("ext_tool_manage_project", "项目管理", "创建/编辑/删除项目及动态"),
@@ -50,6 +50,7 @@ pub(crate) fn tool_display_name(name: &str) -> &'static str {
 }
 
 pub(crate) mod common;
+pub(crate) mod entity_ref;
 pub(crate) mod search;
 pub(crate) mod chunk_navigate;
 pub(crate) mod object;

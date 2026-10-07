@@ -6,7 +6,7 @@ import { useSelectionStore } from '@/stores/selection'
 import { confirm, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
-import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, getMaterialAssociations, updateMaterialAssociations, updateFileMeta, exportWriteBuffer, removeTempFile } from '@/api/db-client'
+import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, getMaterialAssociations, updateMaterialAssociations, updateFileMeta, exportWriteBuffer, removeTempFile, copyFileToClipboard } from '@/api/db-client'
 import { exportProductsToExcel } from '@/utils/productExcel'
 import ExcelImportWizard from '@/components/shared/ExcelImportWizard.vue'
 import type { ImportField, RawDataRow, SheetData } from '@/utils/excelRaw'
@@ -325,8 +325,6 @@ const materialPasteArea = ref<HTMLTextAreaElement | null>(null)
 // 待上传物料：name 不含扩展名，ext 单独存（编辑文件名不涉及后缀）；粘贴上传中 path 为 ''，进度看 uploading/progress
 const materialFiles = ref<Array<{ id?: string; path: string; name: string; ext: string; _temp?: boolean; uploading?: boolean; progress?: number; _cancelled?: boolean }>>([])
 const materialDragOver = ref(false)
-const materialType = ref('彩页')
-const materialNote = ref('')
 
 /** 拆分为 名称 + 扩展名（名称不含后缀，ext 小写） */
 function splitNameExt(fileName: string): { name: string; ext: string } {
@@ -470,25 +468,13 @@ async function readMaterialClipboard() {
   } catch (err) { console.warn('[ProductCenter] macos clipboard read failed:', err) }
 }
 
-const materialTypeOptions = ['彩页', '白皮书', '检测报告', '其他']
-const materialTypeLabels: Record<string, string> = { 'BROCHURE': '彩页', 'WHITEPAPER': '白皮书', 'TEST_REPORT': '检测报告', 'OTHER': '其他' }
-const materialTypeColors: Record<string, string> = { 'BROCHURE': 'bg-blue-50 text-blue-600', 'WHITEPAPER': 'bg-purple-50 text-purple-600', 'TEST_REPORT': 'bg-amber-50 text-amber-600', 'OTHER': 'bg-slate-100 text-slate-500' }
-const materialTypeLabelsExt: Record<string, string> = {
-  'BROCHURE': '彩页', 'WHITEPAPER': '白皮书', 'TEST_REPORT': '检测报告', 'OTHER': '其他',
-  '彩页': '彩页', '白皮书': '白皮书', '检测报告': '检测报告', '其他': '其他',
-}
-const materialTypeColorsExt: Record<string, string> = {
-  'BROCHURE': 'bg-blue-50 text-blue-600', 'WHITEPAPER': 'bg-purple-50 text-purple-600', 'TEST_REPORT': 'bg-amber-50 text-amber-600', 'OTHER': 'bg-slate-100 text-slate-500',
-  '彩页': 'bg-blue-50 text-blue-600', '白皮书': 'bg-purple-50 text-purple-600', '检测报告': 'bg-amber-50 text-amber-600', '其他': 'bg-slate-100 text-slate-500',
-}
-function materialTypeLabel(m: any) { return materialTypeLabelsExt[m.mapping_type] || materialTypeLabelsExt[m.description] || m.mapping_type || m.description || '其他' }
-function materialTypeColor(m: any) { return materialTypeColorsExt[m.mapping_type] || materialTypeColorsExt[m.description] || materialTypeColorsExt['OTHER'] }
+// 物料不再区分类型（后端恒记"其他"），列表不展示类型标识
 
 async function loadMaterials() { if (!selectedProductId.value) return; try { const r: any = await listMaterials(selectedProductId.value); materials.value = r?.materials || r || [] } catch { materials.value = [] } }
 
 async function openMaterialUpload() {
   assocMaterialId.value = null // clear associate mode
-  materialFiles.value = []; materialType.value = '彩页'; materialNote.value = ''
+  materialFiles.value = []
   materialAssoc.value = { productIds: [selectedProductId.value!], seriesIds: [] }
   modalCollapsed.value = Object.fromEntries((store.series as any[]).map((s: any) => [s.id, true]))
   materialUploadOpen.value = true
@@ -548,7 +534,7 @@ async function confirmUpload() {
     const name = ext ? `${baseName}.${ext}` : baseName
     const task = upStart(name)
     try {
-      await uploadFile({ filePath: path, fileName: name, fileExt: ext, entityType: 'product', entityIds: productIds, customName: name, note: materialType.value, creator: '' })
+      await uploadFile({ filePath: path, fileName: name, fileExt: ext, entityType: 'product', entityIds: productIds, customName: name, note: '其他', creator: '' })
       ok++
       upDone(task)
     } catch (e: any) {
@@ -607,6 +593,13 @@ function cancelRenameMaterial() { editingMaterialId.value = null }
 async function handleDownloadMaterial(mid: string) { materialDownloading.value = mid; try { const r = await exportFile(mid); if (!r?.success) { toast({ message: '下载失败: ' + (r?.error || ''), type: 'error' }) } } catch (e: any) { toast({ message: '下载失败: ' + (typeof e === 'string' ? e : (e.message || '未知错误')), type: 'error' }) }; materialDownloading.value = null }
 async function handlePreviewMaterial(mid: string) {
   try { const r = await previewFile(mid); if (!r?.success) { toast({ message: '预览失败: ' + (r?.error || ''), type: 'error' }) } } catch (e: any) { toast({ message: '预览失败: ' + (typeof e === 'string' ? e : (e.message || '未知错误')), type: 'error' }) }
+}
+async function handleCopyMaterial(mid: string) {
+  try {
+    const r = await copyFileToClipboard(mid)
+    if (r?.success) toast({ message: `已复制「${r.fileName || '文件'}」，可粘贴到文件夹或聊天软件`, type: 'success' })
+    else toast({ message: r?.error || '复制失败', type: 'error' })
+  } catch (e: any) { toast({ message: '复制失败: ' + (e?.message || e || ''), type: 'error' }) }
 }
 async function openAssocMaterial(m: any) {
   assocMaterialId.value = m.id
@@ -817,7 +810,6 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                 class="flex items-center gap-2 px-3 py-2.5 bg-surface-50 rounded-lg group hover:bg-surface-100 transition-colors"
                 :class="editingMaterialId === m.id ? 'cursor-default' : ''"
               >
-                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium flex-shrink-0" :class="materialTypeColor(m)">{{ materialTypeLabel(m) }}</span>
                 <div class="flex-1 min-w-0">
                   <template v-if="editingMaterialId === m.id">
                     <input
@@ -832,14 +824,15 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                     />
                   </template>
                   <template v-else>
-                    <p class="text-[12px] font-medium text-surface-800 truncate cursor-pointer hover:text-blue-600 transition-colors" @click="handlePreviewMaterial(m.id)">{{ m.global_name || m.custom_name || '未命名' }}</p>
+                    <p class="text-[12px] font-medium text-surface-800 truncate cursor-pointer hover:text-blue-600 transition-colors" v-tooltip.auto="m.global_name || m.custom_name || '未命名'" @click="handlePreviewMaterial(m.id)">{{ m.global_name || m.custom_name || '未命名' }}</p>
                   </template>
                   <p class="text-[9px] text-surface-400 mt-0.5">{{ formatDateTime(m.created_at) }}</p>
                 </div>
                 <button @mousedown.stop @click.stop="startRenameMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'重命名'"><AppIcon name="edit" size="13"/></button>
                 <button @click.stop="handleDownloadMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'下载'"><AppIcon name="download" size="13"/></button>
+                <button @click.stop="handleCopyMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'复制文件到剪贴板'"><AppIcon name="copy" size="13"/></button>
                 <button @click.stop="openAssocMaterial(m)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'关联产品'"><AppIcon name="link" size="13"/></button>
-                <button @click.stop="handleDeleteMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="13"/></button>
+                <button @click.stop="handleDeleteMaterial(m.id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100" v-tooltip="'删除'"><AppIcon name="trash" size="13"/></button>
               </div>
             </div>
             <p v-else class="text-xs text-surface-300 py-2 text-center">暂无物料，点击右上角添加</p>
@@ -940,15 +933,27 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
           </div>
         </div>
 
-        <!-- Material type — only in upload mode -->
-        <div><p class="text-[10px] text-surface-400 uppercase tracking-wider mb-2">物料类型</p><div class="flex gap-2"><button v-for="mt in materialTypeOptions" :key="mt" @click="materialType = mt" class="px-3 py-1.5 text-xs rounded-lg transition-colors" :class="materialType===mt?'bg-brand-50 text-brand-700 font-medium border border-brand-200':'border border-surface-200 text-surface-600 hover:bg-surface-50'">{{ mt }}</button></div></div>
         </template>
 
         <!-- Associated products — collapsible tree -->
         <div><p class="text-[10px] text-surface-400 uppercase tracking-wider mb-2">关联产品</p>
-          <div class="border border-surface-200 rounded-lg h-[240px] overflow-y-auto">
-            <div class="px-3 py-2 border-b border-surface-100"><div class="flex items-center gap-1.5 bg-surface-50 rounded-lg px-2.5 py-1"><AppIcon name="search" size="12" class="text-surface-400"/><input v-model="materialSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索产品..."/></div></div>
-            <div class="p-2">
+          <div class="border border-surface-200 rounded-lg h-[240px] flex flex-col overflow-hidden">
+            <div class="px-3 py-2 border-b border-surface-100 flex-shrink-0"><div class="flex items-center gap-1.5 bg-surface-50 rounded-lg px-2.5 py-1"><AppIcon name="search" size="12" class="text-surface-400"/><input v-model="materialSearch" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索产品..."/></div></div>
+            <div class="flex-1 overflow-y-auto min-h-0">
+            <!-- 检索模式：命中产品直接平铺展示（不再藏在折叠目录树里） -->
+            <div v-if="materialSearch.trim()" class="p-2">
+              <div v-for="p in assocProductSearch" :key="'ms-'+p.id" class="flex items-center gap-1.5 w-full px-2 py-1 text-[11px] cursor-pointer rounded hover:bg-surface-50" :class="p.id === selectedProductId ? 'text-surface-400 cursor-default' : ''" @click="p.id !== selectedProductId && toggleAssocProduct(p.id)">
+                <div class="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0" :class="materialAssoc.productIds.includes(p.id) || p.id === selectedProductId ?'bg-brand-500 border-brand-500 text-white':'border-surface-300'">
+                  <svg v-if="materialAssoc.productIds.includes(p.id) || p.id === selectedProductId" class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+                </div>
+                <span class="truncate">{{ p.name||'未命名' }}</span>
+                <span v-if="p.id === selectedProductId" class="text-[10px] text-surface-400 flex-shrink-0">(当前)</span>
+                <span v-if="p.seriesName" class="text-[10px] text-surface-300 truncate ml-auto flex-shrink-0 max-w-[45%]">{{ p.seriesName }}</span>
+              </div>
+              <div v-if="!assocProductSearch.length" class="py-4 text-center text-[11px] text-surface-400">未找到匹配产品</div>
+            </div>
+            <!-- 浏览模式：目录树 -->
+            <div v-else class="p-2">
               <template v-for="s in modalTree" :key="'mdl-'+s.id">
                 <div class="flex items-center gap-1.5 w-full px-2 py-1 text-xs cursor-pointer rounded hover:bg-surface-50" @click="toggleModalSeries(s.id)" :style="{ paddingLeft: `${8 + (s._depth||0) * 16}px` }">
                   <span class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0" @click.stop="toggleModalSeries(s.id)">
@@ -968,6 +973,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
                   </div>
                 </template>
               </template>
+            </div>
             </div>
           </div>
         </div>

@@ -2,11 +2,11 @@
 import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { emailGetDetail, emailRenderHtml, emailDelete, type EmailDetail, type EmailAttachment } from '@/api/email-client'
-import { openFile } from '@/api/db-client'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { lazyLoadEmailImages } from '@/utils/emailLazyImages'
 import { renderedCacheGet, renderedCacheSet } from '@/utils/emailImageCache'
+import EmailAttachmentCards from '@/components/email/EmailAttachmentCards.vue'
 import DOMPurify from 'dompurify'
 
 const route = useRoute()
@@ -99,12 +99,6 @@ function formatDate(dateStr: string): string {
   }
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return bytes + 'B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + 'MB'
-}
-
 function getCategoryLabel(cat: string): string {
   const map: Record<string, string> = {
     knowledge: '已入库',
@@ -133,15 +127,6 @@ onBeforeUnmount(() => {
   cancelLazy?.()
   cancelLazy = null
 })
-
-async function openAttachment(att: EmailAttachment) {
-  if (!att.file_asset_id) return
-  try {
-    await openFile(att.file_asset_id)
-  } catch (e) {
-    console.error('打开附件失败:', e)
-  }
-}
 </script>
 
 <template>
@@ -207,36 +192,12 @@ async function openAttachment(att: EmailAttachment) {
         </div>
       </div>
 
-      <!-- Attachments -->
-      <div
-        v-if="attachments.length > 0"
-        class="mx-6 mt-4 px-4 py-3 bg-white border border-surface-200 rounded-lg"
-      >
-        <div class="text-xs font-medium text-surface-600 mb-2">
-          附件 ({{ attachments.length }})
-        </div>
-        <div class="space-y-1.5">
-          <div
-            v-for="att in attachments"
-            :key="att.id"
-            class="flex items-center gap-2 text-xs"
-            :class="att.file_asset_id ? 'cursor-pointer hover:text-brand-600 group' : ''"
-            @click="openAttachment(att)"
-          >
-            <svg class="w-3.5 h-3.5 text-surface-400 group-hover:text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-            </svg>
-            <span class="text-surface-700 truncate group-hover:text-brand-600">{{ att.filename }}</span>
-            <span class="text-surface-400 flex-shrink-0">{{ formatSize(att.size) }}</span>
-            <span v-if="att.file_asset_id" class="text-[10px] text-surface-300 flex-shrink-0">已入库</span>
-          </div>
-        </div>
-      </div>
-
       <!-- Email body -->
       <div class="mx-6 my-4 px-4 py-4 bg-white border border-surface-200 rounded-lg">
         <div v-if="renderedHtml" ref="emailBodyEl" class="email-body text-sm text-surface-700 leading-relaxed" v-html="renderedHtml"></div>
         <pre v-else class="text-sm text-surface-700 whitespace-pre-wrap font-sans leading-relaxed">{{ email.body_text || '(无正文)' }}</pre>
+        <!-- 附件：图片按正文同款渲染，文件用卡片（无独立附件区） -->
+        <EmailAttachmentCards :email-id="emailId" :attachments="attachments" />
       </div>
     </div>
   </div>

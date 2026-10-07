@@ -7,7 +7,18 @@ import type { GeneratedDocument } from '@/composables/useAgentChat'
 
 const props = defineProps<{ doc: GeneratedDocument }>()
 
-const isExcel = computed(() => (props.doc.file_type || '').toLowerCase() === 'xlsx')
+const fileExt = computed(() => {
+  const t = (props.doc.file_type || '').toLowerCase()
+  if (t) return t
+  const name = props.doc.file_name || ''
+  const i = name.lastIndexOf('.')
+  return i > 0 ? name.slice(i + 1).toLowerCase() : ''
+})
+const isExcel = computed(() => fileExt.value.startsWith('xls') || fileExt.value === 'csv')
+const extBadge = computed(() => {
+  const known = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'pdf', 'csv']
+  return known.includes(fileExt.value) ? fileExt.value.toUpperCase() : (isExcel.value ? 'XLSX' : 'DOCX')
+})
 const sizeText = computed(() => {
   const s = props.doc.file_size || 0
   if (s >= 1048576) return (s / 1048576).toFixed(1) + ' MB'
@@ -51,7 +62,7 @@ async function onCopy() {
       class="w-9 h-9 rounded-lg flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0"
       :class="isExcel ? 'bg-[#107c41]' : 'bg-[#2b579a]'"
     >
-      {{ isExcel ? 'XLS' : 'DOC' }}
+      {{ extBadge }}
     </div>
     <div class="min-w-0 flex-1">
       <!-- 点击文件名预览（与资料库文件行一致） -->

@@ -120,11 +120,25 @@ pub async fn email_delete_account(id: String) -> Result<Value, String> {
 }
 
 /// 软删除单封邮件（保留行防同 UID 重新拉取；同步游标不受影响）
+/// 软删除单封邮件（保留行防被 UID 重新拉取；同步游标不受影响）
 #[tauri::command]
 pub async fn email_delete(id: String) -> Result<Value, String> {
     let rows = database::run("UPDATE emails SET is_deleted=1 WHERE id=?", &[json!(&id)]).map_err(|e| e.to_string())?;
     if rows.changes == 0 {
         return Err(format!("邮件不存在: {}", id));
+    }
+    // ★ 知识出库（对齐账户删除模式）：邮件正文 + 其附件 FILE 源全部逐出，
+    //   否则"已删除"的邮件内容仍能被检索命中（数据泄露语义）
+    crate::services::knowledge_lifecycle::notify_deleted("EMAIL", &id);
+    if let Ok(atts) = database::all(
+        "SELECT file_asset_id FROM email_attachments WHERE email_id=?1 AND file_asset_id IS NOT NULL",
+        &[json!(&id)],
+    ) {
+        for a in &atts {
+            if let Some(fid) = a["file_asset_id"].as_str() {
+                crate::services::knowledge_lifecycle::notify_deleted("FILE", fid);
+            }
+        }
     }
     database::save().map_err(|e| e.to_string())?;
     Ok(json!({"success": true}))
@@ -239,12 +253,13 @@ pub async fn email_sync(account_id: Option<String>) -> Result<Value, String> {
                     &[json!(max_uid), json!(account.id)],
                 ).ok();
             }
-        } else if let Ok(emails) = email_client::fetch_new_emails(&account, "INBOX", account.last_sync_inbox_uid) {
+        } else if let Ok(mut emails) = email_client::fetch_new_emails(&account, "INBOX", account.last_sync_inbox_uid) {
             let count = emails.len();
             if count > 0 {
                 let max_uid = emails.iter().map(|e| e.uid).max().unwrap_or(0);
-                for email in &emails {
-                    store_email_sync(&account.id, "INBOX", email).await;
+                for email in emails.iter_mut() {
+                    // 与后台轮询同一入库口径（含 data:URI 附件化、黑名单、知识入队），修复手动同步不入库断链
+                    crate::services::email_polling::store_email(&account, "INBOX", email).await;
                 }
                 database::run(
                     "UPDATE email_accounts SET last_sync_inbox_uid=?, updated_at=datetime('now','localtime') WHERE id=?",
@@ -308,85 +323,10 @@ pub async fn email_stats() -> Result<Value, String> {
     }))
 }
 
-/// 存储邮件（异步版本，供手动同步使用）
-async fn store_email_sync(account_id: &str, folder: &str, email: &email_client::ParsedEmail) {
-    let id = uuid::Uuid::new_v4().to_string();
-    database::run(
-        "INSERT OR IGNORE INTO emails(id, account_id, folder, uid, message_id, from_addr, from_name, to_addr, subject, body_text, body_html, received_at, has_attachments) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-        &[
-            json!(id), json!(account_id), json!(folder), json!(email.uid),
-            json!(email.message_id), json!(email.from_addr), json!(email.from_name),
-            json!(email.to_addr), json!(email.subject), json!(email.body_text),
-            json!(email.body_html), json!(email.received_at), json!(email.has_attachments),
-        ],
-    ).ok();
-
-    for att in &email.attachments {
-        let att_id = uuid::Uuid::new_v4().to_string();
-
-        // 将附件原始字节写入临时文件，然后存入资料库
-        let file_asset_id = if !att.raw_bytes.is_empty() {
-            save_attachment_to_library(&att.raw_bytes, &att.filename, &att.mime_type, &id).await
-        } else {
-            None
-        };
-
-        database::run(
-            "INSERT INTO email_attachments(id, email_id, filename, mime_type, size, parsed_text, file_asset_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            &[json!(att_id), json!(id), json!(att.filename), json!(att.mime_type), json!(att.size), json!(att.parsed_text), json!(file_asset_id)],
-        ).ok();
-    }
-}
-
-/// 将邮件附件保存到资料库，返回 file_asset_id
-async fn save_attachment_to_library(
-    raw_bytes: &[u8],
-    filename: &str,
-    _mime_type: &str,
-    email_id: &str,
-) -> Option<String> {
-    // 从文件名安全提取扩展名（白名单防路径穿越）
-    let ext = crate::services::email_polling::safe_attachment_ext(filename);
-
-    // 写入临时文件
-    let tmp_path = std::env::temp_dir().join(format!(
-        "email_att_{}.{}",
-        uuid::Uuid::new_v4(),
-        ext
-    ));
-    if let Err(e) = std::fs::write(&tmp_path, raw_bytes) {
-        log::warn!("[邮件附件] 写入临时文件失败: {} - {}", filename, e);
-        return None;
-    }
-
-    // 调用 upload_file_core 存入资料库
-    match crate::commands::file_commands::upload_file_core(
-        &tmp_path.to_string_lossy(),
-        "email",
-        &[email_id],
-        filename,
-        "",
-        "",
-        None,
-    )
-    .await
-    {
-        Ok((file_id, _)) => {
-            // 清理临时文件
-            let _ = std::fs::remove_file(&tmp_path);
-            log::info!("[邮件附件] 已存入资料库: {} → {}", filename, &file_id[..8.min(file_id.len())]);
-            Some(file_id)
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            log::warn!("[邮件附件] 存入资料库失败: {} - {}", filename, e);
-            None
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // AI 建议 → 用户确认后才创建业务对象
+// 手动同步入库统一走 email_polling::store_email（原 store_email_sync/save_attachment_to_library
+// 双实现已删除：缺 cc_addr、不标 knowledge、不入队，导致手动同步邮件永不进知识库）
 // ═══════════════════════════════════════════════════════════════════
 
 
@@ -648,9 +588,9 @@ pub async fn email_action_ignore(notification_id: String, suggestion_id: String)
 /// 将所有已分类为 knowledge 的邮件重新提取内容并写入 source_data 表
 #[tauri::command]
 pub async fn email_reprocess_knowledge() -> Result<Value, String> {
-    // 查询所有需要重新处理的邮件
+    // 查询所有需要重新处理的邮件（跳过已软删除的：其知识已出库，不得借道回流）
     let rows = database::all(
-        "SELECT e.id FROM emails e WHERE e.ai_category='knowledge'",
+        "SELECT e.id FROM emails e WHERE e.ai_category='knowledge' AND e.is_deleted=0",
         &[],
     ).map_err(|e| format!("查询邮件失败: {}", e))?;
 
@@ -855,27 +795,48 @@ fn email_build_data_url(path: &str) -> Option<String> {
 /// 内嵌图片总字节 ≤ 该阈值时一次性内联（快速路径），超过则改为懒加载占位
 const EMAIL_EAGER_THRESHOLD: i64 = 256 * 1024;
 
-/// 附件 content_id(归一) → file_asset_id(uuid)
-fn email_cid_map(email_id: &str) -> HashMap<String, String> {
-    let mut m: HashMap<String, String> = HashMap::new();
+/// 内嵌图索引：content_id（去尖括号）→ 资产uuid，另建 filename（小写）→ 资产uuid 回退索引。
+/// 部分发件端（OA/企业系统）正文写 `src="cid:<filename>"` 但 MIME part 不带 Content-ID 头——
+/// 主流客户端按文件名回退匹配能显示；此前未命中会原样保留 cid: 导致 ERR_UNKNOWN_URL_SCHEME 图丢失。
+#[derive(Default)]
+pub(crate) struct EmailImgIndex {
+    by_cid: HashMap<String, String>,
+    by_filename: HashMap<String, String>,
+}
+
+/// 附件 content_id(归一) / filename(小写) → file_asset_id 双索引
+fn email_cid_map(email_id: &str) -> EmailImgIndex {
+    let mut idx = EmailImgIndex::default();
     if let Ok(atts) = database::all(
-        "SELECT content_id, file_asset_id FROM email_attachments WHERE email_id=?1",
+        "SELECT content_id, file_asset_id, filename FROM email_attachments WHERE email_id=?1",
         &[json!(email_id)],
     ) {
         for a in &atts {
-            let cid = a["content_id"].as_str().map(|s| s.trim_matches(|c: char| c == '<' || c == '>' || c.is_whitespace()).to_string()).unwrap_or_default();
             let uuid = a["file_asset_id"].as_str().unwrap_or("").to_string();
-            if !cid.is_empty() && !uuid.is_empty() {
-                m.entry(cid).or_insert(uuid);
+            if uuid.is_empty() {
+                continue;
+            }
+            let cid = a["content_id"].as_str().map(|s| s.trim_matches(|c: char| c == '<' || c == '>' || c.is_whitespace()).to_string()).unwrap_or_default();
+            if !cid.is_empty() {
+                idx.by_cid.entry(cid).or_insert_with(|| uuid.clone());
+            }
+            let fname = a["filename"].as_str().map(|s| s.trim().to_ascii_lowercase()).unwrap_or_default();
+            if !fname.is_empty() {
+                idx.by_filename.entry(fname).or_insert(uuid);
             }
         }
     }
-    m
+    idx
+}
+
+/// token 查找：cid 精确优先，未命中按文件名（不分大小写）回退
+fn email_token_lookup(idx: &EmailImgIndex, tok: &str) -> Option<String> {
+    idx.by_cid.get(tok).cloned().or_else(|| idx.by_filename.get(&tok.to_ascii_lowercase()).cloned())
 }
 
 /// 把本地内嵌图片 src 归一到规范 token（file 的 uuid 或 64 位 content_hash）。
 /// 无法识别 / 外部 http(s) / data: 返回 None。
-fn email_src_token(src: &str, cid_to_uuid: &HashMap<String, String>) -> Option<String> {
+fn email_src_token(src: &str, idx: &EmailImgIndex) -> Option<String> {
     let s = src.trim();
     if s.is_empty() || s.starts_with("data:") {
         return None;
@@ -887,7 +848,7 @@ fn email_src_token(src: &str, cid_to_uuid: &HashMap<String, String>) -> Option<S
     }
     if lower.starts_with("cid:") {
         let tok = s[4..].trim_matches(|c: char| c == '<' || c == '>' || c.is_whitespace()).to_string();
-        return cid_to_uuid.get(&tok).cloned();
+        return email_token_lookup(idx, &tok);
     }
     if lower.starts_with("pms://file/asset/") {
         let tok = s["pms://file/asset/".len()..].trim_end_matches("/content").to_string();
@@ -907,8 +868,8 @@ fn email_src_token(src: &str, cid_to_uuid: &HashMap<String, String>) -> Option<S
 }
 
 /// 解析 src → 直接内联 data URL
-fn email_src_data_url(src: &str, cid_to_uuid: &HashMap<String, String>) -> Option<String> {
-    let token = email_src_token(src, cid_to_uuid)?;
+fn email_src_data_url(src: &str, idx: &EmailImgIndex) -> Option<String> {
+    let token = email_src_token(src, idx)?;
     if email_is_uuid(&token) {
         let p = email_asset_path_by_uuid(&token)?;
         return email_build_data_url(&p);
@@ -920,8 +881,8 @@ fn email_src_data_url(src: &str, cid_to_uuid: &HashMap<String, String>) -> Optio
 /// 重写 HTML 中的 <img src>：
 /// - eager=true：本地图片替换为 data URL；
 /// - eager=false（懒加载）：src 置空并追加 data-emimg="<token>"，保留其余属性。
-fn rewrite_email_imgs(html: &str, cid_to_uuid: &HashMap<String, String>, eager: bool) -> String {
-    fn pass(html: &str, re: &regex::Regex, cid_to_uuid: &HashMap<String, String>, eager: bool) -> String {
+fn rewrite_email_imgs(html: &str, cid_to_uuid: &EmailImgIndex, eager: bool) -> String {
+    fn pass(html: &str, re: &regex::Regex, cid_to_uuid: &EmailImgIndex, eager: bool) -> String {
         let mut out = String::with_capacity(html.len() + 1024);
         let mut last = 0usize;
         for cap in re.captures_iter(html) {
@@ -1001,11 +962,64 @@ pub async fn email_inline_asset(email_id: String, token: String) -> Result<Value
         email_asset_path_by_hash(t).and_then(|p| email_build_data_url(&p))
     } else {
         let key = t.trim_matches(|c: char| c == '<' || c == '>' || c.is_whitespace());
-        cid_to_uuid.get(key).and_then(|u| email_asset_path_by_uuid(u)).and_then(|p| email_build_data_url(&p))
+        email_token_lookup(&cid_to_uuid, key).and_then(|u| email_asset_path_by_uuid(&u)).and_then(|p| email_build_data_url(&p))
     };
     match data_url {
         Some(u) => Ok(json!({"success": true, "dataUrl": u})),
         None => Ok(json!({"success": false, "error": "资源不存在"})),
+    }
+}
+
+#[cfg(test)]
+mod email_img_tests {
+    use super::{email_src_token, rewrite_email_imgs, EmailImgIndex};
+    use std::collections::HashMap;
+
+    fn idx() -> EmailImgIndex {
+        // 与 email_cid_map 生产规范一致：by_filename 键恒小写
+        EmailImgIndex {
+            by_cid: HashMap::from([("image001@a.png".to_string(), "u-cid-1".to_string())]),
+            by_filename: HashMap::from([
+                ("image001@a.png".to_string(), "u-cid-1".to_string()),
+                ("2eb36bf5-0e27.png".to_string(), "u-file-2".to_string()),
+            ]),
+        }
+    }
+
+    #[test]
+    fn cid_exact_hit_preferred() {
+        assert_eq!(email_src_token("cid:image001@a.png", &idx()).as_deref(), Some("u-cid-1"));
+        assert_eq!(email_src_token("cid:<image001@a.png>", &idx()).as_deref(), Some("u-cid-1"));
+    }
+
+    #[test]
+    fn cid_falls_back_to_filename_case_insensitive() {
+        // 发件端无 Content-ID 头、正文按文件名 cid 引用（引用大小写与存储不同）
+        assert_eq!(email_src_token("cid:2EB36BF5-0E27.PNG", &idx()).as_deref(), Some("u-file-2"));
+        assert_eq!(email_src_token("cid:2eb36bf5-0e27.png", &idx()).as_deref(), Some("u-file-2"));
+    }
+
+    #[test]
+    fn unknown_cid_stays_unresolved() {
+        assert_eq!(email_src_token("cid:ghost.png", &idx()), None);
+        assert_eq!(email_src_token("https://x.example/a.png", &idx()), None);
+    }
+
+    #[test]
+    fn rewrite_lazy_placeholders_include_fallback_imgs() {
+        let html = r#"<img src="cid:image001@a.png"><img src="cid:2eb36bf5-0e27.png"><img src="cid:ghost.png">"#;
+        let out = rewrite_email_imgs(html, &idx(), false);
+        assert!(out.contains(r#"src="" data-emimg="u-cid-1""#), "cid 命中: {out}");
+        assert!(out.contains(r#"src="" data-emimg="u-file-2""#), "filename 回退: {out}");
+        assert!(out.contains("cid:ghost.png"), "未命中保留原样: {out}");
+    }
+
+    #[test]
+    fn rewrite_eager_keeps_unresolved_untouched() {
+        // eager 路径：未命中 token 的 src 不被替换（无磁盘资产可读）
+        let html = r#"<img src="cid:ghost.png">"#;
+        let out = rewrite_email_imgs(html, &idx(), true);
+        assert_eq!(out, html);
     }
 }
 

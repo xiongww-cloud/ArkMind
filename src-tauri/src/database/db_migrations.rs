@@ -211,6 +211,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "ALTER TABLE todos ADD COLUMN repeat TEXT DEFAULT NULL",
         // file remark
         "ALTER TABLE file_relations ADD COLUMN remark TEXT DEFAULT ''",
+        // file_assets.status：parse_status 重建迁移会丢掉该列，存量库需幂等补回（object type=FILE 目录查询依赖）
+        "ALTER TABLE file_assets ADD COLUMN status TEXT DEFAULT 'ready'",
         // project-scoped folders
         "ALTER TABLE library_folders ADD COLUMN project_id TEXT DEFAULT NULL",
         "ALTER TABLE library_folders ADD COLUMN sort_order INTEGER DEFAULT 0",
@@ -718,6 +720,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_is_daily ON notes(is_daily);");
     let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_notebook_id ON notes(notebook_id);");
     let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at);");
+    let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_lfl_folder_id ON library_file_locations(folder_id);");
 
     // ★ knowledge_chunks 重构：改为 chunk_type 显式区分父子，
     //    新增 source_data_id 指向 source_data，删除 source_doc_id / file_id。
@@ -1129,6 +1132,51 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         .unwrap_or(0);
     if n_ref + n_dup > 0 {
         log::info!("[数据库] 邮件内嵌图存量修复: {} 条按正文cid引用改判内嵌, {} 条Outlook同资产副本隐藏", n_ref, n_dup);
+    }
+
+    // ★ 生成文档 relation 归属回填：entity_id='' 的旧行按消息 metadata 反查回填会话 id；
+    //   无任何消息引用（含会话已删）的孤儿行删关系+快照——资产转为零引用后由 sweep_orphans
+    //   自动回收（物理文件/知识库/资产行，宽限期外）。幂等：回填后不再命中。
+    {
+        let stale: Vec<(String, String)> = conn
+            .prepare("SELECT id, file_id FROM file_relations WHERE entity_type='generated' AND COALESCE(entity_id,'')=''")
+            .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map(|rows| rows.filter_map(|x| x.ok()).collect()))
+            .unwrap_or_default();
+        let (mut backfilled, mut orphaned) = (0usize, 0usize);
+        for (rid, fid) in &stale {
+            let sid: Option<String> = conn
+                .query_row(
+                    "SELECT session_id FROM chat_messages WHERE COALESCE(metadata,'') LIKE ?1 LIMIT 1",
+                    rusqlite::params![format!("%{}%", fid)],
+                    |r| r.get(0),
+                )
+                .ok()
+                .filter(|s: &String| !s.is_empty());
+            match sid {
+                Some(s) => {
+                    backfilled += conn
+                        .execute("UPDATE file_relations SET entity_id=?1 WHERE id=?2", rusqlite::params![&s, rid])
+                        .unwrap_or(0) as usize;
+                }
+                None => {
+                    conn.execute("DELETE FROM file_relations WHERE id=?1", rusqlite::params![rid]).ok();
+                    let remains: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM file_relations WHERE file_id=?1 AND entity_type='generated'",
+                            rusqlite::params![fid],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(0);
+                    if remains == 0 {
+                        conn.execute("DELETE FROM generated_docs WHERE file_id=?1", rusqlite::params![fid]).ok();
+                    }
+                    orphaned += 1;
+                }
+            }
+        }
+        if backfilled + orphaned > 0 {
+            log::info!("[数据库] 生成文档归属回填: {} 行按消息metadata归会话, {} 行无引用孤儿已摘除(资产待sweep回收)", backfilled, orphaned);
+        }
     }
 
     // ★ 项目 canonical ID 迁移：阶段 A —— 仅准备状态字段与审计表。

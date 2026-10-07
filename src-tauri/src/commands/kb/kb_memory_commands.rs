@@ -397,7 +397,8 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
         for r in &rows {
             let base = r["base_weight"].as_f64().unwrap_or(1.0);
             let lat = r["last_access_at"].as_i64().unwrap_or(0);
-            let effective = if lat > 0 { base * (-GAMMA * (now - lat) as f64).exp() } else { let created = r["created_ts"].as_i64().unwrap_or(now); base * (-GAMMA * (now - created) as f64).exp() };
+            let created = r["created_ts"].as_i64().unwrap_or(now);
+            let effective = if lat > 0 { base * (-GAMMA * (now - lat) as f64).exp() } else { base * (-GAMMA * (now - created) as f64).exp() };
             let pct = (effective / MAX_WEIGHT * 100.0).clamp(0.0, 100.0);
             let idx = (pct / 5.0).round() as usize;
             let idx = idx.min(20);
@@ -405,7 +406,8 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
             child_total += 1;
             effective_sum += effective;
             if effective >= 2.0 { hot_count += 1; }
-            if lat > 0 && lat < now - 90 * 86400 { cold_count += 1; }
+            // 冷块：被访问过=90 天未再访问；从未被访问=创建即冷（原口径漏计后者，新块永不算冷）
+            if (lat > 0 && lat < now - 90 * 86400) || (lat <= 0 && created < now - 90 * 86400) { cold_count += 1; }
         }
     }
     let weight_dist: Vec<Value> = (0..=20).map(|i| {
@@ -430,25 +432,14 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
          FROM source_data GROUP BY source_type ORDER BY cnt DESC", &[],
     ).unwrap_or_default();
 
-    // 5. Activity heatmap (last 30 days: updates + accesses per day)
-    let activity_heatmap = database::all(
-        "SELECT date, SUM(cnt) as cnt FROM ( \
-            SELECT date(updated_at) as date, COUNT(*) as cnt FROM source_data \
-            WHERE updated_at >= date('now', '-30 days', 'localtime') \
-            GROUP BY date(updated_at) \
-            UNION ALL \
-            SELECT date(last_access_at) as date, COUNT(*) as cnt FROM knowledge_chunks \
-            WHERE last_access_at >= date('now', '-30 days', 'localtime') \
-            GROUP BY date(last_access_at) \
-        ) GROUP BY date ORDER BY date", &[],
-    ).unwrap_or_default();
+    // （已移除 activity_heatmap：last_access_at 为 INTEGER unix 秒，与 date() 文本比较恒 false，
+    //   查询结果永远不完整且前端无消费方——活动数据可视化另见遗忘曲线/增长趋势）
 
     Ok(json!({
         "success": true,
         "by_type": by_type,
         "weight_dist": weight_dist,
         "daily_growth": daily_growth,
-        "activity_heatmap": activity_heatmap,
         "object_counts": { "total": object_total, "by_type": object_by_type },
         "health": {
             "total": child_total,
@@ -459,4 +450,187 @@ pub async fn kb_memory_dashboard_stats() -> Result<Value, String> {
             "cold_ratio": if child_total > 0 { (cold_count as f64 / child_total as f64 * 100.0).round() } else { 0.0 },
         }
     }))
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 对象关系图谱（知识观测台）
+// ═══════════════════════════════════════════════════════════════════
+
+/// 节点/边上限：canvas 力导图性能足够，上限主要守护可读性与前端载荷体积；按度数截断保枢纽优先
+const GRAPH_MAX_NODES: usize = 800;
+const GRAPH_MAX_EDGES: usize = 2000;
+
+/// 图谱数据：节点=有关系的对象（孤立对象过滤——图谱只表达关联），边=business_relations。
+/// 端点解析双键 (type,source_id)/(type,id)；解析不到的脏边行（如 source_type 存成 UUID）自然丢弃。
+#[tauri::command]
+pub async fn kb_graph_data() -> Result<Value, String> {
+    let node_rows = database::all(
+        "SELECT id, source_type AS type, source_id AS biz_id, COALESCE(title,'') AS title FROM source_data", &[],
+    ).map_err(|e| e.to_string())?;
+    let edge_rows = database::all(
+        "SELECT source_type AS st, source_id AS si, target_type AS tt, target_id AS ti, COALESCE(relation_type,'') AS rel FROM business_relations", &[],
+    ).map_err(|e| e.to_string())?;
+    Ok(build_graph(node_rows, edge_rows, GRAPH_MAX_NODES, GRAPH_MAX_EDGES))
+}
+
+/// 建图纯函数（可单测）：解析边端点→度数累计→过滤孤立→按度截断→输出 nodes/links
+pub(crate) fn build_graph(node_rows: Vec<Value>, edge_rows: Vec<Value>, cap_nodes: usize, cap_edges: usize) -> Value {
+    use std::collections::{HashMap, HashSet};
+    let mut key_to_id: HashMap<String, String> = HashMap::new();
+    let mut meta: HashMap<String, &Value> = HashMap::new();
+    for n in &node_rows {
+        let id = n["id"].as_str().unwrap_or("").to_string();
+        if id.is_empty() { continue; }
+        let ty = n["type"].as_str().unwrap_or("");
+        key_to_id.insert(format!("{}:{}", ty, id), id.clone());
+        if let Some(biz) = n["biz_id"].as_str() {
+            key_to_id.insert(format!("{}:{}", ty, biz), id.clone());
+        }
+        meta.insert(id, n);
+    }
+    let resolve = |ty: &str, key: &str| -> Option<String> {
+        key_to_id.get(&format!("{}:{}", ty, key)).cloned()
+    };
+
+    // 边：两端可解析、非自环；无向去重（同对同关系只留一条）
+    let mut seen_edge: HashSet<String> = HashSet::new();
+    let mut edges: Vec<(String, String, String)> = Vec::new();
+    let mut degree: HashMap<String, usize> = HashMap::new();
+    for e in &edge_rows {
+        let st = e["st"].as_str().unwrap_or("");
+        let si = e["si"].as_str().unwrap_or("");
+        let tt = e["tt"].as_str().unwrap_or("");
+        let ti = e["ti"].as_str().unwrap_or("");
+        let (Some(a), Some(b)) = (resolve(st, si), resolve(tt, ti)) else { continue };
+        if a == b { continue; }
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let rel = e["rel"].as_str().unwrap_or("").to_string();
+        if !seen_edge.insert(format!("{}|{}|{}", lo, hi, rel)) { continue; }
+        *degree.entry(lo.clone()).or_insert(0) += 1;
+        *degree.entry(hi.clone()).or_insert(0) += 1;
+        edges.push((lo, hi, rel));
+    }
+
+    let object_total = meta.len();
+    let connected_total = degree.len();
+    // 只保留连通节点，度数降序（同度按 id 保证确定性），超上限截断
+    let mut connected: Vec<String> = degree.keys().cloned().collect();
+    connected.sort_by(|a, b| degree[b].cmp(&degree[a]).then_with(|| a.cmp(b)));
+    let nodes_truncated = connected.len() > cap_nodes;
+    connected.truncate(cap_nodes);
+    let kept: HashSet<String> = connected.iter().cloned().collect();
+
+    let mut links_all: Vec<(String, String, String)> = edges.into_iter()
+        .filter(|(a, b, _)| kept.contains(a.as_str()) && kept.contains(b.as_str()))
+        .collect();
+    // 边按两端度数和降序截断：枢纽间的主干边优先保留
+    links_all.sort_by(|x, y| (degree[&y.0] + degree[&y.1]).cmp(&(degree[&x.0] + degree[&x.1])));
+    let edges_truncated = links_all.len() > cap_edges;
+    let links: Vec<Value> = links_all.into_iter().take(cap_edges)
+        .map(|(a, b, rel)| json!({ "source": a, "target": b, "relation": rel }))
+        .collect();
+
+    let nodes: Vec<Value> = connected.iter().map(|id| {
+        let m: &Value = meta.get(id).copied().unwrap_or(&Value::Null);
+        let title = m["title"].as_str().unwrap_or("");
+        json!({
+            "id": id,
+            "bizId": m["biz_id"].as_str().unwrap_or(id),
+            "type": m["type"].as_str().unwrap_or(""),
+            "label": if title.is_empty() { id.chars().take(8).collect::<String>() } else { title.to_string() },
+            "degree": degree.get(id).copied().unwrap_or(0),
+        })
+    }).collect();
+
+    json!({
+        "success": true,
+        "nodes": nodes,
+        "links": links,
+        "stats": {
+            "objectTotal": object_total,
+            "connectedTotal": connected_total,
+            "orphanFiltered": object_total.saturating_sub(connected_total),
+            "nodeCount": nodes.len(),
+            "edgeCount": links.len(),
+            "nodesTruncated": nodes_truncated,
+            "edgesTruncated": edges_truncated,
+        }
+    })
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::build_graph;
+    use serde_json::{json, Value};
+
+    fn node(id: &str, ty: &str, title: &str) -> Value {
+        json!({ "id": id, "type": ty, "biz_id": id, "title": title })
+    }
+    fn edge(st: &str, si: &str, tt: &str, ti: &str, rel: &str) -> Value {
+        json!({ "st": st, "si": si, "tt": tt, "ti": ti, "rel": rel })
+    }
+
+    #[test]
+    fn connected_only_and_degree_counts() {
+        let nodes = vec![node("a", "PROJECT", "项目A"), node("b", "FILE", "文件B"), node("c", "NOTE", "孤立笔记")];
+        let edges = vec![edge("PROJECT", "a", "FILE", "b", "has_file")];
+        let g = build_graph(nodes, edges, 800, 2000);
+        assert_eq!(g["nodes"].as_array().unwrap().len(), 2, "孤立节点 c 必须被过滤");
+        let na = g["nodes"].as_array().unwrap().iter().find(|n| n["id"].as_str() == Some("a")).unwrap();
+        assert_eq!(na["degree"].as_i64().unwrap(), 1);
+        assert_eq!(g["stats"]["orphanFiltered"].as_i64().unwrap(), 1);
+    }
+
+    #[test]
+    fn dedup_selfloop_dirty_edge_dropped() {
+        let nodes = vec![node("a", "PROJECT", "A"), node("b", "FILE", "B")];
+        let edges = vec![
+            edge("PROJECT", "a", "FILE", "b", "has_file"),
+            edge("FILE", "b", "PROJECT", "a", "has_file"),
+            edge("PROJECT", "a", "PROJECT", "a", "self"),
+            edge("078fdcff-uuid-as-type", "x", "FILE", "b", "dirty"),
+        ];
+        let g = build_graph(nodes, edges, 800, 2000);
+        assert_eq!(g["links"].as_array().unwrap().len(), 1, "反向重复/自环/解析失败边丢弃");
+    }
+
+    #[test]
+    fn biz_id_dual_key_resolves() {
+        let nodes = vec![
+            json!({ "id": "sd-1", "type": "FILE", "biz_id": "asset-1", "title": "T" }),
+            node("p", "PROJECT", "P"),
+        ];
+        let edges = vec![edge("FILE", "asset-1", "PROJECT", "p", "has_file")];
+        let g = build_graph(nodes, edges, 800, 2000);
+        assert_eq!(g["links"].as_array().unwrap().len(), 1);
+        let n = g["nodes"].as_array().unwrap().iter().find(|x| x["id"].as_str() == Some("sd-1")).unwrap();
+        assert_eq!(n["bizId"].as_str(), Some("asset-1"));
+    }
+
+    #[test]
+    fn cap_keeps_hubs_and_drops_dangling_links() {
+        let nodes = vec![
+            json!({ "id": "h", "type": "PROJECT", "biz_id": "h", "title": "H" }),
+            node("x1", "FILE", "X1"),
+            node("x2", "FILE", "X2"),
+        ];
+        let edges = vec![
+            edge("PROJECT", "h", "FILE", "x1", "has_file"),
+            edge("PROJECT", "h", "FILE", "x2", "has_file"),
+        ];
+        let g = build_graph(nodes, edges, 1, 1000);
+        assert_eq!(g["nodes"].as_array().unwrap().len(), 1, "cap=1 留度数最高的枢纽");
+        assert_eq!(g["nodes"][0]["id"].as_str(), Some("h"));
+        assert!(g["links"].as_array().unwrap().is_empty(), "端点被截断的边丢弃");
+        assert_eq!(g["stats"]["nodesTruncated"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn empty_edge_cap_zero_keeps_all_nodes_no_links() {
+        let nodes = vec![node("a", "PROJECT", "A"), node("b", "FILE", "B")];
+        let edges = vec![edge("PROJECT", "a", "FILE", "b", "has_file")];
+        let g = build_graph(nodes, edges, 800, 0);
+        assert!(g["links"].as_array().unwrap().is_empty());
+        assert_eq!(g["nodes"].as_array().unwrap().len(), 2);
+    }
 }

@@ -202,7 +202,7 @@ function displayContent(content: string): string {
 
 // ─── Types ──────────────────────────────────────────────────────
 interface ChatMessage extends AgentChatMessage { id?: string; role: 'user'|'assistant'; toolCalls?: any[]; rawToolCalls?: any[]; toolResults?: any[]; contextDocs?: any[]; workspace?: string; attachments?: Array<{path:string;name:string;kind:'image'|'doc'}>; documents?: import('@/composables/useAgentChat').GeneratedDocument[] }
-interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string }
+interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string; updatedAt?: string }
 
 /// 历史消息恢复：从 chat_messages.metadata 还原文档卡片、追问卡片与 via 署名（重启后 tool_log 不在，靠 metadata）
 function docFieldsFromMeta(m: any): { documents?: GeneratedDocument[]; clarification?: ClarificationData; assistants?: string[] } {
@@ -294,7 +294,7 @@ const currentSessionId = ref<string|null>(null)
 const sessionNameEdit = ref('')
 const editingSessionId = ref<string|null>(null)
 const sessionDirty = ref(false)  // 标记当前会话是否有变更
-let lastSavedContent = ''  // 上次保存时的内容快照
+const savedSnapshots = new Map<string, string>()  // ★ 每会话内容快照：内容真变才写库/刷新时间，重命名与切换浏览不再误刷
 let activeTokenTimer: ReturnType<typeof setInterval> | null = null  // 当前轮打字机定时器（done 丢失时由 deactivate/unmount 兜底清理）
 let activeTokenConsume: (() => void) | null = null  // 当前轮 token 消费 tick（页面切回时据此重启被 onDeactivated 清掉的定时器）
 
@@ -319,7 +319,9 @@ onMounted(async () => {
     if (savedAttachments) { pendingAttachments.value = JSON.parse(savedAttachments); localStorage.removeItem('chat_attachments_backup') }
   } catch {}
   
-  try { const r = await kbLoadSessions(); if (mySeq !== sessionsLoadSeq) return; if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, ...docFieldsFromMeta(rest), dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
+  try { const r = await kbLoadSessions(); if (mySeq !== sessionsLoadSeq) return; if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s:any) => ({ ...s, name: s.title || '新对话', updatedAt: s.last_msg_at || s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, ...docFieldsFromMeta(rest), dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.timestamp || (rest.created_at ? new Date(rest.created_at).getTime() : Date.now()) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch (e) { console.error('[KB] loadSessions failed:', e) }
+  // ★ 快照种子：加载即视为已保存基线，之后的纯浏览/切换不会触发写库
+  for (const sess of sessions.value) savedSnapshots.set(sess.id, JSON.stringify(sess.messages))
   // ★ 允许无会话状态：首次发送消息时自动创建
   if (!currentSessionId.value && sessions.value.length) { currentSessionId.value = sessions.value[0].id }
   // 初始化分页状态：初始不足 10 条的会话没有更早消息
@@ -397,19 +399,16 @@ async function selectSession(id: string) {
 }
 const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
 
-    const isCurrent = s === currentSession.value
 function saveToStorage(target?: ChatSession) { 
   // 可显式传入提问时的会话：AI 回答期间用户切会话/新建后，回复必须存回原会话而非当前会话
   const s = target || currentSession.value; 
   if (s && s.messages.length > 0) {
     const currentContent = JSON.stringify(s.messages)
-    if (isCurrent && currentContent === lastSavedContent) {
-      sessionDirty.value = false
-      return
-    }
+    // ★ 内容无变化 → 不写库也不刷新 updatedAt（done/切换等路径的无害重放直接短路）
+    if (savedSnapshots.get(s.id) === currentContent) { sessionDirty.value = false; return }
     s.updatedAt = new Date().toLocaleString('sv-SE'); 
-    if (isCurrent) {
-      lastSavedContent = currentContent
+    savedSnapshots.set(s.id, currentContent)
+    if (s === currentSession.value) {
       sessions.value.sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()); 
       sessionDirty.value = false;
     }
@@ -417,15 +416,15 @@ function saveToStorage(target?: ChatSession) {
   }
 }
 async function loadFromStorage() {
-  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, ...docFieldsFromMeta(rest) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
+  try { const r = await kbLoadSessions(); if (r?.sessions && Array.isArray(r.sessions)) sessions.value = r.sessions.map((s: any) => ({ ...s, name: s.title || '新会话', updatedAt: s.last_msg_at || s.updated_at || s.updatedAt, createdAt: s.created_at || s.createdAt, messages: (s.messages || []).map((m: any) => { const { isThinking, typewriterText, typewriterDone, ...rest } = m; return { ...rest, ...docFieldsFromMeta(rest) } }) })).sort((a: any, b: any) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) } catch { sessions.value = [] }
+  for (const sess of sessions.value) savedSnapshots.set(sess.id, JSON.stringify(sess.messages))
   if (!sessions.value.length) { currentSessionId.value = null; return }
   currentSessionId.value = sessions.value[0].id
-  // 初始化内容快照
+  // 渲染前标记历史 AI 消息状态
   const s = currentSession.value
   if (s) {
     for (const m of s.messages) {
       if (m.role === 'assistant') {
-    lastSavedContent = JSON.stringify(s.messages)
         m.isThinking = false
         m.typewriterDone = true
       }
@@ -488,7 +487,10 @@ async function loadOlderMessages() {
 
 function onFeedScroll() {
   const el = feedScrollRef.value
-  if (!el || el.scrollTop > 100) return
+  if (!el) return
+  // ★ 跟随态判定：距底 <48px 视为贴底；滚开即脱离磁吸，流式输出不再把用户拉回
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD
+  if (el.scrollTop > 100) return
   loadOlderMessages()
 }
 
@@ -517,15 +519,22 @@ async function confirmDeleteSession(id: string) {
 }
 
 let initialScrollDone = false
+// ★ 滚动跟随状态机：原 150px 磁吸区在流式输出时会吞掉用户上滑；
+//   改为 stickToBottom 意图标志——只有用户滚到距底 30px 内才恢复吸附
+const STICK_THRESHOLD = 30
+const stickToBottom = ref(true)
 function scrollToBottomIfNear() {
   const el = feedScrollRef.value as HTMLElement | null; if (!el) return
-  if (!initialScrollDone) { initialScrollDone = true; nextTick(() => { el.scrollTop = el.scrollHeight }); return }
-  const SCROLL_NEAR_BOTTOM_THRESHOLD = 150
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_NEAR_BOTTOM_THRESHOLD
-  if (nearBottom) { nextTick(() => { el.scrollTop = el.scrollHeight }) }
+  if (!initialScrollDone) { initialScrollDone = true; stickToBottom.value = true; nextTick(() => { el.scrollTop = el.scrollHeight }); return }
+  if (!stickToBottom.value) return
+  nextTick(() => { const n = feedScrollRef.value as HTMLElement | null; if (n) n.scrollTop = n.scrollHeight })
+}
+function backToBottom() {
+  stickToBottom.value = true
+  nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
 }
 
-watch(currentSessionId, () => { initialScrollDone = false })
+watch(currentSessionId, () => { initialScrollDone = false; stickToBottom.value = true })
 
 // ─── Context recall ─────────────────────────────────────────────
 const recalledContext = computed(() => {
@@ -557,7 +566,7 @@ async function handleSendMessage() {
   session.messages.push({ id: crypto.randomUUID(), role: 'user', content: q, attachments: atts.length ? atts : undefined, timestamp: Date.now() })
   if (session.name === '新对话') { session.name = q.slice(0, 30) }
   sessionDirty.value = true; inputMessage.value = ''; pendingAttachments.value = []; saveToStorage()
-  nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
+  stickToBottom.value = true; scrollToBottomIfNear()
   nextTick(() => { const el = textareaRef.value; if (el) el.style.height = '' })
   agent.isChatting.value = true
   agent.setThinkingProgress('')
@@ -603,7 +612,7 @@ async function handleSendMessage() {
     unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
       tokenQueue.push(ev.payload.token)
     })
-    nextTick(() => { const el = feedScrollRef.value as HTMLElement | null; if (el) el.scrollTop = el.scrollHeight })
+    stickToBottom.value = true; scrollToBottomIfNear()
     // ★ 监听 agent:done 事件（后台任务完成时触发）
     unlistenDone = await listen<any>('agent:done', async (ev) => {
       console.log('[FE] done received')
@@ -789,13 +798,19 @@ onUnmounted(() => {
       :editingSessionId="editingSessionId" :sessionNameEdit="sessionNameEdit"
       @select="selectSession" @new="newSession" @confirmDelete="confirmDeleteSession"
       @startRename="(id:string)=>{editingSessionId=id;const s=sessions.find(x=>x.id===id);if(s)sessionNameEdit=s.name}"
-      @saveRename="(id:string)=>{const s=sessions.find(x=>x.id===id);if(s){s.name=sessionNameEdit.trim()||s.name;editingSessionId=null;sessionDirty.value=true;saveToStorage()}}"
+      @saveRename="(id:string)=>{const s=sessions.find(x=>x.id===id);if(s){const old=s.name;s.name=sessionNameEdit.trim()||s.name;editingSessionId=null;if(s.name!==old)kbSaveSessions([s]).catch((e)=>console.error('[Agent] 重命名保存失败:', e))}}"
       @updateSessionNameEdit="(val:string)=>sessionNameEdit=val"
       @cancelRename="editingSessionId=null" />
   </transition>
 
   <!-- Main Chat -->
   <div class="flex-1 flex flex-col min-w-0 relative bg-surface-50/30">
+    <!-- ★ 流式输出中用户上滚脱离跟随时，提供一键归队入口 -->
+    <button v-if="!stickToBottom && agent.isChatting.value" @click="backToBottom"
+      class="absolute bottom-28 left-1/2 -translate-x-1/2 z-30 w-9 h-9 rounded-full bg-white border border-surface-200 shadow-lg flex items-center justify-center text-surface-500 hover:text-brand-600 hover:border-brand-300 transition-colors"
+      v-tooltip="'回到底部'">
+      <AppIcon name="chevron-down" size="16" />
+    </button>
     <!-- Messages Feed -->
     <div ref="feedScrollRef" class="flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 space-y-5 scrollbar-thin" @scroll="onFeedScroll">
       <!-- Empty State（无会话 或 会话无消息时显示） -->

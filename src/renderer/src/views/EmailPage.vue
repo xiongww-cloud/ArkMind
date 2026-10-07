@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch, onActivated, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/common/AppIcon.vue'
+import EmailAttachmentCards from '@/components/email/EmailAttachmentCards.vue'
 import { lazyLoadEmailImages } from '@/utils/emailLazyImages'
 import { renderedCacheGet, renderedCacheSet } from '@/utils/emailImageCache'
 import {
@@ -16,7 +17,6 @@ import {
   type EmailDetail,
   type EmailAttachment
 } from '@/api/email-client'
-import { previewFile, copyFileToClipboard, exportFile } from '@/api/db-client'
 import { toast } from '@/composables/useToast'
 import DOMPurify from 'dompurify'
 
@@ -279,14 +279,8 @@ async function loadDetail(id: string) {
     const res = await emailGetDetail(id)
     if (res.success) {
       selectedEmail.value = res.email
-      // 过滤掉图片附件（内嵌图片和图片附件都会在正文中渲染）
-      attachments.value = (res.attachments || []).filter((att: EmailAttachment) => {
-        // 如果标记为内嵌，过滤掉
-        if (att.is_inline) return false
-        // 如果是图片类型，也过滤掉（会在正文中渲染）
-        if (att.mime_type && att.mime_type.startsWith('image/')) return false
-        return true
-      })
+      // 附件全量交给组件：内嵌图由正文 cid 渲染（组件内排除），图片附件按正文方式渲染，其余为文件卡片
+      attachments.value = res.attachments || []
       await loadRenderedHtml(id)
     }
   } catch (e) {
@@ -345,12 +339,6 @@ function selectEmail(id: string) {
 // Helpers
 // ═══════════════════════════════════════════════════════════════
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return bytes + 'B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + 'MB'
-}
-
 function formatDate(dateStr: string): string {
   if (!dateStr) return ''
   try {
@@ -372,39 +360,6 @@ function formatFullDate(dateStr: string): string {
     return new Date(dateStr).toLocaleString('zh-CN')
   } catch {
     return dateStr
-  }
-}
-
-async function openAttachment(att: EmailAttachment) {
-  if (!att.file_asset_id) {
-    console.warn('附件没有关联的文件资产:', att.filename)
-    return
-  }
-  try {
-    await previewFile(att.file_asset_id)
-  } catch (e) {
-    console.error('预览附件失败:', e)
-  }
-}
-
-async function downloadAttachment(att: EmailAttachment) {
-  if (!att.file_asset_id) return
-  try {
-    await exportFile(att.file_asset_id)
-  } catch (e) {
-    console.error('下载附件失败:', e)
-    toast({ message: '下载失败', type: 'error' })
-  }
-}
-
-async function copyAttachment(att: EmailAttachment) {
-  if (!att.file_asset_id) return
-  try {
-    const r = await copyFileToClipboard(att.file_asset_id)
-    if (r?.success) toast({ message: `已复制「${r.fileName || att.filename}」`, type: 'success' })
-  } catch (e) {
-    console.error('复制附件失败:', e)
-    toast({ message: '复制失败', type: 'error' })
   }
 }
 
@@ -440,11 +395,7 @@ async function handleRouteQuery() {
       await loadEmails()
       selectedEmailId.value = targetId
       selectedEmail.value = detail.email
-      attachments.value = (detail.attachments || []).filter((att: EmailAttachment) => {
-        if (att.is_inline) return false
-        if (att.mime_type && att.mime_type.startsWith('image/')) return false
-        return true
-      })
+      attachments.value = detail.attachments || []
       await loadRenderedHtml(targetId)
       await nextTick()
       startLazyIfPending()
@@ -700,42 +651,12 @@ watch(() => route.query, async () => {
             <span class="text-xs text-surface-400">加载中...</span>
           </div>
           <template v-else-if="selectedEmail">
-            <!-- Attachments -->
-            <div
-              v-if="attachments.length > 0"
-              class="mx-6 mt-4 px-4 py-3 bg-white border border-surface-200 rounded-lg"
-            >
-              <div class="text-xs font-medium text-surface-600 mb-2">
-                附件 ({{ attachments.length }})
-              </div>
-              <div class="space-y-1.5">
-                <div
-                  v-for="att in attachments"
-                  :key="att.id"
-                  class="flex items-center gap-2 text-xs rounded-md px-2 py-1.5 transition-colors group"
-                  :class="att.file_asset_id ? 'cursor-pointer hover:bg-surface-50' : 'opacity-60'"
-                  @click="openAttachment(att)"
-                >
-                  <AppIcon name="paperclip" size="14" class="text-surface-400 flex-shrink-0"/>
-                  <span class="text-surface-700 truncate">{{ att.filename }}</span>
-                  <span class="text-surface-400 flex-shrink-0">{{ formatSize(att.size) }}</span>
-                  <span class="flex-1"></span>
-                  <div v-if="att.file_asset_id" class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button @click.stop="downloadAttachment(att)" class="w-5 h-5 flex items-center justify-center rounded hover:bg-surface-200 text-surface-400 hover:text-surface-600" v-tooltip="'下载'">
-                      <AppIcon name="download" size="12" />
-                    </button>
-                    <button @click.stop="copyAttachment(att)" class="w-5 h-5 flex items-center justify-center rounded hover:bg-surface-200 text-surface-400 hover:text-surface-600" v-tooltip="'复制文件到剪贴板'">
-                      <AppIcon name="copy" size="12" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
             <!-- Email body -->
             <div class="px-6 py-4">
               <div v-if="renderedHtml" ref="emailBodyEl" class="email-body text-sm text-surface-700 leading-relaxed" v-html="renderedHtml"></div>
               <pre v-else class="text-sm text-surface-700 whitespace-pre-wrap font-sans leading-relaxed">{{ selectedEmail.body_text || '(无正文)' }}</pre>
+              <!-- 附件：图片按正文同款渲染，文件用卡片（无独立附件区） -->
+              <EmailAttachmentCards :email-id="selectedEmailId" :attachments="attachments" />
             </div>
           </template>
         </div>

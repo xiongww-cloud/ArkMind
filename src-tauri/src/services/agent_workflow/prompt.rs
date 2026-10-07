@@ -43,6 +43,7 @@ PROJECT
          └─ SOLUTION_ITEM（边 metadata 含型号/数量/单价）
              └─ PRODUCT
 
+- 按笔记本/目录定位内容：笔记本清单 ext_tool_object(type="NOTEBOOK")、目录清单 type="FOLDER"；文件带 folder_id/folder_name、笔记带 notebook_id/notebook_name 可直接作 filter 条件；要检索某笔记本/目录/项目**里面的正文**，用 ext_tool_search 的 scope 传对应引用串（硬过滤，目录递归；范围内查不到时会自动附全库对照结果——对照部分只能用于说明"内容实际在别处"，禁止当作范围内内容引用）
 - 探索方案结构：用 ext_tool_relations 沿图谱逐层导航
 - 设备完整参数快照：ext_tool_object(type="SOLUTION_ITEM") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）
 - 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id；联系人关联项目时，所属合作伙伴必须同时关联到同一项目
