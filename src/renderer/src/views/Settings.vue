@@ -1012,7 +1012,7 @@ const availableTools = ref<AgentToolInfo[]>([])
 const showAgentModal = ref(false)
 const agentSaving = ref(false)
 const editingAgentId = ref<string | null>(null)
-/// 当前编辑的是否为系统预设 Agent（内置：可改提示词/描述/路由，启停与工具锁定）
+/// 当前编辑的是否为系统预设 Agent（内置：可改提示词/描述/路由、可启停；产出方式与工具分配锁定）
 const editingAgentIsBuiltin = computed(() => {
   const a = agentProfiles.value.find((x) => x.id === editingAgentId.value)
   return !!a?.is_builtin
@@ -2195,7 +2195,7 @@ async function saveProfileEditor() {
             </div>
             <div class="p-5 space-y-3">
               <!-- Agent 列表 -->
-              <div v-for="agent in agentProfiles" :key="agent.id" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-surface-200 hover:border-surface-300 transition-colors">
+              <div v-for="agent in agentProfiles" :key="agent.id" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-surface-200 hover:border-surface-300 transition-colors" :class="agent.status === 'active' ? '' : 'opacity-55'">
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-1.5">
                     <span class="text-[12px] font-medium text-surface-700 truncate" v-tooltip.auto="agent.name">{{ agent.name }}</span>
@@ -2205,11 +2205,10 @@ async function saveProfileEditor() {
                   </div>
                     <p class="text-[10px] text-surface-400 truncate mt-0.5" v-tooltip.auto="agent.description || '未填委托说明，主 Agent 不知何时该派活给它'">{{ agent.description || '未填委托说明，主 Agent 不知何时该派活给它' }}</p>
                 </div>
-                <label v-if="!agent.is_builtin" class="relative inline-flex items-center cursor-pointer flex-shrink-0" v-tooltip="agent.status === 'active' ? '已启用' : '已禁用'">
+                <label class="relative inline-flex items-center cursor-pointer flex-shrink-0" v-tooltip="agent.status === 'active' ? '已启用' : '已禁用（主 Agent 不再委托给它）'">
                   <input type="checkbox" :checked="agent.status === 'active'" @change="toggleAgentStatus(agent)" class="sr-only peer">
                   <div class="w-8 h-[18px] bg-surface-200 peer-focus:ring-2 peer-focus:ring-brand-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-surface-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-brand-600"></div>
                 </label>
-                <span v-else class="w-8 flex-shrink-0"></span>
                 <button v-if="agent.is_builtin" @click="resetAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-amber-600" v-tooltip="'还原默认配置'"><AppIcon name="refresh" size="11" /></button>
                 <button @click="editAgent(agent)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'编辑'"><AppIcon name="edit" size="11" /></button>
                 <button v-if="!agent.is_builtin" @click="removeAgent(agent.id)" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-red-500" v-tooltip="'删除'"><AppIcon name="x" size="11" /></button>
@@ -2274,7 +2273,7 @@ async function saveProfileEditor() {
                     <!-- 系统预设 Agent 编辑说明 -->
                     <div v-if="editingAgentIsBuiltin" class="flex items-start gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200">
                       <AppIcon name="info" size="11" class="text-amber-500 flex-shrink-0 mt-px" />
-                      <p class="text-[9px] leading-relaxed text-amber-700">系统预设 Agent：可编辑名称、委托说明、路由提示与系统提示词；启停、产出方式与工具分配为系统锁定。改坏了可在列表中点「还原默认配置」一键恢复。</p>
+                      <p class="text-[9px] leading-relaxed text-amber-700">系统预设 Agent：可编辑名称、委托说明、路由提示与系统提示词，可在列表中启用/停用（停用后主 Agent 不再委托它）；产出方式与工具分配为系统锁定。改坏了可在列表中点「还原默认配置」一键恢复（含恢复启用）。</p>
                     </div>
                     <!-- 系统提示词 -->
                     <div>

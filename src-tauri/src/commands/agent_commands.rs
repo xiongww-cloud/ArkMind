@@ -171,8 +171,15 @@ pub async fn agent_profile_update(id: String, data: Value) -> Result<(), String>
         values.push(v.clone()); // Number → REAL / Null → NULL
     }
 
-    // 结构性字段：仅自定义 Agent 可改（内置的启停/委托能力/输出格式锁定，
-    // 启停由迁移强制 active，工具由 preset 锁定，还原走 agent_profile_reset）
+    // 启停对所有 Agent 开放（含内置）：委托注入列表与 delegate 执行均按 status='active' 过滤，
+    // 禁用=退出路由，链路真实；「还原默认配置」仍会把内置 Agent 恢复为启用
+    if let Some(v) = data["status"].as_str() {
+        if v == "active" || v == "disabled" {
+            fields.push("status=?".into());
+            values.push(json!(v));
+        }
+    }
+    // 结构性字段：仅自定义 Agent 可改（内置的委托能力/输出格式锁定，工具由 preset 锁定）
     if !is_builtin {
         if let Some(v) = data["can_delegate"].as_i64() {
             fields.push("can_delegate=?".into());
@@ -181,10 +188,6 @@ pub async fn agent_profile_update(id: String, data: Value) -> Result<(), String>
         if let Some(v) = data["output_format"].as_str() {
             fields.push("output_format=?".into());
             values.push(json!(if v == "deliverable" { "deliverable" } else { "natural" }));
-        }
-        if let Some(v) = data["status"].as_str() {
-            fields.push("status=?".into());
-            values.push(json!(v));
         }
     }
 

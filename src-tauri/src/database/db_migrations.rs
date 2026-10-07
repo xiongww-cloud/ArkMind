@@ -287,8 +287,6 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         // 内置业务助手描述刷新（去"查"字，防主 Agent 把查询也外包；prompt/preset 由预置区 else 分支每次同步，不在此列）：
         // 守卫=两版默认值之一（旧版/笔记版），不覆盖用户自定义，幂等
         "UPDATE agent_profiles SET description='项目、待办、合作伙伴、联系人、产品、笔记的创建、编辑、删除操作' WHERE id='business' AND description IN ('项目、待办、合作伙伴、联系人、产品的增删改查操作','项目、待办、合作伙伴、联系人、产品、笔记的增删改查操作')",
-        // ★ 内置 Agent 已取消用户启停开关：曾被禁用的强制恢复 active（幂等）
-        "UPDATE agent_profiles SET status='active' WHERE is_builtin=1 AND status!='active'",
         // ★ 会话列表时间以最后一条消息为准：把被重命名/浏览等操作污染过的 updated_at 摆正（幂等；无消息会话不动）
         "UPDATE chat_sessions SET updated_at = (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.session_id = chat_sessions.id) WHERE EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = chat_sessions.id)",
     ];
