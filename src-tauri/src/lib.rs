@@ -35,7 +35,9 @@ pub fn get_data_dir() -> PathBuf {
 use database::db_path;
 use std::path::PathBuf;
 use tauri::{Manager, Emitter};
+#[cfg(not(target_os = "macos"))]
 use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
+#[cfg(not(target_os = "macos"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
 fn app_data_dir(_app: &tauri::AppHandle) -> PathBuf {

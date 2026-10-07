@@ -1,6 +1,5 @@
 //! 子 Agent 产出类别（output_format 列的语义化枚举）——输出行为策略的单一落点。
 //! 新增类别 = 加一个变体并补齐三个方法，delegate/workflow/UI 零散点自动收敛。
-use serde::Serialize;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OutputClass {
@@ -17,13 +16,6 @@ const DELIVERABLE_PROTOCOL: &str = "## 执行协议（交付型产出）\n- 你�
 
 /// 执行型协议：结果交主 Agent 综合；缺口/确认走 ext_tool_report 结构化上报
 const NATURAL_PROTOCOL: &str = "## 执行协议\n- 同一任务的多个独立操作，必须在一次回复中并发调用多个工具，不要拆成多轮\n- 查询结果在同一任务内全程复用：需要补充信息时换角度查询，不要原样重查\n- 创建任何业务对象前，必须先用「数据查询」按名称检索同类对象：完全同名由工具层自动复用；存在相似项且不确定是否同一目标时，不要猜测创建，通过「缺口与确认上报」登记确认事项（附候选）请用户确认\n- 拿不准的判断点不要中途停摆、不要编造：独立操作照常完成；数据缺口通过「缺口与确认上报」登记数据缺口（主 Agent 会自查补齐并续派，或转问用户），必须用户拍板的登记为确认事项；不要在正文里写 MISSING:/NEED_USER: 等文字标记\n- 你的汇报只交主 Agent 处理、不直接展示给用户：面向用户的提问与引导一律经「缺口与确认上报」的确认通道表达，由系统自动转卡片（主 Agent 无权代答），正文勿直接向用户发问\n- 任何输出中禁止出现工具函数名（ext_tool_ 开头的标识符）与英文参数名，一律用中文业务称谓\n- 若工具返回\"未授权\"或\"工具未找到\"，跳过该操作，用已有的信息继续完成任务\n- 按照 system_prompt 中的「回答规范」向用户汇报结果，不要输出内部 ID";
-
-#[derive(Serialize)]
-pub struct OutputClassInfo {
-    pub key: &'static str,
-    pub label: &'static str,
-    pub desc: &'static str,
-}
 
 impl OutputClass {
     pub fn from_format(s: &str) -> Self {

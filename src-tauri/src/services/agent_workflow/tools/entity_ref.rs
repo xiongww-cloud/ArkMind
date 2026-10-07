@@ -37,15 +37,6 @@ pub(crate) fn parse(s: &str) -> Option<(&'static str, String)> {
     Some((t, id.to_string()))
 }
 
-/// 任意输入（EntityRef 或裸 uuid+上下文类型）归一为 EntityRef；类型不合法返回 None
-pub(crate) fn normalize(s: &str, fallback_type: &str) -> Option<String> {
-    if let Some((t, id)) = parse(s) { return Some(fmt(t, &id)); }
-    let s = s.trim();
-    if s.is_empty() { return None; }
-    let ft = fallback_type.trim().to_ascii_uppercase();
-    if ENTITY_TYPES.iter().any(|e| *e == ft.as_str()) { Some(fmt(&ft, s)) } else { None }
-}
-
 /// 剥去已知 TYPE 前缀取裸 id（存储层写入用）；非注册前缀原样返回（绝不误切 "FOO-bar" 式 id）
 pub(crate) fn bare_id(s: &str) -> String {
     match parse(s) {
@@ -56,7 +47,7 @@ pub(crate) fn bare_id(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{bare_id, fmt, normalize, parse};
+    use super::{bare_id, fmt, parse};
 
     #[test]
     fn fmt_parse_roundtrip() {
@@ -77,11 +68,6 @@ mod tests {
     #[test]
     fn bare_and_unknown_forms() {
         assert!(parse("b94adcaf-63d0-4fc4").is_none(), "裸 uuid 首段非注册类型 → 不猜测");
-        // normalize 靠上下文类型成形
-        let n = normalize("b94adcaf-63d0-4fc4-b371-5a3de9be7bdf", "file").unwrap();
-        assert!(n.starts_with("FILE-b94adcaf"));
-        assert!(normalize("x", "WIDGET").is_none(), "未登记类型拒绝");
-        assert!(normalize("", "file").is_none());
     }
 
     #[test]

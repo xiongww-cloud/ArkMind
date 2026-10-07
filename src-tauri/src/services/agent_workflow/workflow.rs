@@ -472,7 +472,7 @@ pub async fn agent_chat_workflow_internal(
     let delegate_session: Option<&mut SessionMemory> = delegate_run.map(|d| d.session);
     // ★ Session 来源：委托运行写穿共享主会话（visited/tool_history/token 无需合并即回写，
     //   顺序 await 无竞态）；否则按 session_id 加载/新建
-    let mut owned_session: Option<SessionMemory> = None;
+    let mut owned_session: Option<SessionMemory>;
     let session: &mut SessionMemory = match delegate_session {
         Some(s) => s,
         None => {
