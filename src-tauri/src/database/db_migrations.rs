@@ -545,8 +545,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         [],
     ).ok();
     conn.execute(
-        "UPDATE agent_profiles SET routing_hint='做整体解决方案/技术建议书/技术方案、成套设备选型与配置清单、方案架构与拓扑设计、实施与售后规划等多产品综合方案文档必须委托此 Agent（产出严格不含价格与报价）；单个产品的技术参数查询/编制、招标偏离应答交招投标助手' \
-         WHERE id='solution' AND routing_hint='做整体解决方案/技术建议书/技术方案、成套设备选型与配置清单、方案架构与拓扑设计、实施与售后规划等多产品综合方案文档必须委托此 Agent；单个产品的技术参数查询/编制、招标偏离应答交招投标助手'",
+        "UPDATE agent_profiles SET routing_hint='做整体解决方案/技术建议书/技术方案、成套设备选型与配置清单、方案架构与拓扑设计、实施与售后规划等多产品综合方案文档必须委托此 Agent；单个产品的技术参数查询/编制、招标偏离应答交招投标助手' \
+         WHERE id='solution' AND routing_hint='做整体解决方案/技术建议书/技术方案、成套设备选型与配置清单、方案架构与拓扑设计、实施与售后规划等多产品综合方案文档必须委托此 Agent（产出严格不含价格与报价）；单个产品的技术参数查询/编制、招标偏离应答交招投标助手'",
         [],
     ).ok();
 
