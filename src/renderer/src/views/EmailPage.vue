@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch, onActivated, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from '@/components/common/AppIcon.vue'
 import EmailAttachmentCards from '@/components/email/EmailAttachmentCards.vue'
+import MailAddressRow from '@/components/email/MailAddressRow.vue'
 import { lazyLoadEmailImages } from '@/utils/emailLazyImages'
 import { renderedCacheGet, renderedCacheSet } from '@/utils/emailImageCache'
 import {
@@ -632,10 +633,10 @@ watch(() => route.query, async () => {
                   </div>
                 </div>
                 <div class="mt-1 text-[11px] text-surface-400">
-                  <span>收件人: {{ selectedEmail.to_addr }}</span>
+                  <span>收件人: </span><MailAddressRow :value="selectedEmail.to_addr || ''"/>
                 </div>
                 <div v-if="selectedEmail.cc_addr" class="mt-0.5 text-[11px] text-surface-400">
-                  <span>抄送: {{ selectedEmail.cc_addr }}</span>
+                  <span>抄送: </span><MailAddressRow :value="selectedEmail.cc_addr || ''"/>
                 </div>
                 <div class="mt-0.5 text-[11px] text-surface-400">
                   <span>{{ formatFullDate(selectedEmail.received_at) }}</span>

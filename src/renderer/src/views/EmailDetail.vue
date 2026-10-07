@@ -7,6 +7,7 @@ import { toast } from '@/composables/useToast'
 import { lazyLoadEmailImages } from '@/utils/emailLazyImages'
 import { renderedCacheGet, renderedCacheSet } from '@/utils/emailImageCache'
 import EmailAttachmentCards from '@/components/email/EmailAttachmentCards.vue'
+import MailAddressRow from '@/components/email/MailAddressRow.vue'
 import DOMPurify from 'dompurify'
 
 const route = useRoute()
@@ -183,7 +184,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="flex items-start gap-2">
             <span class="flex-shrink-0 w-12 text-surface-400">收件人</span>
-            <span class="text-surface-700">{{ email.to_addr }}</span>
+            <span class="text-surface-700 min-w-0 flex-1"><MailAddressRow :value="email.to_addr || ''"/></span>
           </div>
           <div class="flex items-start gap-2">
             <span class="flex-shrink-0 w-12 text-surface-400">时间</span>
