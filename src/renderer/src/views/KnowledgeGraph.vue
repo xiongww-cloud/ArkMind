@@ -114,7 +114,7 @@ const isEmptyKb = computed(() => stats.value && (stats.value.health?.total || 0)
       <div v-else-if="statsLoading && !stats" class="grid grid-cols-3 gap-4">
         <div v-for="i in 3" :key="i" class="h-40 rounded-2xl bg-surface-50 animate-pulse"></div>
       </div>
-      <div v-else-if="isEmptyKb" class="rounded-2xl border border-surface-200 p-8 text-center">
+      <div v-else-if="isEmptyKb" class="rounded-2xl border border-surface-100 p-8 text-center">
         <p class="text-[13px] text-surface-600 font-medium">知识库还是空的</p>
         <p class="text-[11px] text-surface-400 mt-1.5 leading-relaxed">先到「资料库」上传文件，或在「设置」配置向量模型——有了知识，观测台才有东西可看。</p>
         <div class="flex items-center justify-center gap-2 mt-4">
@@ -123,14 +123,10 @@ const isEmptyKb = computed(() => stats.value && (stats.value.health?.total || 0)
         </div>
       </div>
 
-      <!-- 对象关系图谱（主视图） -->
-      <div class="rounded-2xl border border-surface-200 bg-white overflow-hidden flex flex-col" style="height: 640px">
-        <div class="flex items-center justify-between px-4 pt-3 pb-0">
-          <h3 class="text-[12px] font-semibold text-surface-600">对象关系图谱</h3>
-          <button @click="refreshAll" class="btn-secondary text-[10px] !py-0.5"><AppIcon name="refresh" size="11"/>刷新</button>
-        </div>
+      <!-- 图谱主视图（开放画布，无标题无卡框，工具条即入口） -->
+      <div class="flex flex-col" style="height: 640px">
         <div class="flex-1 min-h-0">
-          <RelationGraph ref="graphRef" />
+          <RelationGraph ref="graphRef" @refresh="refreshAll" />
         </div>
       </div>
 
@@ -172,12 +168,12 @@ const isEmptyKb = computed(() => stats.value && (stats.value.health?.total || 0)
           <span v-if="pipeError" class="text-[10px] text-red-400">管线状态加载失败</span>
           <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 transition-transform ml-auto flex-shrink-0" :class="pipeOpen ? 'rotate-180' : ''" />
         </button>
-        <div v-if="pipeOpen && pipe" class="px-4 pb-3 border-t border-surface-100 pt-2.5">
+        <div v-if="pipeOpen && pipe" class="px-4 pb-3 pt-2.5">
           <div class="grid grid-cols-4 gap-2 mb-2">
-            <div class="rounded-lg border border-surface-200 p-2 text-center"><div class="text-[13px] font-bold text-surface-700 tabular-nums">{{ pipe.source?.total ?? '-' }}</div><div class="text-[9px] text-surface-400">知识对象</div></div>
-            <div class="rounded-lg border border-surface-200 p-2 text-center"><div class="text-[13px] font-bold text-indigo-600 tabular-nums">{{ pipe.knowledge?.children ?? '-' }}</div><div class="text-[9px] text-surface-400">子碎片</div></div>
-            <div class="rounded-lg border border-surface-200 p-2 text-center"><div class="text-[13px] font-bold" :class="(pipe.knowledge?.embedPending || 0) > 0 ? 'text-amber-500' : 'text-emerald-600'">{{ pipe.knowledge?.vectorizedValid ?? '-' }}</div><div class="text-[9px] text-surface-400">已向量化</div></div>
-            <div class="rounded-lg border border-surface-200 p-2 text-center"><div class="text-[13px] font-bold" :class="(pipe.fileParse?.failed || 0) > 0 ? 'text-red-500' : 'text-surface-700'">{{ pipe.fileParse?.failed ?? '-' }}</div><div class="text-[9px] text-surface-400">解析失败</div></div>
+            <div class="rounded-lg bg-surface-50 p-2 text-center"><div class="text-[13px] font-bold text-surface-700 tabular-nums">{{ pipe.source?.total ?? '-' }}</div><div class="text-[9px] text-surface-400">知识对象</div></div>
+            <div class="rounded-lg bg-surface-50 p-2 text-center"><div class="text-[13px] font-bold text-indigo-600 tabular-nums">{{ pipe.knowledge?.children ?? '-' }}</div><div class="text-[9px] text-surface-400">子碎片</div></div>
+            <div class="rounded-lg bg-surface-50 p-2 text-center"><div class="text-[13px] font-bold" :class="(pipe.knowledge?.embedPending || 0) > 0 ? 'text-amber-500' : 'text-emerald-600'">{{ pipe.knowledge?.vectorizedValid ?? '-' }}</div><div class="text-[9px] text-surface-400">已向量化</div></div>
+            <div class="rounded-lg bg-surface-50 p-2 text-center"><div class="text-[13px] font-bold" :class="(pipe.fileParse?.failed || 0) > 0 ? 'text-red-500' : 'text-surface-700'">{{ pipe.fileParse?.failed ?? '-' }}</div><div class="text-[9px] text-surface-400">解析失败</div></div>
           </div>
           <p v-if="pipe.knowledge?.lastEmbedError" class="text-[10px] text-red-400 truncate mb-2" v-tooltip="pipe.knowledge.lastEmbedError">向量化错误：{{ pipe.knowledge.lastEmbedError }}</p>
           <div class="flex items-center justify-between">
@@ -197,6 +193,5 @@ const isEmptyKb = computed(() => stats.value && (stats.value.health?.total || 0)
 }
 #kg-root .rounded-2xl:hover {
   box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
-  border-color: #cbd5e1;
 }
 </style>

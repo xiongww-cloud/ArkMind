@@ -26,6 +26,7 @@ interface GLink {
 
 const router = useRouter()
 const { navigateTo } = useNavigation()
+const emit = defineEmits<{ (e: 'refresh'): void }>()
 
 const mountRef = ref<HTMLElement | null>(null)
 const loading = ref(false)
@@ -166,6 +167,22 @@ async function load() {
   }
 }
 
+// hover 气泡：库内置 float-tooltip 位置/样式不受控，nodeLabel 置空禁用后自建（对齐 v-tooltip 基线样式）
+const hoverNode = ref<GNode | null>(null)
+const hoverPos = ref<{ x: number; y: number; sr: number } | null>(null)
+const hoverText = computed(() => {
+  const n = hoverNode.value
+  if (!n) return ''
+  const label = n.label.length > 24 ? n.label.slice(0, 23) + '…' : n.label
+  return `${label}｜${knowledgeTypeLabel(n.type)}｜${n.degree} 条关联`
+})
+const hoverStyle = computed<Record<string, string>>(() => {
+  const p = hoverPos.value
+  if (!p) return {}
+  const above = p.y - p.sr - 34 > 0
+  return { left: `${p.x}px`, top: `${above ? p.y - p.sr - 8 : p.y + p.sr + 8}px`, transform: above ? 'translate(-50%, -100%)' : 'translate(-50%, 0)' } as Record<string, string>
+})
+
 // 进入聚焦前快照缩放态，退出时精确恢复——缩放比例永远由用户滚轮/按钮控制，交互不被程序抢走
 let savedZoom: { k: number; cx: number; cy: number } | null = null
 const focusLabel = ref('')
@@ -224,12 +241,14 @@ onMounted(async () => {
   const el = mountRef.value
   if (!el) return
   el.addEventListener('dblclick', onCanvasDblClick)
+  el.addEventListener('wheel', onWheelCapture, { capture: true, passive: true })
   fg = new ForceGraph<GNode, GLink>(el)
     .autoPauseRedraw(false)
     .backgroundColor('#ffffff')
     .nodeVal((n) => nodeValOf(n))
     .nodeColor((n) => knowledgeTypeColor(n.type))
-    .nodeLabel((n) => `${n.label}｜${knowledgeTypeLabel(n.type)}｜${n.degree} 条关联`)
+    .nodeLabel(() => '')
+    .onNodeHover((n) => { hoverNode.value = n; if (!n) hoverPos.value = null })
     .nodeCanvasObjectMode(() => 'after')
     .nodeCanvasObject((node, ctx, scale) => {
       const r = Math.sqrt(Math.max(0, nodeValOf(node))) * 4
@@ -245,6 +264,14 @@ onMounted(async () => {
           const sr = Math.max(6, r * scale)
           const prev = popupPos.value
           if (!prev || Math.abs(prev.x - scr.x) > 0.5 || Math.abs(prev.y - scr.y) > 0.5 || Math.abs(prev.sr - sr) > 0.5) popupPos.value = { x: scr.x, y: scr.y, sr }
+        }
+      }
+      if (hoverNode.value?.id === node.id) {
+        const scr = fg?.graph2ScreenCoords(node.x || 0, node.y || 0)
+        if (scr) {
+          const sr = Math.max(6, r * scale)
+          const prev = hoverPos.value
+          if (!prev || Math.abs(prev.x - scr.x) > 0.5 || Math.abs(prev.y - scr.y) > 0.5 || Math.abs(prev.sr - sr) > 0.5) hoverPos.value = { x: scr.x, y: scr.y, sr }
         }
       }
       if (wantsLabel(node) || scale > 2.4) {
@@ -280,6 +307,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEsc)
   mountRef.value?.removeEventListener('dblclick', onCanvasDblClick)
+  mountRef.value?.removeEventListener('wheel', onWheelCapture, { capture: true } as EventListenerOptions)
   ro?.disconnect()
   ro = null
   fg?._destructor()
@@ -290,6 +318,13 @@ onBeforeUnmount(() => {
 function nodeValOf(n: GNode): number { return 1.5 + Math.min(30, n.degree) }
 
 // 此版本 force-graph 无 onNodeDoubleClick API：双击命中检测手动实现直跳
+// Ctrl/⌘+滚轮（或触控板捏合）才缩放画布；普通滚轮 stopPropagation 截走 force-graph 的
+// d3-zoom 监听但不 preventDefault，默认滚动照常落到页面滚动容器——图谱不再劫持翻页
+function onWheelCapture(e: WheelEvent) {
+  if (e.ctrlKey || e.metaKey) return
+  e.stopPropagation()
+}
+
 function onCanvasDblClick(e: MouseEvent) {
   if (!fg || !mountRef.value) return
   const rect = mountRef.value.getBoundingClientRect()
@@ -310,12 +345,12 @@ defineExpose({ reload: load })
 <template>
   <div class="flex flex-col h-full min-h-0 relative">
     <!-- 工具条：类型筛选 chips + 状态 -->
-    <div class="flex items-center gap-1.5 flex-wrap px-4 pt-3 pb-2 border-b border-surface-100 flex-shrink-0">
+    <div class="flex items-center gap-1.5 flex-wrap px-4 pt-3 pb-2 flex-shrink-0">
       <button
         v-for="c in chips" :key="c.type"
         @click="toggleType(c.type)"
-        class="flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] transition-colors select-none"
-        :class="c.on ? 'border-surface-200 bg-white text-surface-600' : 'border-surface-100 bg-surface-50 text-surface-300'"
+        class="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] transition-colors select-none hover:bg-surface-100"
+        :class="c.on ? 'bg-surface-100 text-surface-600' : 'bg-transparent text-surface-300'"
       >
         <span class="w-2 h-2 rounded-full flex-shrink-0" :style="{ background: c.on ? knowledgeTypeColor(c.type) : '#cbd5e1' }"></span>
         {{ knowledgeTypeLabel(c.type) }}<span class="tabular-nums">{{ c.count }}</span>
@@ -331,9 +366,13 @@ defineExpose({ reload: load })
 
     <!-- 画布 -->
     <div ref="canvasWrapRef" class="flex-1 relative min-h-0">
-      <!-- 聚焦态退出主操作：悬浮画布右上，一眼可见 -->
+      <!-- 画布右上唯一主操作位：常态=刷新，聚焦态=退出聚焦（二者互斥） -->
       <button v-if="focusId" @click="exitFocus" class="absolute top-2 right-2 z-20 btn-primary text-[11px] shadow-lg"><AppIcon name="refresh" size="11" />看全局</button>
+      <button v-else @click="emit('refresh')" class="absolute top-2 right-2 z-20 btn-primary text-[11px] shadow-lg"><AppIcon name="refresh" size="11" />刷新</button>
       <div ref="mountRef" class="absolute inset-0" v-show="!loading && !loadError && !empty"></div>
+
+      <!-- 缩放方式常驻弱提示：不拦截鼠标事件 -->
+      <p class="absolute bottom-1.5 right-2 z-[5] text-[9px] text-surface-300 pointer-events-none select-none">Ctrl + 滚轮缩放</p>
 
       <!-- 选中对象锚定弹窗：跟随节点屏幕坐标，贴边自动翻转 -->
       <div v-if="selected && popupPos && !loadError" class="kg-popup absolute z-10 bg-white rounded-xl border border-surface-200 shadow-lg p-3 text-[11px]" :style="[{ width: POPUP_W + 'px' }, popupStyle]">
@@ -355,6 +394,9 @@ defineExpose({ reload: load })
         <p class="text-[9px] text-surface-300 mt-1.5">双击节点可直接打开</p>
       </div>
 
+      <!-- hover 气泡（选中节点的详情卡已含同等信息，不再叠加） -->
+      <div v-if="hoverNode && hoverPos && hoverNode.id !== selected?.id" class="kg-hover-tip absolute z-30" :style="hoverStyle">{{ hoverText }}</div>
+
       <!-- 状态卡 -->
       <div v-if="loading" class="absolute inset-0 flex items-center justify-center text-[11px] text-surface-400">
         <svg class="animate-spin w-4 h-4 mr-2 text-brand-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-right:6px"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg>
@@ -373,7 +415,7 @@ defineExpose({ reload: load })
       <div v-if="statsOpen" class="absolute bottom-2 left-2 right-2 md:right-auto md:w-[340px] bg-gray-800 text-white text-[10px] leading-relaxed rounded-lg shadow-xl p-3" @click="statsOpen = false">
         节点 = 存在业务关联的知识对象（孤立对象不入图）；大小 ∝ 关联数量；颜色 = 对象类型。
         边来自项目↔文件/待办/笔记、联系人↔合作伙伴/项目、附件↔邮件/产品 等业务关系。
-        点击节点弹出详情卡（双击直接打开对象），卡内可聚焦其 2 跳邻域；聚焦态点空白仅收起卡片，点其他节点可换焦，右上「看全局」退出聚焦。
+        点击节点弹出详情卡（双击直接打开对象），卡内可聚焦其 2 跳邻域；聚焦态点空白仅收起卡片，点其他节点可换焦，右上「看全局」退出聚焦。缩放按住 Ctrl 滚轮（或触控板捏合），普通滚轮翻页不受影响。
       </div>
     </div>
   </div>
@@ -392,4 +434,18 @@ defineExpose({ reload: load })
 }
 .kg-popup-arrow.is-bottom { bottom: -6px; border-top: none; border-left: none; }
 .kg-popup-arrow.is-top { top: -6px; border-bottom: none; border-right: none; }
+/* hover 气泡 = directives/tooltip.ts 同款基线：#1f2937 底/白字 11px/4px 8px/rounded 4/shadow-lg */
+.kg-hover-tip {
+  background: #1f2937;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 4px 8px;
+  border-radius: 4px;
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  white-space: nowrap;
+  max-width: 320px;
+  pointer-events: none;
+  z-index: 30;
+}
 </style>
