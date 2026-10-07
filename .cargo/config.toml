@@ -7,3 +7,14 @@
 # 该脚本根据项目根目录自动解析 src-tauri/bin 的正确路径。
 #
 # 请始终使用 `npm run tauri:build` 编译，不要直接运行 `cargo build`。
+
+# crates.io 镜像（与两台开发机用户级配置同源，仓库级保证新环境开箱即用；
+# 直连 index.crates.io 在国内常超时——mac 构建 "download of ut/f1/utf16string failed" 即此因）
+[source.crates-io]
+replace-with = 'rsproxy-sparse'
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true
