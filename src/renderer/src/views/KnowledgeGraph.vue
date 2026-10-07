@@ -124,7 +124,7 @@ const isEmptyKb = computed(() => stats.value && (stats.value.health?.total || 0)
       </div>
 
       <!-- 对象关系图谱（主视图） -->
-      <div class="rounded-2xl border border-surface-200 bg-white overflow-hidden flex flex-col" style="height: 500px">
+      <div class="rounded-2xl border border-surface-200 bg-white overflow-hidden flex flex-col" style="height: 640px">
         <div class="flex items-center justify-between px-4 pt-3 pb-0">
           <h3 class="text-[12px] font-semibold text-surface-600">对象关系图谱</h3>
           <button @click="refreshAll" class="btn-secondary text-[10px] !py-0.5"><AppIcon name="refresh" size="11"/>刷新</button>
@@ -191,5 +191,12 @@ const isEmptyKb = computed(() => stats.value && (stats.value.health?.total || 0)
 </template>
 
 <style scoped>
-#kg-root .rounded-2xl { box-shadow: 0 1px 2px 0 rgba(0,0,0,0.04); }
+#kg-root .rounded-2xl {
+  box-shadow: 0 1px 2px 0 rgba(0,0,0,0.04);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+#kg-root .rounded-2xl:hover {
+  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+  border-color: #cbd5e1;
+}
 </style>
