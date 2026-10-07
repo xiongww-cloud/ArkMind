@@ -1556,8 +1556,17 @@ mod tests {
     #[test]
     fn test_migrations_on_live_db_copy_are_lossless() {
         let live = {
+            // 跨平台定位运行时库（与 lib::get_data_dir 口径一致；env! 编译期宏禁用于测试路径）
+            #[cfg(target_os = "windows")]
             let mut p = match std::env::var("APPDATA") { Ok(a) => std::path::PathBuf::from(a), Err(_) => return };
-            p.push("com.arkmind.app"); p.push("arkmind.db"); p
+            #[cfg(target_os = "macos")]
+            let mut p = match dirs::home_dir() { Some(h) => h.join("Arkmind"), None => return };
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+            let mut p = match dirs::data_dir() { Some(d) => d.join("com.arkmind.app"), None => return };
+            #[cfg(target_os = "windows")]
+            p.push("com.arkmind.app");
+            p.push("arkmind.db");
+            p
         };
         if !live.exists() { return; }
         let tmp = std::env::temp_dir().join(format!("arkmind_mig_test_{}.db", std::process::id()));

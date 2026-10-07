@@ -705,6 +705,17 @@ pub async fn email_reprocess_knowledge() -> Result<Value, String> {
 
 /// 重新处理历史邮件的附件和 cid: 引用
 /// 将所有邮件的内嵌图片 Content-ID 替换为 API URL
+/// 与 JS encodeURIComponent 同语义（tauri asset 协议 mac 分支要求）：
+/// UTF-8 逐字节 percent-encode，保留 unreserved 字符集 [A-Za-z0-9-_.!~*'()]
+fn encode_uri_component(s: &str) -> String {
+    const KEEP: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()";
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        if KEEP.contains(b) { out.push(*b as char); } else { out.push_str(&format!("%{:02X}", b)); }
+    }
+    out
+}
+
 #[tauri::command]
 pub async fn email_reprocess_attachments() -> Result<Value, String> {
     // 查询所有邮件
@@ -750,6 +761,12 @@ pub async fn email_reprocess_attachments() -> Result<Value, String> {
                     .and_then(|r| r["content_hash"].as_str().map(|h| crate::commands::file_commands::flat_disk_path(h)));
                 
                 if let Some(path) = file_path {
+                    // asset 协议主机形态因平台而异（tauri core.js convertFileSrc）：
+                    // Windows WebView2 = https://asset.localhost/<path>；macOS WKWebView = asset://localhost/<encoded>，
+                    // 后者必须 percent-encode（空格/CJK 路径），否则 WKWebView 拒绝加载 → 邮件内嵌图裂
+                    #[cfg(target_os = "macos")]
+                    let api_url = format!("asset://localhost/{}", encode_uri_component(&path));
+                    #[cfg(not(target_os = "macos"))]
                     let api_url = format!("https://asset.localhost/{}", path.replace("\\", "/"));
                     let cid_clean = cid.trim_matches(|c| c == '<' || c == '>');
                     let cid_ref1 = format!("cid:{}", cid_clean);
@@ -989,5 +1006,20 @@ pub async fn email_inline_asset(email_id: String, token: String) -> Result<Value
     match data_url {
         Some(u) => Ok(json!({"success": true, "dataUrl": u})),
         None => Ok(json!({"success": false, "error": "资源不存在"})),
+    }
+}
+
+#[cfg(test)]
+mod mac_asset_url_tests {
+    use super::encode_uri_component;
+
+    /// mac asset URL 编码必须与 JS encodeURIComponent 一致：
+    /// 仅 unreserved [A-Za-z0-9-_.!~*'()] 保留，/ 与 : 也编码（tauri convertFileSrc 实测行为）
+    #[test]
+    fn encode_uri_component_matches_js() {
+        assert_eq!(encode_uri_component("/Users/x/Arkmind/files/a b.pdf"), "%2FUsers%2Fx%2FArkmind%2Ffiles%2Fa%20b.pdf");
+        assert_eq!(encode_uri_component("报告.pdf"), "%E6%8A%A5%E5%91%8A.pdf");
+        assert_eq!(encode_uri_component("a:b/c"), "a%3Ab%2Fc");
+        assert_eq!(encode_uri_component("k~1.2_3-4!5'6(7)8*9"), "k~1.2_3-4!5'6(7)8*9");
     }
 }

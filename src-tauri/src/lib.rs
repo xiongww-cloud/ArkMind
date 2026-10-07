@@ -9,15 +9,15 @@ mod license;
 mod services;
 mod time_utils;
 
-/// 获取应用数据目录
-/// - macOS: ~/Arkmind
-/// - Windows: %APPDATA%/com.arkmind.app
 /// 字符安全的文本预览：字符串源含多字节内容（模型输出/网页正文/用户数据）时，
 /// 按字节切片 s[..n] 会 panic 在非字符边界
 pub fn preview(s: impl AsRef<str>, max: usize) -> String {
     s.as_ref().chars().take(max).collect()
 }
 
+/// 获取应用数据目录
+/// - macOS: ~/Arkmind（仅 Apple Silicon：bin/libpdfium.a 为 arm64-only，Intel Mac 无法构建）
+/// - Windows: %APPDATA%/com.arkmind.app
 pub fn get_data_dir() -> PathBuf {
 
     #[cfg(target_os = "macos")]

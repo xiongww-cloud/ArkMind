@@ -386,7 +386,14 @@ mod tests {
     #[test]
     #[ignore]
     fn real_bocha_probe() {
-        let db = std::path::Path::new(env!("APPDATA")).join("com.arkmind.app/arkmind.db");
+        // 跨平台定位本机库（env! 是编译期宏，mac 无 APPDATA 会直接编译失败，禁止使用）
+        #[cfg(target_os = "windows")]
+        let db = std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("com.arkmind.app/arkmind.db");
+        #[cfg(target_os = "macos")]
+        let db = dirs::home_dir().unwrap_or_default().join("Arkmind/arkmind.db");
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        let db = dirs::data_dir().unwrap_or_default().join("com.arkmind.app/arkmind.db");
+        if !db.exists() { eprintln!("本机库不存在，跳过: {}", db.display()); return; }
         let conn = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let cfg: String = conn.query_row("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", [], |r| r.get(0)).unwrap();
         let parsed: Value = serde_json::from_str(&cfg).unwrap();
