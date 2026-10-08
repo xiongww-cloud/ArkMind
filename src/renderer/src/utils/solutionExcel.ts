@@ -4,14 +4,11 @@
  * 从 SolutionConfigurator.vue 中抽离，便于维护和复用。
  * 导入逻辑已迁移到 ExcelImportWizard + excelRaw.ts，本文件保留：
  *   - DeviceItem / ImportResult / ExportOptions 类型定义
- *   - exportToPMSExcel（导出）
+ *   - exportToPMSExcel（导出，后端 rust_xlsxwriter 生成）
  *   - buildItemsFromMapping（向导确认后组装设备清单）
  */
 
-import * as ExcelJSModule from 'exceljs/dist/exceljs.min.js'
 import type { RawDataRow, SheetData } from './excelRaw'
-
-const ExcelJS = (ExcelJSModule as any).default || (ExcelJSModule as any).default?.default || ExcelJSModule
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  TYPES
@@ -143,189 +140,60 @@ export function buildItemsFromMapping(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  PMS FORMAT EXPORT
+//  PMS FORMAT EXPORT — 后端 rust_xlsxwriter 生成（行高自适应 + 公式）
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 将设备清单导出为 PMS 格式 Excel 文件并触发浏览器下载。
- *
- * @param opts - 导出配置（项目名、方案名、版本号、金额、设备清单）
+ * 将设备清单导出为报价 Excel 文件（保存对话框落盘）。
+ * 生成端已迁到后端 doc_writer::build_solution_quote_xlsx：
+ * 小计列 =数量×单价 公式、合计行 =SUM 公式（Excel/WPS 改数量自动重算），
+ * 全部行不设固定高度 → 按 wrapText 内容自适应。
  */
 export async function exportToPMSExcel(opts: ExportOptions): Promise<void> {
-  const { projectName, planName, versionLabel, totalAmount, items } = opts
+  const { projectName, planName, versionLabel, items } = opts
 
-  // 动态决定是否包含"设备名称"列
+  // 动态决定是否包含"设备名称"列（与后端布局共用同一判据）
   const hasCustomName = items.some(
     (item) =>
       item.rowType !== 'subnet' &&
       typeof item.customName === 'string' &&
       item.customName.trim() !== ''
   )
-  const totalCols = hasCustomName ? 8 : 7
-  const paramColIdx = hasCustomName ? 4 : 3
 
-  const wb = new (ExcelJS.Workbook as any)()
-  const ws = wb.addWorksheet('报价单')
-
-  ws.columns = hasCustomName
-    ? [
-        { header: '序号', key: 'sn', width: 5 },
-        { header: '设备名称', key: 'cn', width: 15 },
-        { header: '产品型号', key: 'pm', width: 15 },
-        { header: '产品参数', key: 'pr', width: 65 },
-        { header: '数量', key: 'qty', width: 5 },
-        { header: '单位', key: 'un', width: 5 },
-        { header: '单价', key: 'up', width: 15 },
-        { header: '小计', key: 'st', width: 15 },
-      ]
-    : [
-        { header: '序号', key: 'sn', width: 5 },
-        { header: '产品型号', key: 'pm', width: 20 },
-        { header: '产品参数', key: 'pr', width: 65 },
-        { header: '数量', key: 'qty', width: 5 },
-        { header: '单位', key: 'un', width: 5 },
-        { header: '单价', key: 'up', width: 15 },
-        { header: '小计', key: 'st', width: 15 },
-      ]
-
-  // 表头样式
-  const hr = ws.getRow(1)
-  hr.font = { bold: true, size: 11, color: { argb: 'FF333333' } }
-  hr.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
-  hr.height = 28
-  hr.eachCell((c: any) => {
-    if (!c) return
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } }
-    c.border = {
-      top: { style: 'thin' },
-      bottom: { style: 'thin' },
-      left: { style: 'thin' },
-      right: { style: 'thin' },
-    }
-  })
-
-  let excelRowNum = 2
-  let seqNum = 1
-
-  items.forEach((item) => {
-    const ri = excelRowNum
-    const row = ws.getRow(ri)
-
-    // 子网分隔行
-    if (item.rowType === 'subnet') {
-      const label = item.name || '未命名子网'
-      for (let c = 1; c <= totalCols; c++) {
-        const cell = row.getCell(c)
-        cell.value = c === 1 ? label : ''
-        cell.font = { bold: true, size: 10, color: { argb: 'FF0066CC' } }
-        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F0FA' } }
-        cell.border = {
-          top: { style: 'thin' },
-          bottom: { style: 'thin' },
-          left: { style: 'thin' },
-          right: { style: 'thin' },
+  const payloadItems = items.map((item) =>
+    item.rowType === 'subnet'
+      ? { type: 'subnet' as const, label: item.name || '' }
+      : {
+          type: 'device' as const,
+          customName: item.customName || '',
+          model: item.model || '',
+          params: item.mergedText || '',
+          qty: item.quantity || 0,
+          unit: item.unit || '台',
+          price: item.unitPrice || 0,
         }
-      }
-      const endColLetter = String.fromCharCode(64 + totalCols)
-      ws.mergeCells(`A${ri}:${endColLetter}${ri}`)
-      row.height = 24
-      excelRowNum++
-      return
-    }
+  )
 
-    const pname = item.model || ''
-    const pt = item.mergedText || ''
-    const st = (item.unitPrice || 0) * (item.quantity || 0)
-
-    row.getCell('sn').value = seqNum++
-    if (hasCustomName) row.getCell('cn').value = item.customName || ''
-    row.getCell('pm').value = pname
-    row.getCell('pr').value = pt
-    row.getCell('qty').value = item.quantity || 0
-    row.getCell('un').value = item.unit || '台'
-    row.getCell('up').value = item.unitPrice || 0
-    row.getCell('st').value = st
-
-    // 不固定行高：单元格 wrapText 时由 Excel/WPS 打开后按内容自适应
-
-    row.eachCell((cell: any, cn: number) => {
-      if (!cell) return
-      cell.font = { size: 10, color: { argb: 'FF444444' } }
-      cell.border = {
-        top: { style: 'thin' },
-        bottom: { style: 'thin' },
-        left: { style: 'thin' },
-        right: { style: 'thin' },
-      }
-      if (cn === paramColIdx) {
-        cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true }
-      } else {
-        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
-      }
-    })
-
-    row.getCell('up').numFmt = '#,##0.00'
-    row.getCell('st').numFmt = '#,##0.00'
-    excelRowNum++
+  const { invoke } = await import('@tauri-apps/api/core')
+  const r = await invoke<{ success: boolean; bufferBase64?: string; error?: string }>('solution_build_excel', {
+    data: { hasCustomName, items: payloadItems },
   })
-
-  // 合计行
-  const tri = excelRowNum
-  const tr = ws.getRow(tri)
-  const labelEndCol = totalCols - 2
-  const amountStartCol = totalCols - 1
-  const labelEndLetter = String.fromCharCode(64 + labelEndCol)
-  const amountStartLetter = String.fromCharCode(64 + amountStartCol)
-  const endLetter = String.fromCharCode(64 + totalCols)
-
-  ws.mergeCells(`A${tri}:${labelEndLetter}${tri}`)
-  ws.mergeCells(`${amountStartLetter}${tri}:${endLetter}${tri}`)
-
-  tr.getCell(1).value = '合计：'
-  tr.getCell(1).font = { bold: true, size: 11, color: { argb: 'FF333333' } }
-  tr.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
-  tr.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEEEEEE' } }
-
-  tr.getCell(amountStartCol).value = totalAmount || 0
-  tr.getCell(amountStartCol).font = { bold: true, size: 10, color: { argb: 'FF444444' } }
-  tr.getCell(amountStartCol).alignment = { horizontal: 'center', vertical: 'middle' }
-  tr.getCell(amountStartCol).numFmt = '#,##0.00'
-  tr.getCell(amountStartCol).fill = {
-    type: 'pattern',
-    pattern: 'solid',
-    fgColor: { argb: 'FFFFFFFF' },
+  if (!r?.success || !r.bufferBase64) {
+    throw new Error(r?.error || '生成报价单失败')
   }
-
-  tr.height = 26
-
-  for (let c = 1; c <= totalCols; c++) {
-    const cell = tr.getCell(c)
-    if (!cell) continue
-    cell.border = {
-      top: { style: 'thin' },
-      bottom: { style: 'thin' },
-      left: { style: 'thin' },
-      right: { style: 'thin' },
-    }
-    if (!cell.fill || typeof cell.fill !== 'object' || !cell.fill.type) {
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } }
-    }
-  }
+  const bin = atob(r.bufferBase64)
+  const array = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) array[i] = bin.charCodeAt(i)
 
   const fileName = `${projectName}_${planName}_配置清单_${versionLabel}.xlsx`
-  const buf = await wb.xlsx.writeBuffer()
-  // 使用 Tauri save dialog 保存文件
   try {
     const { solutionDownloadExcel } = await import('@/api/db-client')
-    const array = new Uint8Array(buf)
     const result = await solutionDownloadExcel({ buffer: Array.from(array), fileName })
     if (!result.success && result.error !== 'cancelled') {
       console.warn('导出 Excel 失败:', result.error)
     }
   } catch (e) {
-    // Fallback: browser download (for dev mode)
-    const { saveAs } = await import('file-saver')
-    saveAs(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), fileName)
+    console.warn('导出 Excel 保存失败:', e)
+    throw e
   }
 }

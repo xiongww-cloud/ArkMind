@@ -1220,8 +1220,16 @@ fn emit_for_version(version_id: &str) {
         }
     }
 }
-#[tauri::command] pub async fn solution_download_excel(data: Value) -> Result<Value, String> {
-    let save_path = data["savePath"].as_str().unwrap_or("");
+/// 报价单生成（rust_xlsxwriter，替代前端 ExcelJS）：清单结构进 → xlsx 字节 base64 出，
+/// 落盘仍走 solution_download_excel 保存通道；小计/合计为公式，行高自适应。
+#[tauri::command]
+pub async fn solution_build_excel(data: Value) -> Result<Value, String> {
+    use base64::Engine;
+    let bytes = crate::services::doc_writer::build_solution_quote_xlsx(&data)?;
+    Ok(json!({ "success": true, "bufferBase64": base64::engine::general_purpose::STANDARD.encode(&bytes) }))
+}
+
+#[tauri::command] pub async fn solution_download_excel(data: Value) -> Result<Value, String> {    let save_path = data["savePath"].as_str().unwrap_or("");
     if save_path.is_empty() {
         return Ok(json!({"success":false,"error":"未指定保存路径"}));
     }

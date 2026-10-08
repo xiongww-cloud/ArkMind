@@ -1494,6 +1494,173 @@ fn build_xlsx(content: &Value) -> Result<Vec<u8>, String> {
     bytes
 }
 
+/// 方案报价单 xlsx（替代前端 ExcelJS 旧导出）：rust_xlsxwriter 写入——
+/// 行高全部自适应（不设显式高度，Excel/WPS 按 wrapText 内容展开）、
+/// 小计列 `数量×单价` 公式、合计行 `SUM(小计区间)` 公式（改数量自动重算）。
+/// data: { hasCustomName: bool, items: [ {type:"subnet",label} | {type:"device",customName,model,params,qty,unit,price} ] }
+pub fn build_solution_quote_xlsx(data: &Value) -> Result<Vec<u8>, String> {
+    use rust_xlsxwriter::{Format, FormatAlign, FormatBorder, Workbook, Worksheet};
+
+    let has_cn = data["hasCustomName"].as_bool().unwrap_or(false);
+    let total_cols: u16 = if has_cn { 8 } else { 7 };
+    // 0-based 列位：qty / 单价 / 小计（8列含设备名称 vs 7列）
+    let (qty_col, price_col, sub_col): (u16, u16, u16) =
+        if has_cn { (4, 6, 7) } else { (3, 5, 6) };
+    let col_letter = |c: u16| -> char { (b'A' + c as u8) as char };
+
+    let money = || Format::new()
+        .set_num_format("#,##0.00")
+        .set_font_name(XLSX_PRESET_FONT)
+        .set_font_size(10)
+        .set_font_color("444444")
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::VerticalCenter);
+    let body = |left: bool| {
+        let f = Format::new()
+            .set_font_name(XLSX_PRESET_FONT)
+            .set_font_size(10)
+            .set_font_color("444444")
+            .set_border(FormatBorder::Thin)
+            .set_text_wrap()
+            .set_align(FormatAlign::VerticalCenter);
+        if left { f.set_align(FormatAlign::Left) } else { f.set_align(FormatAlign::Center) }
+    };
+    let header = Format::new()
+        .set_bold()
+        .set_font_size(11)
+        .set_font_name(XLSX_PRESET_FONT)
+        .set_font_color("333333")
+        .set_background_color("E8E8E8")
+        .set_border(FormatBorder::Thin)
+        .set_text_wrap()
+        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::VerticalCenter);
+    let subnet = Format::new()
+        .set_bold()
+        .set_font_size(10)
+        .set_font_name(XLSX_PRESET_FONT)
+        .set_font_color("0066CC")
+        .set_background_color("E6F0FA")
+        .set_border(FormatBorder::Thin)
+        .set_text_wrap()
+        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::VerticalCenter);
+
+    let mut wb = Workbook::new();
+    let mut ws = Worksheet::new();
+    ws.set_name("报价单").map_err(|e| format!("设置工作表名失败: {}", e))?;
+
+    // 列宽（与旧导出一致）
+    let widths: &[f64] = if has_cn {
+        &[5.0, 15.0, 15.0, 65.0, 5.0, 5.0, 15.0, 15.0]
+    } else {
+        &[5.0, 20.0, 65.0, 5.0, 5.0, 15.0, 15.0]
+    };
+    for (i, w) in widths.iter().enumerate() {
+        ws.set_column_width(i as u16, *w).map_err(|e| format!("设置列宽失败: {}", e))?;
+    }
+
+    let headers: &[&str] = if has_cn {
+        &["序号", "设备名称", "产品型号", "产品参数", "数量", "单位", "单价", "小计"]
+    } else {
+        &["序号", "产品型号", "产品参数", "数量", "单位", "单价", "小计"]
+    };
+    let mut row: u32 = 0;
+    for (c, h) in headers.iter().enumerate() {
+        ws.write_string_with_format(row, c as u16, *h, &header)
+            .map_err(|e| format!("写表头失败: {}", e))?;
+    }
+    row += 1;
+    let mut first_data_row: Option<u32> = None; // 首个数据行（跳过子网行，SUM 区间起点）
+    let mut seq: u32 = 1;
+
+    let items: Vec<Value> = data["items"].as_array().cloned().unwrap_or_default();
+    for it in &items {
+        if it["type"].as_str() == Some("subnet") {
+            let label = if it["label"].as_str().unwrap_or("").trim().is_empty() { "未命名子网" } else { it["label"].as_str().unwrap_or("") };
+            ws.merge_range(row, 0, row, total_cols - 1, label, &subnet)
+                .map_err(|e| format!("写子网行失败: {}", e))?;
+            row += 1;
+            continue;
+        }
+        let s = |k: &str| it[k].as_str().unwrap_or("").to_string();
+        if first_data_row.is_none() {
+            first_data_row = Some(row);
+        }
+        ws.write_number_with_format(row, 0, seq as f64, &body(false)).map_err(|e| format!("写序号失败: {}", e))?;
+        seq += 1;
+        let mut c: u16 = 1;
+        if has_cn {
+            ws.write_string_with_format(row, c, s("customName"), &body(false))
+                .map_err(|e| format!("写设备名称失败: {}", e))?;
+            c += 1;
+        }
+        ws.write_string_with_format(row, c, s("model"), &body(false))
+            .map_err(|e| format!("写型号失败: {}", e))?;
+        c += 1;
+        ws.write_string_with_format(row, c, s("params"), &body(true))
+            .map_err(|e| format!("写参数失败: {}", e))?;
+        c += 1;
+        ws.write_number_with_format(row, c, it["qty"].as_f64().unwrap_or(0.0), &body(false))
+            .map_err(|e| format!("写数量失败: {}", e))?;
+        c += 1;
+        let unit = { let u = s("unit"); if u.is_empty() { "台".to_string() } else { u } };
+        ws.write_string_with_format(row, c, unit, &body(false))
+            .map_err(|e| format!("写单位失败: {}", e))?;
+        c += 1;
+        ws.write_number_with_format(row, price_col, it["price"].as_f64().unwrap_or(0.0), &money())
+            .map_err(|e| format!("写单价失败: {}", e))?;
+        // 小计 = 数量×单价 公式（行号 1-based）
+        let q = col_letter(qty_col);
+        let p = col_letter(price_col);
+        let formula = format!("={}{}*{}{}", q, row + 1, p, row + 1);
+        ws.write_formula_with_format(row, sub_col, formula.as_str(), &money())
+            .map_err(|e| format!("写小计公式失败: {}", e))?;
+        row += 1;
+    }
+
+    // 合计行：标签合并至单价列前一格；金额合并单价+小计两列 =SUM(小计区间)
+    let last_data_row = row.saturating_sub(1);
+    let label_end = if price_col > 0 { price_col - 1 } else { 0 };
+    let label_fmt = Format::new()
+        .set_bold()
+        .set_font_size(11)
+        .set_font_name(XLSX_PRESET_FONT)
+        .set_font_color("333333")
+        .set_background_color("EEEEEE")
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::VerticalCenter);
+    ws.merge_range(row, 0, row, label_end, "合计：", &label_fmt)
+        .map_err(|e| format!("写合计标签失败: {}", e))?;
+    let money_white = || {
+        let mut f = money();
+        f = f.set_bold().set_background_color("FFFFFF");
+        f
+    };
+    let sum = match first_data_row {
+        Some(f) if last_data_row >= f => {
+            let sc = col_letter(sub_col);
+            format!("=SUM({}{}:{}{})", sc, f + 1, sc, last_data_row + 1)
+        }
+        _ => "=SUM(0)".to_string(),
+    };
+    // 合计金额：merge API 只接受字面字符串，公式走单格（小计列），单价列同底色留空
+    ws.write_blank(row, price_col, &money_white()).map_err(|e| format!("写合计金额前置格失败: {}", e))?;
+    ws.write_formula_with_format(row, sub_col, sum.as_str(), &money_white())
+        .map_err(|e| format!("写合计公式失败: {}", e))?;
+    // 合计行其余被 merge 覆盖的边框已由 merge format 提供
+
+    let tmp = std::env::temp_dir().join(format!("arkmind_quote_{}.xlsx", uuid::Uuid::new_v4()));
+    let tmp_str = tmp.to_string_lossy().to_string();
+    wb.push_worksheet(ws);
+    wb.save(tmp_str.as_str()).map_err(|e| format!("保存报价单失败: {}", e))?;
+    let bytes = std::fs::read(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    bytes.map_err(|e| format!("读取报价单失败: {}", e))
+}
+
 fn apply_xlsx_children(
     ws: &mut rust_xlsxwriter::Worksheet,
     children: &[Value],
@@ -2901,5 +3068,49 @@ mod tests {
         let text = format!("{}{}", sheet, ss);
         assert!(!text.contains("**"), "xlsx 单元格不得残留 ** 标记");
         assert!(text.contains("合计") && text.contains("局部") && text.contains("普通文本"), "文本逐字保留");
+    }
+
+    /// 报价单 builder：8 列布局公式/合计 SUM/子网与合计合并/列宽/无固定行高——读 sheet1.xml 断言
+    #[test]
+    fn solution_quote_xlsx_has_formulas_merges_and_widths() {
+        use std::io::Read as _;
+        let data = json!({
+            "hasCustomName": true,
+            "items": [
+                {"type": "subnet", "label": "核心层"},
+                {"type": "device", "customName": "核心交换机", "model": "CE12800", "params": "多行\n参数说明", "qty": 2, "unit": "台", "price": 100000.0},
+                {"type": "device", "customName": "", "model": "S5730", "params": "接入", "qty": 10, "unit": "台", "price": 5000.0}
+            ]
+        });
+        let bytes = build_solution_quote_xlsx(&data).expect("build quote xlsx");
+        assert_eq!(&bytes[0..2], b"PK", "应为 zip 容器");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("open zip");
+        let mut xml = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml").expect("sheet1").read_to_string(&mut xml).expect("read");
+        // 行布局：1 表头 2 子网 3/4 数据 5 合计；8列 qty=E price=G subtotal=H
+        assert!(xml.contains("E3*G3") && xml.contains("E4*G4"), "小计应为数量×单价公式: {}", &xml[..xml.len().min(900)]);
+        assert!(xml.contains("SUM(H3:H4)"), "合计应为 SUM 公式: {}", &xml[xml.rfind("r=\"5\"").unwrap_or(0).min(xml.len())..]);
+        assert!(xml.contains("ref=\"A2:H2\""), "子网行整行合并");
+        assert!(xml.contains("ref=\"A5:F5\""), "合计标签合并");
+        assert!(xml.contains("<col "), "应写入列宽");
+        assert!(!xml.contains("customHeight"), "不得有固定行高（自适应）");
+    }
+
+    /// 7 列布局（无设备名称列）列字母随之左移
+    #[test]
+    fn solution_quote_xlsx_seven_col_layout() {
+        use std::io::Read as _;
+        let data = json!({
+            "hasCustomName": false,
+            "items": [
+                {"type": "device", "model": "AP4050", "params": "wifi7", "qty": 3, "unit": "台", "price": 1200.5}
+            ]
+        });
+        let bytes = build_solution_quote_xlsx(&data).expect("build");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+        let mut xml = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml").expect("sheet").read_to_string(&mut xml).expect("read");
+        assert!(xml.contains("D2*F2"), "7列布局小计 =D×F: {}", &xml[..xml.len().min(800)]);
+        assert!(xml.contains("SUM(G2:G2)"), "7列合计 SUM 作用于 G 列");
     }
 }

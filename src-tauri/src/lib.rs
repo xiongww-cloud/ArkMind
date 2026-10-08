@@ -364,6 +364,7 @@ pub fn run() {
             // Export
             commands::export_data, commands::export_pick_save_path, commands::import_data, commands::backup_all, commands::restore_all, commands::export_write_buffer,
             commands::solution_download_excel,
+            commands::solution_build_excel,
             // Todos
             commands::todos_list, commands::todos_create, commands::todos_update, commands::todos_delete,
             commands::todos_toggle, commands::todos_get,

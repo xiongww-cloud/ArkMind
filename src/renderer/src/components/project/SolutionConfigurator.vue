@@ -4,6 +4,8 @@ import { exportToPMSExcel, buildItemsFromMapping } from '@/utils/solutionExcel'
 import { detectSCTSheet, buildSCTMapping, classifySCTRow, shouldSkipSCTRow } from '@/utils/sctExcel'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
+import { useProductStore } from '@/stores/product'
+import { toast } from '@/composables/useToast'
 import { confirm, dangerConfirm, alert } from '@/composables/useConfirm'
 import AppIcon from '@/components/common/AppIcon.vue'
 import AppRemark from '@/components/common/AppRemark.vue'
@@ -17,10 +19,11 @@ import type { ImportField, RawDataRow, SheetData } from '@/utils/excelRaw'
 
 import * as api from '@/api/db-client'
 import { formatDateTime } from '@/utils/time'
-const { updateSolutionVersionMeta, fetchProducts, createProduct, updateProduct, deleteVersion } =
+const { updateSolutionVersionMeta, fetchProducts, createProduct, deleteVersion } =
   api
 const props = defineProps({ project: { type: Object, required: true } })
 const projectStore = useProjectStore()
+const productStore = useProductStore()
 const authStore = useAuthStore()
 const guid = () => Math.random().toString(36).substring(2, 11)
 const gvid = () => 'ver-' + Date.now()
@@ -877,16 +880,18 @@ async function sdv() {
     }
 
     // Sync: update product parameters for items with syncParams enabled (best-effort)
+    // 走 store.updateProduct（API+缓存双写）——裸 api 调用会让产品中心读着旧缓存显示"没起作用"
     const syncItems = itemsArr.filter(
       (item) => item.rowType !== 'subnet' && item.syncParams && item.productId && item.mergedText
     )
     if (syncItems.length > 0) {
-      try {
-        await Promise.allSettled(
-          syncItems.map((item) => updateProduct(item.productId, { fullSpecs: item.mergedText }))
-        )
-      } catch (e) {
-        console.warn('[保存] 同步产品参数失败', e)
+      const results = await Promise.allSettled(
+        syncItems.map((item) => productStore.updateProduct(item.productId, { fullSpecs: item.mergedText }))
+      )
+      const failed = results.filter((r) => r.status === 'rejected')
+      if (failed.length > 0) {
+        failed.forEach((f: any) => console.warn('[保存] 同步产品参数失败:', f.reason))
+        toast({ message: `${failed.length}/${syncItems.length} 个产品参数同步失败`, type: 'warning' })
       }
     }
 
