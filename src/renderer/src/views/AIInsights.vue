@@ -1,41 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import { onActivated } from 'vue'
-import AppIcon from '@/components/common/AppIcon.vue'
 import NotificationPanel from '@/components/notification/NotificationPanel.vue'
-import { notificationStats, notificationMarkAllRead } from '@/api/notification-client'
-import { toast } from '@/composables/useToast'
-import { listen } from '@tauri-apps/api/event'
 
-const unreadCount = ref(0)
 const panelRef = ref<InstanceType<typeof NotificationPanel> | null>(null)
 // 数据流视图：全部（默认）/待处理/已办结/已忽略——铃铛弹窗保持单流，切换只在全页
 const viewFilter = ref<'all' | 'pending' | 'done' | 'dismissed'>('all')
-let unlistenNotify: (() => void) | null = null
 
-async function loadStats() {
-  try {
-    const s = await notificationStats()
-    if (s) unreadCount.value = s.unread_count || 0
-  } catch { /* ignore */ }
-}
-
-async function handleMarkAllRead() {
-  try {
-    await notificationMarkAllRead()
-    unreadCount.value = 0
-    panelRef.value?.reload()
-    toast({ message: '已全部标记为已读', type: 'success' })
-  } catch {
-    toast({ message: '操作失败', type: 'error' })
-  }
-}
-
-onMounted(async () => {
-  await loadStats()
-  unlistenNotify = await listen<string>('notification:new', () => loadStats())
-})
-onActivated(() => { loadStats(); panelRef.value?.reload() })
+onActivated(() => { panelRef.value?.reload() })
 </script>
 
 <template>
@@ -58,9 +30,6 @@ onActivated(() => { loadStats(); panelRef.value?.reload() })
           :class="viewFilter === 'dismissed' ? 'bg-slate-100 text-slate-600 font-medium' : 'text-slate-500 hover:bg-slate-50'">已忽略</button>
       </div>
       <div class="w-px h-4 bg-surface-200 mx-1" />
-      <button v-if="(viewFilter === 'pending' || viewFilter === 'all') && unreadCount > 0 && !panelRef?.multiSelectMode"
-        @click="handleMarkAllRead"
-        class="btn-secondary">全部已读</button>
       <template v-if="panelRef?.multiSelectMode">
         <span class="text-[10px] text-surface-400">已选{{ panelRef?.selectedCount }}条</span>
         <button @click="panelRef?.toggleSelectAll()" class="btn-secondary">
@@ -79,7 +48,7 @@ onActivated(() => { loadStats(); panelRef.value?.reload() })
     </div>
     <!-- 通知列表（全宽复用 NotificationPanel，stateFilter 变化时面板自行重载） -->
     <div class="flex-1 min-h-0 overflow-y-auto">
-      <NotificationPanel ref="panelRef" :visible="true" :state-filter="viewFilter" @read="loadStats" />
+      <NotificationPanel ref="panelRef" :visible="true" :state-filter="viewFilter" />
     </div>
   </div>
 </template>

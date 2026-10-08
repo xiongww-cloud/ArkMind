@@ -18,10 +18,12 @@ pub async fn notification_list(unread_only: Option<bool>, state_filter: Option<S
         Some("all") => "1=1",
         _ => "user_state=''",
     };
+    // 未处置（待办语义）通知置顶：全部/已处置流混合展示时，"还需要你处理"的永远排在前
+    let order = "CASE WHEN user_state='' THEN 0 ELSE 1 END, read ASC, created_at DESC";
     let sql = if unread_only.unwrap_or(false) {
-        &format!("SELECT * FROM notifications WHERE read=0 AND {} ORDER BY created_at DESC", state_cond)
+        &format!("SELECT * FROM notifications WHERE read=0 AND {} ORDER BY {}", state_cond, order)
     } else {
-        &format!("SELECT * FROM notifications WHERE {} ORDER BY read ASC, created_at DESC", state_cond)
+        &format!("SELECT * FROM notifications WHERE {} ORDER BY {}", state_cond, order)
     };
     let mut rows = database::all(sql, &[]).map_err(|e| e.to_string())?;
     // ★ actions 从 JSON 字符串解析为数组
