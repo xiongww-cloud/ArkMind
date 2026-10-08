@@ -302,6 +302,7 @@ onUnmounted(() => { flushPending(); editor.value?.destroy() })
 </template>
 
 <style>
+.tiptap-editor a { color: #3b82f6; text-decoration: underline; }
 .tiptap-editor { min-height: 100%; padding: 0 0 16px; font-size: 14px; line-height: 1.55; color: #334155; outline: none; }
 .tiptap-editor ul[data-type="taskList"] { list-style: none; padding-left: 0; }
 .tiptap-editor ul[data-type="taskList"] li { list-style: none; display: flex; gap: 0.5em; align-items: flex-start; }

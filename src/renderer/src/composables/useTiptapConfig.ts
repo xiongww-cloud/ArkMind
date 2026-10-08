@@ -8,6 +8,7 @@ import TableCell from '@tiptap/extension-table-cell'
 import TableHeader from '@tiptap/extension-table-header'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
+import Link from '@tiptap/extension-link'
 import { Node } from '@tiptap/core'
 import { ProjectExtension, FileExtension } from '@/components/editor/extensions'
 
@@ -32,6 +33,9 @@ export function getTiptapExtensions(options?: { placeholder?: string; extraExten
     TableHeader,
     TaskList,
     TaskItem.configure({ nested: true }),
+    // 超链接：openOnClick=false——点击交给 main.ts 全局拦截（openUrl 走系统浏览器），
+    // tiptap 自带 window.open 在 Tauri webview 不可用；autolink 让手输/粘贴 URL 自动成链
+    Link.configure({ openOnClick: false, autolink: true }),
     ProjectExtension,
     FileExtension,
     TimeTag,

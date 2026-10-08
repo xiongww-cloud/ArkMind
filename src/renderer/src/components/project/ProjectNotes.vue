@@ -218,6 +218,7 @@ watch(selectedNote, () => {
 </template>
 
 <style>
+.tiptap-editor a { color: #3b82f6; text-decoration: underline; }
 .tiptap-editor .time-tag {
   background: #f1f5f9;
   border-radius: 5px;

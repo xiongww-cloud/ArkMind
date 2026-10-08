@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { useTiptapToolbar } from '@/composables/useTiptapToolbar'
+import { toast } from '@/composables/useToast'
 
 const props = defineProps<{ editor: any; atActive?: boolean }>()
 const emit = defineEmits<{ at: [] }>()
@@ -11,10 +12,39 @@ const tb = useTiptapToolbar(computed(() => props.editor))
 // ── @ 按钮点击：先关闭其他下拉再 emit
 function onAtClick() { tb.closePopups(); emit('at') }
 
+// ── 网页超链接：必须先选中正文文字再套链接（渲染成蓝链样式）；已有链接→点击即移除
+const linkOpen = ref(false)
+const linkUrl = ref('')
+const linkInput = ref<HTMLInputElement | null>(null)
+const linkWrap = ref<HTMLElement | null>(null)
+const linkAlignRight = ref(false)
+function openLinkPrompt() {
+  tb.closePopups()
+  const ed = props.editor
+  if (!ed) return
+  if (ed.isActive('link')) { ed.chain().focus().extendMarkRange('link').unsetLink().run(); return }
+  if (ed.state.selection.empty) { toast({ message: '先在正文中选中要作为链接的文字', type: 'info' }); return }
+  // 弹窗宽 240：贴近视口右缘时改右锚定，防溢出窗口
+  const rect = linkWrap.value?.getBoundingClientRect()
+  linkAlignRight.value = !!rect && rect.right + 240 + 16 > window.innerWidth
+  linkUrl.value = ''
+  linkOpen.value = true
+  requestAnimationFrame(() => linkInput.value?.focus())
+}
+function applyLink() {
+  const ed = props.editor
+  let u = linkUrl.value.trim()
+  if (!ed || !u) return
+  if (ed.state.selection.empty) { toast({ message: '先在正文中选中要作为链接的文字', type: 'info' }); return }
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u) && !u.startsWith('/')) u = 'https://' + u
+  ed.chain().focus().extendMarkRange('link').setLink({ href: u }).run()
+  linkOpen.value = false
+}
+
 // 关闭外部点击弹窗
 function onDocClick(e: MouseEvent) {
   const el = (e.target as HTMLElement).closest?.('.tiptap-toolbar') as HTMLElement | null
-  if (!el) tb.closePopups()
+  if (!el) { tb.closePopups(); linkOpen.value = false }
 }
 onMounted(() => document.addEventListener('click', onDocClick, true))
 onUnmounted(() => document.removeEventListener('click', onDocClick, true))
@@ -126,12 +156,31 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
-    <!-- @ 插入链接 -->
-    <button data-at-btn @mousedown.prevent @click.stop="onAtClick" v-tooltip="'插入链接'"
+    <!-- @ 插入内部引用（项目/文件），区别于网页超链接 -->
+    <button data-at-btn @mousedown.prevent @click.stop="onAtClick" v-tooltip="'插入引用 (@项目/文件)'"
       class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100"
       :class="atActive ? 'bg-blue-50 text-blue-600' : ''">
       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 12v1a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
     </button>
+
+    <div class="mx-1 w-px h-3 bg-surface-200"></div>
+
+    <!-- 网页超链接 -->
+    <div ref="linkWrap" class="relative" @click.stop>
+      <button @mousedown.prevent @click.stop="openLinkPrompt" v-tooltip="editor?.isActive('link') ? '移除链接' : '添加网页链接'"
+        class="w-6 h-6 flex items-center justify-center rounded transition-colors duration-200 text-surface-500 hover:bg-surface-100"
+        :class="linkOpen || editor?.isActive('link') ? 'bg-blue-50 text-blue-600' : ''">
+        <AppIcon name="link" size="13"/>
+      </button>
+      <div v-if="linkOpen" class="absolute top-full mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 p-2 w-[240px]" :class="linkAlignRight ? 'right-0' : 'left-0'" @click.stop>
+        <input ref="linkInput" v-model="linkUrl" @keydown.enter.prevent="applyLink" @keydown.esc.prevent="linkOpen = false" placeholder="粘贴或输入网址 (URL)" class="w-full border border-surface-200 rounded px-2 py-1 text-[11px] outline-none focus:border-brand-400"/>
+        <p class="text-[9px] text-surface-400 mt-1">选中文字将渲染为可点击的超链接</p>
+        <div class="flex justify-end gap-1.5 mt-1.5">
+          <button @mousedown.prevent="linkOpen = false" class="px-2 py-0.5 text-[10px] text-surface-500 hover:bg-surface-50 rounded">取消</button>
+          <button @mousedown.prevent="applyLink" class="px-2 py-0.5 text-[10px] bg-brand-600 text-white rounded hover:bg-brand-700">添加链接</button>
+        </div>
+      </div>
+    </div>
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
