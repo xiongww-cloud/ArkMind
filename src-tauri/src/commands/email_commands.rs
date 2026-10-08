@@ -647,6 +647,8 @@ pub async fn email_reprocess_knowledge() -> Result<Value, String> {
 /// 将所有邮件的内嵌图片 Content-ID 替换为 API URL
 /// 与 JS encodeURIComponent 同语义（tauri asset 协议 mac 分支要求）：
 /// UTF-8 逐字节 percent-encode，保留 unreserved 字符集 [A-Za-z0-9-_.!~*'()]
+/// 仅 mac 生产路径与测试使用（非 mac 编译整函数缺席，杜绝 dead_code 警告）
+#[cfg(any(test, target_os = "macos"))]
 fn encode_uri_component(s: &str) -> String {
     const KEEP: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()";
     let mut out = String::with_capacity(s.len());
