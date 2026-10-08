@@ -81,6 +81,20 @@ async function batchDelete() {
   }
 }
 
+// 与后端 notification_list 排序口径一致：未处置（user_state=''）置顶 → 未读 → 时间倒序。
+// "全部"流行内原位更新 user_state 后必须重排，否则恢复待处理的行滞留底部/办结的行滞留顶部。
+function resortNotifications() {
+  notifications.value = [...notifications.value].sort((a, b) => {
+    const ua = a.user_state ? 1 : 0
+    const ub = b.user_state ? 1 : 0
+    if (ua !== ub) return ua - ub
+    const ra = a.read || 0
+    const rb = b.read || 0
+    if (ra !== rb) return ra - rb
+    return (b.created_at || '').localeCompare(a.created_at || '')
+  })
+}
+
 // 批量办结：逐条 setState=done（后端无批量处置接口，通知量级小）；非破坏性，不加确认；"全部"流行原位更新
 async function batchComplete() {
   const f = props.stateFilter || 'pending'
@@ -91,6 +105,7 @@ async function batchComplete() {
   const failed = results.filter(r => r.status === 'rejected').length
   if (f === 'all') {
     notifications.value.forEach(n => { if (selectedIds.value.has(n.id)) n.user_state = 'done' })
+    resortNotifications()
   } else {
     notifications.value = notifications.value.filter(n => !selectedIds.value.has(n.id))
   }
@@ -164,7 +179,10 @@ async function setNotifState(id: string, state: '' | 'done' | 'dismissed') {
   await notificationSetState(id, state)
   if (props.stateFilter === 'all') {
     const n = notifications.value.find(x => x.id === id)
-    if (n) n.user_state = state
+    if (n) {
+      n.user_state = state
+      resortNotifications()
+    }
   } else {
     notifications.value = notifications.value.filter(n => n.id !== id)
   }
@@ -176,7 +194,10 @@ async function setNotifState(id: string, state: '' | 'done' | 'dismissed') {
 async function markRead(id: string) {
   await notificationMarkRead(id)
   const n = notifications.value.find(n => n.id === id)
-  if (n) n.read = 1
+  if (n) {
+    n.read = 1
+    resortNotifications()
+  }
   emit('read')
   tauriEmit('notification:updated')
 }
