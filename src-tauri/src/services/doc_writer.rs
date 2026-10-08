@@ -1608,7 +1608,6 @@ pub fn build_solution_quote_xlsx(data: &Value) -> Result<Vec<u8>, String> {
         let unit = { let u = s("unit"); if u.is_empty() { "台".to_string() } else { u } };
         ws.write_string_with_format(row, c, unit, &body(false))
             .map_err(|e| format!("写单位失败: {}", e))?;
-        c += 1;
         ws.write_number_with_format(row, price_col, it["price"].as_f64().unwrap_or(0.0), &money())
             .map_err(|e| format!("写单价失败: {}", e))?;
         // 小计 = 数量×单价 公式（行号 1-based）
