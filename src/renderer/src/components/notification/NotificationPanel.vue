@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile, notificationLinkFiles, notificationUpdateObject, type FileLinkTarget } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationSetState, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile, notificationLinkFiles, notificationUpdateObject, type FileLinkTarget } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
@@ -98,6 +98,8 @@ function stripUuids(text: string): string {
 }
 
 const renderedContent = ref<Record<string, string>>({})
+// 处置视图：pending=未处置（默认流）| handled=已办结/已忽略（可恢复）
+const viewFilter = ref<'pending' | 'handled'>('pending')
 
 async function renderContent(n: Notification) {
   if (renderedContent.value[n.id]) return
@@ -107,7 +109,7 @@ async function renderContent(n: Notification) {
 async function loadNotifications() {
   loading.value = true
   try {
-    const r = await notificationList(props.unread)
+    const r = await notificationList(props.unread, viewFilter.value)
     notifications.value = r.notifications || []
     // Pre-render all content
     for (const n of notifications.value) {
@@ -127,6 +129,29 @@ watch(() => props.visible, (val) => { if (val) { loadNotifications(); exitMultiS
 
 function toggleExpand(id: string) {
   expandedId.value = expandedId.value === id ? null : id
+}
+
+// 用户处置：done/dismissed 出当前流；'' 恢复。行保留在库中作为分析师"不再提醒"的教学证据
+async function setNotifState(id: string, state: '' | 'done' | 'dismissed') {
+  await notificationSetState(id, state)
+  if (viewFilter.value === 'pending' && state !== '') {
+    notifications.value = notifications.value.filter(n => n.id !== id)
+    expandedId.value = expandedId.value === id ? null : expandedId.value
+  } else if (viewFilter.value === 'handled' && state === '') {
+    notifications.value = notifications.value.filter(n => n.id !== id)
+    expandedId.value = null
+  } else {
+    const n = notifications.value.find(n => n.id === id)
+    if (n) n.user_state = state
+  }
+}
+
+function switchView(v: 'pending' | 'handled') {
+  if (viewFilter.value === v) return
+  viewFilter.value = v
+  expandedId.value = null
+  exitMultiSelect()
+  loadNotifications()
 }
 
 async function markRead(id: string) {
@@ -641,10 +666,17 @@ const priorityDot: Record<string, string> = {
 
 <template>
   <div class="flex flex-col h-full select-text">
+    <!-- 处置视图切换 -->
+    <div class="flex items-center gap-1 px-3 pt-2 pb-1 flex-shrink-0">
+      <button @click="switchView('pending')" class="px-2.5 py-1 text-[11px] rounded-md transition-colors"
+        :class="viewFilter === 'pending' ? 'bg-blue-50 text-blue-600 font-medium' : 'text-slate-500 hover:bg-slate-50'">待处理</button>
+      <button @click="switchView('handled')" class="px-2.5 py-1 text-[11px] rounded-md transition-colors"
+        :class="viewFilter === 'handled' ? 'bg-blue-50 text-blue-600 font-medium' : 'text-slate-500 hover:bg-slate-50'">已处理</button>
+    </div>
     <!-- List -->
     <div class="flex-1 overflow-y-auto">
       <div v-if="loading" class="p-6 text-center text-sm text-surface-400">加载中...</div>
-      <div v-else-if="notifications.length === 0" class="p-6 text-center text-sm text-surface-400">暂无通知</div>
+      <div v-else-if="notifications.length === 0" class="p-6 text-center text-sm text-surface-400">{{ viewFilter === 'handled' ? '没有已处理的通知' : '暂无通知' }}</div>
       <div v-else>
         <div v-for="n in notifications" :key="n.id"
           class="border-b border-surface-50">
@@ -665,10 +697,12 @@ const priorityDot: Record<string, string> = {
                 {{ typeLabel[n.type] }}
               </span>
               <div class="flex-1 min-w-0 flex items-center gap-2">
-                <div v-if="n.read === 0" class="w-2 h-2 rounded-full flex-shrink-0" :class="priorityDot[n.priority] || priorityDot.medium"></div>
+                <div v-if="n.read === 0 && !n.user_state" class="w-2 h-2 rounded-full flex-shrink-0" :class="priorityDot[n.priority] || priorityDot.medium"></div>
                 <span v-tooltip.auto="stripUuids(n.title)"
                   class="text-[13px] font-medium text-slate-800 truncate cursor-default select-text"
-                  :class="{ 'font-normal text-slate-500': n.read === 1 }">{{ stripUuids(n.title) }}</span>
+                  :class="{ 'font-normal text-slate-500': n.read === 1 || n.user_state }">{{ stripUuids(n.title) }}</span>
+                <span v-if="n.user_state === 'done'" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 flex-shrink-0 leading-none">已办结</span>
+                <span v-else-if="n.user_state === 'dismissed'" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 flex-shrink-0 leading-none">已忽略</span>
               </div>
               <span class="text-[11px] text-slate-400 flex-shrink-0">{{ timeAgo(n.created_at) }}</span>
               <svg v-if="!multiSelectMode" class="w-3 h-3 flex-shrink-0 text-slate-400 transition-transform duration-200"
@@ -723,9 +757,17 @@ const priorityDot: Record<string, string> = {
               </div>
             </div>
             <div class="flex items-center gap-3 px-4 pb-2 pl-14">
-              <button v-if="n.read === 0" @click.stop="markRead(n.id)" class="text-[11px] text-blue-600 hover:underline">标记已读</button>
-              <button v-if="n.entity_id && !parseActions(n).length" @click.stop="goToEntity(n)" class="text-[11px] text-blue-600 hover:underline">查看详情</button>
-              <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>
+              <template v-if="viewFilter === 'pending'">
+                <button @click.stop="setNotifState(n.id, 'done')" class="text-[11px] text-emerald-600 hover:underline">办结</button>
+                <button @click.stop="setNotifState(n.id, 'dismissed')" class="text-[11px] text-slate-400 hover:text-slate-600 hover:underline">忽略</button>
+                <button v-if="n.read === 0" @click.stop="markRead(n.id)" class="text-[11px] text-blue-600 hover:underline">标记已读</button>
+                <button v-if="n.entity_id && !parseActions(n).length" @click.stop="goToEntity(n)" class="text-[11px] text-blue-600 hover:underline">查看详情</button>
+                <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>
+              </template>
+              <template v-else>
+                <button @click.stop="setNotifState(n.id, '')" class="text-[11px] text-blue-600 hover:underline">回到待处理</button>
+                <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>
+              </template>
             </div>
           </div>
         </div>

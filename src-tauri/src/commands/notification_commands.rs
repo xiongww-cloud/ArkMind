@@ -9,14 +9,17 @@ pub(crate) fn sanitize_notification_text(text: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn notification_list(unread_only: Option<bool>) -> Result<Value, String> {
+pub async fn notification_list(unread_only: Option<bool>, state_filter: Option<String>) -> Result<Value, String> {
+    // state_filter: None/"pending"=未处置流（排除已办结/已忽略）；"handled"=已处置流
+    let handled = state_filter.as_deref() == Some("handled");
+    let state_cond = if handled { "user_state!=''" } else { "user_state=''" };
     let sql = if unread_only.unwrap_or(false) {
-        "SELECT * FROM notifications WHERE read=0 ORDER BY created_at DESC"
+        &format!("SELECT * FROM notifications WHERE read=0 AND {} ORDER BY created_at DESC", state_cond)
     } else {
-        "SELECT * FROM notifications ORDER BY read ASC, created_at DESC"
+        &format!("SELECT * FROM notifications WHERE {} ORDER BY read ASC, created_at DESC", state_cond)
     };
     let mut rows = database::all(sql, &[]).map_err(|e| e.to_string())?;
-    // 将 actions 从 JSON 字符串解析为数组
+    // ★ actions 从 JSON 字符串解析为数组
     for row in rows.iter_mut() {
         if let Some(actions_str) = row.get("actions").and_then(|v| v.as_str()) {
             if let Ok(parsed) = serde_json::from_str::<Value>(actions_str) {
@@ -25,6 +28,17 @@ pub async fn notification_list(unread_only: Option<bool>) -> Result<Value, Strin
         }
     }
     Ok(json!({ "success": true, "notifications": rows }))
+}
+
+/// 用户处置通知：done=现实里已办理（勿再报未办，同对象新变化照常跟踪）
+/// dismissed=话题与我无关（长期静默）；''=恢复回待处理流
+#[tauri::command]
+pub async fn notification_set_state(id: String, state: String) -> Result<(), String> {
+    const ALLOWED: [&str; 3] = ["", "done", "dismissed"];
+    if !ALLOWED.contains(&state.as_str()) { return Err(format!("非法处置状态: {}", state)); }
+    database::run("UPDATE notifications SET user_state=?1 WHERE id=?2", &[json!(state), json!(id)])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -76,7 +90,14 @@ pub async fn notification_batch_delete(ids: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 pub async fn notification_stats() -> Result<Value, String> {
     let unread: i64 = database::with_db(|c| c.query_row(
-        "SELECT COUNT(*) FROM notifications WHERE read=0", [], |r| r.get(0)
+        "SELECT COUNT(*) FROM notifications WHERE read=0 AND user_state=''", [], |r| r.get(0)
+    )).unwrap_or(0);
+    // 处置计数：done=洞察被采纳的信号，dismissed=噪音信号——供后续通知质量校准
+    let done_count: i64 = database::with_db(|c| c.query_row(
+        "SELECT COUNT(*) FROM notifications WHERE user_state='done'", [], |r| r.get(0)
+    )).unwrap_or(0);
+    let dismissed_count: i64 = database::with_db(|c| c.query_row(
+        "SELECT COUNT(*) FROM notifications WHERE user_state='dismissed'", [], |r| r.get(0)
     )).unwrap_or(0);
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let stored_date: String = database::with_db(|c| c.query_row(
@@ -95,6 +116,8 @@ pub async fn notification_stats() -> Result<Value, String> {
     Ok(json!({
         "success": true,
         "unread_count": unread,
+        "done_count": done_count,
+        "dismissed_count": dismissed_count,
         "today_calls": today_calls,
         "today_tokens": today_tokens,
     }))

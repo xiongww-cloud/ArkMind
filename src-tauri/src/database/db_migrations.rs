@@ -1005,6 +1005,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
 
     // ★ notifications 增加 actions 列（操作按钮 JSON 数组）
     let _ = conn.execute_batch("ALTER TABLE notifications ADD COLUMN actions TEXT DEFAULT '[]'");
+    // 用户处置状态：''=待处理 | done=已办结（现实里办了）| dismissed=已忽略（话题与我无关）
+    // 行永久保留作教学证据：忽略/办结通知注入分析师 prompt，阻断同话题复发
+    let _ = conn.execute_batch("ALTER TABLE notifications ADD COLUMN user_state TEXT DEFAULT ''");
 
     // ★ 归一化 notes 时间戳格式：存量 RFC3339（含 'T'）→ SQLite "YYYY-MM-DD HH:MM:SS" 本地格式。
     //    排序按字符串字典序，混合格式会导致 space(0x20) < 'T'(0x54) 使同一天排序错乱。

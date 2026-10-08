@@ -76,6 +76,11 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 创建任何通知前，必须先调用「通知管理」（action='list'） 查看近 7 天已有的通知——这是核对已有通知的唯一途径；禁止用「知识搜索」搜"通知"等关键词替代（搜到的是已入库正文的旧块，既不是通知清单，又白烧轮次）。
 逐条比对：如果已有通知的内容与本次拟创建的通知在语义上重复（同一事件、同一建议、同一观察），则跳过不创建。
 即使标题措辞不同，只要核心信息一致就算重复。
+## 用户处置状态（优先级高于你的判断）
+通知带 user_state 字段、最近通知行内带〔用户已办结/已忽略〕标记：
+- **已办结**：用户在现实中办掉了此事——禁止再把它当未办事项重报；同一对象出现**新的**变化可照常跟踪。
+- **已忽略**：用户判定该话题与自己无关——该话题及其任何变体长期静默，禁止再发通知、禁止写入观察池；「用户已忽略话题清单」段落列出的全部条目同等生效且不限轮次。
+- 观察池中对应已办结/已忽略话题的条目属遗留垃圾：输出 WATCH-DONE 关闭。
 
 ## 五副洞察透镜（深挖时逐副过一遍）
 - 时间：太快/太慢/停滞/该出现的节点没出现？
@@ -269,14 +274,15 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     }
 
     let baseline = build_baseline();
-    let recent = get_recent_notifications(3);
+    let recent = get_recent_notifications(8);
+    let dismissed = get_dismissed_section();
     let seeds_text = if seeds.is_empty() { "（本轮无新增变化，请重点跟进遗留观察）".to_string() } else { seeds };
     let watch_text = if watch_effective.is_empty() { "（无）".to_string() } else { watch_effective.clone() };
     let whoami_block = w.prompt_block(false); // 分析师只读：不给指向无写权限工具的 id 提示
     let query = format!(
-        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n\n## 遗留观察池（每行 [w<id>|年龄]；优先跟进验证，已核实/证伪/不再值得盯的输出 WATCH-DONE: <id> 关闭）\n{}",
+        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n{}\n## 遗留观察池（每行 [w<id>|年龄]；优先跟进验证，已核实/证伪/不再值得盯/对应用户已办结或已忽略的输出 WATCH-DONE: <id> 关闭）\n{}",
         if whoami_block.is_empty() { String::new() } else { format!("{}\n\n", whoami_block) },
-        since, seeds_text, baseline, recent, watch_text
+        since, seeds_text, baseline, recent, dismissed, watch_text
     );
 
     let handle = app_handle.clone();
@@ -656,10 +662,24 @@ fn build_baseline() -> String {
     out
 }
 
+/// 单条通知的注入行渲染（纯函数便于测试）：时间 | 标题 | 处置标记
+pub(crate) fn format_notification_row(r: &Value) -> String {
+    let time = r["created_at"].as_str().unwrap_or("");
+    let title = r["title"].as_str().unwrap_or("");
+    let read = r["read"].as_i64().unwrap_or(0);
+    let mut status = if read == 0 { "未读" } else { "已读" };
+    match r["user_state"].as_str() {
+        Some("done") => status = "用户已办结",
+        Some("dismissed") => status = "用户已忽略",
+        _ => {}
+    }
+    format!("[{}] {} ({})", &time[..16.min(time.len())], title, status)
+}
+
 /// 查询最近N条通知
 fn get_recent_notifications(limit: i64) -> String {
     let rows = database::all(
-        "SELECT type, title, created_at, read FROM notifications ORDER BY created_at DESC LIMIT ?1",
+        "SELECT type, title, created_at, read, user_state FROM notifications ORDER BY created_at DESC LIMIT ?1",
         &[json!(limit)],
     ).unwrap_or_default();
 
@@ -667,13 +687,18 @@ fn get_recent_notifications(limit: i64) -> String {
         return "无".to_string();
     }
 
-    rows.iter().map(|r| {
-        let time = r["created_at"].as_str().unwrap_or("");
-        let title = r["title"].as_str().unwrap_or("");
-        let read = r["read"].as_i64().unwrap_or(0);
-        let status = if read == 0 { "未读" } else { "已读" };
-        format!("[{}] {} ({})", &time[..16.min(time.len())], title, status)
-    }).collect::<Vec<_>>().join("\n")
+    rows.iter().map(format_notification_row).collect::<Vec<_>>().join("\n")
+}
+
+/// 用户忽略话题的永久注入段（不随最近窗口滑出）：语义匹配交给分析师自觉，证据常驻每轮上下文
+fn get_dismissed_section() -> String {
+    let rows = database::all(
+        "SELECT type, title, created_at, read, user_state FROM notifications WHERE user_state='dismissed' ORDER BY created_at DESC LIMIT 30",
+        &[],
+    ).unwrap_or_default();
+    if rows.is_empty() { return String::new(); }
+    let body = rows.iter().map(|r| format!("- {}", r["title"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
+    format!("\n## 用户已忽略话题清单（硬门禁）\n{}\n以上话题及其任何变体（换措辞、换角度、拆分合并）禁止再发通知、禁止写入观察池；若池中留有对应观察，输出 WATCH-DONE 关闭。\n", body)
 }
 
 /// 读取配置
@@ -711,6 +736,20 @@ fn update_call_stats() {
 #[cfg(test)]
 mod tests {
     use super::{parse_watch_done, parse_watch_lines, parse_watch_value, merge_entries, WatchEntry, WATCH_TTL_SECS, WATCH_MAX_ENTRIES};
+    use super::format_notification_row;
+    use serde_json::json;
+
+    /// 注入行渲染：处置状态优先于读写状态呈现
+    #[test]
+    fn notification_row_marks_user_state() {
+        let base = |st: Option<&str>, read: i64| json!({
+            "title": "客户A安静两周", "created_at": "2026-10-08 14:00:00", "read": read,
+            "user_state": st.unwrap_or("")
+        });
+        assert_eq!(format_notification_row(&base(None, 1)), "[2026-10-08 14:00] 客户A安静两周 (已读)");
+        assert!(format_notification_row(&base(Some("done"), 1)).contains("用户已办结"));
+        assert!(format_notification_row(&base(Some("dismissed"), 0)).contains("用户已忽略"));
+    }
 
     /// 文件对账契约：例行存在 + link_file 动作教学（用户点击才写边）
     #[test]

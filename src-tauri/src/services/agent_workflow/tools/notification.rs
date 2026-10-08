@@ -194,7 +194,7 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                 "list" => {
                                     let limit = a["limit"].as_u64().unwrap_or(20) as usize;
                                     let offset = a["offset"].as_u64().unwrap_or(0) as usize;
-                                    let sql = "SELECT id, type, title, content, entity_type, entity_id, priority, source, follow_up_of, actions, created_at FROM notifications ORDER BY created_at DESC LIMIT ?1 OFFSET ?2";
+                                    let sql = "SELECT id, type, title, content, entity_type, entity_id, priority, source, follow_up_of, actions, user_state, created_at FROM notifications ORDER BY created_at DESC LIMIT ?1 OFFSET ?2";
                                     match crate::database::all(sql, &[json!(limit), json!(offset)]) {
                                         Ok(rows) => {
                                             let items: Vec<Value> = rows.iter().map(|r| {
@@ -205,6 +205,7 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                                     "type": r["type"].as_str().unwrap_or(""),
                                                     "title": r["title"].as_str().unwrap_or(""),
                                                     "priority": r["priority"].as_str().unwrap_or("medium"),
+                                                    "user_state": r["user_state"].as_str().unwrap_or(""),
                                                     "actions": actions,
                                                     "created_at": r["created_at"].as_str().unwrap_or("")
                                                 })

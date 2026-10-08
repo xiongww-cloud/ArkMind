@@ -326,19 +326,20 @@ CREATE INDEX IF NOT EXISTS idx_file_rel_file ON file_relations(file_id);
         -- policies 表已退役（持久要求以 memories source='profile' 承载），存量由迁移 DROP
 
         -- ★ NOTIFICATIONS 通知表
-        CREATE TABLE IF NOT EXISTS notifications (
-            id            TEXT PRIMARY KEY,
-            type          TEXT NOT NULL,
-            title         TEXT NOT NULL,
-            content       TEXT DEFAULT '',
-            entity_type   TEXT DEFAULT '',
-            entity_id     TEXT DEFAULT '',
-            priority      TEXT DEFAULT 'medium',
-            read          INTEGER DEFAULT 0,
-            source        TEXT DEFAULT 'system',
-            follow_up_of  TEXT DEFAULT '',
-            created_at    TEXT DEFAULT (datetime('now','localtime'))
-        );
+CREATE TABLE IF NOT EXISTS notifications (
+    id            TEXT PRIMARY KEY,
+    type          TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    content       TEXT DEFAULT '',
+    entity_type   TEXT DEFAULT '',
+    entity_id     TEXT DEFAULT '',
+    priority      TEXT DEFAULT 'medium',
+    read          INTEGER DEFAULT 0,
+    source        TEXT DEFAULT 'system',
+    follow_up_of  TEXT DEFAULT '',
+    user_state    TEXT DEFAULT '',
+    created_at    TEXT DEFAULT (datetime('now','localtime'))
+    );
         CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
         CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);
 

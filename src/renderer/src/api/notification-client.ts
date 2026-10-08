@@ -18,6 +18,7 @@ export interface Notification {
   source: string
   follow_up_of: string
   created_at: string
+  user_state?: string
   meta?: string | null
   actions?: NotificationAction[]
 }
@@ -34,6 +35,8 @@ export interface SuggestionMeta {
 export interface NotificationStats {
   success: boolean
   unread_count: number
+  done_count?: number
+  dismissed_count?: number
   today_calls: number
   today_tokens: number
 }
@@ -88,8 +91,12 @@ export async function profileFactDelete(id: string): Promise<{ success: boolean 
   return invoke('profile_fact_delete', { id })
 }
 
-export async function notificationList(unreadOnly?: boolean): Promise<{ success: boolean; notifications: Notification[] }> {
-  return invoke('notification_list', { unreadOnly: unreadOnly ?? null })
+export async function notificationList(unreadOnly?: boolean, stateFilter?: 'pending' | 'handled'): Promise<{ success: boolean; notifications: Notification[] }> {
+  return invoke('notification_list', { unreadOnly: unreadOnly ?? null, stateFilter: stateFilter ?? null })
+}
+
+export async function notificationSetState(id: string, state: '' | 'done' | 'dismissed'): Promise<void> {
+  return invoke('notification_set_state', { id, state })
 }
 
 export async function notificationCreate(data: Record<string, unknown>): Promise<{ success: boolean; id: string }> {
