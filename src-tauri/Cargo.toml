@@ -1,6 +1,6 @@
 [package]
 name = "arkmind"
-version = "14.1.1"
+version = "14.1.2"
 description = "Arkmind 鏂硅垷鏅哄簱"
 authors = ["Arkmind Team"]
 edition = "2021"
