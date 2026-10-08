@@ -1620,9 +1620,8 @@ pub fn build_solution_quote_xlsx(data: &Value) -> Result<Vec<u8>, String> {
         row += 1;
     }
 
-    // 合计行：标签合并至单价列前一格；金额合并单价+小计两列 =SUM(小计区间)
+    // 合计行：标签合并至单价列（8 列布局即 A:G）；金额=小计列单格 SUM 公式（merge API 只接受字面串，公式必须单格）
     let last_data_row = row.saturating_sub(1);
-    let label_end = if price_col > 0 { price_col - 1 } else { 0 };
     let label_fmt = Format::new()
         .set_bold()
         .set_font_size(11)
@@ -1632,7 +1631,7 @@ pub fn build_solution_quote_xlsx(data: &Value) -> Result<Vec<u8>, String> {
         .set_border(FormatBorder::Thin)
         .set_align(FormatAlign::Center)
         .set_align(FormatAlign::VerticalCenter);
-    ws.merge_range(row, 0, row, label_end, "合计：", &label_fmt)
+    ws.merge_range(row, 0, row, price_col, "合计：", &label_fmt)
         .map_err(|e| format!("写合计标签失败: {}", e))?;
     let money_white = || {
         let mut f = money();
@@ -1646,8 +1645,6 @@ pub fn build_solution_quote_xlsx(data: &Value) -> Result<Vec<u8>, String> {
         }
         _ => "=SUM(0)".to_string(),
     };
-    // 合计金额：merge API 只接受字面字符串，公式走单格（小计列），单价列同底色留空
-    ws.write_blank(row, price_col, &money_white()).map_err(|e| format!("写合计金额前置格失败: {}", e))?;
     ws.write_formula_with_format(row, sub_col, sum.as_str(), &money_white())
         .map_err(|e| format!("写合计公式失败: {}", e))?;
     // 合计行其余被 merge 覆盖的边框已由 merge format 提供
@@ -3091,7 +3088,7 @@ mod tests {
         assert!(xml.contains("E3*G3") && xml.contains("E4*G4"), "小计应为数量×单价公式: {}", &xml[..xml.len().min(900)]);
         assert!(xml.contains("SUM(H3:H4)"), "合计应为 SUM 公式: {}", &xml[xml.rfind("r=\"5\"").unwrap_or(0).min(xml.len())..]);
         assert!(xml.contains("ref=\"A2:H2\""), "子网行整行合并");
-        assert!(xml.contains("ref=\"A5:F5\""), "合计标签合并");
+        assert!(xml.contains("ref=\"A5:G5\""), "合计标签合并至单价列（G列）");
         assert!(xml.contains("<col "), "应写入列宽");
         assert!(!xml.contains("customHeight"), "不得有固定行高（自适应）");
     }
