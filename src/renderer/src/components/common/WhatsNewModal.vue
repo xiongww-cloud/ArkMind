@@ -17,6 +17,19 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '14.2.1',
+    date: '2026-10-08',
+    icon: 'bolt',
+    iconBg: 'bg-rose-50',
+    iconColor: 'text-rose-600',
+    title: '浮窗链接与通知排序修复',
+    items: [
+      '修复：桌面快速唤起的聊天浮窗中点击链接会在浮窗内打开——现在统一交给系统默认浏览器',
+      '通知页排序优化：未办结/未忽略的通知始终置顶；处置操作后列表即时重排，无需刷新',
+      '通知页移除「全部已读」：有办结/忽略就够了，已读不再是用户操作',
+    ],
+  },
+  {
     version: '14.2.0',
     date: '2026-10-08',
     icon: 'bell',
