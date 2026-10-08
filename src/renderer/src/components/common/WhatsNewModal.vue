@@ -17,6 +17,30 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '14.1.2',
+    date: '2026-10-08',
+    icon: 'settings',
+    iconBg: 'bg-blue-50',
+    iconColor: 'text-blue-600',
+    title: '待办到期时间修复',
+    items: [
+      '待办到期时间正确显示时分：AI 创建、日历选择、通知一键创建写入的时间统一规范化，未带时间的默认当日 09:00（存量待办启动时自动补齐）',
+      '修复月度重复任务在月末日期（如每月 31 日）卡住不滚动的老问题',
+    ],
+  },
+  {
+    version: '14.1.1',
+    date: '2026-10-08',
+    icon: 'file-doc',
+    iconBg: 'bg-slate-100',
+    iconColor: 'text-slate-600',
+    title: '使用手册同步更新',
+    items: [
+      '邮件章节对齐新版附件展示与收件人折叠、编辑器补超链接说明、智能问答补 AI 生成文档卡片说明',
+      '编译零警告维护',
+    ],
+  },
+  {
     version: '14.1.0',
     date: '2026-10-08',
     icon: 'file-text',
