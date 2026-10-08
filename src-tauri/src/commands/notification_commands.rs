@@ -94,8 +94,10 @@ pub async fn notification_batch_delete(ids: Vec<String>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn notification_stats() -> Result<Value, String> {
+    // 角标计数=未处置通知（待处理流全集）：弹窗已无手动已读入口，read 不再参与角标语义，
+    // 一键处理/已读过的未办结通知必须继续计入，直到办结/忽略才减数
     let unread: i64 = database::with_db(|c| c.query_row(
-        "SELECT COUNT(*) FROM notifications WHERE read=0 AND user_state=''", [], |r| r.get(0)
+        "SELECT COUNT(*) FROM notifications WHERE user_state=''", [], |r| r.get(0)
     )).unwrap_or(0);
     // 处置计数：done=洞察被采纳的信号，dismissed=噪音信号——供后续通知质量校准
     let done_count: i64 = database::with_db(|c| c.query_row(
