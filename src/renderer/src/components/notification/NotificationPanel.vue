@@ -17,6 +17,8 @@ const props = defineProps<{
   unread?: boolean
   /** 数据流：pending=待处理（默认，铃铛弹窗不传即此）| done=已办结 | dismissed=已忽略 | all=全部（混合视图）；AI洞察全页切换用 */
   stateFilter?: 'pending' | 'handled' | 'done' | 'dismissed' | 'all'
+  /** 已读操作（标记已读按钮）：弹窗场景 false——处置制下已读无意义，仅通知页全页保留 */
+  showReadActions?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -774,7 +776,7 @@ const priorityDot: Record<string, string> = {
               <template v-else>
                 <button @click.stop="setNotifState(n.id, 'done')" class="text-[11px] text-emerald-600 hover:underline">办结</button>
                 <button @click.stop="setNotifState(n.id, 'dismissed')" class="text-[11px] text-slate-400 hover:text-slate-600 hover:underline">忽略</button>
-                <button v-if="n.read === 0" @click.stop="markRead(n.id)" class="text-[11px] text-blue-600 hover:underline">标记已读</button>
+                <button v-if="n.read === 0 && showReadActions !== false" @click.stop="markRead(n.id)" class="text-[11px] text-blue-600 hover:underline">标记已读</button>
                 <button v-if="n.entity_id && !parseActions(n).length" @click.stop="goToEntity(n)" class="text-[11px] text-blue-600 hover:underline">查看详情</button>
                 <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>
               </template>
