@@ -17,6 +17,21 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '14.2.0',
+    date: '2026-10-08',
+    icon: 'bell',
+    iconBg: 'bg-indigo-50',
+    iconColor: 'text-indigo-600',
+    title: '通知处置与方案导出升级',
+    items: [
+      '通知支持「办结/忽略」：告诉分析师你的处置结果，忽略的话题不再重复打扰',
+      '通知页新增「待处理/已处理」流切换，已处理可一键回到待处理；铃铛弹窗保持只展示待处理',
+      '多选批量操作：批量办结、批量删除',
+      '方案报价单 Excel 导出重做：行高按内容自适应，小计/合计改用公式（改数量单价自动重算）',
+      '方案清单勾选「更新产品参数」保存后产品库即时生效',
+    ],
+  },
+  {
     version: '14.1.2',
     date: '2026-10-08',
     icon: 'settings',
