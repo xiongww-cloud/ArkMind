@@ -1132,6 +1132,20 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         log::info!("[数据库] 邮件内嵌图存量修复: {} 条按正文cid引用改判内嵌, {} 条Outlook同资产副本隐藏", n_ref, n_dup);
     }
 
+    // ★ 待办 due_date 存量规范化（与 todo_commands::normalize_due_datetime 同规则，幂等）：
+    //   纯日期 YYYY-MM-DD → 补 T09:00（到期=当日00:00 会"没到当天即显过期"，且 JS 把纯日期按
+    //   UTC 解析在东八区错位显示）；空格分隔 YYYY-MM-DD HH:MM[:SS] → T 分隔 ISO。
+    let n_due = conn
+        .execute(
+            "UPDATE todos SET due_date = CASE WHEN LENGTH(due_date) = 10 THEN due_date || 'T09:00' ELSE REPLACE(due_date, ' ', 'T') END \
+             WHERE due_date IS NOT NULL AND (LENGTH(due_date) = 10 OR (LENGTH(due_date) BETWEEN 16 AND 19 AND SUBSTR(due_date, 11, 1) = ' '))",
+            [],
+        )
+        .unwrap_or(0);
+    if n_due > 0 {
+        log::info!("[数据库] 待办 due_date 规范化: {} 条补齐时分/归一 ISO", n_due);
+    }
+
     // ★ 生成文档 relation 归属回填：entity_id='' 的旧行按消息 metadata 反查回填会话 id；
     //   无任何消息引用（含会话已删）的孤儿行删关系+快照——资产转为零引用后由 sweep_orphans
     //   自动回收（物理文件/知识库/资产行，宽限期外）。幂等：回填后不再命中。

@@ -71,12 +71,43 @@ pub(crate) fn normalize_todo_priority(p: &str) -> Option<String> {
     }.to_string())
 }
 
+/// due_date 规范化（硬保障"到期必须带时分"契约——提示词约束会被模型漏掉）：
+/// - 纯日期 YYYY-MM-DD → 补当日 09:00（工作日上午惯例；00:00 会"没到当天即显示过期"）
+/// - 空格分隔日期时间 YYYY-MM-DD HH:MM[:SS] → 归一为 ISO T 分隔（前端按含 T 判定显示时分）
+/// - 已含 T / 空 / 非预期格式 → 原样透传（不破坏既有数据）
+pub(crate) fn normalize_due_datetime(raw: &str) -> String {
+    let s = raw.trim();
+    let bytes = s.as_bytes();
+    // 10 位纯日期 YYYY-MM-DD
+    if bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && s[..4].bytes().all(|b| b.is_ascii_digit())
+        && s[5..7].bytes().all(|b| b.is_ascii_digit())
+        && s[8..10].bytes().all(|b| b.is_ascii_digit())
+    {
+        return format!("{s}T09:00");
+    }
+    // 空格分隔的日期时间（SQLite datetime 风格）→ T 分隔 ISO
+    if bytes.len() >= 16 && bytes[10] == b' ' && bytes[4] == b'-' && bytes[7] == b'-' {
+        return s.replacen(' ', "T", 1);
+    }
+    // 16/19 位空格分隔 YYYY-MM-DD HH:MM[:SS]
+    if (bytes.len() == 16 || bytes.len() == 19) && bytes[10] == b' ' && bytes[4] == b'-' && bytes[7] == b'-' {
+        return s.replacen(' ', "T", 1);
+    }
+    s.to_string()
+}
+
 #[tauri::command]
 pub async fn todos_create(data: Value) -> Result<Value, String> {
     let title = data["title"].as_str().unwrap_or("新待办").to_string();
     let content = data["content"].as_str().unwrap_or("").to_string();
     let priority = data["priority"].as_str().and_then(normalize_todo_priority);
-    let due_date = data["dueDate"].as_str().map(|s| s.to_string());
+    let due_date = data["dueDate"].as_str().map(|s| {
+        let n = normalize_due_datetime(s);
+        if n.is_empty() { None } else { Some(n) }
+    }).flatten();
     let project_id = data["projectId"].as_str().map(|s| s.to_string());
     let repeat = data["repeat"].as_str().map(|s| s.to_string());
 
@@ -161,7 +192,7 @@ pub async fn todos_update(id: String, data: Value) -> Result<Value, String> {
         if dd.is_null() || dd.as_str().map(|s| s.is_empty()).unwrap_or(true) {
             fields.push("due_date=NULL".into());
         } else if let Some(v) = dd.as_str() {
-            fields.push("due_date=?".into()); values.push(json!(v));
+            fields.push("due_date=?".into()); values.push(json!(normalize_due_datetime(v)));
         }
     }
     if let Some(rp) = data.get("repeat") {
@@ -256,20 +287,27 @@ pub async fn todos_delete(id: String) -> Result<Value, String> {
 }
 
 fn next_due_date(current: &str, repeat: &str) -> Option<String> {
-    let time_suffix = if current.contains('T') {
-        chrono::NaiveDateTime::parse_from_str(current, "%Y-%m-%dT%H:%M:%S").ok().map(|dt| format!("T{}", dt.format("%H:%M:%S")))
-    } else { None };
-    let date = chrono::NaiveDate::parse_from_str(current, "%Y-%m-%d")
-        .or_else(|_| {
-            chrono::NaiveDateTime::parse_from_str(current, "%Y-%m-%dT%H:%M:%S")
-                .map(|dt| dt.date())
-        }).ok()?;
+    let c = current.trim();
+    let dt_formats = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"];
+    // 保留时分滚动到下一日（纯日期维持纯日期）；无秒 ISO（normalize_due_datetime 产物）同样必须命中
+    let time_suffix = dt_formats.iter()
+        .find_map(|f| chrono::NaiveDateTime::parse_from_str(c, f).ok())
+        .map(|dt| format!("T{}", dt.format("%H:%M")));
+    let date = chrono::NaiveDate::parse_from_str(c, "%Y-%m-%d")
+        .ok()
+        .or_else(|| dt_formats.iter().find_map(|f| chrono::NaiveDateTime::parse_from_str(c, f).ok().map(|dt| dt.date())))?;
     let next = match repeat {
         "daily" => date + chrono::Duration::days(1),
         "weekly" => date + chrono::Duration::days(7),
         "monthly" => {
             let (y, m) = if date.month() == 12 { (date.year() + 1, 1) } else { (date.year(), date.month() + 1) };
-            let max_day = chrono::NaiveDate::from_ymd_opt(y, m, 1).unwrap_or(date).pred_opt().map(|d| d.day()).unwrap_or(28);
+            // 目标月最大日 = 目标月次月首日的前一天（原实现把"目标月首日减一"当成了当月末，
+            // 31 日月度重复会钳到错误的 max_day 导致永远卡在原地不滚动）
+            let max_day = chrono::NaiveDate::from_ymd_opt(y, m + 1, 1)
+                .or_else(|| chrono::NaiveDate::from_ymd_opt(y + 1, 1, 1))
+                .and_then(|d| d.pred_opt())
+                .map(|d| d.day())
+                .unwrap_or(28);
             let day = date.day().min(max_day);
             chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap_or(date)
         }
@@ -338,7 +376,7 @@ pub async fn todos_get(id: String) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_todo_priority;
+    use super::{normalize_todo_priority, normalize_due_datetime, next_due_date};
 
     #[test]
     fn priority_variants_all_map_to_canonical_range() {
@@ -359,5 +397,29 @@ mod tests {
         assert_eq!(normalize_todo_priority("").as_deref(), None);
         assert_eq!(normalize_todo_priority("自定义级别").as_deref(), Some("自定义级别"));
         assert_eq!(normalize_todo_priority(" P1 ").as_deref(), Some("P1"));
+    }
+
+    #[test]
+    fn due_datetime_normalized_to_iso_with_time() {
+        // 纯日期补当日 09:00（前端只认含 T 的值显示时分）
+        assert_eq!(normalize_due_datetime("2026-10-14"), "2026-10-14T09:00");
+        // 空格分隔（CalendarPicker 输出）→ T 分隔
+        assert_eq!(normalize_due_datetime("2026-10-14 14:30:00"), "2026-10-14T14:30:00");
+        assert_eq!(normalize_due_datetime("2026-10-14 14:30"), "2026-10-14T14:30");
+        // 已带 T / 空 / 非预期格式原样透传
+        assert_eq!(normalize_due_datetime("2026-10-14T14:30"), "2026-10-14T14:30");
+        assert_eq!(normalize_due_datetime("  "), "");
+        assert_eq!(normalize_due_datetime("10/14"), "10/14");
+    }
+
+    #[test]
+    fn repeat_roll_preserves_time_without_seconds_iso() {
+        // 无秒 ISO（normalize 产物）滚动必须保留时分——曾因只认带秒格式而丢时间
+        assert_eq!(next_due_date("2026-10-14T09:00", "weekly").as_deref(), Some("2026-10-21T09:00"));
+        assert_eq!(next_due_date("2026-10-14T14:30:00", "daily").as_deref(), Some("2026-10-15T14:30"));
+        // 纯日期维持纯日期
+        assert_eq!(next_due_date("2026-10-14", "daily").as_deref(), Some("2026-10-15"));
+        // 跨月月末钳制
+        assert_eq!(next_due_date("2026-01-31T08:00", "monthly").as_deref(), Some("2026-02-28T08:00"));
     }
 }
