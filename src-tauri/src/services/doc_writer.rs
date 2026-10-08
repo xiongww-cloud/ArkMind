@@ -26,6 +26,9 @@ const DOC_PRESET_TABLE_HALF_PT: u16 = 24;
 const DOC_PRESET_RUNNING_HALF_PT: u16 = 18;
 /// 正文行距 1.5 倍（rwml line_pct ×240 → w:line=360 lineRule=auto）
 const DOC_PRESET_LINE_PCT: f32 = 1.5;
+/// 正文段首行缩进 2 字符（小四 12pt × 2 = 24pt → w:firstLine=480 twips）——中文排版惯例；
+/// 居中对齐（题注）与右对齐（落款）段落不缩进，见 body_first_line_pt
+const DOC_PRESET_FIRST_LINE_PT: f32 = 24.0;
 /// 标题 1-6 级字号（half-pt）：小二18/三号16/四号14/12/11/11 pt，字体同宋体
 /// （覆盖 rwml 内置西文惯例 32/28/…；标题行距与正文同为 1.5 倍）
 const DOC_PRESET_HEADING_HALF_PT: [u16; 6] = [36, 32, 28, 24, 22, 22];
@@ -190,9 +193,12 @@ fn body_paragraph(builder: rwml::DocBuilder, text: &str) -> rwml::DocBuilder {
     body_paragraph_from(builder, text, None)
 }
 fn body_paragraph_from(builder: rwml::DocBuilder, text: &str, r: Option<&Value>) -> rwml::DocBuilder {
-    let pb = rwml::ParagraphBuilder::new()
-        .runs(body_runs(text, r))
+    let mut pb = rwml::ParagraphBuilder::new()
+        .runs(body_runs(strip_leading_ideographic_space(text), r))
         .line_pct(DOC_PRESET_LINE_PCT);
+    if let Some(f) = body_first_line_pt(r.map(parse_docx_align).flatten()) {
+        pb = pb.first_line_pt(f);
+    }
     builder.rich_paragraph(pb.build())
 }
 
@@ -773,9 +779,19 @@ fn apply_docx_blocks(
                 let shading = docx_shading_color(child);
                 let styled = align.is_some() || shading.is_some();
                 if let Some(runs) = child["runs"].as_array() {
-                    let built: Vec<rwml::Run> = runs.iter().flat_map(build_runs).collect();
+                    // 首个 run 剥段首全角空格（系统缩进接管，防双重缩进）
+                    let mut runs_owned: Vec<Value> = runs.clone();
+                    if let Some(first) = runs_owned.first_mut() {
+                        if let Some(t) = first["text"].as_str().map(|s| strip_leading_ideographic_space(s).to_string()) {
+                            first["text"] = json!(t);
+                        }
+                    }
+                    let built: Vec<rwml::Run> = runs_owned.iter().flat_map(build_runs).collect();
                     if !built.is_empty() {
                         let mut pb = rwml::ParagraphBuilder::new().runs(built).line_pct(DOC_PRESET_LINE_PCT);
+                        if let Some(f) = body_first_line_pt(align) {
+                            pb = pb.first_line_pt(f);
+                        }
                         if let Some(a) = align {
                             pb = pb.align(a);
                         }
@@ -792,8 +808,11 @@ fn apply_docx_blocks(
                         }
                         if styled {
                             let mut pb = rwml::ParagraphBuilder::new()
-                                .runs(body_runs(line.trim_end(), Some(child)))
+                                .runs(body_runs(strip_leading_ideographic_space(line.trim_end()), Some(child)))
                                 .line_pct(DOC_PRESET_LINE_PCT);
+                            if let Some(f) = body_first_line_pt(align) {
+                                pb = pb.first_line_pt(f);
+                            }
                             if let Some(a) = align {
                                 pb = pb.align(a);
                             }
@@ -1028,7 +1047,7 @@ fn heading_run(text: &str, level: u8) -> rwml::Run {
 }
 
 /// Word 列表渲染：**字面编号**（每组每级独立计数，不跨组延续）+ 预设样式
-/// （宋体小四 run + 1.5 倍行距 + 层级左缩进与悬挂）。rwml 合成 numbering 用固定 numId
+/// （宋体小四 run + 1.5 倍行距 + 首行 2 字符缩进与层级左缩进悬挂）。rwml 合成 numbering 用固定 numId
 /// 导致有序列表跨块编号延续、level 基准混乱——生成即终稿的场景字面前缀显示 100% 可控。
 fn render_list_paragraphs(
     mut builder: rwml::DocBuilder,
@@ -1056,7 +1075,8 @@ fn render_list_paragraphs(
         let pb = rwml::ParagraphBuilder::new()
             .runs(item_runs)
             .line_pct(DOC_PRESET_LINE_PCT)
-            .indent_left_pt(21.0 * (lvl as f32 + 1.0))
+            // 整体右移 2 字符（与正文首行缩进对齐惯例）：首行编号起点 = 24pt + 21×lvl，换行文本再进一格
+            .indent_left_pt(21.0 * (lvl as f32 + 1.0) + DOC_PRESET_FIRST_LINE_PT)
             .hanging_pt(21.0);
         builder = builder.rich_paragraph(pb.build());
     }
@@ -1103,6 +1123,8 @@ fn collect_list_items(items: &[Value], level: u8, ordered: bool, out: &mut Vec<(
 /// 剥除 AI 常自带的序号/项目符号前缀（"1. "/"2、"/"3）"/"- "/"• "），返回纯文本
 /// （系统统一重新编号，避免 "1. 1. 文本" 双重前缀）
 fn strip_list_prefix(text: &str) -> String {
+    // 段首全角空格先剥（AI 手动缩进习惯——系统缩进接管后防双重缩进，也保证前缀检测命中）
+    let text = strip_leading_ideographic_space(text);
     if let Some(pos) = text.find(|c: char| !c.is_ascii_digit()) {
         if pos > 0 && pos <= 3 {
             let rest = &text[pos..];
@@ -1148,6 +1170,19 @@ fn docx_shading_color(v: &Value) -> Option<(u8, u8, u8)> {
     str_field(v, "shading")
         .or_else(|| str_field(v, "bg"))
         .and_then(|s| parse_hex_rgb(&s))
+}
+
+/// 正文段首行缩进（中文排版惯例：缩进 2 字符）；居中/右对齐不缩进（题注、落款惯例例外）
+fn body_first_line_pt(align: Option<rwml::Align>) -> Option<f32> {
+    match align {
+        Some(rwml::Align::Center) | Some(rwml::Align::Right) => None,
+        _ => Some(DOC_PRESET_FIRST_LINE_PT),
+    }
+}
+
+/// 剥离段首全角空格（AI 常习惯性打"　　"手动缩进——系统缩进生效后必须去除，否则双重缩进）
+fn strip_leading_ideographic_space(text: &str) -> &str {
+    text.trim_start_matches('\u{3000}')
 }
 
 /// 构建带样式的 Word 表格：默认细边框 + 表头浅灰底黑字加粗居中（显式传值永远优先）
@@ -2630,13 +2665,39 @@ mod tests {
         xml
     }
 
-    /// 正文纯文本段落缺省 → 宋体小四（w:sz 24）+ 1.5 倍行距（w:line=360）
+    /// 正文纯文本段落缺省 → 宋体小四（w:sz 24）+ 1.5 倍行距（w:line=360）+ 首行缩进2字符（480twips）
     #[test]
     fn docx_body_preset_font_size() {
         let xml = docx_part(&json!({"children": [{"type": "paragraph", "text": "默认正文"}]}), "document.xml");
         assert!(xml.contains(r#"w:sz w:val="24""#), "正文应为小四 24half: {}", &xml[..xml.len().min(600)]);
         assert!(xml.contains("宋体"), "正文应为宋体");
         assert!(xml.contains(r#"w:line="360""#), "正文应为 1.5 倍行距(w:line=360): {}", &xml[..xml.len().min(600)]);
+        assert!(xml.contains(r#"w:firstLine="480""#), "正文应首行缩进 24pt(480twips): {}", &xml[..xml.len().min(600)]);
+    }
+
+    /// 中文排版：居中/右对齐段不缩进；runs 段缩进；段首全角空格剥离（防双重缩进）
+    #[test]
+    fn docx_first_line_indent_rules() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "paragraph", "text": "　　手动打了全角空格的正文", "align": "justify"},
+            {"type": "paragraph", "text": "居中题注", "align": "center"},
+            {"type": "paragraph", "runs": [{"text": "　　runs 段首", "bold": true}, {"text": "续文"}]},
+            {"type": "paragraph", "text": "右对齐落款", "align": "right"},
+        ]}), "document.xml");
+        assert_eq!(xml.matches(r#"w:firstLine="480""#).count(), 2, "justify 与 runs 段缩进、center/right 不缩进: {}", xml);
+        assert!(!xml.contains(">　"), "段首全角空格必须被剥离: {}", xml);
+        assert!(xml.contains("手动打了全角空格的正文"), "剥空格不伤正文");
+        assert!(xml.contains("runs 段首"), "runs 段首全角空格剥离");
+    }
+
+    /// 标题与列表不套用正文首行缩进（列表走左缩进+悬挂）
+    #[test]
+    fn docx_heading_and_list_no_first_line_indent() {
+        let xml = docx_part(&json!({"children": [
+            {"type": "heading", "level": 1, "text": "标题"},
+            {"type": "list", "ordered": true, "items": ["甲", "乙"]},
+        ]}), "document.xml");
+        assert!(!xml.contains(r#"w:firstLine="480""#), "标题/列表不应有正文首行缩进: {}", xml);
     }
 
     /// 标题：级别字号预设（H1=小二 36half/18pt）且保留 Heading 样式引用（大纲/目录能力）；标题 1.5 倍行距
@@ -2726,16 +2787,20 @@ mod tests {
     }
 
     /// Word 列表：预设样式（宋体小四 + 1.5倍行距）+ 字面编号
-    /// （组间独立计数、嵌套自动二级圆点、剥 AI 自带前缀防双重编号、层级缩进）
+    /// （组间独立计数、嵌套自动二级圆点、剥 AI 自带前缀防双重编号、层级缩进 + 首行 2 字符缩进）
     #[test]
     fn docx_list_preset_style_and_numbering() {
         let xml = docx_part(&json!({"children": [
-            {"type": "list", "ordered": true, "items": ["第一步", "1. 自带序号第二步"]},
+            {"type": "list", "ordered": true, "items": ["第一步", "1. 自带序号第二步", "　　3. 全角空格缩进项"]},
             {"type": "list", "ordered": true, "items": ["新组应从1开始"]},
             {"type": "list", "items": [{"text": "父项", "children": ["子项甲"]}]},
         ]}), "document.xml");
         assert!(xml.contains(r#"w:sz w:val="24""#), "列表应宋体小四");
         assert!(xml.contains(r#"w:line="360""#), "列表应 1.5 倍行距");
+        // 顶层：left=(21+24)pt=900twips、hanging=21pt=420twips → 首行编号从 24pt（2字符）起
+        assert!(xml.contains(r#"w:left="900""#), "顶层列表左缩进应含 2 字符首行缩进(900twips): {}", &xml[..xml.len().min(1600)]);
+        assert!(xml.contains(r#"w:hanging="420""#), "悬挂对齐保持 21pt");
+        assert!(xml.contains(">3. <") && !xml.contains(">　"), "段首全角空格应剥离且编号统一重排");
         // 前缀与正文现为独立 run（行内加粗支持）：分别断言存在、无双重编号残留
         assert!(
             xml.contains(">2. <") && xml.contains("自带序号第二步") && !xml.contains("1. 自带"),
@@ -2744,8 +2809,7 @@ mod tests {
         );
         assert!(xml.contains(">1. ") && xml.contains("新组应从1开始"), "有序组间编号应独立重置");
         assert!(!xml.contains("1. 1."), "不得双重前缀");
-        assert!(xml.contains(">◦ ") && xml.contains("子项甲"), "嵌套子级应为二级圆点");
-        assert!(xml.contains("w:left"), "列表应有层级缩进");
+        assert!(xml.contains(">• ") && xml.contains(">◦ ") && xml.contains("子项甲"), "一级圆点+嵌套子级二级圆点");
     }
 
     /// 行内 markdown 解析：成对标记 → 样式段；工程文本/未闭合 → 原样字面
