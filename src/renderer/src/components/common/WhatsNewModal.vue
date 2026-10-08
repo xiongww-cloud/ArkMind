@@ -17,6 +17,20 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '14.1.0',
+    date: '2026-10-08',
+    icon: 'file-text',
+    iconBg: 'bg-green-50',
+    iconColor: 'text-green-600',
+    title: '排版与编辑细节打磨',
+    items: [
+      'AI 生成 Word 文档符合中文排版习惯：正文与列表段落自动首行缩进 2 字符（居中题注、右对齐落款自动豁免）',
+      'AI 创建的笔记/待办富文本正常呈现，Markdown 不再显示为源码',
+      '富文本编辑器新增超链接：选中文字即可插入/移除链接（笔记、待办）',
+      '邮件多收件人默认只显示 3 个，点击展开查看全部',
+    ],
+  },
+  {
     version: '14.0.0',
     date: '2026-10-07',
     icon: 'chat-ai',
