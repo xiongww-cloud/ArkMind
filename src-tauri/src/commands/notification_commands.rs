@@ -10,9 +10,14 @@ pub(crate) fn sanitize_notification_text(text: &str) -> String {
 
 #[tauri::command]
 pub async fn notification_list(unread_only: Option<bool>, state_filter: Option<String>) -> Result<Value, String> {
-    // state_filter: None/"pending"=未处置流（排除已办结/已忽略）；"handled"=已处置流
-    let handled = state_filter.as_deref() == Some("handled");
-    let state_cond = if handled { "user_state!=''" } else { "user_state=''" };
+    // state_filter: None/"pending"=待处理流（未处置，含已读）；"done"/"dismissed"=细分已处置流；"handled"=已处置合集；"all"=不过滤
+    let state_cond = match state_filter.as_deref() {
+        Some("done") => "user_state='done'",
+        Some("dismissed") => "user_state='dismissed'",
+        Some("handled") => "user_state!=''",
+        Some("all") => "1=1",
+        _ => "user_state=''",
+    };
     let sql = if unread_only.unwrap_or(false) {
         &format!("SELECT * FROM notifications WHERE read=0 AND {} ORDER BY created_at DESC", state_cond)
     } else {

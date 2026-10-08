@@ -568,7 +568,7 @@ onUnmounted(() => {
           </button>
         </div>
         <div class="flex-1 min-h-0 overflow-y-auto">
-          <NotificationPanel ref="notifPanelRef" :visible="showNotifications" unread @close="showNotifications = false" @read="loadNotificationStats" />
+          <NotificationPanel ref="notifPanelRef" :visible="showNotifications" @close="showNotifications = false" @read="loadNotificationStats" />
         </div>
       </div>
     </div>

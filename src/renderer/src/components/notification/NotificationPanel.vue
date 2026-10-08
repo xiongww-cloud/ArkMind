@@ -15,8 +15,8 @@ import { emit as tauriEmit } from '@tauri-apps/api/event'
 const props = defineProps<{
   visible?: boolean
   unread?: boolean
-  /** 数据流：pending=待处理（默认，铃铛弹窗不传即此）| handled=已办结/已忽略（AI洞察全页切换用） */
-  stateFilter?: 'pending' | 'handled'
+  /** 数据流：pending=待处理（默认，铃铛弹窗不传即此）| done=已办结 | dismissed=已忽略 | all=全部（混合视图）；AI洞察全页切换用 */
+  stateFilter?: 'pending' | 'handled' | 'done' | 'dismissed' | 'all'
 }>()
 
 const emit = defineEmits<{
@@ -79,14 +79,19 @@ async function batchDelete() {
   }
 }
 
-// 批量办结：逐条 setState=done（后端无批量处置接口，通知量级小）；非破坏性，不加确认
+// 批量办结：逐条 setState=done（后端无批量处置接口，通知量级小）；非破坏性，不加确认；"全部"流行原位更新
 async function batchComplete() {
-  if (props.stateFilter === 'handled') return
+  const f = props.stateFilter || 'pending'
+  if (f !== 'pending' && f !== 'all') return
   if (selectedIds.value.size === 0) return
   const ids = Array.from(selectedIds.value)
   const results = await Promise.allSettled(ids.map(id => notificationSetState(id, 'done')))
   const failed = results.filter(r => r.status === 'rejected').length
-  notifications.value = notifications.value.filter(n => !selectedIds.value.has(n.id))
+  if (f === 'all') {
+    notifications.value.forEach(n => { if (selectedIds.value.has(n.id)) n.user_state = 'done' })
+  } else {
+    notifications.value = notifications.value.filter(n => !selectedIds.value.has(n.id))
+  }
   exitMultiSelect()
   emit('read')
   tauriEmit('notification:updated')
@@ -151,11 +156,16 @@ function toggleExpand(id: string) {
   expandedId.value = expandedId.value === id ? null : id
 }
 
-// 用户处置：done/dismissed（待处理流→出流）/ ''（已处理流恢复→出流）——任何处置后该行都不再属于当前视图；
+// 用户处置：done/dismissed（待处理流→出流）/ ''（已处理流恢复→出流）；"全部"流不过滤处置状态，行原位更新保持可见。
 // 记录仍写库（分析师"不再提醒"教学证据）。行内处置同时刷新铃铛计数。
 async function setNotifState(id: string, state: '' | 'done' | 'dismissed') {
   await notificationSetState(id, state)
-  notifications.value = notifications.value.filter(n => n.id !== id)
+  if (props.stateFilter === 'all') {
+    const n = notifications.value.find(x => x.id === id)
+    if (n) n.user_state = state
+  } else {
+    notifications.value = notifications.value.filter(n => n.id !== id)
+  }
   expandedId.value = expandedId.value === id ? null : expandedId.value
   emit('read')
   tauriEmit('notification:updated')
@@ -757,7 +767,7 @@ const priorityDot: Record<string, string> = {
               </div>
             </div>
             <div class="flex items-center gap-3 px-4 pb-2 pl-14">
-              <template v-if="stateFilter === 'handled'">
+              <template v-if="n.user_state">
                 <button @click.stop="setNotifState(n.id, '')" class="text-[11px] text-blue-600 hover:underline">回到待处理</button>
                 <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>
               </template>

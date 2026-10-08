@@ -91,7 +91,7 @@ export async function profileFactDelete(id: string): Promise<{ success: boolean 
   return invoke('profile_fact_delete', { id })
 }
 
-export async function notificationList(unreadOnly?: boolean, stateFilter?: 'pending' | 'handled'): Promise<{ success: boolean; notifications: Notification[] }> {
+export async function notificationList(unreadOnly?: boolean, stateFilter?: 'pending' | 'handled' | 'done' | 'dismissed' | 'all'): Promise<{ success: boolean; notifications: Notification[] }> {
   return invoke('notification_list', { unreadOnly: unreadOnly ?? null, stateFilter: stateFilter ?? null })
 }
 
