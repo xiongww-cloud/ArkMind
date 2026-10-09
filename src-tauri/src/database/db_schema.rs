@@ -338,6 +338,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     source        TEXT DEFAULT 'system',
     follow_up_of  TEXT DEFAULT '',
     user_state    TEXT DEFAULT '',
+    state_changed_at TEXT DEFAULT '',
     created_at    TEXT DEFAULT (datetime('now','localtime'))
     );
         CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);

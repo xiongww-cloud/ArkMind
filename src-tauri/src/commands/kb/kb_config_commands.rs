@@ -99,6 +99,8 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
         "ext_tool_memory".to_string(),
         "ext_tool_delegate_agent".to_string(),
         "ext_tool_ask_user".to_string(),
+        // 关注管理：用户对话中明示"盯着X"的承接入口（观察池写入），无它则只能口头答应
+        "ext_tool_watch".to_string(),
     ];
     if crate::services::web_search::is_configured() {
         base.into_iter().chain(crate::services::web_search::WEB_TOOL_NAMES.iter().map(|s| s.to_string())).collect()

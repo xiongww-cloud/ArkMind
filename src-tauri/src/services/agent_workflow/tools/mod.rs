@@ -36,6 +36,7 @@ pub(crate) const TOOL_LABELS: &[(&str, &str, &str)] = &[
     ("ext_tool_report", "缺口与确认上报", "子 Agent 结构化上报：数据缺口 / 需用户拍板的确认事项"),
     ("ext_tool_ask_user", "向用户提问", "结构化追问，本轮结束等待答复"),
     ("ext_tool_delegate_agent", "委托专业助手", "把任务委托给专业 Agent 执行"),
+    ("ext_tool_watch", "关注管理", "观察池增删改查：替用户持续盯一件事"),
 ];
 
 pub(crate) fn tool_label(name: &str) -> (&'static str, &'static str) {
@@ -64,6 +65,7 @@ pub(crate) mod manage_note;
 pub(crate) mod memory;
 pub(crate) mod notification;
 pub(crate) mod report;
+pub(crate) mod watch;
 pub(crate) mod write_document;
 
 pub(crate) use common::*;

@@ -728,7 +728,7 @@ const vecSavedData = ref<any>(null)
 const vecConfigured = computed(() => !!(vecSavedData.value?.apiKey))
 
 // ─── Notification Settings ──────────────────────────────────
-import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, profileFactSave, type LoopStatus, type ProfileFact } from '@/api/notification-client'
+import { notificationConfigGet, notificationConfigUpdate, notificationLoopStatus, profileFactsList, profileFactDelete, profileFactSave, watchPoolGet, watchEntryDelete, type WatchEntryView, type LoopStatus, type ProfileFact } from '@/api/notification-client'
 import { getChatHotkey, setChatHotkey, fetchUserProfile, updateUserProfile } from '@/api/db-client'
 
 const notifyEnabled = ref(true)
@@ -740,6 +740,18 @@ const focusModalOpen = ref(false)         // 编辑弹窗
 const focusDraft = ref('')                // 弹窗草稿
 const focusSaving = ref(false)
 const FOCUS_MAX = 2000
+// 观察池清单（只读展示+删除；新增走对话告诉 AI，本处不提供入口）
+const watchOpen = ref(false)
+const watchEntries = ref<WatchEntryView[]>([])
+async function toggleWatchPool() {
+  watchOpen.value = !watchOpen.value
+  if (watchOpen.value) {
+    try { watchEntries.value = (await watchPoolGet()).entries } catch { watchEntries.value = [] }
+  }
+}
+async function removeWatchEntry(id: number) {
+  try { await watchEntryDelete(id); watchEntries.value = watchEntries.value.filter(e => e.id !== id) } catch { /* 条目已不存在等竞态：静默 */ }
+}
 const loopStatus = ref<LoopStatus>({ success: true, running: false, last_check_at: '', next_check_at: '' })
 let loopStatusTimer: ReturnType<typeof setInterval> | null = null
 
@@ -1943,6 +1955,30 @@ async function saveProfileEditor() {
                   <div class="flex items-center gap-2 flex-shrink-0">
                     <button v-if="focusText" @click="clearFocusRequirements" :disabled="focusSaving" class="btn-secondary text-xs !text-amber-600 !border-amber-300 hover:!bg-amber-50"><AppIcon name="trash" size="12"/>清空</button>
                     <button @click="openFocusModal" class="btn-primary text-xs"><AppIcon name="edit" size="12"/>{{ focusText ? '编辑' : '添加要求' }}</button>
+                  </div>
+                </div>
+              </div>
+              <!-- AI 持续关注清单：观察池=分析师工作队列；用户可删，新增走对话 -->
+              <div class="border-t border-surface-100 pt-3">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0">
+                    <p class="text-[12px] font-medium text-surface-700">AI 持续关注清单</p>
+                    <p class="text-[10px] text-surface-400">
+                      用户指定 {{ watchEntries.filter(e => e.zone === 'user').length }} 条 · AI 洞察 {{ watchEntries.filter(e => e.zone === 'ai').length }} 条；想新增就在对话里告诉 AI"盯着某件事"
+                    </p>
+                  </div>
+                  <button @click="toggleWatchPool" class="btn-secondary text-xs">{{ watchOpen ? '收起' : '查看' }}</button>
+                </div>
+                <div v-if="watchOpen" class="mt-2 space-y-1 max-h-[240px] overflow-y-auto">
+                  <div v-if="!watchEntries.length" class="text-[11px] text-surface-400 py-2 text-center">观察池为空</div>
+                  <div v-for="e in watchEntries" :key="e.id" class="flex items-start gap-2 px-2.5 py-1.5 rounded-lg bg-surface-50">
+                    <span class="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 leading-none mt-0.5"
+                      :class="e.zone === 'user' ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'">{{ e.zone === 'user' ? '用户指定' : 'AI 洞察' }}</span>
+                    <div class="flex-1 min-w-0">
+                      <p class="text-[11px] text-surface-700 break-all">{{ e.text }}</p>
+                      <p class="text-[10px] text-surface-400">w{{ e.id }} · {{ e.age }}{{ e.entity ? ' · 已锚定对象' : '' }}</p>
+                    </div>
+                    <button @click="removeWatchEntry(e.id)" class="text-[10px] text-surface-400 hover:text-red-500 flex-shrink-0 mt-0.5">删除</button>
                   </div>
                 </div>
               </div>

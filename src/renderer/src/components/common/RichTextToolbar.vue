@@ -10,23 +10,44 @@ const emit = defineEmits<{ at: [] }>()
 const tb = useTiptapToolbar(computed(() => props.editor))
 
 // ── @ 按钮点击：先关闭其他下拉再 emit
-function onAtClick() { tb.closePopups(); emit('at') }
+function onAtClick() { closeAll(); emit('at') }
+
+// ── 浮层面板：Teleport 到 body + fixed 定位——绝对定位面板会被编辑器滚动容器裁切、
+//    被相邻栏（如待办详情右侧附件栏）盖压；浮层化后脱离宿主层叠上下文，一处修复所有宿主
+const headingWrap = ref<HTMLElement | null>(null)
+const listWrap = ref<HTMLElement | null>(null)
+const alignWrap = ref<HTMLElement | null>(null)
+const tableWrap = ref<HTMLElement | null>(null)
+const linkWrap = ref<HTMLElement | null>(null)
+
+const panelWidths: Record<string, number> = { heading: 96, list: 112, align: 122, table: 120, link: 240 }
+function popStyle(which: 'heading' | 'list' | 'align' | 'table' | 'link'): Record<string, string> {
+  const wrap = { heading: headingWrap, list: listWrap, align: alignWrap, table: tableWrap, link: linkWrap }[which].value
+  const r = wrap?.getBoundingClientRect()
+  if (!r) return { position: 'fixed', top: '-9999px', left: '-9999px' }
+  const w = panelWidths[which]
+  const st: Record<string, string> = { position: 'fixed', top: `${r.bottom + 4}px`, zIndex: '999' }
+  // 视口右缘不够放则右锚定翻转（对齐表格面板原有右对齐习惯）
+  if (which === 'table' || (r.left + w + 8 > window.innerWidth)) st.right = `${Math.max(8, window.innerWidth - r.right)}px`
+  else st.left = `${Math.max(8, r.left)}px`
+  return st
+}
+
+function closeAll() {
+  tb.closePopups()
+  linkOpen.value = false
+}
 
 // ── 网页超链接：必须先选中正文文字再套链接（渲染成蓝链样式）；已有链接→点击即移除
 const linkOpen = ref(false)
 const linkUrl = ref('')
 const linkInput = ref<HTMLInputElement | null>(null)
-const linkWrap = ref<HTMLElement | null>(null)
-const linkAlignRight = ref(false)
 function openLinkPrompt() {
-  tb.closePopups()
+  closeAll()
   const ed = props.editor
   if (!ed) return
   if (ed.isActive('link')) { ed.chain().focus().extendMarkRange('link').unsetLink().run(); return }
   if (ed.state.selection.empty) { toast({ message: '先在正文中选中要作为链接的文字', type: 'info' }); return }
-  // 弹窗宽 240：贴近视口右缘时改右锚定，防溢出窗口
-  const rect = linkWrap.value?.getBoundingClientRect()
-  linkAlignRight.value = !!rect && rect.right + 240 + 16 > window.innerWidth
   linkUrl.value = ''
   linkOpen.value = true
   requestAnimationFrame(() => linkInput.value?.focus())
@@ -41,32 +62,45 @@ function applyLink() {
   linkOpen.value = false
 }
 
-// 关闭外部点击弹窗
+// 外部点击关闭：宿主工具栏与浮层本体（Teleport 后不在 .tiptap-toolbar 内）之外的点击
 function onDocClick(e: MouseEvent) {
-  const el = (e.target as HTMLElement).closest?.('.tiptap-toolbar') as HTMLElement | null
-  if (!el) { tb.closePopups(); linkOpen.value = false }
+  const t = e.target as HTMLElement
+  if (t.closest?.('.tiptap-toolbar') || t.closest?.('.rt-pop')) return
+  closeAll()
 }
-onMounted(() => document.addEventListener('click', onDocClick, true))
-onUnmounted(() => document.removeEventListener('click', onDocClick, true))
+// 滚动即关：fixed 浮层锚点不跟随，滚动中保持打开会脱节——直接收起（再次点击再开）
+function onScrollClose() {
+  if (linkOpen.value || tb.headingOpen.value || tb.listOpen.value || tb.alignOpen.value || tb.tableMenuOpen.value) closeAll()
+}
+onMounted(() => {
+  document.addEventListener('click', onDocClick, true)
+  window.addEventListener('scroll', onScrollClose, true)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick, true)
+  window.removeEventListener('scroll', onScrollClose, true)
+})
 </script>
 
 <template>
-  <div class="tiptap-toolbar flex items-center gap-0 px-2 h-10 border-b border-surface-100 shrink-0" @click="tb.closePopups">
+  <div class="tiptap-toolbar flex items-center gap-0 px-2 h-10 border-b border-surface-100 shrink-0" @click="closeAll">
 
     <!-- 标题下拉 -->
-    <div class="relative" @click.stop>
+    <div ref="headingWrap" class="relative" @click.stop>
       <button @mousedown.prevent @click.stop="tb.togglePopup('heading')"
         class="flex items-center gap-0.5 w-[52px] h-6 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100 truncate">
         <span class="truncate">{{ tb.headingLabel.value }}</span>
         <svg class="w-2 h-2 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
       </button>
-      <div v-if="tb.headingOpen.value" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[80px]">
+    </div>
+    <Teleport to="body">
+      <div v-if="tb.headingOpen.value" class="rt-pop bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[80px]" :style="popStyle('heading')">
         <button @mousedown.prevent="tb.execFormat('formatBlock','p'); tb.headingLabel.value='正文'; tb.headingOpen.value=false" class="w-full px-3 py-1.5 text-[11px] text-left text-surface-600 hover:bg-surface-50">正文</button>
         <button @mousedown.prevent="tb.insertHeading(1); tb.headingLabel.value='标题 1'; tb.headingOpen.value=false" class="w-full px-3 py-1.5 text-[11px] text-left font-bold text-surface-600 hover:bg-surface-50">标题 1</button>
         <button @mousedown.prevent="tb.insertHeading(2); tb.headingLabel.value='标题 2'; tb.headingOpen.value=false" class="w-full px-3 py-1.5 text-[11px] text-left font-bold text-surface-600 hover:bg-surface-50">标题 2</button>
         <button @mousedown.prevent="tb.insertHeading(3); tb.headingLabel.value='标题 3'; tb.headingOpen.value=false" class="w-full px-3 py-1.5 text-[11px] text-left font-bold text-surface-600 hover:bg-surface-50">标题 3</button>
       </div>
-    </div>
+    </Teleport>
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
@@ -93,17 +127,19 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
     <!-- 列表下拉 -->
-    <div class="relative" @click.stop>
+    <div ref="listWrap" class="relative" @click.stop>
       <button @mousedown.prevent @click.stop="tb.togglePopup('list')" v-tooltip="'列表'"
         class="flex items-center gap-0.5 h-6 px-1.5 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100">
         <AppIcon name="list" size="13"/>
         <svg class="w-2 h-2 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
       </button>
-      <div v-if="tb.listOpen.value" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[100px]">
+    </div>
+    <Teleport to="body">
+      <div v-if="tb.listOpen.value" class="rt-pop bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[100px]" :style="popStyle('list')">
         <button @mousedown.prevent="tb.insertList('ul'); tb.listOpen.value=false" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left text-surface-600 hover:bg-surface-50"><AppIcon name="list" size="13"/>无序列表</button>
         <button @mousedown.prevent="tb.insertList('ol'); tb.listOpen.value=false" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left text-surface-600 hover:bg-surface-50"><AppIcon name="list-ol" size="13"/>有序列表</button>
       </div>
-    </div>
+    </Teleport>
 
     <!-- 任务清单 -->
     <button @mousedown.prevent="tb.toggleTaskList()" v-tooltip="'任务清单'"
@@ -115,18 +151,20 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
     <!-- 对齐下拉 -->
-    <div class="relative" @click.stop>
+    <div ref="alignWrap" class="relative" @click.stop>
       <button @mousedown.prevent @click.stop="tb.togglePopup('align')" v-tooltip="'对齐'"
         class="flex items-center gap-0.5 h-6 px-1.5 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100">
         <AppIcon :name="tb.alignLabel.value === '右对齐' ? 'align-right' : tb.alignLabel.value === '居中' ? 'align-center' : 'align-left'" size="13"/>
         <svg class="w-2 h-2 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
       </button>
-      <div v-if="tb.alignOpen.value" class="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[110px]">
+    </div>
+    <Teleport to="body">
+      <div v-if="tb.alignOpen.value" class="rt-pop bg-white rounded-lg shadow-lg border border-surface-100 py-1 min-w-[110px]" :style="popStyle('align')">
         <button @mousedown.prevent="tb.execAlign('left')" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left text-surface-600 hover:bg-surface-50"><AppIcon name="align-left" size="13"/>左对齐</button>
         <button @mousedown.prevent="tb.execAlign('center')" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left text-surface-600 hover:bg-surface-50"><AppIcon name="align-center" size="13"/>居中</button>
         <button @mousedown.prevent="tb.execAlign('right')" class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-left text-surface-600 hover:bg-surface-50"><AppIcon name="align-right" size="13"/>右对齐</button>
       </div>
-    </div>
+    </Teleport>
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
@@ -172,7 +210,9 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
         :class="linkOpen || editor?.isActive('link') ? 'bg-blue-50 text-blue-600' : ''">
         <AppIcon name="link" size="13"/>
       </button>
-      <div v-if="linkOpen" class="absolute top-full mt-1 z-50 bg-white rounded-lg shadow-lg border border-surface-100 p-2 w-[240px]" :class="linkAlignRight ? 'right-0' : 'left-0'" @click.stop>
+    </div>
+    <Teleport to="body">
+      <div v-if="linkOpen" class="rt-pop bg-white rounded-lg shadow-lg border border-surface-100 p-2 w-[240px]" :style="popStyle('link')" @click.stop>
         <input ref="linkInput" v-model="linkUrl" @keydown.enter.prevent="applyLink" @keydown.esc.prevent="linkOpen = false" placeholder="粘贴或输入网址 (URL)" class="w-full border border-surface-200 rounded px-2 py-1 text-[11px] outline-none focus:border-brand-400"/>
         <p class="text-[9px] text-surface-400 mt-1">选中文字将渲染为可点击的超链接</p>
         <div class="flex justify-end gap-1.5 mt-1.5">
@@ -180,19 +220,21 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
           <button @mousedown.prevent="applyLink" class="px-2 py-0.5 text-[10px] bg-brand-600 text-white rounded hover:bg-brand-700">添加链接</button>
         </div>
       </div>
-    </div>
+    </Teleport>
 
     <div class="mx-1 w-px h-3 bg-surface-200"></div>
 
     <!-- 表格下拉 -->
-    <div class="relative" @click.stop>
+    <div ref="tableWrap" class="relative" @click.stop>
       <button @mousedown.prevent @click.stop="tb.togglePopup('table')" v-tooltip="'表格'"
         class="flex items-center gap-0.5 h-6 px-1.5 justify-center rounded transition-colors duration-200 text-[11px] text-surface-500 hover:bg-surface-100"
         :class="editor?.isActive('table') ? 'bg-blue-50 text-blue-600' : 'text-surface-500 hover:bg-surface-100'">
         <AppIcon name="table-grid" size="13"/>
         <svg class="w-1.5 h-1.5 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
       </button>
-      <div v-if="tb.tableMenuOpen.value" class="absolute top-full right-0 mt-1 z-50 bg-white rounded-lg shadow-sm border border-surface-100 p-1 w-[120px]" @click.stop>
+    </div>
+    <Teleport to="body">
+      <div v-if="tb.tableMenuOpen.value" class="rt-pop bg-white rounded-lg shadow-sm border border-surface-100 p-1 w-[120px]" :style="popStyle('table')" @click.stop>
         <template v-if="!editor?.isActive('table')">
           <div class="space-y-1.5 mb-2">
             <div class="flex items-center gap-1.5">
@@ -221,7 +263,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
           <button @mousedown.prevent="tb.execFormat('deleteTable'); tb.tableMenuOpen.value=false" class="w-full px-2 py-1 text-[11px] text-left text-red-500 hover:bg-red-50 rounded">删除表格</button>
         </template>
       </div>
-    </div>
+    </Teleport>
 
   </div>
 </template>

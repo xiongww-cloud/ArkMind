@@ -365,6 +365,15 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                     } else {
                                         "[]".to_string()
                                     };
+                                    // ★ 来源观察条目（跟进类通知必带）：["w5","w12"]→[5,12]，非法格式剔除；
+                                    //   通知创建即出队（框架确定性），用户处置只裁决通知，池不留中间态
+                                    let watch_refs: Vec<u64> = a["watch_ref"].as_array().map(|arr|
+                                        arr.iter().filter_map(|v| crate::services::notification_loop::parse_wid(
+                                            &v.as_str().map(String::from).unwrap_or_else(|| v.to_string())))
+                                        .collect()
+                                    ).unwrap_or_default();
+                                    let meta_str = if watch_refs.is_empty() { "{}".to_string() }
+                                        else { serde_json::to_string(&json!({"watch_ref": watch_refs})).unwrap_or_else(|_| "{}".into()) };
                                     // ★ 创建侧校验：剔除指向不存在对象的 view_* 死按钮
                                     let (actions_str, dropped_actions) = sanitize_actions_json(&actions_str);
                                     // ★ 去重安全网（7 天窗口，仅防完全相同 title+entity_id 重复）：
@@ -389,8 +398,8 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                     } else {
                                         let id = uuid::Uuid::new_v4().to_string();
                                         match database::run(
-                                            "INSERT INTO notifications(id,type,title,content,entity_type,entity_id,priority,source,follow_up_of,actions) VALUES(?1,?2,?3,?4,?5,?6,?7,'llm',?8,?9)",
-                                            &[json!(&id), json!(ntype), json!(title), json!(content), json!(entity_type), json!(entity_id), json!(priority), json!(follow_up_of), json!(actions_str)],
+                                            "INSERT INTO notifications(id,type,title,content,entity_type,entity_id,priority,source,follow_up_of,actions,meta) VALUES(?1,?2,?3,?4,?5,?6,?7,'llm',?8,?9,?10)",
+                                            &[json!(&id), json!(ntype), json!(title), json!(content), json!(entity_type), json!(entity_id), json!(priority), json!(follow_up_of), json!(actions_str), json!(meta_str)],
                                         ) {
                                             Err(e) => ToolResultEnvelope {
                                                 result_type: "notification_create_result".to_string(),
@@ -398,12 +407,16 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                                 summary: Some(format!("创建通知失败: {}", e)),
                                             }.to_json(),
                                             Ok(_) => {
+                                                let dequeued = crate::services::notification_loop::watch_dequeue(&watch_refs);
                                                 if let Some(ref h) = app_handle { let _ = h.emit("notification:new", &id); }
-                                                let summary = if dropped_actions.is_empty() {
+                                                let mut summary = if dropped_actions.is_empty() {
                                                     format!("已创建通知「{}」", title)
                                                 } else {
                                                     format!("已创建通知「{}」；注意：{} 个跳转按钮因引用对象不存在已被移除（{}）；view_* 按钮的 ID 必须来自本轮工具查询确认存在的对象", title, dropped_actions.len(), dropped_actions.join("、"))
                                                 };
+                                                if dequeued > 0 {
+                                                    summary.push_str(&format!("；来源观察条目已出队 {} 条（结果已交付，用户可经卡片续盯）", dequeued));
+                                                }
                                                 ToolResultEnvelope {
                                                     result_type: "notification_create_result".to_string(),
                                                     data: json!({"id": id, "title": title, "success": true}),

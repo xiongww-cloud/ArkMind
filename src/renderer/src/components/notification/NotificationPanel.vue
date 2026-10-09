@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { notificationList, notificationMarkRead, notificationSetState, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile, notificationLinkFiles, notificationUpdateObject, type FileLinkTarget } from '@/api/notification-client'
+import { notificationList, notificationMarkRead, notificationSetState, notificationWatchKeep, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile, notificationLinkFiles, notificationUpdateObject, type FileLinkTarget } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
 import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
@@ -189,6 +189,30 @@ async function setNotifState(id: string, state: '' | 'done' | 'dismissed') {
   expandedId.value = expandedId.value === id ? null : expandedId.value
   emit('read')
   tauriEmit('notification:updated')
+}
+
+// 观察池联动：meta.watch_ref=[w<id>…]（创建即出队，条目已不在池中）；
+// 〔继续跟进〕= 以通知标题再入用户指定区（追踪意愿由用户明示恢复）
+function watchRefs(n: Notification): number[] {
+  if (!n.meta) return []
+  try {
+    const m = typeof n.meta === 'string' ? JSON.parse(n.meta) : n.meta
+    const arr = (m as any)?.watch_ref
+    return Array.isArray(arr) ? arr.filter((x: unknown) => typeof x === 'number') : []
+  } catch { return [] }
+}
+
+async function keepWatching(n: Notification) {
+  try {
+    const r = await notificationWatchKeep(n.id)
+    if (r.success) {
+      n.read = 1
+      resortNotifications()
+      toast({ message: `已重新加入观察池（w${r.watch_id}），分析师将持续跟进`, type: 'success' })
+    }
+  } catch (e: any) {
+    toast({ message: `续盯失败：${e?.message || e}`, type: 'error' })
+  }
 }
 
 async function markRead(id: string) {
@@ -735,7 +759,8 @@ const priorityDot: Record<string, string> = {
                   class="text-[13px] font-medium text-slate-800 truncate cursor-default select-text"
                   :class="{ 'font-normal text-slate-500': n.read === 1 || n.user_state }">{{ stripUuids(n.title) }}</span>
                 <span v-if="n.user_state === 'done'" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 flex-shrink-0 leading-none">已办结</span>
-                <span v-else-if="n.user_state === 'dismissed'" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 flex-shrink-0 leading-none">已忽略</span>
+                <span v-else-if="n.user_state === 'dismissed'" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 flex-shrink-0 leading-none">不再跟进</span>
+                <span v-if="watchRefs(n).length" class="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 flex-shrink-0 leading-none">追踪 {{ watchRefs(n).length }} 条观察</span>
               </div>
               <span class="text-[11px] text-slate-400 flex-shrink-0">{{ timeAgo(n.created_at) }}</span>
               <svg v-if="!multiSelectMode" class="w-3 h-3 flex-shrink-0 text-slate-400 transition-transform duration-200"
@@ -791,12 +816,13 @@ const priorityDot: Record<string, string> = {
             </div>
             <div class="flex items-center gap-3 px-4 pb-2 pl-14">
               <template v-if="n.user_state">
+                <button v-if="watchRefs(n).length" @click.stop="keepWatching(n)" class="text-[11px] text-amber-600 hover:underline">继续跟进</button>
                 <button @click.stop="setNotifState(n.id, '')" class="text-[11px] text-blue-600 hover:underline">回到待处理</button>
                 <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>
               </template>
               <template v-else>
                 <button @click.stop="setNotifState(n.id, 'done')" class="text-[11px] text-emerald-600 hover:underline">办结</button>
-                <button @click.stop="setNotifState(n.id, 'dismissed')" class="text-[11px] text-slate-400 hover:text-slate-600 hover:underline">忽略</button>
+                <button @click.stop="setNotifState(n.id, 'dismissed')" class="text-[11px] text-slate-400 hover:text-slate-600 hover:underline">不再跟进</button>
                 <button v-if="n.read === 0 && showReadActions !== false" @click.stop="markRead(n.id)" class="text-[11px] text-blue-600 hover:underline">标记已读</button>
                 <button v-if="n.entity_id && !parseActions(n).length" @click.stop="goToEntity(n)" class="text-[11px] text-blue-600 hover:underline">查看详情</button>
                 <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>

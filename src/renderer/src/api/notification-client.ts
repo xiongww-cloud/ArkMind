@@ -99,6 +99,27 @@ export async function notificationSetState(id: string, state: '' | 'done' | 'dis
   return invoke('notification_set_state', { id, state })
 }
 
+/** 继续跟进：以通知标题再入观察池用户指定区，并标记已读 */
+export async function notificationWatchKeep(id: string): Promise<{ success: boolean; watch_id: number }> {
+  return invoke('notification_watch_keep', { id })
+}
+
+export interface WatchEntryView {
+  id: number
+  zone: string
+  age: string
+  text: string
+  entity: string
+}
+
+export async function watchPoolGet(): Promise<{ success: boolean; entries: WatchEntryView[] }> {
+  return invoke('watch_pool_get')
+}
+
+export async function watchEntryDelete(watchId: number): Promise<void> {
+  return invoke('watch_entry_delete', { watchId })
+}
+
 export async function notificationCreate(data: Record<string, unknown>): Promise<{ success: boolean; id: string }> {
   return invoke('notification_create', { data })
 }

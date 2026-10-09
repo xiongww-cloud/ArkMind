@@ -19,10 +19,12 @@ static STARTUP_DONE: AtomicBool = AtomicBool::new(false);
 const WATCH_KEY: &str = "analyst_watch";
 /// 单条观察最大长度（长度安全阀，非数量限制）
 const WATCH_MAX_LEN: usize = 120;
-/// 观察条目保留时长：7 天后自动过期
+/// 观察条目保留时长（仅 AI 区）：7 天后自动过期；用户指定区无 TTL、永不淘汰
 const WATCH_TTL_SECS: i64 = 7 * 24 * 3600;
-/// 观察池条数上限：超出按创建顺序淘汰最旧
-const WATCH_MAX_ENTRIES: usize = 30;
+/// AI 洞察池条数上限：超出按创建顺序淘汰最旧
+const WATCH_MAX_ENTRIES: usize = 50;
+/// 用户指定池上限（满时 add/再入拒绝并提示先清理）
+const WATCH_USER_MAX: usize = 20;
 
 /// 分析师工具白名单：只读查询 + 创建通知。无任何业务写权限（建档走通知按钮用户确认）
 const ANALYSIS_TOOLS: [&str; 6] = [
@@ -52,7 +54,8 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
    Q2 可行动：用户看完知道后果或下一步吗？
    Q3 收敛：与已通知/已观察的内容比，有新证据或状态变化吗？
    三问全过 → 通过「通知管理」创建通知；任一不过 → 放弃或降级为 WATCH。
-5. 每轮最多 3 条通知，宁缺毋滥。
+ 5. 每轮最多 3 条通知，宁缺毋滥。
+6. 画像积累（每轮例行）：从本轮读过的邮件/文件中判断**关于用户本人的稳定事实**（反复出现的行事习惯、角色与决策风格、对客户的承诺），有则给相关通知的 actions 带 save_profile（params.content 一句完整描述、以"用户"为主语）；至多 2 条，没有就不硬凑——画像的价值在准不在多。
 
 ## 现实感知（每轮强制例行，不是可选项）
 输入数据若含【关于我】/【用户画像】，其主体是本系统的用户，通知行文称"你"；其中列出的邮箱是用户自己的发件地址。
@@ -76,11 +79,12 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 创建任何通知前，必须先调用「通知管理」（action='list'） 查看近 7 天已有的通知——这是核对已有通知的唯一途径；禁止用「知识搜索」搜"通知"等关键词替代（搜到的是已入库正文的旧块，既不是通知清单，又白烧轮次）。
 逐条比对：如果已有通知的内容与本次拟创建的通知在语义上重复（同一事件、同一建议、同一观察），则跳过不创建。
 即使标题措辞不同，只要核心信息一致就算重复。
-## 用户处置状态（优先级高于你的判断）
-通知带 user_state 字段、最近通知行内带〔用户已办结/已忽略〕标记：
+## 用户处置与观察池=工作队列（优先级高于你的判断）
+窗口内通知带 user_state 字段/〔用户已办结|用户不再跟进〕标记：
 - **已办结**：用户在现实中办掉了此事——禁止再把它当未办事项重报；同一对象出现**新的**变化可照常跟踪。
-- **已忽略**：用户判定该话题与自己无关——该话题及其任何变体长期静默，禁止再发通知、禁止写入观察池；「用户已忽略话题清单」段落列出的全部条目同等生效且不限轮次。
-- 观察池中对应已办结/已忽略话题的条目属遗留垃圾：输出 WATCH-DONE 关闭。
+- **不再跟进**：用户撤销了这条追踪——没有新输入不得再提；数据确有实质推进（新邮件/状态变化/临期逼近）时重报属正常，不算违规。
+- 出队规则：你创建通知并带 watch_ref 后，来源观察条目已由系统自动出队，**无需再对它们输出 WATCH-DONE**；对"未读/已读未处置"的通知，对象若仍值得盯可重新 WATCH 一条续跟，不值得则放弃即可。
+- 【用户指定】区条目是用户直接要求盯的追踪：每轮必须优先跟进并产出（通知或验证结论），禁止对它们输出 WATCH-DONE——它们只能由用户处置。
 
 ## 五副洞察透镜（深挖时逐副过一遍）
 - 时间：太快/太慢/停滞/该出现的节点没出现？
@@ -103,7 +107,7 @@ WATCH: <一句话观察 + 需要下轮验证什么>
 你只需输出**本轮的变化**（新增 WATCH / 关闭 WATCH-DONE），无需回显保留中的观察（回显不会让它续命，也不会丢失）。已有观察累积验证成立后，才升级为通知。
 
 ## 通知输出契约（硬性格式）
-- 发现必须通过「通知管理」创建，不得直接在回复里输出通知内容
+- 发现必须通过「通知管理」创建，不得直接在回复里输出通知内容；由观察条目跟进产生的通知，watch_ref 必须列全来源条目 id（输入池每行的 [w<id>]），条目将自动出队
 - title 必须是单行文本（禁止换行），长度不超过 50 字，禁止重复内容
 - actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*（view_* 的 ID 必须来自本轮工具查询确认存在的对象，禁止凭记忆编造 ID；通知历史在面板自带浏览，禁止构造按钮去指向『上一条通知』）；需要跟进的带 create_todo 并预填 title/priority/due_date——title 必须是 ≤10 字的动作短句（动词+对象，如"回访咸宁项目对接人"），背景、依据、来源全部写进 content；due_date 必须带时分（格式 YYYY-MM-DD HH:MM:00 空格分隔，无具体线索时上午 09:30，材料里有时刻就照用），禁止只给日期；建档建议带 create_contact/create_partner 预填字段并引用来源证据（create_contact 必须带 partner_id 或 partner_name）；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；文件归属关联建议带 link_file（params: file_id + entity_type + entity_id + entity_name（目标短名，供确认弹窗展示），均须来自本轮查询确认，正文引用证据句——关联边只在用户点击时写入）；同一文件对多个目标各有据时，合并为**一个** link_file（params.links 数组，一目标一项，≤10，超出降级 WATCH），禁止按目标拆成多个 link_file 按钮；多对象可 create_all；项目相关的业务事件可带 create_project_log（params: project_id + content），content 为简洁的事实陈述（发生了什么），不是你的分析结论，只有信号明确、事实确凿时才提供；对象信息有明确变更事实时（邮件/公告确认投标延期改期、中标失标、产品价格或规格变动、客户联系方式变更）可带 update_object（params: entity_type + entity_id + updates 仅含变更字段 + evidence 证据原句；时间字段必须带时分，格式 YYYY-MM-DD HH:MM:00）——用户点击才写入，你不直接改任何数据；证据含糊或仅疑似时禁止发 update_object 按钮，改记 WATCH
 - 标题与正文禁止出现对象ID/UUID，只用名称；正文用 Markdown（加粗重点、列表分条），一事一通知
@@ -247,14 +251,16 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
 
     let w = crate::services::whoami::Whoami::load();
     let seeds = build_change_seeds(&since, &w);
-    // 观察池读取即过期过滤（7 天 TTL + 30 条上限）；带稳定 id 与年龄呈现，模型可精确关闭
+    // 观察池=工作队列：TTL/上限过滤后按区分组呈现（用户指定区置顶且禁自关，AI 区原规则）
     let now_ts = now_secs();
-    let watch_effective = load_watch_entries().into_iter()
-        .map(|e| format!("- [w{}|{}] {}", e.id, watch_age_label(now_ts - e.t), e.text))
-        .collect::<Vec<_>>().join("\n");
+    let entries = load_watch_entries();
+    let fmt_e = |e: &WatchEntry| format!("- [w{}|{}] {}{}", e.id, watch_age_label(now_ts - e.t), e.text,
+        if e.entity.is_empty() { String::new() } else { format!("（锚点 {}）", crate::preview(&e.entity, 18)) });
+    let watch_user = entries.iter().filter(|e| e.zone == "user").map(fmt_e).collect::<Vec<_>>().join("\n");
+    let watch_ai = entries.iter().filter(|e| e.zone == "ai").map(fmt_e).collect::<Vec<_>>().join("\n");
 
     // 结构化跳过判断：无新线索且无遗留观察 → 不调 LLM（不再依赖魔法字符串哨兵）
-    if seeds.is_empty() && watch_effective.is_empty() {
+    if seeds.is_empty() && watch_user.is_empty() && watch_ai.is_empty() {
         log::info!("[通知循环] 无变化种子且观察池为空，跳过 LLM 调用");
         update_call_stats();
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
@@ -274,15 +280,18 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     }
 
     let baseline = build_baseline();
-    let recent = get_recent_notifications(8);
-    let dismissed = get_dismissed_section();
+    // 时间窗注入：本轮新建 ∪ 本轮被处置（created_at>since 或处置时刻>since）——处置信号必达且不随窗口老化
+    let recent = get_window_notifications(&since);
+    let (st_total, st_done, st_dis) = get_disposition_stats();
+    let stats_block = render_disposition_block(st_total, st_done, st_dis);
     let seeds_text = if seeds.is_empty() { "（本轮无新增变化，请重点跟进遗留观察）".to_string() } else { seeds };
-    let watch_text = if watch_effective.is_empty() { "（无）".to_string() } else { watch_effective.clone() };
+    let watch_user_text = if watch_user.is_empty() { "（无）".to_string() } else { watch_user };
+    let watch_ai_text = if watch_ai.is_empty() { "（无）".to_string() } else { watch_ai };
     let whoami_block = w.prompt_block(false); // 分析师只读：不给指向无写权限工具的 id 提示
     let query = format!(
-        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知：\n{}\n{}\n## 遗留观察池（每行 [w<id>|年龄]；优先跟进验证，已核实/证伪/不再值得盯/对应用户已办结或已忽略的输出 WATCH-DONE: <id> 关闭）\n{}",
+        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知与处置（自 {} 起新建或被用户处置）：\n{}\n\n{}\n## 观察池·用户指定（用户直接要求盯或续盯再入的追踪，每轮必须优先跟进；禁止对它们输出 WATCH-DONE）\n{}\n\n## 观察池·AI 洞察（每行 [w<id>|年龄]；优先跟进验证，已核实/证伪/不再值得盯的输出 WATCH-DONE: <id> 关闭；产出通知时 watch_ref 带全来源条目 id，条目即自动出队）\n{}",
         if whoami_block.is_empty() { String::new() } else { format!("{}\n\n", whoami_block) },
-        since, seeds_text, baseline, recent, dismissed, watch_text
+        since, seeds_text, baseline, since, recent, stats_block, watch_user_text, watch_ai_text
     );
 
     let handle = app_handle.clone();
@@ -346,12 +355,16 @@ pub fn get_watch_pool() -> String {
         .collect::<Vec<_>>().join("\n")
 }
 
-/// 观察池条目：稳定 id（池内单调递增、删除不复用不重排——模型跨轮引用的锚点）、创建时间、文本
+/// 观察池条目：稳定 id（池内单调递增、删除不复用不重排——模型跨轮引用与卡片出队的锚点）、创建时间、文本、
+/// 分区 zone（"ai"=洞察自入池，可被模型 WATCH-DONE/淘汰/出队关闭；"user"=用户指定或续盯再入，
+/// 模型禁关、免 TTL 免淘汰，出队仅经用户动作）、可选实体锚点（EntityRef 字符串，供分析师定位深挖对象）
 #[derive(Clone, PartialEq, Debug)]
 pub struct WatchEntry {
     pub id: u64,
     pub t: i64,
     pub text: String,
+    pub zone: String,
+    pub entity: String,
 }
 
 fn now_secs() -> i64 {
@@ -362,8 +375,8 @@ fn watch_age_label(age_secs: i64) -> String {
     if age_secs < 86_400 { "今天".to_string() } else { format!("{}天前", age_secs / 86_400) }
 }
 
-/// 解析观察池存储值（纯函数，便于测试）：JSON 数组 [{i?,t,text}]；
-/// 无 id 的旧数据（含纯文本格式）加载时按序自动补发稳定 id；读出即按 TTL 过滤、限最新 N 条
+/// 解析观察池存储值（纯函数，便于测试）：JSON 数组 [{i?,t,text,z?,e?}]（z 缺省=ai，e=实体锚点可选）；
+/// 无 id 的旧数据（含纯文本格式）加载时按序自动补发稳定 id；AI 区按 TTL 过滤；两区各按上限截最新
 fn parse_watch_value(raw: &str, now: i64) -> Vec<WatchEntry> {
     if raw.trim().is_empty() {
         return Vec::new();
@@ -376,22 +389,29 @@ fn parse_watch_value(raw: &str, now: i64) -> Vec<WatchEntry> {
             .map(|l| json!({"text": l})).collect()
     };
     let mut max_id = parsed.iter().filter_map(|v| v.get("i").and_then(|x| x.as_u64())).max().unwrap_or(0);
-    let rows: Vec<(Option<u64>, i64, String)> = parsed.into_iter().filter_map(|v| {
+    let rows: Vec<(Option<u64>, i64, String, String, String)> = parsed.into_iter().filter_map(|v| {
         let text = v.get("text").and_then(|t| t.as_str())?.to_string();
         if text.trim().is_empty() { return None; }
         let t = v.get("t").and_then(|x| x.as_i64()).unwrap_or(now);
         let id = v.get("i").and_then(|x| x.as_u64()).filter(|i| *i > 0);
         if let Some(i) = id { max_id = max_id.max(i); }
-        Some((id, t, text))
+        let zone = if v.get("z").and_then(|x| x.as_str()) == Some("user") { "user".to_string() } else { "ai".to_string() };
+        let entity = v.get("e").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        Some((id, t, text, zone, entity))
     }).collect();
     let mut next = max_id + 1;
-    let entries: Vec<WatchEntry> = rows.into_iter().map(|(id, t, text)| WatchEntry {
+    let entries: Vec<WatchEntry> = rows.into_iter().map(|(id, t, text, zone, entity)| WatchEntry {
         id: id.unwrap_or_else(|| { let i = next; next += 1; i }),
-        t, text,
+        t, text, zone, entity,
     }).collect();
-    entries.into_iter()
-        .filter(|e| now - e.t <= WATCH_TTL_SECS)
-        .rev().take(WATCH_MAX_ENTRIES).collect::<Vec<_>>().into_iter().rev().collect()
+    // AI 区：TTL 过滤 + 最新 50；用户区：无 TTL + 最新 20（各按创建序保留）
+    let mut ai: Vec<WatchEntry> = entries.iter().filter(|e| e.zone == "ai" && now - e.t <= WATCH_TTL_SECS).cloned().collect();
+    if ai.len() > WATCH_MAX_ENTRIES { ai.drain(0..ai.len() - WATCH_MAX_ENTRIES); }
+    let mut user: Vec<WatchEntry> = entries.iter().filter(|e| e.zone == "user").cloned().collect();
+    if user.len() > WATCH_USER_MAX { user.drain(0..user.len() - WATCH_USER_MAX); }
+    let mut out = user;
+    out.extend(ai);
+    out
 }
 
 /// 从分析回复解析关闭行（纯函数）：`WATCH-DONE: w3` / `w3, w7` / `3、7`；无效 id 由 merge 端自然忽略
@@ -410,22 +430,25 @@ pub(crate) fn parse_watch_done(answer: &str) -> Vec<u64> {
     out
 }
 
-/// 合并（纯函数）：先按 done_ids 关闭（返回关闭数），再把新观察去重追加（旧条目时间戳不变=不续命）；
-/// 新条目 id 取池内最大值递增；超出条数上限按最旧淘汰
+/// 合并（纯函数）：先按 done_ids 关闭（**user 区条目豁免——模型禁关用户指定/续盯追踪**），
+/// 再把新观察去重追加（一律入 ai 区；旧条目时间戳不变=不续命）；
+/// 新条目 id 取池内最大值递增；超限淘汰只按创建序动 ai 区
 fn merge_entries(alive: Vec<WatchEntry>, new_lines: &[String], done_ids: &[u64], now: i64) -> (Vec<WatchEntry>, usize) {
     let before = alive.len();
-    let mut entries: Vec<WatchEntry> = alive.into_iter().filter(|e| !done_ids.contains(&e.id)).collect();
+    let mut entries: Vec<WatchEntry> = alive.into_iter()
+        .filter(|e| !(done_ids.contains(&e.id) && e.zone == "ai")).collect();
     let closed = before - entries.len();
     let mut next_id = entries.iter().map(|e| e.id).max().unwrap_or(0) + 1;
     for line in new_lines {
         if !entries.iter().any(|e| &e.text == line) {
-            entries.push(WatchEntry { id: next_id, t: now, text: line.clone() });
+            entries.push(WatchEntry { id: next_id, t: now, text: line.clone(), zone: "ai".into(), entity: String::new() });
             next_id += 1;
         }
     }
-    if entries.len() > WATCH_MAX_ENTRIES {
-        let excess = entries.len() - WATCH_MAX_ENTRIES;
-        entries.drain(0..excess);
+    let ai_count = entries.iter().filter(|e| e.zone == "ai").count();
+    if ai_count > WATCH_MAX_ENTRIES {
+        let mut excess = ai_count - WATCH_MAX_ENTRIES;
+        entries.retain(|e| if e.zone == "ai" && excess > 0 { excess -= 1; false } else { true });
     }
     (entries, closed)
 }
@@ -436,13 +459,18 @@ fn load_watch_entries() -> Vec<WatchEntry> {
     parse_watch_value(&raw, now_secs())
 }
 
-/// 写回观察池（JSON 数组，含稳定 id）；空池删 key
+/// 写回观察池（JSON 数组，含稳定 id；user 区/锚点条目带 z/e 字段）；空池删 key
 fn save_watch_entries(entries: &[WatchEntry]) {
     if entries.is_empty() {
         clear_watch_pool();
         return;
     }
-    let arr: Vec<Value> = entries.iter().map(|e| json!({"i": e.id, "t": e.t, "text": e.text})).collect();
+    let arr: Vec<Value> = entries.iter().map(|e| {
+        let mut v = json!({"i": e.id, "t": e.t, "text": e.text});
+        if e.zone == "user" { v["z"] = json!("user"); }
+        if !e.entity.is_empty() { v["e"] = json!(&e.entity); }
+        v
+    }).collect();
     set_config(WATCH_KEY, &serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into()));
 }
 
@@ -453,6 +481,100 @@ fn merge_watch_entries(new_lines: &[String], done_ids: &[u64]) -> (Vec<WatchEntr
     let (merged, closed) = merge_entries(load_watch_entries(), new_lines, done_ids, now);
     save_watch_entries(&merged);
     (merged, closed)
+}
+
+// ─── 池对外操作：主 Agent「关注管理」工具 / 通知创建即出队 / 续盯再入 ───────────
+// 池即工作队列：条目入池（模型 WATCH / 用户指定 add / 续盯再入）→ 通知创建即出队（框架确定性）
+// → 用户处置定终态（办结/不再跟进=终态；继续跟进=再入用户区）。
+
+/// 「w12」/「12」两种写法归一为数字 id
+pub fn parse_wid(raw: &str) -> Option<u64> {
+    let s = raw.trim().trim_start_matches(['-', '*', '(', ')', '[', ']', '【', '】', ' ']);
+    let s = s.strip_prefix('w').or_else(|| s.strip_prefix('W')).unwrap_or(s);
+    let s = s.trim_end_matches([')', ']', '】', ' ', '，', ',']);
+    s.trim().parse::<u64>().ok().filter(|i| *i > 0)
+}
+
+/// 结构化池内容（Settings 展示 / watch 工具 list）：[{id,zone,age,text,entity}]，用户指定区在前
+pub fn watch_pool_structured() -> Vec<Value> {
+    let now = now_secs();
+    let mut items: Vec<Value> = load_watch_entries().into_iter().map(|e| json!({
+        "id": e.id, "zone": e.zone, "age": watch_age_label(now - e.t), "text": e.text, "entity": e.entity,
+    })).collect();
+    items.sort_by(|a, b| {
+        let ua = if a["zone"] == json!("user") { 1 } else { 0 };
+        let ub = if b["zone"] == json!("user") { 1 } else { 0 };
+        ub.cmp(&ua).then_with(|| a["id"].as_u64().unwrap_or(0).cmp(&b["id"].as_u64().unwrap_or(0)))
+    });
+    items
+}
+
+/// 实体锚点宽容校验：非空时必须能解析为 EntityRef，否则静默丢弃（脏锚点不如没有）
+fn clean_entity(e: &str) -> String {
+    let e = e.trim();
+    if e.is_empty() { return String::new(); }
+    match crate::services::agent_workflow::tools::entity_ref::parse(e) {
+        Some((t, id)) => crate::services::agent_workflow::tools::entity_ref::fmt(&t, &id),
+        None => String::new(),
+    }
+}
+
+/// 用户指定区新增（主 Agent 按用户明示指令调用）：池内任意区完全同文本拒绝；用户区满 20 拒绝
+pub fn watch_add(text: &str, entity: &str) -> Result<u64, String> {
+    let text = text.trim().replace(['\r', '\n'], " ");
+    let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(WATCH_MAX_LEN).collect();
+    if text.is_empty() { return Err("观察内容为空".into()); }
+    let mut entries = load_watch_entries();
+    if entries.iter().any(|e| e.text == text) { return Err("池中已有完全相同的观察条目，无需重复添加".into()); }
+    if entries.iter().filter(|e| e.zone == "user").count() >= WATCH_USER_MAX {
+        return Err(format!("用户指定观察已达上限 {} 条，请先删除不再关注的条目", WATCH_USER_MAX));
+    }
+    let next_id = entries.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+    entries.push(WatchEntry { id: next_id, t: now_secs(), text, zone: "user".into(), entity: clean_entity(entity) });
+    save_watch_entries(&entries);
+    Ok(next_id)
+}
+
+/// 更新观察（保留稳定 id——卡片与跨轮引用不断链；刷新时间戳=重新起算）。两区皆可更新
+pub fn watch_update(id: u64, text: &str, entity: Option<&str>) -> Result<(), String> {
+    let text = text.trim().replace(['\r', '\n'], " ");
+    let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(WATCH_MAX_LEN).collect();
+    if text.is_empty() { return Err("观察内容为空".into()); }
+    let mut entries = load_watch_entries();
+    let e = entries.iter_mut().find(|e| e.id == id).ok_or_else(|| format!("观察条目 w{} 不存在", id))?;
+    e.text = text;
+    e.t = now_secs();
+    if let Some(ent) = entity { e.entity = clean_entity(ent); }
+    save_watch_entries(&entries);
+    Ok(())
+}
+
+/// 删除观察（用户明示指令经主 Agent 执行，或 Settings 用户直接删除）。两区皆可删——删除主体是用户
+pub fn watch_remove(id: u64) -> Result<(), String> {
+    let mut entries = load_watch_entries();
+    let before = entries.len();
+    entries.retain(|e| e.id != id);
+    if entries.len() == before { return Err(format!("观察条目 w{} 不存在", id)); }
+    save_watch_entries(&entries);
+    Ok(())
+}
+
+/// 通知创建即出队（框架确定性执行，两区均可关闭——"出结果"不是删除追踪意愿，用户可续盯再入）；返回关闭数
+pub fn watch_dequeue(refs: &[u64]) -> usize {
+    if refs.is_empty() { return 0; }
+    let mut entries = load_watch_entries();
+    let before = entries.len();
+    entries.retain(|e| !refs.contains(&e.id));
+    save_watch_entries(&entries);
+    before - entries.len()
+}
+
+/// 续盯再入（面板〔继续跟进〕）：以通知标题构造条目入用户区；通知是追踪的最新状态，标题即最佳观察文本
+pub fn watch_reinject(title: &str, entity: &str) -> Result<u64, String> {
+    let t = title.trim();
+    if t.is_empty() { return Err("通知标题为空，无法续盯".into()); }
+    let text = format!("续盯通知：{}", t.chars().take(WATCH_MAX_LEN - 5).collect::<String>());
+    watch_add(&text, entity)
 }
 
 /// 从分析回复中解析 `WATCH:` 行（保序、单条截断 120 字；池级限制在合并时执行：7 天 TTL + 30 条上限）
@@ -670,35 +792,54 @@ pub(crate) fn format_notification_row(r: &Value) -> String {
     let mut status = if read == 0 { "未读" } else { "已读" };
     match r["user_state"].as_str() {
         Some("done") => status = "用户已办结",
-        Some("dismissed") => status = "用户已忽略",
+        Some("dismissed") => status = "用户不再跟进",
         _ => {}
     }
     format!("[{}] {} ({})", &time[..16.min(time.len())], title, status)
 }
 
-/// 查询最近N条通知
-fn get_recent_notifications(limit: i64) -> String {
+/// 时间窗注入：本轮新建 ∪ 本轮被处置（处置时刻>since）——用户刚办结/不再跟进的旧通知本轮必现，
+/// 旧处置随窗口自然滑出（重复通知=有新输入，符合工作队列语义；永久静默清单已被此模型取代）
+fn get_window_notifications(since: &str) -> String {
     let rows = database::all(
-        "SELECT type, title, created_at, read, user_state FROM notifications ORDER BY created_at DESC LIMIT ?1",
-        &[json!(limit)],
+        "SELECT type, title, created_at, read, user_state FROM notifications \
+         WHERE created_at > ?1 OR (user_state != '' AND state_changed_at > ?1) \
+         ORDER BY created_at DESC LIMIT 50",
+        &[json!(since)],
     ).unwrap_or_default();
-
     if rows.is_empty() {
-        return "无".to_string();
+        return "（窗口内无新建或处置的通知）".to_string();
     }
-
     rows.iter().map(format_notification_row).collect::<Vec<_>>().join("\n")
 }
 
-/// 用户忽略话题的永久注入段（不随最近窗口滑出）：语义匹配交给分析师自觉，证据常驻每轮上下文
-fn get_dismissed_section() -> String {
-    let rows = database::all(
-        "SELECT type, title, created_at, read, user_state FROM notifications WHERE user_state='dismissed' ORDER BY created_at DESC LIMIT 30",
+/// 近90天处置统计：(总数, 办结, 不再跟进)
+fn get_disposition_stats() -> (i64, i64, i64) {
+    let row = database::get(
+        "SELECT COUNT(*) AS total, \
+         SUM(CASE WHEN user_state='done' THEN 1 ELSE 0 END) AS done, \
+         SUM(CASE WHEN user_state='dismissed' THEN 1 ELSE 0 END) AS dismissed \
+         FROM notifications WHERE created_at > datetime('now','-90 day','localtime')",
         &[],
-    ).unwrap_or_default();
-    if rows.is_empty() { return String::new(); }
-    let body = rows.iter().map(|r| format!("- {}", r["title"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
-    format!("\n## 用户已忽略话题清单（硬门禁）\n{}\n以上话题及其任何变体（换措辞、换角度、拆分合并）禁止再发通知、禁止写入观察池；若池中留有对应观察，输出 WATCH-DONE 关闭。\n", body)
+    ).ok().flatten().unwrap_or(json!({}));
+    (
+        row["total"].as_i64().unwrap_or(0),
+        row["done"].as_i64().unwrap_or(0),
+        row["dismissed"].as_i64().unwrap_or(0),
+    )
+}
+
+/// 处置统计注入块（纯函数）：不再跟进占比过高时收紧门槛——质量反馈闭环
+pub(crate) fn render_disposition_block(total: i64, done: i64, dismissed: i64) -> String {
+    if total == 0 { return String::new(); }
+    let ratio = dismissed as f64 / total as f64;
+    let mut s = format!("## 你的通知处置情况（近90天：共{}条，办结{}条，不再跟进{}条）\n", total, done, dismissed);
+    if ratio > 1.0 / 3.0 {
+        s.push_str("不再跟进占比偏高——用户认为你的产出噪音偏多。本轮收紧门槛：候选通知宁可降级为 WATCH 或静默，只报证据充分、行动价值明确的那一条。\n");
+    } else if ratio < 0.05 && done > 0 {
+        s.push_str("处置反馈良好（办结为主）——维持当前判断标准。\n");
+    }
+    s
 }
 
 /// 读取配置
@@ -735,9 +876,16 @@ fn update_call_stats() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_watch_done, parse_watch_lines, parse_watch_value, merge_entries, WatchEntry, WATCH_TTL_SECS, WATCH_MAX_ENTRIES};
+    use super::{parse_watch_done, parse_watch_lines, parse_watch_value, merge_entries, WatchEntry, WATCH_TTL_SECS, WATCH_MAX_ENTRIES, WATCH_USER_MAX};
     use super::format_notification_row;
     use serde_json::json;
+
+    fn we(id: u64, t: i64, text: &str) -> WatchEntry {
+        WatchEntry { id, t, text: text.to_string(), zone: "ai".into(), entity: String::new() }
+    }
+    fn we_user(id: u64, t: i64, text: &str) -> WatchEntry {
+        WatchEntry { id, t, text: text.to_string(), zone: "user".into(), entity: String::new() }
+    }
 
     /// 注入行渲染：处置状态优先于读写状态呈现
     #[test]
@@ -748,7 +896,7 @@ mod tests {
         });
         assert_eq!(format_notification_row(&base(None, 1)), "[2026-10-08 14:00] 客户A安静两周 (已读)");
         assert!(format_notification_row(&base(Some("done"), 1)).contains("用户已办结"));
-        assert!(format_notification_row(&base(Some("dismissed"), 0)).contains("用户已忽略"));
+        assert!(format_notification_row(&base(Some("dismissed"), 0)).contains("用户不再跟进"));
     }
 
     /// 文件对账契约：例行存在 + link_file 动作教学（用户点击才写边）
@@ -801,7 +949,7 @@ mod tests {
     fn merge_caps_to_max_entries_dropping_oldest() {
         let now = 1_000_000_000_i64;
         let alive: Vec<WatchEntry> = (0..WATCH_MAX_ENTRIES as u64)
-            .map(|i| WatchEntry { id: i + 1, t: now - (100 - i as i64), text: format!("旧{}", i + 1) })
+            .map(|i| we(i + 1, now - (100 - i as i64), &format!("旧{}", i + 1)))
             .collect();
         assert_eq!(alive.len(), WATCH_MAX_ENTRIES);
         let (merged, closed) = merge_entries(alive, &["新观察".to_string()], &[], now);
@@ -814,15 +962,15 @@ mod tests {
     #[test]
     fn read_trims_over_cap_keeping_newest() {
         let now = 1_000_000_000_i64;
-        let arr: Vec<serde_json::Value> = (0..40i64).map(|i| serde_json::json!({"t": now - (400 - i * 10), "text": format!("观察{}", i)})).collect();
+        let arr: Vec<serde_json::Value> = (0..60i64).map(|i| serde_json::json!({"t": now - (600 - i * 10), "text": format!("观察{}", i)})).collect();
         let raw = serde_json::to_string(&arr).unwrap();
         let alive = parse_watch_value(&raw, now);
         assert_eq!(alive.len(), WATCH_MAX_ENTRIES);
-        assert_eq!(alive[alive.len() - 1].text, "观察39", "保留最新条目");
+        assert_eq!(alive[alive.len() - 1].text, "观察59", "保留最新条目");
         assert_eq!(alive[0].text, "观察10", "最旧 10 条被裁掉");
         // 无 id 旧数据加载即补发连续稳定 id
         assert_eq!(alive[0].id, 11);
-        assert_eq!(alive[alive.len() - 1].id, 40);
+        assert_eq!(alive[alive.len() - 1].id, 60);
     }
 
     #[test]
@@ -835,15 +983,15 @@ mod tests {
     fn merge_dedups_and_keeps_old_timestamps() {
         let now = 1_000_000_000_i64;
         let alive = vec![
-            WatchEntry { id: 1, t: now - 500, text: "观察A".into() },
-            WatchEntry { id: 2, t: now - 400, text: "观察B".into() },
+            we(1, now - 500, "观察A"),
+            we(2, now - 400, "观察B"),
         ];
         // 下轮：A 回显（不续命不重复入池）、新增 C（id 单调递增到 3）
         let (merged, closed) = merge_entries(alive, &["观察A".into(), "观察C".into()], &[], now);
         assert_eq!(closed, 0);
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].t, now - 500, "回显的旧条目时间戳不刷新（不续命）");
-        assert_eq!(merged[2], WatchEntry { id: 3, t: now, text: "观察C".to_string() });
+        assert_eq!(merged[2], we(3, now, "观察C"));
         // 同文重复追加两次也只进一条
         let (again, _) = merge_entries(merged, &["观察C".into(), "观察C".into()], &[], now + 10);
         assert_eq!(again.len(), 3);
@@ -853,15 +1001,15 @@ mod tests {
     fn done_closes_by_id_and_new_ids_never_reuse() {
         let now = 1_000_000_000_i64;
         let alive = vec![
-            WatchEntry { id: 3, t: now - 900, text: "已核实事项".into() },
-            WatchEntry { id: 7, t: now - 800, text: "仍在跟进".into() },
+            we(3, now - 900, "已核实事项"),
+            we(7, now - 800, "仍在跟进"),
         ];
         // 关闭 w3；新观察的 id 从池内最大值+1（=8）继续，绝不被删除过的 3 复用
         let (merged, closed) = merge_entries(alive, &["新线索".into()], &[3, 999], now);
         assert_eq!(closed, 1, "无效 id(999) 自然忽略，只关命中项");
         assert_eq!(merged.len(), 2);
         assert!(merged.iter().all(|e| e.id != 3), "已关闭条目必须消失");
-        assert_eq!(merged[1], WatchEntry { id: 8, t: now, text: "新线索".into() });
+        assert_eq!(merged[1], we(8, now, "新线索"));
     }
 
     #[test]
@@ -874,7 +1022,7 @@ mod tests {
     #[test]
     fn empty_model_output_keeps_pool() {
         let now = 1_000_000_000_i64;
-        let alive = vec![WatchEntry { id: 5, t: now - 100, text: "持续观察X".into() }];
+        let alive = vec![we(5, now - 100, "持续观察X")];
         // 模型本轮无 WATCH/DONE → 池保留（时间驱动，非回显驱动）
         let (merged, closed) = merge_entries(alive, &[], &[], now);
         assert_eq!(merged.len(), 1);
@@ -900,8 +1048,8 @@ mod tests {
         // 旧格式：纯文本换行 → 按新条目迁移（t=now，自动补 id 1/2，无损）
         let alive = parse_watch_value("旧观察一\n旧观察二", now);
         assert_eq!(alive.len(), 2);
-        assert_eq!(alive[0], WatchEntry { id: 1, t: now, text: "旧观察一".into() });
-        assert_eq!(alive[1], WatchEntry { id: 2, t: now, text: "旧观察二".into() });
+        assert_eq!(alive[0], we(1, now, "旧观察一"));
+        assert_eq!(alive[1], we(2, now, "旧观察二"));
         assert!(parse_watch_value("", now).is_empty());
     }
 
@@ -909,12 +1057,70 @@ mod tests {
     fn json_roundtrip_preserves_ids() {
         let now = 1_000_000_000_i64;
         let entries = vec![
-            WatchEntry { id: 41, t: now, text: "观察A".into() },
-            WatchEntry { id: 7, t: now - 10, text: "观察B".into() },
+            we(41, now, "观察A"),
+            we(7, now - 10, "观察B"),
         ];
         let arr: Vec<serde_json::Value> = entries.iter()
             .map(|e| serde_json::json!({"i": e.id, "t": e.t, "text": e.text})).collect();
         let raw = serde_json::to_string(&arr).unwrap();
         assert_eq!(parse_watch_value(&raw, now), entries);
+    }
+
+    /// 存量 JSON 无 z 字段 → 全部视为 ai 区（向后兼容）；z:user 正确识别
+    #[test]
+    fn zone_defaults_to_ai_for_legacy() {
+        let now = 1_000_000_000_i64;
+        let alive = parse_watch_value(r#"[{"i":1,"t":999999900,"text":"旧条目"}]"#, now);
+        assert_eq!(alive[0].zone, "ai");
+        let user = parse_watch_value(r#"[{"i":2,"t":999999900,"text":"用户条","z":"user"}]"#, now);
+        assert_eq!(user[0].zone, "user");
+    }
+
+    /// 用户指定区：模型 WATCH-DONE 无效（免死区）；AI 区正常关闭
+    #[test]
+    fn user_zone_exempt_from_model_done() {
+        let now = 1_000_000_000_i64;
+        let alive = vec![we_user(1, now - 100, "用户盯X"), we(2, now - 100, "AI盯Y")];
+        let (merged, closed) = merge_entries(alive, &[], &[1, 2], now);
+        assert_eq!(closed, 1, "只关 AI 区命中项，user 区豁免");
+        assert!(merged.iter().any(|e| e.id == 1), "用户指定条目必须保留");
+        assert!(!merged.iter().any(|e| e.id == 2));
+    }
+
+    /// 用户指定区：无 TTL（远古条目不过期）、不参与超限淘汰、组内超上限截最新
+    #[test]
+    fn user_zone_no_ttl_no_eviction() {
+        let now = 1_000_000_000_i64;
+        let items: Vec<serde_json::Value> = (0..25u64)
+            .map(|i| serde_json::json!({"i": i + 1, "t": now - 86400 * 30, "text": format!("盯{}", i), "z": "user"}))
+            .collect();
+        let alive = parse_watch_value(&serde_json::to_string(&items).unwrap(), now);
+        assert_eq!(alive.len(), WATCH_USER_MAX, "30 天旧条目不过期，但超上限截最新 20");
+        assert_eq!(alive[alive.len() - 1].text, "盯24");
+        // 淘汰只动 AI 区：user 满 + AI 溢出 → AI 被裁，user 全保留
+        let mut mixed: Vec<WatchEntry> = (0..(WATCH_USER_MAX as u64)).map(|i| we_user(i + 1, now - 10, &format!("u{}", i))).collect();
+        mixed.extend((100u64..(100 + WATCH_MAX_ENTRIES as u64 + 5)).map(|i| we(i, now - 10, &format!("a{}", i))));
+        let (merged, _) = merge_entries(mixed, &["新".into()], &[], now);
+        assert_eq!(merged.iter().filter(|e| e.zone == "user").count(), WATCH_USER_MAX, "user 区不受挤压");
+        assert_eq!(merged.iter().filter(|e| e.zone == "ai").count(), WATCH_MAX_ENTRIES);
+        assert!(merged.iter().any(|e| e.text == "新"));
+    }
+
+    /// 处置统计注入块：高忽略率收紧门槛 / 良好反馈维持 / 无数据不注入
+    #[test]
+    fn disposition_block_thresholds() {
+        assert_eq!(super::render_disposition_block(0, 0, 0), "");
+        assert!(super::render_disposition_block(12, 2, 6).contains("收紧门槛"));
+        assert!(super::render_disposition_block(30, 12, 1).contains("维持当前判断标准"));
+        assert!(!super::render_disposition_block(30, 5, 5).contains("收紧门槛"));
+    }
+
+    /// w 前缀 id 宽容解析（工具与卡片共用）
+    #[test]
+    fn wid_parses_both_forms() {
+        assert_eq!(super::parse_wid("w12"), Some(12));
+        assert_eq!(super::parse_wid("12"), Some(12));
+        assert_eq!(super::parse_wid("[w3]"), Some(3));
+        assert_eq!(super::parse_wid("x"), None);
     }
 }

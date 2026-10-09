@@ -47,6 +47,23 @@ fn notebook_names() -> String {
         .join("、")
 }
 
+/// 双标题归一化（写入侧清洗）：content 首行为顶级 `# 标题` 且与 title 相同/互含、或 title 缺失时——
+/// 剥除首行（title 空则升为标题）。正文里的小节标题（## 及更深）与不同语义的首行原样保留。
+pub(crate) fn normalize_note_content(title: &str, content: &str) -> (String, String) {
+    let t = title.trim().to_string();
+    let first = content.lines().next().unwrap_or("").trim().to_string();
+    let head = if let Some(h) = first.strip_prefix("# ") { h.trim().to_string() }
+        else if first.starts_with('#') && !first.starts_with("##") { first[1..].trim().to_string() }
+        else { String::new() };
+    if head.is_empty() { return (t, content.to_string()); }
+    let unnamed = t.is_empty() || t == "未命名笔记";
+    let dup = unnamed || head == t || t.contains(&head) || head.contains(&t);
+    if !dup { return (t, content.to_string()); }
+    let new_title = if unnamed { head } else { t };
+    let rest = content.splitn(2, '\n').nth(1).unwrap_or("").trim_start_matches(['\r', '\n']).to_string();
+    (new_title, rest)
+}
+
 pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, note_id: &str, notebook: &str, project_id: &str) -> String {
     // 通过 note_id 或标题模糊匹配查找笔记（仅限未删除）
     let find_note = |nid: &str, t: &str| -> Option<(String, String)> {
@@ -70,6 +87,9 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
 
     match action {
         "create" => {
+            // 写入归一化：先洗双标题，再做同名分流（分流比对也用洗后值）
+            let (tn, cn) = normalize_note_content(title, content);
+            let (title, content) = (tn.as_str(), cn.as_str());
             if title.trim().is_empty() && content.trim().is_empty() {
                 return fail("创建笔记需要提供 title（或至少 content）。".to_string());
             }
@@ -135,9 +155,12 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
                 Some((fid, ftitle)) => {
                     let mut data = json!({ "noteId": fid });
                     let mut changed = false;
+                    // 双标题归一：有效标题=改名用新题，否则用现有题；content 洗后入库
+                    let eff_title = if !title.trim().is_empty() && !note_id.trim().is_empty() { title } else { &ftitle };
+                    let (nt, nc) = normalize_note_content(eff_title, content);
                     // title 非空但 note_id 为空时，title 只作为定位条件，不视为改名（改名需显式 note_id）
-                    if !title.trim().is_empty() && !note_id.trim().is_empty() { data["title"] = json!(title.trim()); changed = true; }
-                    if !content.trim().is_empty() { data["content"] = json!(content); changed = true; }
+                    if !title.trim().is_empty() && !note_id.trim().is_empty() { data["title"] = json!(nt.trim()); changed = true; }
+                    if !content.trim().is_empty() { data["content"] = json!(nc); changed = true; }
                     if !notebook.trim().is_empty() {
                         match match_notebook(notebook) {
                             Ok(Some((id, name))) => { data["notebookId"] = json!(id); data["_nbname"] = json!(name); changed = true; }
@@ -223,5 +246,53 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
             }
         }
         _ => fail(format!("未知操作类型: {}。支持 create/update/delete/list_notebooks/create_notebook。", action)),
+    }
+}
+
+#[cfg(test)]
+mod normalize_tests {
+    use super::normalize_note_content;
+
+    #[test]
+    fn strips_duplicate_leading_heading() {
+        let (t, c) = normalize_note_content("产品A说明", "# 产品A说明
+## 背景
+- 内容");
+        assert_eq!(t, "产品A说明");
+        assert_eq!(c, "## 背景
+- 内容", "同名顶级标题行剥除，小节保留");
+    }
+
+    #[test]
+    fn promotes_heading_to_title_when_title_missing() {
+        let (t, c) = normalize_note_content("", "# 会议纪要
+讨论了交付节奏");
+        assert_eq!(t, "会议纪要");
+        assert_eq!(c, "讨论了交付节奏");
+        let (t2, _) = normalize_note_content("未命名笔记", "# 真标题
+x");
+        assert_eq!(t2, "真标题");
+    }
+
+    #[test]
+    fn keeps_distinct_or_deeper_headings() {
+        let (t, c) = normalize_note_content("竞品分析", "# 华为交换机
+正文");
+        assert_eq!(t, "竞品分析");
+        assert_eq!(c, "# 华为交换机
+正文", "首行与标题不同义：原样");
+        let (t2, c2) = normalize_note_content("笔记", "## 小节开头
+正文");
+        assert_eq!(t2, "笔记");
+        assert_eq!(c2, "## 小节开头
+正文");
+    }
+
+    #[test]
+    fn containment_counts_as_duplicate() {
+        let (t, c) = normalize_note_content("2026-10-09 巡检记录", "# 巡检记录
+细节");
+        assert_eq!(t, "2026-10-09 巡检记录");
+        assert_eq!(c, "细节");
     }
 }

@@ -37,15 +37,51 @@ pub async fn notification_list(unread_only: Option<bool>, state_filter: Option<S
     Ok(json!({ "success": true, "notifications": rows }))
 }
 
-/// 用户处置通知：done=现实里已办理（勿再报未办，同对象新变化照常跟踪）
-/// dismissed=话题与我无关（长期静默）；''=恢复回待处理流
+/// 用户处置通知：done=现实里已办结（勿再报未办，同对象新变化照常跟踪）
+/// dismissed=不再跟进（该追踪撤销，无新输入不得再提）；''=恢复回待处理流。
+/// 处置写 state_changed_at 时刻（时间窗注入：本轮被处置的旧通知也要让分析师立即看见）；
+/// 观察池联动不在这里——通知创建时条目即出队（tools/notification.rs），处置只裁决通知本身
 #[tauri::command]
 pub async fn notification_set_state(id: String, state: String) -> Result<(), String> {
     const ALLOWED: [&str; 3] = ["", "done", "dismissed"];
     if !ALLOWED.contains(&state.as_str()) { return Err(format!("非法处置状态: {}", state)); }
-    database::run("UPDATE notifications SET user_state=?1 WHERE id=?2", &[json!(state), json!(id)])
-        .map_err(|e| e.to_string())?;
+    if state.is_empty() {
+        database::run("UPDATE notifications SET user_state='' WHERE id=?", &[json!(id)])
+            .map_err(|e| e.to_string())?;
+    } else {
+        database::run("UPDATE notifications SET user_state=?1, state_changed_at=datetime('now','localtime') WHERE id=?2",
+            &[json!(state), json!(id)]).map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+/// 继续跟进：用通知标题构造观察条目再入用户区（通知是追踪事项的最新状态），并标记已读。
+/// 池不复活旧条目、新建条目（新 id 新起算）；通知状态不动——续盯语义=追踪在跑，非"回到待处理"
+#[tauri::command]
+pub async fn notification_watch_keep(id: String) -> Result<Value, String> {
+    let row = database::get("SELECT title, entity_type, entity_id, user_state FROM notifications WHERE id=?", &[json!(id)])
+        .map_err(|e| e.to_string())?
+        .ok_or("通知不存在")?;
+    let title = row["title"].as_str().unwrap_or("").to_string();
+    let ent = match (row["entity_type"].as_str().unwrap_or(""), row["entity_id"].as_str().unwrap_or("")) {
+        (t, i) if !t.is_empty() && !i.is_empty() => crate::services::agent_workflow::tools::entity_ref::fmt(t, i),
+        _ => String::new(),
+    };
+    let new_id = crate::services::notification_loop::watch_reinject(&title, &ent).map_err(|e| e.to_string())?;
+    database::run("UPDATE notifications SET read=1 WHERE id=?", &[json!(id)]).map_err(|e| e.to_string())?;
+    Ok(json!({ "success": true, "watch_id": new_id }))
+}
+
+/// 观察池结构化内容（Settings 双分区只读展示与主 Agent 工具共用）
+#[tauri::command]
+pub async fn watch_pool_get() -> Result<Value, String> {
+    Ok(json!({ "success": true, "entries": crate::services::notification_loop::watch_pool_structured() }))
+}
+
+/// Settings 直接删除观察条目（无勾选无静默——单纯删除追踪；话题再出现由分析师按新输入判断）
+#[tauri::command]
+pub async fn watch_entry_delete(watch_id: u64) -> Result<(), String> {
+    crate::services::notification_loop::watch_remove(watch_id)
 }
 
 #[tauri::command]
