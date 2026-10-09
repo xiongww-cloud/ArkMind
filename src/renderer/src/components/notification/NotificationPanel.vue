@@ -205,10 +205,12 @@ function watchRefs(n: Notification): number[] {
 async function keepWatching(n: Notification) {
   try {
     const r = await notificationWatchKeep(n.id)
-    if (r.success) {
+    if (r.already) {
+      toast({ message: '此事已在观察池追踪中，无需重复续盯', type: 'info' })
+    } else if (r.success) {
       n.read = 1
       resortNotifications()
-      toast({ message: `已重新加入观察池（w${r.watch_id}），分析师将持续跟进`, type: 'success' })
+      toast({ message: `已加入观察池（w${r.watch_id}），分析师将持续跟进`, type: 'success' })
     }
   } catch (e: any) {
     toast({ message: `续盯失败：${e?.message || e}`, type: 'error' })
@@ -816,13 +818,14 @@ const priorityDot: Record<string, string> = {
             </div>
             <div class="flex items-center gap-3 px-4 pb-2 pl-14">
               <template v-if="n.user_state">
-                <button v-if="watchRefs(n).length" @click.stop="keepWatching(n)" class="text-[11px] text-amber-600 hover:underline">继续跟进</button>
+                <button @click.stop="keepWatching(n)" class="text-[11px] text-amber-600 hover:underline">继续跟进</button>
                 <button @click.stop="setNotifState(n.id, '')" class="text-[11px] text-blue-600 hover:underline">回到待处理</button>
                 <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>
               </template>
               <template v-else>
                 <button @click.stop="setNotifState(n.id, 'done')" class="text-[11px] text-emerald-600 hover:underline">办结</button>
                 <button @click.stop="setNotifState(n.id, 'dismissed')" class="text-[11px] text-slate-400 hover:text-slate-600 hover:underline">不再跟进</button>
+                <button @click.stop="keepWatching(n)" class="text-[11px] text-amber-600 hover:underline">继续跟进</button>
                 <button v-if="n.read === 0 && showReadActions !== false" @click.stop="markRead(n.id)" class="text-[11px] text-blue-600 hover:underline">标记已读</button>
                 <button v-if="n.entity_id && !parseActions(n).length" @click.stop="goToEntity(n)" class="text-[11px] text-blue-600 hover:underline">查看详情</button>
                 <button @click.stop="removeNotification(n.id)" class="text-[11px] text-red-500 hover:underline ml-auto">删除</button>

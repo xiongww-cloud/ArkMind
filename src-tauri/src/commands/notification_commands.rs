@@ -67,9 +67,17 @@ pub async fn notification_watch_keep(id: String) -> Result<Value, String> {
         (t, i) if !t.is_empty() && !i.is_empty() => crate::services::agent_workflow::tools::entity_ref::fmt(t, i),
         _ => String::new(),
     };
-    let new_id = crate::services::notification_loop::watch_reinject(&title, &ent).map_err(|e| e.to_string())?;
+    let new_id = match crate::services::notification_loop::watch_reinject(&title, &ent) {
+        Ok(id) => Some(id),
+        // 已在池中完全相同的观察（重复点击续盯）：幂等成功，非错误
+        Err(e) if e.contains("完全相同") => None,
+        Err(e) => return Err(e),
+    };
     database::run("UPDATE notifications SET read=1 WHERE id=?", &[json!(id)]).map_err(|e| e.to_string())?;
-    Ok(json!({ "success": true, "watch_id": new_id }))
+    match new_id {
+        Some(wid) => Ok(json!({ "success": true, "watch_id": wid })),
+        None => Ok(json!({ "success": true, "already": true })),
+    }
 }
 
 /// 观察池结构化内容（Settings 双分区只读展示与主 Agent 工具共用）

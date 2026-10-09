@@ -99,8 +99,8 @@ export async function notificationSetState(id: string, state: '' | 'done' | 'dis
   return invoke('notification_set_state', { id, state })
 }
 
-/** 继续跟进：以通知标题再入观察池用户指定区，并标记已读 */
-export async function notificationWatchKeep(id: string): Promise<{ success: boolean; watch_id: number }> {
+/** 继续跟进：以通知标题再入观察池用户指定区，并标记已读；已在追踪中返回 already */
+export async function notificationWatchKeep(id: string): Promise<{ success: boolean; watch_id?: number; already?: boolean }> {
   return invoke('notification_watch_keep', { id })
 }
 
