@@ -80,9 +80,9 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 逐条比对：如果已有通知的内容与本次拟创建的通知在语义上重复（同一事件、同一建议、同一观察），则跳过不创建。
 即使标题措辞不同，只要核心信息一致就算重复。
 ## 用户处置与观察池=工作队列（优先级高于你的判断）
-窗口内通知带 user_state 字段/〔用户已办结|用户不再跟进〕标记：
-- **已办结**：用户在现实中办掉了此事——禁止再把它当未办事项重报；同一对象出现**新的**变化可照常跟踪。
-- **不再跟进**：用户撤销了这条追踪——没有新输入不得再提；数据确有实质推进（新邮件/状态变化/临期逼近）时重报属正常，不算违规。
+窗口内通知带 user_state 字段/〔用户已办结|用户不再跟进〕标记，两种终态语义不同：
+- **已办结=结案**：用户在现实中办掉了此事——禁止再把它当未办事项重报；同一对象出现**新的**动态，照常跟踪照常报。
+- **不再跟进=话题级静默**：用户不在乎这个话题——**即使出现相关的新输入也不得借题重提**（换措辞、换角度、拼接新数据都算借题），直到用户把该通知回到待处理或点继续跟进重新授权；「用户静默话题」清单中的条目同等持续生效。
 - 出队规则：你创建通知并带 watch_ref 后，来源观察条目已由系统自动出队，**无需再对它们输出 WATCH-DONE**；对"未读/已读未处置"的通知，对象若仍值得盯可重新 WATCH 一条续跟，不值得则放弃即可。
 - 【用户指定】区条目是用户直接要求盯的追踪：每轮必须优先跟进并产出（通知或验证结论），禁止对它们输出 WATCH-DONE——它们只能由用户处置。
 
@@ -284,14 +284,15 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     let recent = get_window_notifications(&since);
     let (st_total, st_done, st_dis) = get_disposition_stats();
     let stats_block = render_disposition_block(st_total, st_done, st_dis);
+    let dismissed_block = get_dismissed_section();
     let seeds_text = if seeds.is_empty() { "（本轮无新增变化，请重点跟进遗留观察）".to_string() } else { seeds };
     let watch_user_text = if watch_user.is_empty() { "（无）".to_string() } else { watch_user };
     let watch_ai_text = if watch_ai.is_empty() { "（无）".to_string() } else { watch_ai };
     let whoami_block = w.prompt_block(false); // 分析师只读：不给指向无写权限工具的 id 提示
     let query = format!(
-        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知与处置（自 {} 起新建或被用户处置）：\n{}\n\n{}\n## 观察池·用户指定（用户直接要求盯或续盯再入的追踪，每轮必须优先跟进；禁止对它们输出 WATCH-DONE）\n{}\n\n## 观察池·AI 洞察（每行 [w<id>|年龄]；优先跟进验证，已核实/证伪/不再值得盯的输出 WATCH-DONE: <id> 关闭；产出通知时 watch_ref 带全来源条目 id，条目即自动出队）\n{}",
+        "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知与处置（自 {} 起新建或被用户处置）：\n{}\n\n{}{}\n## 观察池·用户指定（用户直接要求盯或续盯再入的追踪，每轮必须优先跟进；禁止对它们输出 WATCH-DONE）\n{}\n\n## 观察池·AI 洞察（每行 [w<id>|年龄]；优先跟进验证，已核实/证伪/不再值得盯的输出 WATCH-DONE: <id> 关闭；产出通知时 watch_ref 带全来源条目 id，条目即自动出队）\n{}",
         if whoami_block.is_empty() { String::new() } else { format!("{}\n\n", whoami_block) },
-        since, seeds_text, baseline, since, recent, stats_block, watch_user_text, watch_ai_text
+        since, seeds_text, baseline, since, recent, dismissed_block, stats_block, watch_user_text, watch_ai_text
     );
 
     let handle = app_handle.clone();
@@ -842,6 +843,28 @@ pub(crate) fn render_disposition_block(total: i64, done: i64, dismissed: i64) ->
     s
 }
 
+/// 话题级静默清单（近90天被用户不再跟进的通知，最新30条）：dismissed 的压制必须持续生效，
+/// 一次性窗口滑出后会"借题重提"，此段常驻每轮上下文；办结不进此段（结案语义由窗口证据+规则覆盖）
+fn get_dismissed_section() -> String {
+    let rows = database::all(
+        "SELECT title FROM notifications WHERE user_state='dismissed' \
+         AND COALESCE(NULLIF(state_changed_at,''), created_at) > datetime('now','-90 day','localtime') \
+         ORDER BY COALESCE(NULLIF(state_changed_at,''), created_at) DESC LIMIT 30",
+        &[],
+    ).unwrap_or_default();
+    let titles: Vec<String> = rows.iter()
+        .map(|r| r["title"].as_str().unwrap_or("").to_string())
+        .filter(|t| !t.trim().is_empty()).collect();
+    render_dismissed_block(&titles)
+}
+
+/// 静默清单注入段渲染（纯函数便于测试）：空清单不占上下文
+pub(crate) fn render_dismissed_block(titles: &[String]) -> String {
+    if titles.is_empty() { return String::new(); }
+    let body = titles.iter().map(|t| format!("- {}", t)).collect::<Vec<_>>().join("\n");
+    format!("\n## 用户静默话题（硬门禁，近90天）\n{}\n以上话题用户已明确表示不再跟进：禁止以任何形式重提（含借新数据换角度重报）；如池中或种子里有相关线索，直接放弃不再跟踪。用户后续可能重新授权，以当期窗口内状态为准。\n", body)
+}
+
 /// 读取配置
 fn get_config(key: &str) -> Option<String> {
     database::with_db(|c| c.query_row(
@@ -1104,6 +1127,25 @@ mod tests {
         assert_eq!(merged.iter().filter(|e| e.zone == "user").count(), WATCH_USER_MAX, "user 区不受挤压");
         assert_eq!(merged.iter().filter(|e| e.zone == "ai").count(), WATCH_MAX_ENTRIES);
         assert!(merged.iter().any(|e| e.text == "新"));
+    }
+
+    /// 静默话题清单注入段：空不占上下文；非空含硬门禁措辞
+    #[test]
+    fn dismissed_block_gates_topics() {
+        assert_eq!(super::render_dismissed_block(&[]), "");
+        let blk = super::render_dismissed_block(&["客户A续约意向跟踪".into(), "某厂商促销".into()]);
+        assert!(blk.contains("用户静默话题（硬门禁"));
+        assert!(blk.contains("- 客户A续约意向跟踪"));
+        assert!(blk.contains("禁止以任何形式重提"));
+    }
+
+    /// 处置语义教学：办结=结案可报新动态、不再跟进=话题级静默禁借题重提
+    #[test]
+    fn prompt_teaches_disposition_semantics() {
+        let p = super::DEFAULT_ANALYSIS_PROMPT;
+        assert!(p.contains("已办结=结案"), "办结语义须教学");
+        assert!(p.contains("不再跟进=话题级静默") && p.contains("不得借题重提"), "静默语义须做实");
+        assert!(p.contains("自动出队"), "创建即出队规则须教学");
     }
 
     /// 处置统计注入块：高忽略率收紧门槛 / 良好反馈维持 / 无数据不注入
