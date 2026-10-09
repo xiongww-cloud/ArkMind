@@ -1296,7 +1296,7 @@ export async function kbFabSaveMessage(data: {
 }): Promise<SuccessResponse> {
   return invoke('kb_fab_save_message', { data })
 }
-/** 清空全部快呼会话（设置页"清空精灵对话"） */
+/** 清空全部快速唤起浮窗会话 */
 export async function kbClearFabSessions(): Promise<SuccessResponse> {
   return invoke('kb_clear_fab_sessions')
 }
