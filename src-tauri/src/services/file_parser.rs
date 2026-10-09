@@ -22,6 +22,13 @@ static VISION_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .expect("视觉模型 HTTP 客户端创建失败")
 });
 
+/// 知识库视觉请求全局闸：跨文件封顶在途请求数（文件内并发 3 × 最多 5 文件 = 15 路需求，
+/// 由此闸背压到 10），防供应商 429 限流。覆盖 PDF 逐页 OCR、整图 OCR、chat 文档附件解析。
+static VISION_SEMAPHORE: Lazy<tokio::sync::Semaphore> = Lazy::new(|| tokio::sync::Semaphore::new(10));
+
+/// 聊天图片描述独立通道：不与知识库批量解析排队，KB 高峰时发图仍秒级响应
+static CHAT_VISION_SEMAPHORE: Lazy<tokio::sync::Semaphore> = Lazy::new(|| tokio::sync::Semaphore::new(2));
+
 #[derive(Default)]
 pub struct ParseResult { pub text: String, pub success: bool, pub error: String, pub inferred_ext: Option<String> }
 
@@ -261,6 +268,8 @@ pub(crate) fn file_to_data_uri(path: &str, mime: &str) -> Option<String> {
 /// 调用视觉模型 API 进行 OCR（异步）
 async fn ocr_with_vision_api(base64_data_uri: &str) -> Result<String, String> {
     let cfg = get_vision_config().ok_or("未配置视觉模型，请在设置页配置视觉模型")?;
+    // 全局闸：限制知识库路径跨文件在途视觉请求总数（重试间不持 permit，退避 sleep 在调用方）
+    let _permit = VISION_SEMAPHORE.acquire().await.ok();
     let adapter = get_adapter(&cfg.api_format, &cfg.model);
 
     // 复用共享客户端（避免每页重建 reqwest::Client 的开销）
@@ -338,6 +347,8 @@ const CHAT_DESCRIBE_PROMPT: &str = r#"请详细描述这张图片的内容。如
 /// Chat 场景图片描述（调用视觉模型，用通用提示词而非文档提取提示词）
 pub async fn describe_image_for_chat(base64_data_uri: &str) -> Result<String, String> {
     let cfg = get_vision_config().ok_or("未配置视觉模型，请在设置页配置视觉模型")?;
+    // 独立小通道：不排在知识库批量 OCR 后面（KB 全局闸 10 满时也只需等本通道 2 permits）
+    let _permit = CHAT_VISION_SEMAPHORE.acquire().await.ok();
     let adapter = get_adapter(&cfg.api_format, &cfg.model);
     let client = &*VISION_CLIENT;
     let body = adapter.build_request(&cfg, base64_data_uri, CHAT_DESCRIBE_PROMPT);
@@ -492,41 +503,75 @@ pub fn get_pdf_page_count(path: &str) -> Option<u16> {
     Some(doc.pages().len())
 }
 
-/// 渲染 PDF 单页为 base64 图片（96 DPI，JPEG 格式）
-pub fn pdfium_render_page(path: &str, page_num: u16) -> Option<String> {
-    use base64::Engine;
+/// 单页预渲染结果
+pub enum PageRender {
+    /// base64 data URI（96 DPI JPEG q55，与原逐页渲染参数一致）
+    Image(String),
+    /// 近纯白页（本地像素预检命中，无需发视觉模型）
+    Blank,
+    /// 页面缺失 / 渲染失败 / 渲染 panic
+    Failed,
+}
+
+/// 近空白位图判定：RGB 步长采样（≤3000 点），白色像素（R/G/B 均 ≥250）占比 ≥99.5% 视为空白。
+/// 阈值刻意保守：96 DPI 正文页墨量通常 3~8% 不会误杀；灰底/彩色设计页照常送 VLM。
+pub fn is_near_blank_rgb(rgb: &[u8]) -> bool {
+    let total_px = rgb.len() / 3;
+    if total_px == 0 { return true; }
+    let stride = (total_px / 3000).max(1);
+    let mut samples = 0usize;
+    let mut white = 0usize;
+    let mut i = 0;
+    while i < total_px {
+        let px = &rgb[i * 3..i * 3 + 3];
+        samples += 1;
+        if px[0] >= 250 && px[1] >= 250 && px[2] >= 250 { white += 1; }
+        i += stride;
+    }
+    samples > 0 && white * 200 >= samples * 199 // ≥ 99.5%
+}
+
+/// 批量渲染 PDF 指定页为 data URI（文档一次 load，消除逐页重复加载全文档的 IO）。
+/// 返回 None = 文档整体加载失败；Some(vec) 按入参页序，页级失败以 PageRender::Failed 标记。
+pub fn render_pdf_pages(path: &str, pages: &[u16]) -> Option<Vec<(u16, PageRender)>> {
     let t0 = std::time::Instant::now();
     let pdfium = try_load_pdfium()?;
     let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pdfium.load_pdf_from_file(path, None)))
         .ok()?.ok()?;
     let t_load = t0.elapsed().as_millis();
-    let pages = doc.pages();
-    let page = pages.get(page_num).ok()?;
+    let doc_pages = doc.pages();
+    let mut results = Vec::with_capacity(pages.len());
+    for &p in pages {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            render_one_page(&doc_pages, p)
+        })).unwrap_or(PageRender::Failed);
+        results.push((p, outcome));
+    }
+    log::info!("[文件解析] 批量渲染 {} 页: load={}ms 总耗时={}ms", pages.len(), t_load, t0.elapsed().as_millis());
+    Some(results)
+}
 
+fn render_one_page(doc_pages: &pdfium_render::prelude::PdfPages, page_num: u16) -> PageRender {
+    let page = match doc_pages.get(page_num) { Ok(p) => p, Err(_) => return PageRender::Failed };
     let scale = 96.0 / 72.0;
     let width = (page.width().value * scale) as i32;
     let height = (page.height().value * scale) as i32;
-    let bitmap = page.render(width, height, None).ok()?;
-    let t_render = t0.elapsed().as_millis();
+    let bitmap = match page.render(width, height, None) { Ok(b) => b, Err(_) => return PageRender::Failed };
 
     // pdfium 输出 BGRA 格式，需要转换为 RGB
     let bgra = bitmap.as_raw_bytes();
     let rgb: Vec<u8> = bgra.chunks(4)
         .flat_map(|c| [c[2], c[1], c[0]])  // BGRA → RGB
         .collect();
-    let img = image::RgbImage::from_raw(width as u32, height as u32, rgb)?;
+    if is_near_blank_rgb(&rgb) { return PageRender::Blank; }
+    let img = match image::RgbImage::from_raw(width as u32, height as u32, rgb) { Some(i) => i, None => return PageRender::Failed };
 
     let mut jpeg_buf = std::io::Cursor::new(Vec::new());
     // JPEG 质量降到 55，减小发给视觉模型的 payload（对 OCR 精度影响小）
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 55);
-    encoder.encode_image(&image::DynamicImage::ImageRgb8(img)).ok()?;
+    if encoder.encode_image(&image::DynamicImage::ImageRgb8(img)).is_err() { return PageRender::Failed; }
     let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg_buf.into_inner());
-
-    log::info!(
-        "[文件解析] 渲染页 {}: load={}ms render={}ms encode={}ms 图片={}KB",
-        page_num + 1, t_load, t_render, t0.elapsed().as_millis() - t_render, b64.len() / 1024
-    );
-    Some(format!("data:image/jpeg;base64,{}", b64))
+    PageRender::Image(format!("data:image/jpeg;base64,{}", b64))
 }
 
 /// 通过 pdfium-render 提取每页纯文本
@@ -700,31 +745,16 @@ fn classify_ocr_error(err: &str) -> (bool, bool) {
 
 use super::tokio_ctx::{in_blocking_thread, BlockingThreadEnter};
 
-/// 同步调用视觉模型 API，最多重试 3 次（仅重试可恢复错误；空白页直接返回 Blank）
-pub fn ocr_image_sync_result(base64_uri: &str) -> OcrOutcome {
+/// 调用视觉模型 API（async），最多重试 3 次（仅重试可恢复错误；空白页直接返回 Blank）。
+/// 全局闸在 ocr_with_vision_api 内部逐次 acquire，退避 sleep 期间不占 permit；
+/// 429/5xx 退避加 jitter，防并发页同时重试踩限流。
+pub async fn ocr_image_async(base64_uri: &str) -> OcrOutcome {
+    use rand::Rng;
     const MAX_ATTEMPTS: u32 = 3;
     let mut last_err = String::from("未知错误");
     for attempt in 0..MAX_ATTEMPTS {
         let t0 = std::time::Instant::now();
-        // 区分调用场景：worker 线程可用 block_in_place；spawn_blocking 线程 block_in_place 必 panic，
-        // 须改跑独立 current-thread runtime（见 BlockingThreadEnter 标记）
-        let result = if tokio::runtime::Handle::try_current().is_ok() && !in_blocking_thread() {
-            let handle = tokio::runtime::Handle::current();
-            // 在 async 上下文中：使用 block_in_place 安全地执行阻塞调用
-            tokio::task::block_in_place(|| handle.block_on(ocr_with_vision_api(base64_uri)))
-        } else {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    log::info!("[文件解析] tokio 运行时创建失败: {}", e);
-                    return OcrOutcome::Failed(format!("tokio 运行时创建失败: {}", e));
-                }
-            };
-            rt.block_on(ocr_with_vision_api(base64_uri))
-        };
+        let result = ocr_with_vision_api(base64_uri).await;
         let attempt_ms = t0.elapsed().as_millis();
 
         match result {
@@ -745,13 +775,37 @@ pub fn ocr_image_sync_result(base64_uri: &str) -> OcrOutcome {
                 }
                 log::info!("[文件解析] OCR 失败 第 {}/{} 次 (耗时 {}ms): {}", attempt + 1, MAX_ATTEMPTS, attempt_ms, e);
                 if attempt + 1 < MAX_ATTEMPTS {
-                    // 退避：2s / 4s
-                    std::thread::sleep(std::time::Duration::from_secs(2 * (attempt as u64 + 1)));
+                    // 退避 2s/4s + 0~500ms jitter
+                    let jitter_ms: u64 = rand::thread_rng().gen_range(0..500);
+                    tokio::time::sleep(std::time::Duration::from_millis(2000 * (attempt as u64 + 1) + jitter_ms)).await;
                 }
             }
         }
     }
     OcrOutcome::Failed(last_err)
+}
+
+/// 同步调用视觉模型 API（兼容 parse_file_smart / 图片附件等旧路径）
+pub fn ocr_image_sync_result(base64_uri: &str) -> OcrOutcome {
+    // 区分调用场景：worker 线程可用 block_in_place；spawn_blocking 线程 block_in_place 必 panic，
+    // 须改跑独立 current-thread runtime（见 BlockingThreadEnter 标记）
+    if tokio::runtime::Handle::try_current().is_ok() && !in_blocking_thread() {
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| handle.block_on(ocr_image_async(base64_uri)))
+    } else {
+        // runtime 每次调用建一个（重试循环在 async 内部，不再逐次重建）
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                log::info!("[文件解析] tokio 运行时创建失败: {}", e);
+                return OcrOutcome::Failed(format!("tokio 运行时创建失败: {}", e));
+            }
+        };
+        rt.block_on(ocr_image_async(base64_uri))
+    }
 }
 
 /// 同步调用 OCR API 的阻塞封装（兼容旧调用，失败返回空字符串）
@@ -1652,6 +1706,26 @@ mod tests {
         assert!(!has_real_text(""));
         assert!(!has_real_text("   \n\t  "));
         assert!(!has_real_text("--- *** ---"));
+    }
+
+    #[test]
+    fn is_near_blank_detects_white_and_text() {
+        // 纯白页 → 空白
+        let white = vec![255u8; 1200 * 3];
+        assert!(is_near_blank_rgb(&white), "纯白应判空白");
+        // 白底黑字（模拟 96 DPI 正文页 ~6% 墨量）→ 不应误杀
+        let mut text = vec![255u8; 1200 * 3];
+        for i in 0..72 { text[i * 3] = 0; text[i * 3 + 1] = 0; text[i * 3 + 2] = 0; }
+        assert!(!is_near_blank_rgb(&text), "正文页不应判空白");
+        // 灰底设计页（亮度 230 < 250）→ 不判空白，照常送 VLM
+        let gray = vec![230u8; 1200 * 3];
+        assert!(!is_near_blank_rgb(&gray), "灰底页不应判空白");
+        // 零星标点（0.08% < 0.5% 容差）→ 仍判空白
+        let mut speck = vec![255u8; 1200 * 3];
+        speck[0] = 0; speck[1] = 0; speck[2] = 0;
+        assert!(is_near_blank_rgb(&speck), "单点装饰应视为空白扉页");
+        // 空缓冲
+        assert!(is_near_blank_rgb(&[]));
     }
 
     #[test]

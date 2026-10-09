@@ -376,11 +376,31 @@ fn process_file_upload(file_id: &str, source_type: &str, source_id: &str) -> Res
 }
 
 // ═══════════════════════════════════════════════════════════════
-// PDF 流式解析：逐页渲染 + OCR，支持断点续传
+// PDF 流式解析：一次 load 批量渲染 + 文件内 3 路并发 OCR，支持断点续传
+// 全局视觉在途请求由 file_parser::VISION_SEMAPHORE 跨文件封顶（防 429）
 // ═══════════════════════════════════════════════════════════════
 
+/// 单文件内 OCR 并发路数（视觉 API 等待为主，渲染已前置为一次 load 批量）
+const PDF_PAGE_OCR_CONCURRENCY: usize = 3;
+
+/// 乱序完成的页结果按页号组装为全文（纯函数，便于测试）
+pub(crate) fn assemble_pdf_pages(parts: &mut [Option<String>]) -> String {
+    let mut out = String::new();
+    for (i, part) in parts.iter().enumerate() {
+        if let Some(text) = part {
+            if !out.is_empty() {
+                out.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1));
+            }
+            out.push_str(text);
+        }
+    }
+    out
+}
+
 fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: &str) -> Result<(), String> {
-    use crate::services::file_parser::{get_pdf_page_count, pdfium_render_page, ocr_image_sync_result, has_real_text, OcrOutcome};
+    use crate::services::file_parser::{get_pdf_page_count, render_pdf_pages, ocr_image_async, has_real_text, OcrOutcome, PageRender};
+    use futures::StreamExt;
+    use std::sync::{Arc, Mutex};
 
     let file_id = row["id"].as_str().unwrap_or("").to_string();
     if file_id.is_empty() {
@@ -421,22 +441,11 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
         return process_pdf_text_only(&file_id, &path, total_pages, source_type, source_id);
     }
 
-    // 按页号有序收集
+    // ── 阶段 1：缓存命中页直接进结果（跳过渲染与 API，断点续传）──
     let mut full_text_parts: Vec<Option<String>> = vec![None; total_pages as usize];
-
-    // 逐页流式处理（单文件内串行；多文件间的并行由调度层负责，避免视觉模型过载）
-    let mut page_num: u16 = 0;
-    while page_num < total_pages {
-        let p = page_num;
-        page_num += 1;
-
-        // 每页检查文件是否仍然存在
-        if !std::path::Path::new(&path).exists() {
-            log::info!("[数据中台] {} 文件已被删除，终止解析（已处理 {} / {} 页）", log_tag, page_num, total_pages);
-            break;
-        }
-
-        // 跳过已有缓存结果的页
+    let mut targets: Vec<u16> = Vec::new();
+    let mut done_count: usize = 0;
+    for p in 0..total_pages {
         let cached_text = crate::database::get(
             "SELECT ocr_text FROM file_parse_cache WHERE file_id=?1 AND page_num=?2",
             &[json!(&file_id), json!(p)],
@@ -445,66 +454,143 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
             if has_real_text(&text) {
                 full_text_parts[p as usize] = Some(text);
             }
+            done_count += 1;
             log::info!("[数据中台] {} 第 {}/{} 页: 使用缓存", log_tag, p + 1, total_pages);
             continue;
         }
-
-        let t_page = std::time::Instant::now();
-        let image_uri = match pdfium_render_page(&path, p) {
-            Some(uri) => uri,
-            None => {
-                log::info!("[数据中台] {} 第 {}/{} 页 OCR 失败: 渲染失败", log_tag, p + 1, total_pages);
-                return Err(format!("{}{} 第 {}/{} 页渲染失败", NON_RETRYABLE_PREFIX, log_tag, p + 1, total_pages));
-            }
-        };
-        let outcome = ocr_image_sync_result(&image_uri);
-
-        match outcome {
-            OcrOutcome::Failed(e) => {
-                // 视觉模型解析失败（已重试 3 次）→ 整文件失败，不写入 source_data
-                log::info!("[数据中台] {} 第 {}/{} 页 OCR 失败: {}", log_tag, p + 1, total_pages, e);
-                return Err(format!("{}{} 第 {}/{} 页视觉模型解析失败: {}", NON_RETRYABLE_PREFIX, log_tag, p + 1, total_pages, e));
-            }
-            OcrOutcome::Blank => {
-                // 空白页：跳过，不缓存、不判定失败
-                log::info!("[数据中台] {} 第 {}/{} 页: 空白页，跳过", log_tag, p + 1, total_pages);
-            }
-            OcrOutcome::Ok(ocr_text) => {
-                // 仅当有真实文本时写入缓存（修复缓存投毒）
-                if has_real_text(&ocr_text) {
-                    let _ = crate::database::run(
-                        "INSERT OR REPLACE INTO file_parse_cache(file_id, page_num, ocr_text) VALUES(?1, ?2, ?3)",
-                        &[json!(&file_id), json!(p), json!(ocr_text)],
-                    );
-                    full_text_parts[p as usize] = Some(ocr_text.clone());
-                }
-            }
-        }
-        // 更新进度（心跳：刷新 updated_at，避免长时间 OCR 被自愈误判为卡死而重复启动）
-        let _ = crate::database::run(
-            "UPDATE knowledge_push_queue SET progress_page=?1, updated_at=datetime('now','localtime') WHERE source_id=?2 AND source_type=?3",
-            &[json!(p + 1), json!(source_id), json!(source_type)],
-        );
-        log::info!("[数据中台] {} 第 {}/{} 页: OCR 完成 (整页耗时 {}ms)", log_tag, p + 1, total_pages, t_page.elapsed().as_millis());
+        targets.push(p);
     }
 
-    // Tier 1 修复：文件在解析过程中被删除 → 丢弃已解析部分，不写入 source_data
-    // （返回 Err 后，process_task_with_retry 会检查 task_target_exists 并删除无效任务）
     if !std::path::Path::new(&path).exists() {
         log::info!("[数据中台] {} 文件已被删除，丢弃已解析部分", log_tag);
         return Err("文件已被删除".into());
     }
 
-    // 按页号组装 full_text
-    let mut full_text = String::new();
-    for (i, part) in full_text_parts.iter().enumerate() {
-        if let Some(text) = part {
-            if !full_text.is_empty() {
-                full_text.push_str(&format!("\n\n--- 第 {} 页 ---\n\n", i + 1));
+    // ── 阶段 2：批量渲染（文档一次 load）+ 近空白页本地预检（不发 API）──
+    let rendered = match render_pdf_pages(&path, &targets) {
+        Some(v) => v,
+        None => {
+            log::info!("[数据中台] {} PDF 文档加载失败", log_tag);
+            return Err(format!("{}{} PDF 文档加载失败", NON_RETRYABLE_PREFIX, log_tag));
+        }
+    };
+    let mut ocr_jobs: Vec<(u16, String)> = Vec::new();
+    for (p, r) in rendered {
+        match r {
+            PageRender::Failed => {
+                log::info!("[数据中台] {} 第 {}/{} 页 OCR 失败: 渲染失败", log_tag, p + 1, total_pages);
+                return Err(format!("{}{} 第 {}/{} 页渲染失败", NON_RETRYABLE_PREFIX, log_tag, p + 1, total_pages));
             }
-            full_text.push_str(text);
+            PageRender::Blank => {
+                done_count += 1;
+                log::info!("[数据中台] {} 第 {}/{} 页: 空白页预检命中，跳过", log_tag, p + 1, total_pages);
+            }
+            PageRender::Image(uri) => ocr_jobs.push((p, uri)),
         }
     }
+
+    // ── 阶段 3：OCR 并发池（文件内 3 路；全局闸 10 在 ocr_with_vision_api 内部）──
+    if !ocr_jobs.is_empty() {
+        let parts = Arc::new(Mutex::new(full_text_parts));
+        let done = Arc::new(AtomicUsize::new(done_count));
+        let abort = Arc::new(AtomicBool::new(false));
+        let first_error = Arc::new(Mutex::new(None::<String>));
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("tokio 运行时创建失败: {}", e))?;
+
+        let parts_pool = parts.clone();
+        let done_pool = done.clone();
+        let abort_pool = abort.clone();
+        let fe_pool = first_error.clone();
+        let file_id_pool = file_id.clone();
+        let path_pool = path.clone();
+        let tag_pool = log_tag.clone();
+        let sid_pool = source_id.to_string();
+        let styp_pool = source_type.to_string();
+
+        rt.block_on(async move {
+            futures::stream::iter(ocr_jobs)
+                .map(|(p, uri)| {
+                    let (parts, done, abort, fe, fid, fpath, tag, sid, styp) = (
+                        parts_pool.clone(), done_pool.clone(), abort_pool.clone(), fe_pool.clone(),
+                        file_id_pool.clone(), path_pool.clone(), tag_pool.clone(), sid_pool.clone(), styp_pool.clone(),
+                    );
+                    async move {
+                        let t_page = std::time::Instant::now();
+                        // 已有页失败/文件被删 → 未派发页直接跳过（在途页继续跑完落缓存）
+                        if abort.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if !std::path::Path::new(&fpath).exists() {
+                            abort.store(true, Ordering::Relaxed);
+                            let mut e = fe.lock().unwrap();
+                            if e.is_none() { *e = Some("文件已被删除".to_string()); }
+                            return;
+                        }
+                        match ocr_image_async(&uri).await {
+                            OcrOutcome::Failed(err_msg) => {
+                                // 视觉模型解析失败（已重试 3 次）→ 中止剩余页；已落缓存保留（重试时断点续传）
+                                log::info!("[数据中台] {} 第 {}/{} 页 OCR 失败: {}", tag, p + 1, total_pages, err_msg);
+                                abort.store(true, Ordering::Relaxed);
+                                let mut e = fe.lock().unwrap();
+                                if e.is_none() {
+                                    *e = Some(format!("{}{} 第 {}/{} 页视觉模型解析失败: {}", NON_RETRYABLE_PREFIX, tag, p + 1, total_pages, err_msg));
+                                }
+                            }
+                            OcrOutcome::Blank => {
+                                log::info!("[数据中台] {} 第 {}/{} 页: 空白页，跳过", tag, p + 1, total_pages);
+                                done.fetch_add(1, Ordering::SeqCst);
+                            }
+                            OcrOutcome::Ok(ocr_text) => {
+                                // 仅当有真实文本时写入缓存（修复缓存投毒）
+                                if has_real_text(&ocr_text) {
+                                    let _ = crate::database::run(
+                                        "INSERT OR REPLACE INTO file_parse_cache(file_id, page_num, ocr_text) VALUES(?1, ?2, ?3)",
+                                        &[json!(&fid), json!(p), json!(ocr_text.clone())],
+                                    );
+                                    parts.lock().unwrap()[p as usize] = Some(ocr_text);
+                                }
+                                let n = done.fetch_add(1, Ordering::SeqCst) + 1;
+                                // 更新进度（已完成页数；心跳刷新 updated_at 防自愈误判卡死）
+                                let _ = crate::database::run(
+                                    "UPDATE knowledge_push_queue SET progress_page=?1, updated_at=datetime('now','localtime') WHERE source_id=?2 AND source_type=?3",
+                                    &[json!(n), json!(&sid), json!(&styp)],
+                                );
+                                log::info!("[数据中台] {} 第 {}/{} 页: OCR 完成 (整页耗时 {}ms, 进度 {}/{})", tag, p + 1, total_pages, t_page.elapsed().as_millis(), n, total_pages);
+                            }
+                        }
+                    }
+                })
+                .buffer_unordered(PDF_PAGE_OCR_CONCURRENCY)
+                .for_each(|_| async {})
+                .await;
+        });
+
+        full_text_parts = match Arc::try_unwrap(parts) {
+            Ok(v) => v.into_inner().unwrap_or_default(),
+            Err(arc) => arc.lock().unwrap().clone(),
+        };
+
+        // 文件在解析过程中被删除 → 丢弃已解析部分，不写入 source_data
+        // （返回 Err 后，process_task_with_retry 会检查 task_target_exists 并删除无效任务）
+        if !std::path::Path::new(&path).exists() {
+            log::info!("[数据中台] {} 文件已被删除，丢弃已解析部分", log_tag);
+            return Err("文件已被删除".into());
+        }
+
+        // 存在失败页 → 在途页已全部收尾，整文件标记不可重试失败
+        if abort.load(Ordering::Relaxed) {
+            let err = first_error.lock().unwrap().take()
+                .unwrap_or_else(|| format!("{}{} 视觉模型解析失败", NON_RETRYABLE_PREFIX, log_tag));
+            return Err(err);
+        }
+    }
+
+    // 按页号组装 full_text（并发乱序完成 → 此处恢复页序）
+    let full_text = assemble_pdf_pages(&mut full_text_parts);
 
     if full_text.is_empty() {
         return Err("PDF 解析结果为空".to_string());
@@ -1252,5 +1338,26 @@ pub fn cleanup_orphan_source_data() {
             r.changes
         ),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assemble_pdf_pages;
+
+    #[test]
+    fn assemble_keeps_page_order_regardless_of_completion_order() {
+        // 并发池乱序写入 → 组装必须按页号恢复顺序，空页（None）跳过且分隔行用真实页号
+        let mut parts: Vec<Option<String>> = vec![None; 4];
+        parts[3] = Some("第四页内容".to_string());
+        parts[1] = Some("第二页内容".to_string());
+        let out = assemble_pdf_pages(&mut parts);
+        assert_eq!(out, "第二页内容\n\n--- 第 4 页 ---\n\n第四页内容");
+    }
+
+    #[test]
+    fn assemble_empty_all_returns_empty() {
+        let mut parts: Vec<Option<String>> = vec![None; 3];
+        assert_eq!(assemble_pdf_pages(&mut parts), "");
     }
 }
