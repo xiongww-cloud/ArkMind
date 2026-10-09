@@ -28,7 +28,7 @@ import { useLinkModals } from '@/composables/useLinkModals'
 import { nowLocalDb, tsMillis } from '@/utils/time'
 import { sanitizeHtmlSync } from '@/utils/sanitize'
 
-type ViewType = 'all'|'daily'|'notebook'|'projectNote'|'trash'
+type ViewType = 'all'|'uncategorized'|'daily'|'notebook'|'projectNote'|'trash'
 interface Note { note_id:string; id:string; title:string; excerpt:string; content?:string; is_daily:number; notebook_id?:string; notebook_name?:string; project_ids?:string; deleted_at?:string; updated_at:string; created_at:string; tags?:any[] }
 interface Notebook { id:string; name:string; color:string; parentId?:string|null }
 interface Project { id:string; name:string }
@@ -129,6 +129,12 @@ async function loadNotes() {
         // "全部"只显示库内常规笔记/闪记，项目笔记不混入（项目笔记视图专览）
         const rr: any = await notesV2ListAll()
         r = { notes: ((rr?.notes || []) as any[]).filter((n: any) => !(n.project_ids && String(n.project_ids).trim())) }
+        break
+      }
+      case 'uncategorized': {
+        // "未分类"= 无笔记本归属且无项目关联的虚拟集合（AI 建档不传 notebook 即落入此类，归集入口）
+        const rr: any = await notesV2ListAll()
+        r = { notes: ((rr?.notes || []) as any[]).filter((n: any) => !n.notebook_id && !(n.project_ids && String(n.project_ids).trim())) }
         break
       }
       case 'daily': r = await notesV2ListDaily(); break
@@ -384,6 +390,7 @@ const filteredProjectNotes = computed(() => {
 const listHeaderTitle = computed(() => {
   if (currentView.value === 'daily') return '闪记'
   if (currentView.value === 'all') return '全部'
+  if (currentView.value === 'uncategorized') return '未分类'
   if (currentView.value === 'projectNote') {
     return selectedProjectNoteId.value ? (projects.value.find(p => p.id === selectedProjectNoteId.value)?.name || '项目笔记') : '项目笔记'
   }
@@ -594,7 +601,9 @@ function onDragMove(e: MouseEvent) {
   dragY.value = e.clientY
   const el = document.elementFromPoint(e.clientX, e.clientY)
   const target = el?.closest('[data-drop-target]') as HTMLElement | null
-  const tid = target?.dataset.dropTarget || null
+  let tid = target?.dataset.dropTarget || null
+  // "__none__"（未分类）只接受笔记拖入（移出笔记本），笔记本拖拽忽略该目标
+  if (tid === '__none__' && dragType.value === 'notebook') tid = null
   dragTargetId.value = tid
 
   if (tid && dragType.value === 'notebook') {
@@ -641,8 +650,9 @@ async function onDragUp(_e: MouseEvent) {
       const idsToMove = selectedCount.value > 1 && isSelected(noteId)
         ? [...selectedIds.value]
         : [noteId]
+      const toUncategorized = targetId === '__none__'
       for (const rid of idsToMove) {
-        await notesV2Update({ noteId: rid, notebookId: targetId })
+        await notesV2Update({ noteId: rid, notebookId: toUncategorized ? null : targetId })
       }
       notes.value = notes.value.filter(n => !idsToMove.includes(n.note_id) && !idsToMove.includes(n.id))
       clearMultiSelect()
@@ -801,14 +811,8 @@ const restoreNotebookList = computed(() => {
       </div>
     </div>
 
-    <!-- Scrollable list: 全部 → 闪记 → 用户笔记本 → 项目笔记本 → 回收站 -->
+    <!-- Scrollable list: 闪记 → 笔记本区（全部 → 用户树 → 未分类）→ 项目笔记本 → 回收站 -->
     <div class="flex-1 px-2 py-1" style="overflow-y:auto;overflow-x:clip">
-      <!-- 全部笔记 -->
-      <button @click="switchView('all')" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden" :class="currentView==='all'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
-        <div v-if="currentView==='all'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
-        <AppIcon name="list" size="14" class="text-surface-400" :class="currentView==='all'?'text-blue-500':''"/>全部
-      </button>
-
       <!-- 闪记 -->
       <button @click="switchView('daily')" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden" :class="currentView==='daily'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
         <div v-if="currentView==='daily'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
@@ -818,14 +822,20 @@ const restoreNotebookList = computed(() => {
       <!-- 分隔：闪记 / 用户笔记本 -->
       <div class="mb-2 border-t border-surface-100"></div>
 
+      <!-- 全部笔记：虚拟视图组首（grid 图标 + pl-12） -->
+      <button @click="switchView('all')" class="flex items-center gap-1.5 w-full py-1.5 text-[13px] text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: '12px' }" :class="currentView==='all'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+        <div v-if="currentView==='all'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
+        <AppIcon name="grid" size="14" class="flex-shrink-0" :class="currentView==='all'?'text-blue-500':'text-surface-400'"/>全部笔记
+      </button>
+
       <!-- User notebooks -->
       <template v-for="(nb, nbi) in notebookTree" :key="nb.id">
         <!-- Insertion line: above target -->
         <div v-if="isDragging && dragType==='notebook' && dragInsert?.targetId===nb.id && dragInsert?.side==='above'" class="insertion-line" :style="{ marginLeft: `${4 + (nb._depth || 0) * 16}px` }"></div>
-        <div v-if="editingNotebookId===nb.id" class="flex items-center gap-1 px-2 py-1" :style="{ paddingLeft: `${12 + (nb._depth || 0) * 16 + 20}px` }">
-          <input ref="notebookNameRef" v-model="notebookEditName" class="flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-brand-400 select-text" @keyup.enter="saveNotebookName(nb.id)" @blur="saveNotebookName(nb.id)"/>
+        <div v-if="editingNotebookId===nb.id" class="flex items-center gap-1 px-2 py-1" :style="{ paddingLeft: `${12 + (nb._depth || 0) * 12}px` }">
+          <input ref="notebookNameRef" data-notebook-edit v-model="notebookEditName" class="flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-brand-400 select-text" @keyup.enter="saveNotebookName(nb.id)" @blur="saveNotebookName(nb.id)"/>
         </div>
-        <div v-else :data-drop-target="nb.id" class="flex items-center gap-1 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group cursor-pointer relative overflow-hidden select-none" :class="[(currentView==='notebook'&&selectedNotebookId===nb.id)?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragNotebookId===nb.id?'opacity-30':'', isDragging && dragTargetId===nb.id && dragNotebookId!==nb.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectNotebook(nb.id)" @mousedown="startNotebookDrag($event, nb.id)" :style="{ paddingLeft: `${4 + (nb._depth || 0) * 16}px` }">
+        <div v-else :data-drop-target="nb.id" class="flex items-center gap-1 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group cursor-pointer relative overflow-hidden select-none" :class="[(currentView==='notebook'&&selectedNotebookId===nb.id)?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragNotebookId===nb.id?'opacity-30':'', isDragging && dragTargetId===nb.id && dragNotebookId!==nb.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectNotebook(nb.id)" @mousedown="startNotebookDrag($event, nb.id)" :style="{ paddingLeft: `${12 + (nb._depth || 0) * 12}px` }">
   <div v-if="currentView==='notebook'&&selectedNotebookId===nb.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
           <!-- Insertion line: inside target -->
           <div v-if="isDragging && dragType==='notebook' && dragInsert?.targetId===nb.id && dragInsert?.side==='inside'" class="absolute inset-0 border-2 border-brand-400 rounded-lg pointer-events-none"></div>
@@ -834,7 +844,7 @@ const restoreNotebookList = computed(() => {
             <svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedNotebooks.has(nb.id) ? 'rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
           </span>
           <span v-else class="w-3 flex-shrink-0 mr-0.5"></span>
-          <AppIcon name="folder-open" size="13" class="flex-shrink-0 text-surface-400"/>
+          <AppIcon name="folder" size="13" class="flex-shrink-0" :class="currentView==='notebook'&&selectedNotebookId===nb.id?'!text-blue-500':'text-surface-400'"/>
           <span class="truncate flex-1">{{ nb.name }}</span>
           <span @mousedown.stop @click.stop="startAddNotebook(nb.id)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100" v-tooltip="'新建子笔记本'"><AppIcon name="plus" size="10"/></span>
           <span @mousedown.stop @click.stop="startEditNotebook(nb)" class="w-4 h-4 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span>
@@ -843,6 +853,15 @@ const restoreNotebookList = computed(() => {
         <!-- Insertion line: below target -->
         <div v-if="isDragging && dragType==='notebook' && dragInsert?.targetId===nb.id && dragInsert?.side==='below'" class="insertion-line" :style="{ marginLeft: `${4 + (nb._depth || 0) * 16}px` }"></div>
       </template>
+
+      <!-- 未分类：虚拟组尾（对齐资料库"未分类"分隔层样式）；拖笔记到此=移出笔记本 -->
+      <div class="mt-2 pt-1.5 border-t border-surface-100">
+        <button @click="switchView('uncategorized')" data-drop-target="__none__" class="flex items-center gap-1.5 w-full py-1.5 text-[13px] text-left transition-colors rounded-lg relative overflow-hidden select-none" :style="{ paddingLeft: '12px' }" :class="[currentView==='uncategorized'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragType==='note' && dragTargetId==='__none__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
+          <div v-if="currentView==='uncategorized'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
+          <span class="w-3 h-3 flex-shrink-0"></span>
+          <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400" :class="currentView==='uncategorized'?'!text-blue-500':''"/>未分类
+        </button>
+      </div>
 
       <!-- 分隔：项目笔记 -->
       <div class="mb-2 mt-1 border-t border-surface-100"></div>
@@ -853,7 +872,7 @@ const restoreNotebookList = computed(() => {
         <span @click.stop="projectNotesExpanded=!projectNotesExpanded" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 -ml-4">
           <svg class="w-2.5 h-2.5 transition-transform duration-150" :class="projectNotesExpanded?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         </span>
-        <AppIcon name="folder-open" size="14" class="flex-shrink-0" :class="currentView==='projectNote'&&!selectedProjectNoteId?'text-blue-500':'text-surface-400'"/>项目笔记
+        <AppIcon name="folder" size="13" class="flex-shrink-0" :class="currentView==='projectNote'&&!selectedProjectNoteId?'!text-blue-500':'text-surface-400'"/>项目笔记
       </div>
       <template v-if="projectNotesExpanded">
         <div v-for="p in filteredProjectNotes" :key="p.id" @click="selectProjectNote(p.id)" v-tooltip.auto="p.name" class="flex items-center gap-1.5 w-full pr-2 py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" :class="currentView==='projectNote'&&selectedProjectNoteId===p.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'" style="padding-left:34px">
@@ -892,7 +911,7 @@ const restoreNotebookList = computed(() => {
         <div class="flex-1 min-w-0">
           <p class="text-[12px] font-medium text-surface-800 truncate">{{ currentView==='daily' ? (note.title||(note.created_at||'').slice(0,10)) : (note.title||'未命名笔记') }}</p>
           <p class="text-[10px] text-surface-400 line-clamp-1 mt-0.5">{{ (note.excerpt||'').replace(/<[^>]*>/g,'').slice(0,40) || '暂无内容' }}</p>
-          <p class="text-[9px] text-surface-300 mt-0.5"><span v-if="currentView==='all'" class="text-surface-400">{{ note.notebook_name || (note.is_daily ? '闪记' : (note.project_ids ? (projectNamesOf(note.project_ids) || '项目笔记') : '未归类')) }} · </span><span v-else-if="currentView==='projectNote'" class="text-surface-400">{{ projectNamesOf(note.project_ids) || '项目笔记' }} · </span>{{ formatNoteTime(note.updated_at || note.created_at || '') }}</p>
+          <p class="text-[9px] text-surface-300 mt-0.5"><span v-if="currentView==='all'||currentView==='uncategorized'" class="text-surface-400">{{ note.notebook_name || (note.is_daily ? '闪记' : (note.project_ids ? (projectNamesOf(note.project_ids) || '项目笔记') : '未分类')) }} · </span><span v-else-if="currentView==='projectNote'" class="text-surface-400">{{ projectNamesOf(note.project_ids) || '项目笔记' }} · </span>{{ formatNoteTime(note.updated_at || note.created_at || '') }}</p>
         </div>
         <button @click.stop="deleteNote(note.note_id)" class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"><AppIcon name="trash" size="13"/></button>
       </div>

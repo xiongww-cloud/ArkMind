@@ -96,7 +96,11 @@ pub async fn notes_update(data: Value) -> Result<Value, String> {
     if let Some(v) = data["title"].as_str() { fields.push("title=?".into()); values.push(json!(v)); }
     if let Some(v) = data["content"].as_str() { fields.push("content=?".into()); values.push(json!(v)); }
     if let Some(v) = data["isDaily"].as_bool().or_else(||data["isDaily"].as_i64().map(|n|n!=0)) { fields.push("is_daily=?".into()); values.push(json!(if v{1}else{0})); }
-    if let Some(v) = data["notebookId"].as_str() { fields.push("notebook_id=?".into()); values.push(json!(v)); }
+    // notebookId：字符串=移入笔记本；显式 null=移入"未分类"（清空归属）；缺席=不动
+    if let Some(v) = data.get("notebookId") {
+        if let Some(s) = v.as_str() { fields.push("notebook_id=?".into()); values.push(json!(s)); }
+        else if v.is_null() { fields.push("notebook_id=NULL".into()); }
+    }
     if !fields.is_empty() { fields.push("updated_at=?".into()); values.push(json!(ts)); values.push(json!(note_id)); let sql = format!("UPDATE notes SET {} WHERE note_id=?", fields.join(",")); database::run(&sql, &values).map_err(|e|e.to_string())?; }
     if let Some(pids) = data["projectIds"].as_array() {
         // 增量比对：笔记自动保存会反复走"先删后插"，只为"新出现的项目关联"刷新活跃时间
