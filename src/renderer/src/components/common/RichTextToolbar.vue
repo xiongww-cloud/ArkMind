@@ -2,7 +2,6 @@
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { useTiptapToolbar } from '@/composables/useTiptapToolbar'
-import { toast } from '@/composables/useToast'
 
 const props = defineProps<{ editor: any; atActive?: boolean }>()
 const emit = defineEmits<{ at: [] }>()
@@ -27,9 +26,15 @@ function popStyle(which: 'heading' | 'list' | 'align' | 'table' | 'link'): Recor
   if (!r) return { position: 'fixed', top: '-9999px', left: '-9999px' }
   const w = panelWidths[which]
   const st: Record<string, string> = { position: 'fixed', top: `${r.bottom + 4}px`, zIndex: '999' }
-  // 视口右缘不够放则右锚定翻转（对齐表格面板原有右对齐习惯）
-  if (which === 'table' || (r.left + w + 8 > window.innerWidth)) st.right = `${Math.max(8, window.innerWidth - r.right)}px`
-  else st.left = `${Math.max(8, r.left)}px`
+  if (which === 'link') {
+    // 链接面板：与按钮右侧对齐向左展开；中间栏太窄将溢出工具条左缘时，收顶到工具条内
+    const tbLeft = ((wrap as HTMLElement).closest?.('.tiptap-toolbar')?.getBoundingClientRect().left ?? 0) + 4
+    if (r.right - w < tbLeft) st.left = `${tbLeft}px`
+    else st.right = `${Math.max(8, window.innerWidth - r.right)}px`
+  } else if (which === 'table' || (r.left + w + 8 > window.innerWidth)) {
+    // 视口右缘不够放则右锚定翻转（对齐表格面板原有右对齐习惯）
+    st.right = `${Math.max(8, window.innerWidth - r.right)}px`
+  } else st.left = `${Math.max(8, r.left)}px`
   return st
 }
 
@@ -41,24 +46,28 @@ function closeAll() {
 // ── 网页超链接：必须先选中正文文字再套链接（渲染成蓝链样式）；已有链接→点击即移除
 const linkOpen = ref(false)
 const linkUrl = ref('')
+const linkWarn = ref('')
 const linkInput = ref<HTMLInputElement | null>(null)
 function openLinkPrompt() {
   closeAll()
   const ed = props.editor
   if (!ed) return
   if (ed.isActive('link')) { ed.chain().focus().extendMarkRange('link').unsetLink().run(); return }
-  if (ed.state.selection.empty) { toast({ message: '先在正文中选中要作为链接的文字', type: 'info' }); return }
   linkUrl.value = ''
+  // 前置条件缺失时在浮层内联提示（底部 toast 离按钮太远、风格脱节）；浮层照常打开
+  linkWarn.value = ed.state.selection.empty ? '先在正文中选中要作为链接的文字' : ''
   linkOpen.value = true
   requestAnimationFrame(() => linkInput.value?.focus())
 }
 function applyLink() {
   const ed = props.editor
-  let u = linkUrl.value.trim()
-  if (!ed || !u) return
-  if (ed.state.selection.empty) { toast({ message: '先在正文中选中要作为链接的文字', type: 'info' }); return }
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u) && !u.startsWith('/')) u = 'https://' + u
-  ed.chain().focus().extendMarkRange('link').setLink({ href: u }).run()
+  if (!ed) return
+  if (ed.state.selection.empty) { linkWarn.value = '先在正文中选中要作为链接的文字'; return }
+  const u = linkUrl.value.trim()
+  if (!u) { linkWarn.value = '请输入网址 (URL)'; return }
+  linkWarn.value = ''
+  const href = (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u) && !u.startsWith('/')) ? 'https://' + u : u
+  ed.chain().focus().extendMarkRange('link').setLink({ href }).run()
   linkOpen.value = false
 }
 
@@ -213,8 +222,8 @@ onUnmounted(() => {
     </div>
     <Teleport to="body">
       <div v-if="linkOpen" class="rt-pop bg-white rounded-lg shadow-lg border border-surface-100 p-2 w-[240px]" :style="popStyle('link')" @click.stop>
-        <input ref="linkInput" v-model="linkUrl" @keydown.enter.prevent="applyLink" @keydown.esc.prevent="linkOpen = false" placeholder="粘贴或输入网址 (URL)" class="w-full border border-surface-200 rounded px-2 py-1 text-[11px] outline-none focus:border-brand-400"/>
-        <p class="text-[9px] text-surface-400 mt-1">选中文字将渲染为可点击的超链接</p>
+        <input ref="linkInput" v-model="linkUrl" @keydown.enter.prevent="applyLink" @keydown.esc.prevent="linkOpen = false" placeholder="粘贴或输入网址 (URL)" class="w-full border border-surface-200 rounded px-2 py-1 text-[11px] outline-none focus:border-brand-400" :class="linkWarn ? 'border-red-300 focus:border-red-400' : ''"/>
+        <p class="text-[9px] mt-1" :class="linkWarn ? 'text-red-500' : 'text-surface-400'">{{ linkWarn || '选中文字将渲染为可点击的超链接' }}</p>
         <div class="flex justify-end gap-1.5 mt-1.5">
           <button @mousedown.prevent="linkOpen = false" class="px-2 py-0.5 text-[10px] text-surface-500 hover:bg-surface-50 rounded">取消</button>
           <button @mousedown.prevent="applyLink" class="px-2 py-0.5 text-[10px] bg-brand-600 text-white rounded hover:bg-brand-700">添加链接</button>
