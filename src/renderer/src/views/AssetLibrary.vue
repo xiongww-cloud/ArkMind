@@ -4,6 +4,7 @@ import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { useResizablePanels } from '@/composables/useResizablePanels'
 import { useMultiSelect } from '@/composables/useMultiSelect'
+import { useNavigation } from '@/composables/useNavigation'
 import AppIcon from '@/components/common/AppIcon.vue'
 import UploadModal from '@/components/shared/UploadModal.vue'
 import {
@@ -168,6 +169,12 @@ const projectHeaderTitle = computed(() => {
 function fileProjectBadge(f: any): string {
   if (projectFilesMode.value && projectFilesMode.value.projectId === null && f.project_name) return f.project_name
   return f.project_names || ''
+}
+// 项目文件列表中的项目名点击跳转到对应项目详情（行数据自带 project_id）
+const { navigateTo } = useNavigation()
+function openProjectOf(f: any) {
+  const pid = f.project_id || projectFilesMode.value?.projectId
+  if (pid) navigateTo('project', pid)
 }
 // 项目列表共用左栏导航筛选框（navFilterQuery）
 const filteredSectionProjects = computed(() => {
@@ -523,8 +530,9 @@ async function handleDelete(id: string) {
       <div class="px-2 py-1">
         <!-- 全部文件 -->
         <div>
-          <button @click="selectFolder(null)" :data-drop-target="'__root__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="[selectedFolderId===null?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragTargetId==='__root__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
-            <div v-if="selectedFolderId===null" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
+          <button @click="selectFolder(null)" :data-drop-target="'__root__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${2}px` }" :class="[selectedFolderId===null && !projectFilesMode?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragTargetId==='__root__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
+            <div v-if="selectedFolderId===null && !projectFilesMode" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
+            <span class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="grid" size="13" class="flex-shrink-0"/>全部文件
           </button>
         </div>
@@ -534,18 +542,18 @@ async function handleDelete(id: string) {
           <!-- Insertion line: above -->
           <div v-if="isDragging && dragType==='folder' && dragInsert?.targetId===d.id && dragInsert?.side==='above'" class="insertion-line" :style="{ marginLeft: `${4 + (d._depth||0) * 16}px` }"></div>
           <!-- 编辑中的目录名 -->
-          <div v-if="editingFolderId===d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${12 + (d._depth||0) * 12}px` }">
-            <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
+          <div v-if="editingFolderId===d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${2 + (d._depth||0) * 12}px` }">
+            <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 relative left-[5px]"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
             <span v-else class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
             <input data-folder-edit v-model="folderEditName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="confirmRename(d.id)" @blur="confirmRename(d.id)"/>
           </div>
 
           <!-- 正常目录节点 -->
-          <div v-else :data-drop-target="d.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedFolderId===d.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragFolderId===d.id?'opacity-30':'', isDragging && dragTargetId===d.id && dragFolderId!==d.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectFolder(d.id)" @mousedown="startFolderDrag($event, d.id)" :style="{ paddingLeft: `${12 + (d._depth||0) * 12}px` }">
+          <div v-else :data-drop-target="d.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedFolderId===d.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragFolderId===d.id?'opacity-30':'', isDragging && dragTargetId===d.id && dragFolderId!==d.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectFolder(d.id)" @mousedown="startFolderDrag($event, d.id)" :style="{ paddingLeft: `${2 + (d._depth||0) * 12}px` }">
             <div v-if="dragType==='folder' && dragInsert?.targetId===d.id && dragInsert?.side==='inside'" class="absolute inset-0 border-2 border-brand-400 rounded-lg pointer-events-none"></div>
             <div v-if="selectedFolderId===d.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
-            <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
+            <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 relative left-[5px]"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
             <span v-else class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
             <span class="truncate flex-1">{{ d.name }}</span>
@@ -555,7 +563,7 @@ async function handleDelete(id: string) {
           </div>
 
           <!-- 在该目录下新增子目录的输入 -->
-          <div v-if="addingNew && addingParentId === d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${12 + ((d._depth||0) + 1) * 16}px` }">
+          <div v-if="addingNew && addingParentId === d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${2 + ((d._depth||0) + 1) * 12}px` }">
             <span class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
             <input data-folder-add v-model="newFolderName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="confirmAddFolder" @keyup.escape="cancelAddFolder" @blur="confirmAddFolder"/>
@@ -565,7 +573,7 @@ async function handleDelete(id: string) {
         </template>
 
         <!-- 根级新增目录输入 -->
-        <div v-if="addingNew && !addingParentId" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" style="padding-left:16px">
+        <div v-if="addingNew && !addingParentId" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" style="padding-left:2px">
           <span class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
           <input data-folder-add v-model="newFolderName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none" @keyup.enter="confirmAddFolder" @keyup.escape="cancelAddFolder" @blur="confirmAddFolder"/>
@@ -573,7 +581,7 @@ async function handleDelete(id: string) {
 
         <!-- 未分类 -->
         <div class="mt-2 pt-1.5 border-t border-surface-100">
-          <button @click="selectFolder('__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="[selectedFolderId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragTargetId==='__uncategorized__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
+          <button @click="selectFolder('__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${2}px` }" :class="[selectedFolderId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragTargetId==='__uncategorized__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
             <div v-if="selectedFolderId==='__uncategorized__'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
             <span class="w-3 h-3 flex-shrink-0"></span>
             <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>未分类
@@ -582,22 +590,22 @@ async function handleDelete(id: string) {
 
         <!-- 项目文件（只读聚合视图；项目文件的上传/改名/删除在项目详情管理） -->
         <div class="mt-2 pt-1.5 border-t border-surface-100">
-          <div class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" style="padding-left:12px" :class="projectFilesMode && projectFilesMode.projectId===null ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-600 hover:bg-surface-100'" @click="selectProjectNode(null)">
+          <div class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" style="padding-left:2px" :class="projectFilesMode && projectFilesMode.projectId===null ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-600 hover:bg-surface-100'" @click="selectProjectNode(null)">
             <div v-if="projectFilesMode && projectFilesMode.projectId===null" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
-            <span @click.stop="toggleProjectSection()" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="projectSectionOpen?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
-            <AppIcon name="folder-open" size="13" class="flex-shrink-0 text-surface-400"/>项目文件
+            <span @click.stop="toggleProjectSection()" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 relative left-[5px]"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="projectSectionOpen?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
+            <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>项目文件
           </div>
           <template v-if="projectSectionOpen">
-            <div v-if="projects.length===0" class="py-1 text-[11px] text-surface-400" style="padding-left:32px">暂无项目</div>
+            <div v-if="projects.length===0" class="py-1 text-[11px] text-surface-400" style="padding-left:22px">暂无项目</div>
             <template v-for="p in filteredSectionProjects" :key="'pj-'+p.id">
-              <div class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" :style="{ paddingLeft: '28px' }" :class="projectFilesMode && projectFilesMode.projectId===p.id ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-600 hover:bg-surface-100'" @click="selectProjectNode(p.id)">
+              <div class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" :style="{ paddingLeft: '14px' }" :class="projectFilesMode && projectFilesMode.projectId===p.id ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-600 hover:bg-surface-100'" @click="selectProjectNode(p.id)">
                 <div v-if="projectFilesMode && projectFilesMode.projectId===p.id && !selectedProjectFolderId" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
-                <span @click.stop="toggleProjectExpanded(p.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="expandedProjects.has(p.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
-                <AppIcon name="folder-open" size="13" class="flex-shrink-0 text-surface-400"/>
+                <span @click.stop="toggleProjectExpanded(p.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 relative left-[5px]"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="expandedProjects.has(p.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
+                <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
                 <span class="truncate flex-1 min-w-0" v-tooltip.auto="p.name">{{ p.name }}</span>
               </div>
               <template v-if="expandedProjects.has(p.id)">
-                <div v-for="d in projectFolderTree(p.id)" :key="'pfd-'+d.id" class="flex items-center gap-1.5 w-full py-1 text-xs text-left transition-colors rounded-lg cursor-pointer select-none" :style="{ paddingLeft: `${46+(d._depth||0)*14}px` }" :class="projectFilesMode && projectFilesMode.projectId===p.id && selectedProjectFolderId===d.id ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-500 hover:bg-surface-100'" @click="selectProjectFolder(p.id, d.id)">
+                <div v-for="d in projectFolderTree(p.id)" :key="'pfd-'+d.id" class="flex items-center gap-1.5 w-full py-1 text-xs text-left transition-colors rounded-lg cursor-pointer select-none" :style="{ paddingLeft: `${32+(d._depth||0)*14}px` }" :class="projectFilesMode && projectFilesMode.projectId===p.id && selectedProjectFolderId===d.id ? 'bg-blue-50/70 text-brand-700 font-medium' : 'text-surface-500 hover:bg-surface-100'" @click="selectProjectFolder(p.id, d.id)">
                   <AppIcon name="folder" size="12" class="flex-shrink-0 text-surface-400"/>
                   <span class="truncate flex-1 min-w-0" v-tooltip.auto="d.name">{{ d.name }}</span>
                 </div>
@@ -662,8 +670,9 @@ async function handleDelete(id: string) {
           <template v-else>
             <div class="flex items-center gap-1 min-w-0">
               <span class="text-[12px] text-surface-800 truncate hover:text-blue-600 transition-colors cursor-pointer min-w-0" v-tooltip.auto="fileDisplayName(f)" @click="onFileCardClick($event, f.id)">{{ fileDisplayName(f) }}</span>
-              <span v-if="fileProjectBadge(f)" class="flex-shrink-0 px-1 py-px rounded bg-blue-50 text-brand-600 text-[9px] leading-none" v-tooltip="fileProjectBadge(f)">项目</span>
+              <span v-if="fileProjectBadge(f) && !projectFilesMode" class="flex-shrink-0 px-1 py-px rounded bg-blue-50 text-brand-600 text-[9px] leading-none" v-tooltip="fileProjectBadge(f)">项目</span>
             </div>
+            <p v-if="projectFilesMode && fileProjectBadge(f)" class="text-[10px] text-blue-500/80 truncate mt-0.5 cursor-pointer hover:text-blue-600 hover:underline transition-colors" @click.stop="openProjectOf(f)">{{ fileProjectBadge(f) }}</p>
           </template>
           <div v-if="editingRemarkFileId === f.id && !projectFilesMode" class="mt-1">
             <input v-model="editingRemarkValue" data-lib-remark-input class="w-full text-[11px] text-surface-600 bg-transparent outline-none border-b border-brand-400 pb-0.5 select-text" placeholder="输入备注..." @keyup.enter="saveRemark(f)" @blur="saveRemark(f)" @mousedown.stop @keyup.escape="cancelEditRemark()"/>

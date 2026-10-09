@@ -126,9 +126,9 @@ async function loadNotes() {
     let r:any
     switch (currentView.value) {
       case 'all': {
-        // "全部"只显示库内常规笔记/闪记，项目笔记不混入（项目笔记视图专览）
+        // "全部笔记"=库内常规笔记：闪记与项目笔记都不混入（各有专属视图）
         const rr: any = await notesV2ListAll()
-        r = { notes: ((rr?.notes || []) as any[]).filter((n: any) => !(n.project_ids && String(n.project_ids).trim())) }
+        r = { notes: ((rr?.notes || []) as any[]).filter((n: any) => !n.is_daily && !(n.project_ids && String(n.project_ids).trim())) }
         break
       }
       case 'uncategorized': {
@@ -814,8 +814,9 @@ const restoreNotebookList = computed(() => {
     <!-- Scrollable list: 闪记 → 笔记本区（全部 → 用户树 → 未分类）→ 项目笔记本 → 回收站 -->
     <div class="flex-1 px-2 py-1" style="overflow-y:auto;overflow-x:clip">
       <!-- 闪记 -->
-      <button @click="switchView('daily')" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden" :class="currentView==='daily'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+      <button @click="switchView('daily')" class="flex items-center gap-1.5 w-full pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden" :style="{ paddingLeft: '2px' }" :class="currentView==='daily'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
         <div v-if="currentView==='daily'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
+        <span class="w-3 h-3 flex-shrink-0"></span>
         <AppIcon name="bolt" size="14" class="text-surface-400" :class="currentView==='daily'?'text-blue-500':''"/>闪记
       </button>
 
@@ -823,8 +824,9 @@ const restoreNotebookList = computed(() => {
       <div class="mb-2 border-t border-surface-100"></div>
 
       <!-- 全部笔记：虚拟视图组首（grid 图标 + pl-12） -->
-      <button @click="switchView('all')" class="flex items-center gap-1.5 w-full py-1.5 text-[13px] text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: '12px' }" :class="currentView==='all'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+      <button @click="switchView('all')" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: '2px' }" :class="currentView==='all'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
         <div v-if="currentView==='all'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
+        <span class="w-3 h-3 flex-shrink-0"></span>
         <AppIcon name="grid" size="14" class="flex-shrink-0" :class="currentView==='all'?'text-blue-500':'text-surface-400'"/>全部笔记
       </button>
 
@@ -832,15 +834,15 @@ const restoreNotebookList = computed(() => {
       <template v-for="(nb, nbi) in notebookTree" :key="nb.id">
         <!-- Insertion line: above target -->
         <div v-if="isDragging && dragType==='notebook' && dragInsert?.targetId===nb.id && dragInsert?.side==='above'" class="insertion-line" :style="{ marginLeft: `${4 + (nb._depth || 0) * 16}px` }"></div>
-        <div v-if="editingNotebookId===nb.id" class="flex items-center gap-1 px-2 py-1" :style="{ paddingLeft: `${12 + (nb._depth || 0) * 12}px` }">
+        <div v-if="editingNotebookId===nb.id" class="flex items-center gap-1 px-2 py-1" :style="{ paddingLeft: `${2 + (nb._depth || 0) * 12}px` }">
           <input ref="notebookNameRef" data-notebook-edit v-model="notebookEditName" class="flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-brand-400 select-text" @keyup.enter="saveNotebookName(nb.id)" @blur="saveNotebookName(nb.id)"/>
         </div>
-        <div v-else :data-drop-target="nb.id" class="flex items-center gap-1 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group cursor-pointer relative overflow-hidden select-none" :class="[(currentView==='notebook'&&selectedNotebookId===nb.id)?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragNotebookId===nb.id?'opacity-30':'', isDragging && dragTargetId===nb.id && dragNotebookId!==nb.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectNotebook(nb.id)" @mousedown="startNotebookDrag($event, nb.id)" :style="{ paddingLeft: `${12 + (nb._depth || 0) * 12}px` }">
+        <div v-else :data-drop-target="nb.id" class="flex items-center gap-1 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group cursor-pointer relative overflow-hidden select-none" :class="[(currentView==='notebook'&&selectedNotebookId===nb.id)?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragNotebookId===nb.id?'opacity-30':'', isDragging && dragTargetId===nb.id && dragNotebookId!==nb.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="selectNotebook(nb.id)" @mousedown="startNotebookDrag($event, nb.id)" :style="{ paddingLeft: `${2 + (nb._depth || 0) * 12}px` }">
   <div v-if="currentView==='notebook'&&selectedNotebookId===nb.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
           <!-- Insertion line: inside target -->
           <div v-if="isDragging && dragType==='notebook' && dragInsert?.targetId===nb.id && dragInsert?.side==='inside'" class="absolute inset-0 border-2 border-brand-400 rounded-lg pointer-events-none"></div>
           <!-- Toggle arrow for parents -->
-          <span v-if="nb._hasChildren" @click.stop="toggleNotebook(nb.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 mr-0.5">
+          <span v-if="nb._hasChildren" @click.stop="toggleNotebook(nb.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 mr-0.5 relative left-[5px]">
             <svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedNotebooks.has(nb.id) ? 'rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
           </span>
           <span v-else class="w-3 flex-shrink-0 mr-0.5"></span>
@@ -856,7 +858,7 @@ const restoreNotebookList = computed(() => {
 
       <!-- 未分类：虚拟组尾（对齐资料库"未分类"分隔层样式）；拖笔记到此=移出笔记本 -->
       <div class="mt-2 pt-1.5 border-t border-surface-100">
-        <button @click="switchView('uncategorized')" data-drop-target="__none__" class="flex items-center gap-1.5 w-full py-1.5 text-[13px] text-left transition-colors rounded-lg relative overflow-hidden select-none" :style="{ paddingLeft: '12px' }" :class="[currentView==='uncategorized'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragType==='note' && dragTargetId==='__none__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
+        <button @click="switchView('uncategorized')" data-drop-target="__none__" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden select-none" :style="{ paddingLeft: '2px' }" :class="[currentView==='uncategorized'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragType==='note' && dragTargetId==='__none__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
           <div v-if="currentView==='uncategorized'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
           <span class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400" :class="currentView==='uncategorized'?'!text-blue-500':''"/>未分类
@@ -867,15 +869,15 @@ const restoreNotebookList = computed(() => {
       <div class="mb-2 mt-1 border-t border-surface-100"></div>
 
       <!-- 项目笔记（两级树：顶层=聚合所有项目笔记；项目名=该项目笔记。"全部"已排除项目笔记） -->
-      <div @click="selectProjectNote(null)" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden cursor-pointer select-none" :class="currentView==='projectNote'&&!selectedProjectNoteId?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+      <div @click="selectProjectNote(null)" class="flex items-center gap-1.5 w-full pr-2 py-1.5 text-xs text-left transition-colors rounded-lg mb-0.5 relative overflow-hidden cursor-pointer select-none" :style="{ paddingLeft: '2px' }" :class="currentView==='projectNote'&&!selectedProjectNoteId?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
         <div v-if="currentView==='projectNote'&&!selectedProjectNoteId" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
-        <span @click.stop="projectNotesExpanded=!projectNotesExpanded" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 -ml-4">
+        <span @click.stop="projectNotesExpanded=!projectNotesExpanded" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 relative left-[5px]">
           <svg class="w-2.5 h-2.5 transition-transform duration-150" :class="projectNotesExpanded?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg>
         </span>
         <AppIcon name="folder" size="13" class="flex-shrink-0" :class="currentView==='projectNote'&&!selectedProjectNoteId?'!text-blue-500':'text-surface-400'"/>项目笔记
       </div>
       <template v-if="projectNotesExpanded">
-        <div v-for="p in filteredProjectNotes" :key="p.id" @click="selectProjectNote(p.id)" v-tooltip.auto="p.name" class="flex items-center gap-1.5 w-full pr-2 py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" :class="currentView==='projectNote'&&selectedProjectNoteId===p.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'" style="padding-left:34px">
+        <div v-for="p in filteredProjectNotes" :key="p.id" @click="selectProjectNote(p.id)" v-tooltip.auto="p.name" class="flex items-center gap-1.5 w-full pr-2 py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden cursor-pointer select-none" :class="currentView==='projectNote'&&selectedProjectNoteId===p.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'" style="padding-left:32px">
           <div v-if="currentView==='projectNote'&&selectedProjectNoteId===p.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r pointer-events-none"></div>
           <AppIcon name="folder" size="12" class="flex-shrink-0 text-surface-400"/>
           <span class="truncate flex-1 min-w-0">{{ p.name }}</span>
@@ -884,8 +886,9 @@ const restoreNotebookList = computed(() => {
 
       <!-- 分隔：回收站 -->
       <div class="mt-2 pt-1.5 border-t border-surface-100">
-        <button @click="switchView('trash')" class="flex items-center gap-2 w-full pl-[22px] pr-2 py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :class="currentView==='trash'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
+        <button @click="switchView('trash')" class="flex items-center gap-1.5 w-full pr-2 py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: '2px' }" :class="currentView==='trash'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100'">
           <div v-if="currentView==='trash'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
+          <span class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="trash" size="13" class="text-surface-400"/>回收站
         </button>
       </div>
