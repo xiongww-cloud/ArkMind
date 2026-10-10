@@ -19,7 +19,7 @@ watch(() => props.visible, (v) => { if (v) delFiles.value = false })
             <h3 class="text-[14px] font-semibold text-surface-800">撤回这条消息之后的全部对话？</h3>
           </div>
           <p class="text-[11px] text-surface-500 leading-relaxed mb-1">从这条起的内容（含其后的回答）将从会话与 AI 上下文中移除，工具记忆与压缩摘要同步断代：</p>
-          <p class="text-[11px] text-surface-700 bg-surface-50 rounded-lg px-2.5 py-1.5 leading-snug mb-3" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">「{{ anchorText }}」</p>
+          <p class="text-[11px] text-surface-700 bg-surface-50 rounded-lg px-2.5 py-1.5 leading-snug mb-3 max-h-[88px] overflow-y-auto whitespace-pre-wrap break-all">「{{ anchorText }}」</p>
           <div v-if="files.length" class="border border-surface-100 rounded-xl px-3 py-2 mb-3">
             <label class="flex items-start gap-2 cursor-pointer">
               <input type="checkbox" v-model="delFiles" class="w-3.5 h-3.5 mt-0.5 accent-red-500" />
@@ -31,8 +31,8 @@ watch(() => props.visible, (v) => { if (v) delFiles.value = false })
             <p v-if="!delFiles" class="text-[10px] text-surface-400 mt-1 ml-[22px]">不勾选则保留在右侧「交付文件」面板，可随时删除</p>
           </div>
           <div class="flex justify-end gap-2">
-            <button @click="emit('cancel')" class="btn-secondary text-xs">取消</button>
-            <button @click="emit('confirm', delFiles)" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors">确认撤回</button>
+            <button @click="emit('cancel')" class="px-4 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50 transition-colors">取消</button>
+            <button @click="emit('confirm', delFiles)" class="px-4 py-1.5 text-xs font-medium rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors">撤回</button>
           </div>
         </div>
       </div>
