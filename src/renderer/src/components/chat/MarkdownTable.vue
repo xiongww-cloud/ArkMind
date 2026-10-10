@@ -167,13 +167,13 @@ defineExpose({
               class="w-full min-w-[56px] !py-2 px-3 text-[12px] font-semibold text-left bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <input v-else v-model="addedCols[cv.i].header" placeholder="新列名"
               class="w-full min-w-[56px] !py-2 px-3 text-[12px] font-semibold text-left bg-brand-50/50 outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
-            <div class="absolute top-1 right-1 z-10 flex items-center gap-1 rounded-full bg-slate-800/95 px-1.5 py-0.5 shadow-lg opacity-0 group-hover/col:opacity-100 transition-opacity">
+            <div class="absolute top-1 right-1 z-10 flex items-center gap-1.5 rounded-full bg-slate-800/95 px-2.5 py-1 shadow-lg opacity-0 group-hover/col:opacity-100 transition-opacity">
               <button type="button" @click="insertColAt(cv.k === 'b' ? cv.c : addedCols[cv.i].anchor)"
-                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-white" title="在此列右侧插入新列">＋</button>
+                class="text-[12px] leading-none px-1 text-white hover:text-brand-200" title="在此列右侧插入新列">＋</button>
               <button v-if="cv.k === 'b'" type="button" @click="delCol(cv.c)"
-                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-red-300" title="删除此列">×</button>
+                class="text-[12px] leading-none px-1 text-white hover:text-red-300" title="删除此列">×</button>
               <button v-else type="button" @click="addedCols[cv.i].dead = true"
-                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-red-300" title="删除此列">×</button>
+                class="text-[12px] leading-none px-1 text-white hover:text-red-300" title="删除此列">×</button>
             </div>
           </th>
         </tr>
@@ -190,13 +190,13 @@ defineExpose({
               class="w-full min-w-[46px] !py-2 px-3 text-[12px] bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <input v-else :value="addedRows[(rv as { k: 'a'; i: number }).i].cells[colKey(cv)] ?? ''" @input="addedRows[(rv as { k: 'a'; i: number }).i].cells[colKey(cv)] = ($event.target as HTMLInputElement).value"
               class="w-full min-w-[46px] !py-2 px-3 text-[12px] bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
-            <div v-if="ci === 0" class="absolute top-1 right-1 z-10 flex items-center gap-1 rounded-full bg-slate-800/95 px-1.5 py-0.5 shadow-lg opacity-0 group-hover/row:opacity-100 transition-opacity">
+            <div v-if="ci === 0" class="absolute top-1 right-1 z-10 flex items-center gap-1.5 rounded-full bg-slate-800/95 px-2.5 py-1 shadow-lg opacity-0 group-hover/row:opacity-100 transition-opacity">
               <button v-if="rv.k === 'b'" type="button" @click="insertRowAt(rv.r)"
-                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-white" title="在此行下方插入新行">＋</button>
+                class="text-[12px] leading-none px-1 text-white hover:text-brand-200" title="在此行下方插入新行">＋</button>
               <button v-if="rv.k === 'b'" type="button" @click="delRow(rv.r)"
-                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-red-300" title="删除此行">×</button>
+                class="text-[12px] leading-none px-1 text-white hover:text-red-300" title="删除此行">×</button>
               <button v-else type="button" @click="addedRows[rv.i].dead = true"
-                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-red-300" title="删除此行">×</button>
+                class="text-[12px] leading-none px-1 text-white hover:text-red-300" title="删除此行">×</button>
             </div>
           </td>
         </tr>

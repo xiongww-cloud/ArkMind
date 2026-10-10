@@ -25,7 +25,12 @@ function onDocMouseUp() {
     if (!parent || parent.closest('.md-table-root') || parent.closest('input,textarea') || parent.closest('.annotate-skip')) { bubble.value = null; return }
     const r = range.getBoundingClientRect()
     if (!r.width && !r.height) { bubble.value = null; return }
-    bubble.value = { x: Math.min(Math.max(r.left + r.width / 2, 90), window.innerWidth - 90), y: r.bottom + 6, text: text.slice(0, 120) }
+    // 贴住选区末端所在行（多行选区不再悬在整块下方）；贴近视口底部时翻到选区上方
+    const rects = range.getClientRects()
+    const last = rects.length ? rects[rects.length - 1] : r
+    let y = last.bottom + 6
+    if (y > window.innerHeight - 80) y = r.top - 34
+    bubble.value = { x: Math.min(Math.max(last.left + last.width / 2, 90), window.innerWidth - 90), y, text: text.slice(0, 120) }
   })
 }
 document.addEventListener('mouseup', onDocMouseUp)
