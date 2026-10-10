@@ -681,6 +681,15 @@ function submitClarification(text: string) {
   handleSendMessage()
 }
 
+/// 已答复卡片的答案视图数据源：该消息之后最近一条用户消息正文（刷新/重开会话仍可解析）
+function clarificationReply(msgId?: string): string {
+  if (!msgId) return ''
+  const arr = currentSession.value?.messages || []
+  const i = arr.findIndex(x => x.id === msgId)
+  if (i < 0) return ''
+  return arr.slice(i + 1).find(x => x.role === 'user')?.content || ''
+}
+
 async function stopAgent() {
   try {
     const { agentCancel } = await import('@/api/db-client')
@@ -875,6 +884,7 @@ onUnmounted(() => {
                 <ClarifyCard
                   :clarification="msg.clarification"
                   :answered="idx < currentSession.messages.length - 1"
+                  :reply-text="clarificationReply(msg.id)"
                   @submit="submitClarification"
                 />
               </div>

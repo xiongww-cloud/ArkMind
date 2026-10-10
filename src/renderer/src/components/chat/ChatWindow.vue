@@ -473,6 +473,14 @@ function submitClarification(text: string) {
   send()
 }
 
+/// 已答复卡片的答案视图数据源：该消息之后最近一条用户消息正文（刷新/重开会话仍可解析）
+function clarificationReply(msgId?: string): string {
+  if (!msgId) return ''
+  const i = messages.value.findIndex(x => x.id === msgId)
+  if (i < 0) return ''
+  return messages.value.slice(i + 1).find(x => x.role === 'user')?.content || ''
+}
+
 /// 输入框键盘契约：⏎ 发送 / ⇧⏎ 换行（textarea 默认）/ Esc 收起窗口
 function onComposerKey(e: KeyboardEvent) {
   if (e.key === 'Escape') { e.preventDefault(); hideWindow(); return }
@@ -559,6 +567,7 @@ onUnmounted(() => {
                 <ClarifyCard
                   :clarification="m.clarification"
                   :answered="m.id !== messages[messages.length - 1]?.id"
+                  :reply-text="clarificationReply(m.id)"
                   @submit="submitClarification"
                 />
               </div>

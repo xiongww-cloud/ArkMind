@@ -5,19 +5,45 @@ import { buildClarificationReply, mergeClarificationAnswer } from '@/composables
 
 const props = defineProps<{
   clarification: ClarificationData
-  /** 非会话最后一条消息 → 已回答态：折叠选择器只留提示（防刷新后重复提交） */
+  /** 非会话最后一条消息 → 已回答态：显示每题最终决定（答案从用户答复消息解析，刷新不丢） */
   answered?: boolean
+  /** answered 时传入紧随其后的用户答复消息文本 */
+  replyText?: string
 }>()
 const emit = defineEmits<{ submit: [text: string] }>()
 
+const SKIP_TEXT = '暂不补充这些信息，请按最合理的默认假设继续，并在结果中括注说明采用的假设。'
+
+/** 从 buildClarificationReply 格式解析每题答案：按已知题干定位，答案=本题干冒号后到下一题干前 */
+const parsedReply = computed(() => {
+  if (!props.answered || !props.replyText) return null
+  const t = props.replyText
+  if (t === SKIP_TEXT || t.startsWith('暂不补充这些信息')) return { skipped: true, answers: {} as Record<string, string> }
+  const marks: { q: ClarificationQuestion, at: number }[] = []
+  for (const q of props.clarification.questions) {
+    const key = `${q.prompt.replace(/[？?]\s*$/, '')}：`
+    const at = t.indexOf(key)
+    if (at >= 0) marks.push({ q, at })
+  }
+  if (!marks.length) return null
+  marks.sort((a, b) => a.at - b.at)
+  const answers: Record<string, string> = {}
+  marks.forEach((m, i) => {
+    const start = m.at + `${m.q.prompt.replace(/[？?]\s*$/, '')}：`.length
+    const end = i + 1 < marks.length ? marks[i + 1].at : t.length
+    answers[m.q.question_id] = t.slice(start, end).replace(/；\s*$/, '').replace(/。\s*请继续执行。\s*$/, '').trim()
+  })
+  return { skipped: false, answers }
+})
+
 const answers = reactive<Record<string, string | string[]>>({})
-/** 每道题的自定义答案文本（选择题可选补充；单选提交时覆盖点选，多选作为附加项） */
 const custom = reactive<Record<string, string>>({})
+const customOpen = reactive<Record<string, boolean>>({})
 for (const q of props.clarification.questions) {
   answers[q.question_id] = q.type === 'multiple_choice' ? [] : ''
   custom[q.question_id] = ''
+  customOpen[q.question_id] = false
 }
-
 const disabled = computed(() => !!props.answered)
 
 function isPicked(q: ClarificationQuestion, opt: string): boolean {
@@ -34,27 +60,22 @@ function toggle(q: ClarificationQuestion, opt: string) {
     answers[q.question_id] = arr
   } else {
     answers[q.question_id] = answers[q.question_id] === opt ? '' : opt
+    if (answers[q.question_id]) custom[q.question_id] = ''
   }
 }
-function textOf(q: ClarificationQuestion): string {
-  const a = answers[q.question_id]
-  return typeof a === 'string' ? a : ''
+function openCustom(q: ClarificationQuestion) {
+  customOpen[q.question_id] = true
+  if (q.type === 'single_choice') answers[q.question_id] = ''
 }
-function setText(q: ClarificationQuestion, v: string) {
-  if (!disabled.value) answers[q.question_id] = v
-}
-
-const canSubmit = computed(() => props.clarification.questions.some((q) => {
-  const a = merged(q)
-  return Array.isArray(a) ? a.length > 0 : a.trim().length > 0
-}))
-
 function merged(q: ClarificationQuestion): string | string[] {
   return mergeClarificationAnswer(q, answers[q.question_id], custom[q.question_id])
 }
-
+const anyAnswered = computed(() => props.clarification.questions.some((q) => {
+  const a = merged(q)
+  return Array.isArray(a) ? a.length > 0 : String(a).trim().length > 0
+}))
 function submit() {
-  if (disabled.value || !canSubmit.value) return
+  if (disabled.value || !anyAnswered.value) return
   const finalAnswers: Record<string, string | string[]> = {}
   for (const q of props.clarification.questions) finalAnswers[q.question_id] = merged(q)
   emit('submit', buildClarificationReply(props.clarification, finalAnswers))
@@ -66,62 +87,58 @@ function skipWithDefaults() {
 </script>
 
 <template>
-  <div
-    class="rounded-xl border bg-white shadow-sm overflow-hidden w-full max-w-[420px]"
-    :class="answered ? 'border-[#e5e5ea] opacity-90' : 'border-brand-300'"
-  >
-    <div class="px-3 py-2 bg-brand-50/70 border-b" :class="answered ? 'border-[#e5e5ea]' : 'border-brand-100'">
-      <span class="text-[12px] font-medium text-brand-800">需要补充关键信息</span>
+  <div class="rounded-xl border bg-white overflow-hidden w-full"
+    :class="answered ? 'border-surface-200' : 'border-brand-300 shadow-sm'">
+    <div class="px-3.5 pt-2.5 pb-1 flex items-center gap-1.5">
+      <span v-if="!answered" class="w-4 h-4 rounded-full bg-brand-100 text-brand-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0">?</span>
+      <span v-else class="w-4 h-4 rounded-full bg-emerald-50 text-emerald-600 text-[10px] flex items-center justify-center flex-shrink-0">✓</span>
+      <span class="text-[12px] font-semibold text-surface-700">{{ answered ? '已确认' : 'AI 需要你的决定' }}</span>
     </div>
-    <div class="px-3 py-2.5 space-y-2.5">
-      <p v-if="clarification.reason" class="text-[11px] text-surface-500 leading-relaxed">{{ clarification.reason }}</p>
-      <div v-for="(q, i) in clarification.questions" :key="q.question_id">
-        <p class="text-[12px] font-medium text-surface-700 mb-1.5 leading-snug">{{ i + 1 }}. {{ q.prompt }}</p>
-        <div v-if="q.type !== 'text'">
-          <div
-            class="flex flex-wrap gap-1.5 transition-opacity"
-            :class="q.type === 'single_choice' && custom[q.question_id].trim() ? 'opacity-40' : ''"
-          >
-            <button
-              v-for="opt in q.options" :key="opt"
-              type="button"
-              @click="toggle(q, opt)"
-              :disabled="disabled"
-              class="px-2.5 py-1 rounded-lg text-[11px] border transition-colors"
-              :class="isPicked(q, opt)
-                ? 'border-brand-500 bg-brand-600 text-white'
-                : 'border-surface-200 bg-white text-surface-600' + (disabled ? '' : ' hover:border-brand-300 hover:bg-brand-50/40')"
-            >{{ opt }}</button>
+    <div class="px-3.5 pb-3 space-y-3">
+      <p v-if="clarification.reason && !answered" class="text-[11px] text-surface-500 leading-relaxed -mt-0.5">{{ clarification.reason }}</p>
+
+      <!-- 已答复：每题的最终决定（从答复消息解析，刷新/重开不丢） -->
+      <template v-if="answered">
+        <p v-if="parsedReply?.skipped" class="text-[11px] text-surface-500">用户选择按默认假设继续（结果中已括注采用的假设）</p>
+        <template v-else-if="parsedReply">
+          <div v-for="(q, i) in clarification.questions" :key="q.question_id">
+            <p class="text-[11px] text-surface-400 leading-snug">{{ i + 1 }}. {{ q.prompt }}</p>
+            <p v-if="parsedReply.answers[q.question_id]" class="text-[12px] text-surface-800 font-medium mt-0.5">→ {{ parsedReply.answers[q.question_id] }}</p>
           </div>
-          <input
-            v-model="custom[q.question_id]"
-            :disabled="disabled"
-            type="text"
-            class="mt-1.5 w-full border border-surface-200 rounded-lg px-2.5 py-1 text-[11px] outline-none focus:border-brand-400 disabled:bg-surface-50"
-            :placeholder="q.type === 'multiple_choice' ? '补充其他答案（将并入已选项）...' : '或输入自定义答案（将覆盖上方选择）...'"
-          />
+        </template>
+        <p v-else class="text-[11px] text-surface-400">已答复</p>
+      </template>
+
+      <!-- 作答态 -->
+      <template v-else>
+        <div v-for="(q, i) in clarification.questions" :key="q.question_id" class="pt-0.5">
+          <p class="text-[12px] font-medium text-surface-700 mb-1.5 leading-snug">{{ i + 1 }}. {{ q.prompt }}</p>
+          <input v-if="q.type === 'text'" v-model="answers[q.question_id]" type="text"
+            class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="输入答复..." />
+          <div v-else class="space-y-1">
+            <button v-for="opt in q.options" :key="opt" type="button" @click="toggle(q, opt)"
+              class="w-full text-left px-2.5 py-1.5 rounded-lg border text-[11px] flex items-center gap-2 transition-colors"
+              :class="isPicked(q, opt) ? 'border-brand-500 bg-brand-50 text-brand-800 font-medium' : 'border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-brand-50/40'">
+              <span class="w-3.5 h-3.5 rounded-full border flex items-center justify-center flex-shrink-0"
+                :class="isPicked(q, opt) ? 'border-brand-600 bg-brand-600' : 'border-surface-300'">
+                <svg v-if="isPicked(q, opt)" class="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+              </span>
+              {{ opt }}
+            </button>
+            <input v-if="customOpen[q.question_id] || custom[q.question_id]" v-model="custom[q.question_id]" type="text"
+              class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400"
+              :placeholder="q.type === 'multiple_choice' ? '补充其他答案（并入已选项）...' : '自定义答案...'" autofocus />
+            <button v-else type="button" @click="openCustom(q)" class="text-[10px] text-surface-400 hover:text-brand-600 px-1">+ 其他（自行填写）</button>
+          </div>
         </div>
-        <input
-          v-else
-          :value="textOf(q)"
-          :disabled="disabled"
-          type="text"
-          class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 disabled:bg-surface-50"
-          placeholder="输入答复..."
-          @input="(e: any) => setText(q, e.target.value)"
-        />
-      </div>
-      <div v-if="!answered" class="flex items-center justify-end gap-2.5 pt-0.5">
-        <button type="button" class="text-[11px] text-surface-400 hover:text-surface-600 transition-colors" @click="skipWithDefaults">按默认假设继续</button>
-        <button
-          type="button"
-          :disabled="!canSubmit"
-          class="px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
-          :class="canSubmit ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'"
-          @click="submit"
-        >确认并继续</button>
-      </div>
-      <p v-else class="text-[11px] text-surface-400">已答复，结果见下方对话</p>
+        <div class="flex items-center justify-between pt-0.5">
+          <button type="button" class="text-[10px] text-surface-400 hover:text-surface-600 transition-colors" @click="skipWithDefaults">先不补充，按默认假设继续</button>
+          <button type="button" :disabled="!anyAnswered" @click="submit"
+            class="px-3.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+            :class="anyAnswered ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'"
+          >确认并继续</button>
+        </div>
+      </template>
     </div>
   </div>
 </template>
