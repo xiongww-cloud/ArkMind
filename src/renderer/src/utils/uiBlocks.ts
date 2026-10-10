@@ -121,28 +121,23 @@ export interface TableRowState { cells: Record<string, string>; deleted: boolean
 
 /** table diff → 结构化修订消息文本；无改动返回 null（禁提交） */
 export function tableDiffText(b: UiTableBlock, orig: Record<string, string>[], state: TableRowState[]): string | null {
+  const keyOf = (i: number) => {
+    const idf = i < orig.length ? String(orig[i][b.columns[0].key] ?? '').trim() : ''
+    return idf ? `「${idf}」` : `第${i + 1}行`
+  }
   const parts: string[] = []
-  let added = 0
   state.forEach((row, i) => {
-    if (row.deleted) {
-      const idf = i < orig.length ? String(orig[i][b.columns[0].key] ?? '').trim() : ''
-      parts.push(`- 删除第${i + 1}行${idf ? `「${idf}」` : ''}`)
-      return
-    }
-    if (i >= orig.length) { added++ ; return }
+    if (row.deleted) { parts.push(`- 删除${i < orig.length ? `${keyOf(i)}行` : '新增行'}`); return }
+    if (i >= orig.length) return
     const changes: string[] = []
     for (const c of b.columns) {
       const o = String(orig[i][c.key] ?? ''), n = String(row.cells[c.key] ?? '').trim()
       if (n !== o) changes.push(`${c.label}=${n || '（清空）'}`)
     }
-    if (changes.length) {
-      const idf = String(orig[i][b.columns[0].key] ?? '').trim()
-      parts.push(`- 修改第${i + 1}行${idf ? `「${idf}」` : ''}：${changes.join('；')}`)
-    }
+    if (changes.length) parts.push(`- 修改${keyOf(i)}行：${changes.join('；')}`)
   })
-  const addedRows = state.slice(orig.length).filter(r => !r.deleted)
-  if (addedRows.length) {
-    for (const r of addedRows) parts.push(`- 新增行：${b.columns.map(c => `${c.label}=${String(r.cells[c.key] ?? '').trim() || '?'}`).join('，')}`)
+  for (const r of state.slice(orig.length).filter(x => !x.deleted)) {
+    parts.push(`- 新增行：${b.columns.map(c => `${c.label}=${String(r.cells[c.key] ?? '').trim() || '?'}`).join('，')}`)
   }
   if (!parts.length) return null
   return [`【组件提交·清单修订】${b.title}`, ...parts].join('\n')

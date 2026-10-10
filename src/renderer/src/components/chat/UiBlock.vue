@@ -63,71 +63,69 @@ function setCell(row: TableRowState, key: string, v: string) { row.cells[key] = 
   <pre v-if="!parsed" class="ui-block-fallback text-[11px] bg-surface-50 border border-surface-200 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">{{ raw }}</pre>
 
   <!-- 表单 -->
-  <div v-else-if="form" class="rounded-xl border border-brand-200 bg-white my-1 overflow-hidden">
-    <div class="px-3 py-2 bg-brand-50/60 border-b border-brand-100 flex items-center justify-between">
-      <span class="text-[12px] font-semibold text-surface-800">{{ form.title }}</span>
+  <div v-else-if="form" class="rounded-lg border border-surface-200 bg-white my-1 overflow-hidden">
+    <div class="px-2.5 py-1.5 bg-surface-50 border-b border-surface-100 flex items-center justify-between gap-2">
+      <span class="text-[11px] font-semibold text-surface-700">{{ form.title }}</span>
       <span v-if="submitted" class="text-[10px] text-emerald-600">已提交</span>
     </div>
-    <div class="p-3 space-y-2" :class="submitted ? 'opacity-60 pointer-events-none' : ''">
+    <div class="p-2.5 space-y-1.5" :class="submitted ? 'opacity-60 pointer-events-none' : ''">
       <label v-for="f in form.fields" :key="f.name" class="block">
-        <span class="text-[11px] text-surface-500">{{ f.label }}<span v-if="f.required" class="text-red-500">*</span></span>
+        <span class="text-[10px] text-surface-500">{{ f.label }}<span v-if="f.required" class="text-red-500">*</span></span>
         <select v-if="f.kind === 'select'" v-model="formValues[f.name]"
-          class="mt-0.5 w-full text-[12px] border border-surface-200 rounded-lg px-2 py-1.5 outline-none focus:border-brand-400 bg-white">
+          class="mt-0.5 w-full text-[11px] border border-surface-200 rounded-md px-2 py-1 outline-none focus:border-brand-400 bg-white">
           <option value="" disabled selected>请选择</option>
           <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
         </select>
-        <div v-else-if="f.kind === 'checkbox'" class="mt-1 flex items-center gap-2">
-          <input type="checkbox" v-model="formValues[f.name]" class="w-3.5 h-3.5 accent-indigo-600" />
-          <span class="text-[11px] text-surface-600">{{ f.placeholder || '是' }}</span>
+        <div v-else-if="f.kind === 'checkbox'" class="mt-0.5 flex items-center gap-2">
+          <input type="checkbox" v-model="formValues[f.name]" class="w-3 h-3 accent-indigo-600" />
+          <span class="text-[10px] text-surface-600">{{ f.placeholder || '是' }}</span>
         </div>
         <input v-else v-model="formValues[f.name]" type="text" :placeholder="f.placeholder || ''"
-          class="mt-0.5 w-full text-[12px] border border-surface-200 rounded-lg px-2 py-1.5 outline-none focus:border-brand-400" />
+          class="mt-0.5 w-full text-[11px] border border-surface-200 rounded-md px-2 py-1 outline-none focus:border-brand-400" />
       </label>
-      <div class="pt-1 flex justify-end">
+      <div class="pt-0.5 flex justify-end">
         <button @click="submitForm" :disabled="!formValid"
-          class="px-3 py-1 text-[11px] font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">
+          class="px-2.5 py-0.5 text-[10px] font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">
           {{ form.submit_label || '提交' }}
         </button>
       </div>
     </div>
   </div>
 
-  <!-- 可编辑清单 -->
-  <div v-else-if="table" class="rounded-xl border border-brand-200 bg-white my-1 overflow-hidden">
-    <div class="px-3 py-2 bg-brand-50/60 border-b border-brand-100 flex items-center justify-between">
-      <span class="text-[12px] font-semibold text-surface-800">{{ table.title }}</span>
+  <!-- 可编辑清单：外观≈普通表格，单元格原地改；行删除悬停浮现，不占固定列 -->
+  <div v-else-if="table" class="rounded-lg border border-surface-200 bg-white my-1 overflow-hidden">
+    <div class="px-2.5 py-1.5 bg-surface-50 border-b border-surface-100 flex items-center justify-between gap-2">
+      <span class="text-[11px] font-semibold text-surface-700">{{ table.title }}</span>
       <span v-if="submitted" class="text-[10px] text-emerald-600">已提交</span>
     </div>
-    <div class="p-2 overflow-x-auto" :class="submitted ? 'opacity-60 pointer-events-none' : ''">
-      <table class="w-full text-[11px] border-collapse">
+    <div class="px-1.5 pt-1 pb-1.5 overflow-x-auto" :class="submitted ? 'opacity-60 pointer-events-none' : ''">
+      <table class="w-full text-[11px]">
         <thead>
           <tr>
-            <th class="text-left font-medium text-surface-400 px-1 py-1 w-6">#</th>
-            <th v-for="c in table.columns" :key="c.key" class="text-left font-medium text-surface-500 px-1 py-1">{{ c.label }}</th>
-            <th class="w-8"></th>
+            <th v-for="c in table.columns" :key="c.key" class="text-left font-medium text-surface-400 px-1 py-0.5 whitespace-nowrap">{{ c.label }}</th>
+            <th class="w-0"></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(r, i) in rows" :key="i" class="border-t border-surface-100">
+          <tr v-for="(r, i) in rows" :key="i" class="group border-t border-surface-100">
             <template v-if="!r.deleted">
-              <td class="px-1 py-0.5 text-surface-400">{{ i + 1 }}</td>
-              <td v-for="c in table.columns" :key="c.key" class="px-1 py-0.5">
-                <input :value="cellValue(r, c.key)" @input="setCell(r, c.key, ($event.target as HTMLInputElement).value)"
-                  class="w-full min-w-[70px] text-[11px] border border-transparent hover:border-surface-200 focus:border-brand-400 rounded px-1.5 py-1 outline-none bg-transparent focus:bg-white" />
+              <td v-for="c in table.columns" :key="c.key" class="px-0 py-0">
+                <input size="1" :value="cellValue(r, c.key)" @input="setCell(r, c.key, ($event.target as HTMLInputElement).value)"
+                  class="w-full min-w-0 text-[11px] border border-transparent hover:border-surface-200 focus:border-brand-400 rounded px-1 py-0.5 outline-none bg-transparent focus:bg-white" />
               </td>
-              <td class="px-1 text-center">
-                <button v-if="rows.length > 1 && i < rows.length" @click="r.deleted = true"
-                  class="text-surface-300 hover:text-red-500 text-[12px]" title="删除此行">×</button>
+              <td class="w-0">
+                <button v-if="!submitted && rowTotal > 1" @click="r.deleted = true"
+                  class="opacity-0 group-hover:opacity-100 transition-opacity text-surface-300 hover:text-red-500 px-1 leading-none" title="删除此行">×</button>
               </td>
             </template>
           </tr>
         </tbody>
       </table>
-      <div class="flex items-center justify-between px-1 pt-1.5" v-if="!submitted">
+      <div class="flex items-center justify-between px-1 pt-1" v-if="!submitted">
         <button @click="addRow" :disabled="rows.length >= LIMITS.tableRows"
-          class="text-[11px] text-brand-600 hover:underline disabled:opacity-40">+ 加行（{{ rowTotal }}/{{ LIMITS.tableRows }}）</button>
+          class="text-[10px] text-brand-600 hover:underline disabled:opacity-40">+ 加行</button>
         <button @click="submitTable" :disabled="!canSubmitTable"
-          class="px-3 py-1 text-[11px] font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">提交修改</button>
+          class="px-2.5 py-0.5 text-[10px] font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">提交修改</button>
       </div>
     </div>
   </div>
