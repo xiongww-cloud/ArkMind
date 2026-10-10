@@ -1513,14 +1513,23 @@ fn text_disp_width(s: &str) -> usize {
     s.split('\n').map(|line| line.chars().map(char_disp).sum()).max().unwrap_or(0)
 }
 
-/// 递归收集值的显示文本宽度（含 md 标记——宁可高估不可低估）：
-/// 字符串→自身宽；数字→字面；数组/对象→递归求和
+/// 单元格显示宽度（只计文本内容，结构字段不计宽）：
+/// 字符串→自身；数字→字面；对象→text / value / runs / children 递归；数组→逐项求和。
+/// 注意不得对 Object 全 values 求和——"type":"string"、"align":"center" 等样式字段会把短列虚撑成宽列
 fn collect_disp_width(v: &Value) -> usize {
     match v {
         Value::String(s) => text_disp_width(s),
         Value::Number(n) => text_disp_width(&n.to_string()),
         Value::Array(a) => a.iter().map(collect_disp_width).sum(),
-        Value::Object(o) => o.values().map(collect_disp_width).sum(),
+        Value::Object(o) => {
+            if let Some(t) = o.get("text").and_then(|t| t.as_str()) { return text_disp_width(t); }
+            if let Some(val) = o.get("value") { if !val.is_null() { return collect_disp_width(val); } }
+            let mut w = 0;
+            if let Some(runs) = o.get("runs").and_then(|r| r.as_array()) { w += runs.iter().map(collect_disp_width).sum::<usize>(); }
+            if let Some(ch) = o.get("children").and_then(|c| c.as_array()) { w += ch.iter().map(collect_disp_width).sum::<usize>(); }
+            if let Some(f) = o.get("formula").and_then(|f| f.as_str()) { w = w.max(text_disp_width(f)); }
+            w
+        }
         _ => 0,
     }
 }
@@ -3083,6 +3092,23 @@ mod tests {
         let mut styles3 = String::new();
         zip3.by_name("xl/styles.xml").expect("styles3").read_to_string(&mut styles3).expect("read styles3");
         assert!(styles3.contains("wrapText=\"1\""), "超宽列单元格换行");
+    }
+
+    /// 样式字段不得虚增列宽：带 bold/align/border 的短文本列维持默认宽
+    #[test]
+    fn styled_cells_do_not_inflate_column_width() {
+        use std::io::Read as _;
+        let content = json!({"sheets": [{"name": "S1", "children": [
+            {"type": "row", "cells": [
+                {"type": "string", "text": "编号", "bold": true, "align": "center", "border": true},
+                {"type": "string", "text": "配置", "align": "center", "wrap": true}
+            ]}
+        ]}]});
+        let bytes = super::build_xlsx(&content).expect("build");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+        let mut xml = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml").expect("sheet").read_to_string(&mut xml).expect("read");
+        assert!(!xml.contains("<col "), "短样式列不应设自定义宽: {}", &xml[..xml.len().min(400)]);
     }
 
     #[test]
