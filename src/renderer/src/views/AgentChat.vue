@@ -7,6 +7,7 @@ import { toast } from '@/composables/useToast'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbLoadSessionMessages, kbDeleteSession, kbWithdrawMessages, kbSessionFiles, kbReleaseGeneratedFile, previewFile, exportFile, copyFileToClipboard, type WithdrawnFile, type SessionFile } from '@/api/db-client'
 import WithdrawDialog from '@/components/chat/WithdrawDialog.vue'
+import SessionFilesPanel from '@/components/chat/SessionFilesPanel.vue'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { useAgentChat, type ChatMessage as AgentChatMessage, type GeneratedDocument, type ClarificationData, extractDocumentsFromToolLog, parseDocumentsMetadata, parseClarificationMetadata } from '@/composables/useAgentChat'
@@ -630,7 +631,7 @@ async function handleSendMessage() {
         // ★ 提取 AI 生成的文档对象（预览/下载/复制卡片）
         const docs = extractDocumentsFromToolLog(result.tool_log)
         if (docs.length) aiMsg.documents = docs
-        if (filesPanel.value) loadSessionFiles()
+        if (filesOpen.value) loadSessionFiles()
         // ★ 追问卡片结构化数据（text+card 双轨：正文已是文本版）
         if (result.clarification && Array.isArray(result.clarification.questions) && result.clarification.questions.length) {
           aiMsg.clarification = result.clarification
@@ -716,7 +717,7 @@ function submitAnnotation() {
   submitClarification(text)
 }
 watch(() => agent.isChatting.value, (v) => { if (v) exitAnnotate() })
-watch(currentSessionId, () => { exitAnnotate(); if (filesPanel.value) loadSessionFiles() })
+watch(currentSessionId, () => { exitAnnotate(); if (filesOpen.value) loadSessionFiles() })
 
 // ─── 撤回：任意用户消息起，其后全部移出会话与上下文；可选连带删除生成文件 ───
 const withdrawTarget = ref<{ text: string; files: WithdrawnFile[]; idx: number } | null>(null)
@@ -740,29 +741,30 @@ async function doWithdraw(deleteFiles: boolean) {
       if (s) { s.messages.splice(t.idx); saveToStorage(s) }
       exitAnnotate()
       toast({ message: `已撤回 ${r.withdrawn_count} 条消息${r.files_deleted ? `，删除 ${r.files_deleted} 个文件` : ''}`, type: 'success' })
-      if (filesPanel.value) loadSessionFiles()
+      if (filesOpen.value) loadSessionFiles()
     }
   } catch (e: any) { toast({ message: `撤回失败：${e?.message || e}`, type: 'error' }) }
 }
 
 // ─── 交付文件面板（会话生成文件集中管理；与消息存活无关）───
-const filesPanel = ref(false)
+const filesOpen = ref(false)
 const sessionFiles = ref<SessionFile[]>([])
 async function loadSessionFiles() {
   const sid = currentSessionId.value
   if (!sid) { sessionFiles.value = []; return }
   try { sessionFiles.value = (await kbSessionFiles(sid)).files || [] } catch { sessionFiles.value = [] }
 }
-function toggleFilesPanel() { filesPanel.value = !filesPanel.value; if (filesPanel.value) loadSessionFiles() }
+function toggleFilesPanel() { filesOpen.value = !filesOpen.value; if (filesOpen.value) loadSessionFiles() }
 async function deleteSessionFile(f: SessionFile) {
   const ok = await dangerConfirm({ title: '删除文件', message: `「${f.name}」将从资料库、知识库与消息卡片中移除`, confirmText: '删除' })
   if (!ok) return
   try { await kbReleaseGeneratedFile(f.id); toast({ message: '已删除', type: 'success' }); loadSessionFiles() } catch (e: any) { toast({ message: `删除失败：${e?.message || e}`, type: 'error' }) }
 }
-const fileIconColor = (f: SessionFile) => { const e = (f.ext || '').toLowerCase(); return e.startsWith('xls') || e === 'csv' ? 'bg-[#107c41]' : 'bg-[#2b579a]' }
-const fmtFileExt = (f: SessionFile) => { const e = (f.ext || '').toUpperCase(); return e ? e.slice(0, 4) : 'FILE' }
-const fmtSize = (n?: number | null) => !n ? '' : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B'
-const onFilesChanged = () => { if (filesPanel.value) loadSessionFiles() }
+const onFilesChanged = () => { if (filesOpen.value) loadSessionFiles() }
+async function copyUserMsg(msg: ChatMessage) {
+  try { await navigator.clipboard.writeText((msg.content || '').trim()); toast({ message: '已复制', type: 'success' }) } catch { toast({ message: '复制失败', type: 'error' }) }
+}
+function pfFile(f: SessionFile) { previewFile(f.id).catch(() => {}) }
 async function dlFile(f: SessionFile) {  try { const r = await exportFile(f.id); if (r?.success) toast({ message: '已保存', type: 'success' }); else if (r?.error && r.error !== '已取消') toast({ message: r.error, type: 'error' }) }
   catch (e: any) { toast({ message: e?.message || '下载失败', type: 'error' }) }
 }
@@ -898,39 +900,8 @@ onUnmounted(() => {
 
   <!-- Main Chat -->
   <div class="flex-1 flex flex-col min-w-0 relative bg-surface-50/30">
-    <!-- 交付文件入口 -->
-    <button @click="toggleFilesPanel" v-tooltip="'交付文件'"
-      class="absolute top-2.5 right-4 z-20 w-8 h-8 rounded-lg border transition-colors flex items-center justify-center"
-      :class="filesPanel ? 'border-brand-300 bg-brand-50 text-brand-600' : 'border-surface-200 bg-white text-surface-400 hover:text-brand-600 shadow-sm'">
-      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.132-.98.968-1.776 1.964-1.776h12.57c.996 0 1.832.796 1.964 1.776M3.75 9.776v8.47c0 1.009.84 1.834 1.85 1.777a17.854 17.854 0 019.05-1.043c1.014.064 1.832-.756 1.832-1.773v-8.47M3.75 9.776l-.03.322c-.012.13-.02.262-.02.396V10m16.556-.224l-.026.298c-.017.19-.026.383-.026.577V10.5m-8.25-3v3m0 0v3m0-3h3m-3 3h3" /></svg>
-      <span v-if="sessionFiles.length" class="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-brand-600 text-white text-[8px] flex items-center justify-center">{{ sessionFiles.length }}</span>
-    </button>
-    <!-- 交付文件抽屉 -->
-    <div v-if="filesPanel && currentSession" class="absolute inset-y-0 right-0 w-[300px] bg-white border-l border-surface-200 shadow-2xl z-30 flex flex-col">
-      <div class="px-3.5 py-3 border-b border-surface-100 flex items-center justify-between flex-shrink-0">
-        <span class="text-[12px] font-semibold text-surface-800">交付文件 <span class="text-surface-400 font-normal">{{ sessionFiles.length }}</span></span>
-        <button class="w-6 h-6 rounded-md text-surface-400 hover:text-surface-600 hover:bg-surface-50 flex items-center justify-center" @click="filesPanel = false"><AppIcon name="close" size="12" /></button>
-      </div>
-      <div class="flex-1 overflow-y-auto p-2 space-y-1.5">
-        <p v-if="!sessionFiles.length" class="text-[11px] text-surface-400 text-center py-8">本次会话还没有生成文件</p>
-        <div v-for="f in sessionFiles" :key="f.id" class="group/file rounded-xl border border-surface-100 hover:border-surface-200 hover:shadow-sm transition-all px-2.5 py-2">
-          <div class="flex items-center gap-2 min-w-0">
-            <span class="w-7 h-7 rounded-md flex items-center justify-center text-white text-[8px] font-bold flex-shrink-0" :class="fileIconColor(f)">{{ fmtFileExt(f) }}</span>
-            <div class="min-w-0 flex-1">
-              <p class="text-[11px] font-medium text-surface-800 truncate cursor-pointer hover:text-brand-600" v-tooltip.auto="f.name" @click="previewFile(f.id).catch(() => {})">{{ f.name }}</p>
-              <p class="text-[9px] text-surface-400">{{ (f.created_at || '').slice(5, 16) }}{{ f.size ? ' · ' + fmtSize(f.size) : '' }}
-                <span v-if="!f.live_src" class="ml-1 px-1 py-px rounded bg-amber-50 text-amber-600">来源已撤回</span>
-              </p>
-            </div>
-            <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover/file:opacity-100 transition-opacity">
-              <button class="w-6 h-6 rounded text-surface-400 hover:text-brand-600 flex items-center justify-center" v-tooltip="'下载'" @click="dlFile(f)"><AppIcon name="download" size="12" /></button>
-              <button class="w-6 h-6 rounded text-surface-400 hover:text-brand-600 flex items-center justify-center" v-tooltip="'复制文件'" @click="cpFile(f)"><AppIcon name="copy" size="12" /></button>
-              <button class="w-6 h-6 rounded text-surface-400 hover:text-red-500 flex items-center justify-center" v-tooltip="'删除'" @click="deleteSessionFile(f)"><AppIcon name="trash" size="12" /></button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <SessionFilesPanel :files="sessionFiles" :open="filesOpen" @toggle="toggleFilesPanel"
+      @preview="pfFile" @download="dlFile" @copy="cpFile" @remove="deleteSessionFile" />
     <!-- ★ 流式输出中用户上滚脱离跟随时，提供一键归队入口 -->
     <button v-if="!stickToBottom && agent.isChatting.value" @click="backToBottom"
       class="absolute bottom-28 left-1/2 -translate-x-1/2 z-30 w-9 h-9 rounded-full bg-white border border-surface-200 shadow-lg flex items-center justify-center text-surface-500 hover:text-brand-600 hover:border-brand-300 transition-colors"
@@ -961,7 +932,6 @@ onUnmounted(() => {
             <div class="min-w-0" :class="msg.role === 'user' ? 'max-w-[72%]' : (msg.isThinking ? '' : 'max-w-[92%]')">
             <div class="text-[10px] text-[#c7c7cc] mb-1.5 px-1 flex items-center gap-1.5" :class="msg.role === 'user' ? 'justify-end' : ''">
               <span>{{ msg.timestamp ? formatChatTime(msg.timestamp) : '' }}</span>
-              <button v-if="msg.role === 'user' && !agent.isChatting.value" class="text-[9px] text-surface-300 hover:text-red-500 transition-colors" @click="askWithdraw(idx)">撤回</button>
               <span v-if="!msg.isThinking && msg.assistants?.length" class="px-1.5 py-[1px] rounded-full bg-[#f2f2f7] text-[#8e8e93] text-[9px] leading-none">via {{ msg.assistants.join(' · ') }}</span>
             </div>
             <div v-if="msg.error" class="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 text-[13px] text-red-600 rounded-tl-[4px]">{{ msg.error }}</div>
@@ -972,6 +942,10 @@ onUnmounted(() => {
                 <span v-for="name in extractAttachmentNames(msg.content)" :key="name" class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-white/20 text-white/90">
                   <AppIcon name="file" size="10" class="opacity-80" />{{ name }}
                 </span>
+              </div>
+              <div v-if="msg.role === 'user' && !agent.isChatting.value && !msg.error" class="flex justify-end items-center gap-0.5 px-1 py-0.5">
+                <button class="w-5 h-5 flex items-center justify-center rounded text-[#c7c7cc] hover:text-[#2563eb] transition-colors" v-tooltip="'复制'" @click="copyUserMsg(msg)"><AppIcon name="copy" size="11" /></button>
+                <button class="w-5 h-5 flex items-center justify-center rounded text-[#c7c7cc] hover:text-red-500 transition-colors" v-tooltip="'撤回：移除此后全部对话'" @click="askWithdraw(idx)"><AppIcon name="undo" size="11" /></button>
               </div>
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
@@ -992,10 +966,9 @@ onUnmounted(() => {
               <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
                 <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" v-tooltip="'复制答案'"><AppIcon name="copy" class="w-3 h-3" /></button>
                 <button v-if="idx === currentSession.messages.length - 1 && !agent.isChatting.value && !msg.error"
-                  class="annotate-skip px-2 h-6 rounded-md text-[10px] transition-all" :class="annotateId === (msg.id || '') ? 'text-brand-600 font-medium bg-brand-50' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'"
-                  @click="annotateId === (msg.id || '') ? exitAnnotate() : enterAnnotate(msg.id || '')">
-                  {{ annotateId === (msg.id || '') ? '退出批注' : '批注' }}
-                </button>
+                  class="annotate-skip w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="annotateId === (msg.id || '') ? 'text-brand-600 bg-brand-50' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'"
+                  v-tooltip="annotateId === (msg.id || '') ? '退出批注' : '批注修订'"
+                  @click="annotateId === (msg.id || '') ? exitAnnotate() : enterAnnotate(msg.id || '')"><AppIcon name="edit" size="12" /></button>
                 <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" v-tooltip="'查看 Workspace'">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 17V7m0 10a2 2 0 01-2-2V9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2m-6 0h6"/></svg>
                 </button>

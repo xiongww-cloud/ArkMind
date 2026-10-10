@@ -499,6 +499,10 @@ function askWithdraw(anchor: ChatMessage) {
   const files = messages.value.slice(idx + 1).flatMap(m => (m.documents || []).map(d => ({ id: d.file_id, name: d.file_name })))
   withdrawTarget.value = { text: anchor.content || '', files, idx }
 }
+async function copyUserMsg(m: ChatMessage) {
+  try { await navigator.clipboard.writeText((m.content || '').trim()); import('@/composables/useToast').then(t => t.toast({ message: '已复制', type: 'success' })) }
+  catch { import('@/composables/useToast').then(t => t.toast({ message: '复制失败', type: 'error' })) }
+}
 async function doWithdraw(deleteFiles: boolean) {
   const t = withdrawTarget.value
   if (!t) return
@@ -593,8 +597,6 @@ onUnmounted(() => {
           <div v-for="(m, mi) in visibleMessages" :key="m.id || mi" class="msg-block">
             <div v-if="m.role === 'user'" class="msg-q" :class="{ faded: isFaded(m) }">
               <span class="msg-q__who">我</span><span class="msg-q__text">{{ displayContent(m.content) }}</span>
-              <button v-if="!agent.isChatting.value" class="shrink-0 self-center ml-1 px-1.5 py-0.5 rounded text-[9px] text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                @click="askWithdraw(m)">撤回</button>
               <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1" />
               <div v-else-if="m.content?.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1">
                 <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="px-1.5 py-0.5 rounded text-[10px] bg-[#f1f5f9] text-[#64748b]">{{ name }}</span>
@@ -618,9 +620,10 @@ onUnmounted(() => {
                 <span>{{ fmtTime(m.timestamp) }}</span>
                 <span v-if="m.assistants?.length" class="via-chip">via {{ m.assistants.join(' · ') }}</span>
                 <button v-if="m.id === messages[messages.length - 1]?.id && !agent.isChatting.value && !m.error"
-                  :class="['annotate-skip', annotateId === (m.id || '') ? 'text-brand-600 font-medium' : 'text-surface-300 hover:text-brand-600']"
+                  :class="['annotate-skip w-5 h-5 -mr-1 flex items-center justify-center rounded transition-colors', annotateId === (m.id || '') ? 'text-brand-600 bg-brand-50' : 'text-surface-300 hover:text-brand-600']"
+                  v-tooltip="annotateId === (m.id || '') ? '退出批注' : '批注修订'"
                   @click="annotateId === (m.id || '') ? exitAnnotate() : enterAnnotate(m.id || '')">
-                  {{ annotateId === (m.id || '') ? '退出批注' : '批注' }}
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.9 4.4l2.7 2.7-11 11-3.6.9.9-3.6 11-11z"/><path d="M14.5 6.8l2.7 2.7"/></svg>
                 </button>
               </div>
               <AnnotatePanel v-if="annotateId === (m.id || '')" class="annotate-skip mt-1" :items="annotations"
@@ -636,6 +639,14 @@ onUnmounted(() => {
                   @submit="submitClarification"
                 />
               </div>
+            </div>
+            <div v-if="m.role === 'user' && !agent.isChatting.value && !m.error" class="flex justify-end items-center gap-0.5 px-0.5 -mt-0.5">
+              <button class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors" v-tooltip="'复制'" @click="copyUserMsg(m)">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+              </button>
+              <button class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 transition-colors" v-tooltip="'撤回：移除此后全部对话'" @click="askWithdraw(m)">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 010 11H11"/></svg>
+              </button>
             </div>
           </div>
         </div>
