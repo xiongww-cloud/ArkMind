@@ -12,7 +12,7 @@ import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import MessageBody from '@/components/chat/MessageBody.vue'
 import AnnotationLayer from '@/components/chat/AnnotationLayer.vue'
 import AnnotatePanel from '@/components/chat/AnnotatePanel.vue'
-import { hasInteractive, buildRevisionMessage, type Annotation } from '@/utils/uiBlocks'
+import { hasInteractive, buildRevisionMessage, type Annotation, type TableRevision } from '@/utils/uiBlocks'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
 import { useLiveProgress } from '@/composables/useLiveProgress'
@@ -487,7 +487,8 @@ function clarificationReply(msgId?: string): string {
 // ─── 批注修订（仅最后一条 AI 答复可批注；表格改动+正文批注统一提交）───
 const annotateId = ref<string | null>(null)
 const annotations = reactive<Annotation[]>([])
-const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[] } | null> = {}
+const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[]; resetTableRevision: (i: number) => void } | null> = {}
+const tableRevisions = ref<TableRevision[]>([])
 
 // ─── 撤回：任意用户消息起，其后全部移出会话与上下文；可选连带删除生成文件 ───
 const withdrawTarget = ref<{ text: string; files: WithdrawnFile[]; idx: number } | null>(null)
@@ -521,11 +522,13 @@ async function doWithdraw(deleteFiles: boolean) {
 function enterAnnotate(id: string) {
   if (agent.isChatting.value) return
   annotations.length = 0
+  tableRevisions.value = []
   annotateId.value = id
 }
 function exitAnnotate() {
   annotateId.value = null
   annotations.length = 0
+  tableRevisions.value = []
 }
 function submitAnnotation() {
   const tables = mbRefs[annotateId.value || '']?.getRevisions() ?? []
@@ -611,7 +614,7 @@ onUnmounted(() => {
                 <span class="text-[12px] text-[#8e8e93]">· {{ wProgress || '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
               </div>
               <AnnotationLayer v-else-if="annotateId === (m.id || '')" class="msg-a__body" :active="true" @add="annotations.push($event)">
-                <MessageBody :raw="m.content" :msg-id="m.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[m.id || ''] = el }" @send="submitClarification" />
+                <MessageBody :raw="m.content" :msg-id="m.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[m.id || ''] = el }" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (m.id || '')) tableRevisions = r }" />
               </AnnotationLayer>
               <MessageBody v-else-if="!m.thinking && hasInteractive(m.content)" class="msg-a__body" :raw="m.content" :msg-id="m.id || ''" @send="submitClarification" />
               <div v-else class="msg-a__body markdown-body" :class="{ 'thinking-bubble': m.thinking }"
@@ -626,8 +629,9 @@ onUnmounted(() => {
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.9 4.4l2.7 2.7-11 11-3.6.9.9-3.6 11-11z"/><path d="M14.5 6.8l2.7 2.7"/></svg>
                 </button>
               </div>
-              <AnnotatePanel v-if="annotateId === (m.id || '')" class="annotate-skip mt-1" :items="annotations"
-                @remove="annotations.splice($event, 1)" @submit="submitAnnotation" @cancel="exitAnnotate" />
+              <AnnotatePanel v-if="annotateId === (m.id || '')" class="annotate-skip mt-1" :items="annotations" :tables="tableRevisions"
+                @remove="annotations.splice($event, 1)" @submit="submitAnnotation" @cancel="exitAnnotate"
+                @reset-table="mbRefs[annotateId || '']?.resetTableRevision($event)" />
               <div v-if="!m.thinking && m.documents?.length" class="mt-1 flex flex-col gap-1.5">
                 <DocumentObject v-for="d in m.documents" :key="d.file_id" :doc="d" />
               </div>

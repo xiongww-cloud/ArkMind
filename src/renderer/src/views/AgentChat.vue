@@ -18,7 +18,7 @@ import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import MessageBody from '@/components/chat/MessageBody.vue'
 import AnnotationLayer from '@/components/chat/AnnotationLayer.vue'
 import AnnotatePanel from '@/components/chat/AnnotatePanel.vue'
-import { hasInteractive, buildRevisionMessage, type Annotation } from '@/utils/uiBlocks'
+import { hasInteractive, buildRevisionMessage, type Annotation, type TableRevision } from '@/utils/uiBlocks'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
 import { useLiveProgress } from '@/composables/useLiveProgress'
@@ -699,15 +699,18 @@ function clarificationReply(msgId?: string): string {
 // ─── 批注修订（仅最后一条 AI 答复可批注；表格改动+正文批注统一提交）───
 const annotateId = ref<string | null>(null)
 const annotations = reactive<Annotation[]>([])
-const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[] } | null> = {}
+const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[]; resetTableRevision: (i: number) => void } | null> = {}
+const tableRevisions = ref<TableRevision[]>([])
 function enterAnnotate(id: string) {
   if (agent.isChatting.value) return
   annotations.length = 0
+  tableRevisions.value = []
   annotateId.value = id
 }
 function exitAnnotate() {
   annotateId.value = null
   annotations.length = 0
+  tableRevisions.value = []
 }
 function submitAnnotation() {
   const tables = mbRefs[annotateId.value || '']?.getRevisions() ?? []
@@ -958,7 +961,7 @@ onUnmounted(() => {
                 </div>
                 <div v-else-if="agent.isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
                 <AnnotationLayer v-else-if="annotateId === (msg.id || '')" :active="true" @add="annotations.push($event)">
-                  <MessageBody class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[msg.id || ''] = el }" @send="submitClarification" />
+                  <MessageBody class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[msg.id || ''] = el }" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (msg.id || '')) tableRevisions = r }" />
                 </AnnotationLayer>
                 <MessageBody v-else-if="hasInteractive(msg.content)" class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" @send="submitClarification" />
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
@@ -974,8 +977,9 @@ onUnmounted(() => {
                 </button>
               </div>
               <div v-if="showWorkspaceIdx === idx && msg.workspace" class="mt-1 p-3 bg-[#f8f9fa] border border-[#e5e5ea] rounded-xl text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-[#3a3a3c] max-h-[300px] overflow-y-auto">{{ msg.workspace }}</div>
-              <AnnotatePanel v-if="annotateId === (msg.id || '')" class="annotate-skip mt-1.5" :items="annotations"
-                @remove="annotations.splice($event, 1)" @submit="submitAnnotation" @cancel="exitAnnotate" />
+              <AnnotatePanel v-if="annotateId === (msg.id || '')" class="annotate-skip mt-1.5" :items="annotations" :tables="tableRevisions"
+                @remove="annotations.splice($event, 1)" @submit="submitAnnotation" @cancel="exitAnnotate"
+                @reset-table="mbRefs[annotateId || '']?.resetTableRevision($event)" />
               <div v-if="!msg.isThinking && msg.documents?.length" class="mt-1.5 flex flex-col gap-1.5">
                 <DocumentObject v-for="d in msg.documents" :key="d.file_id" :doc="d" />
               </div>

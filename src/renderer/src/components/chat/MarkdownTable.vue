@@ -9,6 +9,7 @@ import { renderMdInline } from '@/composables/useAgentChat'
  * 组装成【答复修订】消息交 AI 应用——前端零写路径。只读态沿用全局 .markdown-body 表格样式 + 单元格行内 markdown。
  */
 const props = defineProps<{ md: string; forced?: boolean }>()
+const emit = defineEmits<{ revised: [] }>()
 
 const table = computed(() => parseMarkdownTable(props.md))
 const editing = computed(() => !!props.forced)
@@ -133,9 +134,13 @@ function resetEdits() {
 // 退出批注态即丢弃未提交编辑（与批注 chips 丢弃语义一致）
 watch(editing, (on) => { if (!on) resetEdits() })
 
+// 每次操作日志变化即向上传播快照（批注面板把表格改动渲染成卡片，与文字批注同一列表）
+watch([cellEdits, deletedRows, deletedCols, headerEdits, addedCols, addedRows], () => emit('revised'), { deep: true })
+
 defineExpose({
   hasChanges: () => changeCount.value > 0,
   getRevision: buildRevision,
+  reset: resetEdits,
 })
 </script>
 
