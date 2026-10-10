@@ -46,7 +46,15 @@ pub fn sync_entity(source_type: &str, source_id: &str) -> Result<(), String> {
         "TODO" => extract_todo(source_id),
         "FILE" => extract_file(source_id),
         "CHAT" => extract_chat(source_id),
-        "EMAIL" => extract_email(source_id),
+        "EMAIL" => {
+            // 内嵌图 OCR 带每封时间预算；未跑完则走 __PROGRESS__ 续跑（缓存保证每轮净进展），
+            // 避免长邮件串行 OCR 霸占数据中台并发槽位导致管线整体停摆
+            let (t, c, incomplete) = extract_email_progressive(source_id);
+            if incomplete {
+                return Err(format!("{}内嵌图 OCR 时间预算耗尽，续跑", crate::services::file_ingestion::PROGRESS_PREFIX));
+            }
+            (t, c)
+        }
         "CONTACT" => extract_contact(source_id),
         "CHANNEL" => extract_channel(source_id),
         "VENDOR" => extract_vendor(source_id),
@@ -307,13 +315,25 @@ fn extract_chat(session_id: &str) -> (String, String) {
     (title, parts.join("\n\n"))
 }
 
+/// 邮件正文提取（reprocess 命令入口，无时间预算——用户显式触发，可等全量 OCR）。
 pub fn extract_email(email_id: &str) -> (String, String) {
+    let (t, c, _) = extract_email_inner(email_id, None);
+    (t, c)
+}
+
+/// 队列 worker 入口：内嵌图 OCR 带每封邮件时间预算，预算耗尽保留占位并置 incomplete，
+/// 由队列以 __PROGRESS__ 续跑（OCR 结果缓存于 email_attachments.parsed_text，每轮有净进展）。
+pub(crate) fn extract_email_progressive(email_id: &str) -> (String, String, bool) {
+    extract_email_inner(email_id, Some(std::time::Duration::from_secs(240)))
+}
+
+fn extract_email_inner(email_id: &str, budget: Option<std::time::Duration>) -> (String, String, bool) {
     let row = match crate::database::get(
         "SELECT e.subject, e.from_addr, e.from_name, e.to_addr, e.body_text, e.body_html, e.received_at, e.ai_category, e.folder FROM emails e WHERE e.id=?1",
         &[serde_json::json!(email_id)],
     ) {
         Ok(Some(r)) => r,
-        _ => return (String::new(), String::new()),
+        _ => return (String::new(), String::new(), false),
     };
 
     let subject = row["subject"].as_str().unwrap_or("");
@@ -347,12 +367,12 @@ pub fn extract_email(email_id: &str) -> (String, String) {
         String::new()
     };
     // 内嵌图（含 data:URI 转成的附件）OCR 文字就地并入正文
-    let body = inject_inline_image_ocr(body, email_id);
+    let (body, ocr_incomplete) = inject_inline_image_ocr(body, email_id, budget);
 
-    // 附加附件解析文本
+    // 附加附件解析文本（is_inline=0：内嵌图的 OCR 缓存写在 parsed_text，但已在正文就地并入，勿重复）
     let mut attachment_parts = Vec::new();
     if let Ok(attachments) = crate::database::all(
-        "SELECT filename, parsed_text FROM email_attachments WHERE email_id=?1 AND parsed_text != ''",
+        "SELECT filename, parsed_text FROM email_attachments WHERE email_id=?1 AND is_inline=0 AND parsed_text != ''",
         &[serde_json::json!(email_id)],
     ) {
         for att in &attachments {
@@ -371,7 +391,7 @@ pub fn extract_email(email_id: &str) -> (String, String) {
         content.push_str(&attachment_parts.join("\n\n"));
     }
 
-    (title, content)
+    (title, content, ocr_incomplete)
 }
 
 /// 附件 MIME：优先记录值，缺失/异常时按扩展名猜（默认 png）
@@ -391,42 +411,67 @@ fn guess_image_mime(mime: &str, filename: &str) -> String {
 /// 把正文中的 [图片:{cid}] 占位替换为内嵌图 OCR 文字（无数量上限）。
 /// 未配置视觉模型/识别为空/资产丢失 → 剔除占位（正文干净，绝不留 base64 或悬挂引用）。
 /// 仅在队列 worker（sync_entity）与 reprocess 命令里执行，OCR 阻塞由 block_in_place 消化，不卡数据中台主循环。
-fn inject_inline_image_ocr(body: String, email_id: &str) -> String {
-    if !body.contains("[图片:") { return body; }
+/// 结果按资产缓存到 email_attachments.parsed_text：多轮续跑只 OCR 缺失图，预算耗尽保留占位。
+/// 返回 (正文, incomplete)：budget 内没跑完所有缺失图时 incomplete=true（调用方走续跑，绝不丢弃）。
+fn inject_inline_image_ocr(body: String, email_id: &str, budget: Option<std::time::Duration>) -> (String, bool) {
+    if !body.contains("[图片:") { return (body, false); }
     let atts = crate::database::all(
-        "SELECT filename, content_id, file_asset_id, mime_type FROM email_attachments WHERE email_id=?1 AND is_inline=1",
+        "SELECT filename, content_id, file_asset_id, mime_type, COALESCE(parsed_text,'') AS parsed_text FROM email_attachments WHERE email_id=?1 AND is_inline=1",
         &[serde_json::json!(email_id)],
     ).unwrap_or_default();
     // cid 与 filename 双键（对应 html 中 src="cid:xxx" 可能是 content_id 也可能是裸文件名）
-    let mut by_key: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+    struct Img { asset: String, mime: String, cached: String }
+    let mut by_key: std::collections::HashMap<String, Img> = std::collections::HashMap::new();
     for a in &atts {
         let asset = a["file_asset_id"].as_str().unwrap_or("");
         if asset.is_empty() { continue; }
         let mime = guess_image_mime(a["mime_type"].as_str().unwrap_or(""), a["filename"].as_str().unwrap_or(""));
+        let cached = a["parsed_text"].as_str().unwrap_or("").to_string();
         if let Some(cid) = a["content_id"].as_str().filter(|c| !c.is_empty()) {
-            by_key.insert(cid.to_string(), (asset.to_string(), mime.clone()));
+            by_key.insert(cid.to_string(), Img { asset: asset.to_string(), mime: mime.clone(), cached: cached.clone() });
         }
         let fname = a["filename"].as_str().unwrap_or("");
-        if !fname.is_empty() { by_key.entry(fname.to_string()).or_insert((asset.to_string(), mime)); }
+        if !fname.is_empty() { by_key.entry(fname.to_string()).or_insert(Img { asset: asset.to_string(), mime, cached }); }
     }
     if by_key.is_empty() {
         // 无可用内嵌资产 → 仅清占位
         let re = regex::Regex::new(r"\[图片:[^\]]+\]").unwrap();
-        return re.replace_all(&body, "").trim().to_string();
+        return (re.replace_all(&body, "").trim().to_string(), false);
     }
+    let start = std::time::Instant::now();
+    let incomplete = std::cell::RefCell::new(false);
     let re = regex::Regex::new(r"\[图片:([^\]]+)\]").unwrap();
     let out = re.replace_all(&body, |caps: &regex::Captures| {
         let key = caps[1].trim();
-        let Some((asset, mime)) = by_key.get(key) else { return String::new() };
-        let Some(path) = crate::commands::file_commands::get_physical_path(asset) else { return String::new() };
-        let Some(uri) = crate::services::file_parser::file_to_data_uri(&path, mime) else { return String::new() };
+        let Some(img) = by_key.get(key) else { return String::new() };
+        // 缓存命中：直接并入，不耗预算
+        if !img.cached.trim().is_empty() {
+            return format!("（图片文字：{}）", img.cached.trim());
+        }
+        // 预算耗尽：保留占位原样（下轮续跑凭缓存补齐），标记 incomplete
+        if let Some(b) = budget {
+            if start.elapsed() >= b {
+                *incomplete.borrow_mut() = true;
+                return caps.get(0).map(|m| m.as_str().to_string()).unwrap_or_default();
+            }
+        }
+        let Some(path) = crate::commands::file_commands::get_physical_path(&img.asset) else { return String::new() };
+        let Some(uri) = crate::services::file_parser::file_to_data_uri(&path, &img.mime) else { return String::new() };
         let text = crate::services::file_parser::ocr_image_sync(&uri);
         let text = text.trim();
-        if text.is_empty() { String::new() } else { format!("（图片文字：{}）", text) }
+        if text.is_empty() { String::new() } else {
+            // 回写缓存（同资产多行一起写；写失败不影响本轮结果，下轮重新 OCR 而已）
+            let _ = crate::database::run(
+                "UPDATE email_attachments SET parsed_text=?1 WHERE email_id=?2 AND file_asset_id=?3 AND is_inline=1",
+                &[serde_json::json!(text), serde_json::json!(email_id), serde_json::json!(&img.asset)],
+            );
+            format!("（图片文字：{}）", text)
+        }
     }).to_string();
     // 占位替换后可能留下连续空行
     let re_blank = regex::Regex::new(r"\n{3,}").unwrap();
-    re_blank.replace_all(&out, "\n\n").trim().to_string()
+    let done = *incomplete.borrow();
+    (re_blank.replace_all(&out, "\n\n").trim().to_string(), done)
 }
 
 fn extract_contact(contact_id: &str) -> (String, String) {

@@ -19,6 +19,8 @@ const MAX_CONCURRENT: usize = 5;
 
 /// 任务错误前缀：带此前缀的错误不参与任务级重试，直接标记为 failed（如视觉模型解析失败）
 pub const NON_RETRYABLE_PREFIX: &str = "__NO_RETRY__";
+/// 时间预算耗尽的"续跑"信号：退回 pending 且不消耗重试预算（断点续进，直至完成）
+pub const PROGRESS_PREFIX: &str = "__PROGRESS__";
 
 /// 任务错误前缀：不支持的文件格式，标记为 unsupported 终态（不重试、冷启动不重置）
 pub const UNSUPPORTED_PREFIX: &str = "__UNSUPPORTED__";
@@ -101,12 +103,14 @@ fn ingestion_loop() {
         ingest_pending_products();
         ingest_pending_projects();
         ingest_pending_todos();
-        ingest_pending_emails();
 
-        // 3. FILE 兜底扫描（每30s）：上传后入队前崩溃 → 有资产无队列记录，永久漏解析的缺口在此收敛
+        // 3. FILE/EMAIL 兜底扫描（每30s）：上传后入队前崩溃 → 有资产无队列记录，永久漏解析的缺口在此收敛。
+        //    邮件补漏必须同闸：曾因其每轮（100ms）执行 + 只查 source_data 不管队列在途，
+        //    与卡住的 OCR 任务叠加成每 200ms 重入队 12 封的日志风暴与管线空转。
         if last_backfill.elapsed() >= Duration::from_secs(30) {
             last_backfill = std::time::Instant::now();
             backfill_missing_file_sources();
+            ingest_pending_emails();
         }
 
         // 4. 孤儿资产兜底回收（每 24h）：任何同步删除路径的漏网在宽限期后被此处收敛
@@ -177,6 +181,14 @@ fn process_push_queue_non_blocking() -> usize {
     // 检查是否还有并发槽位
     let current_active = ACTIVE_TASKS.load(Ordering::Relaxed);
     if current_active >= MAX_CONCURRENT {
+        // 满载不再静默：限频 warn（60s 一条），停摆可被第一时间看见
+        use std::sync::atomic::AtomicU64;
+        static LAST_FULL_WARN: AtomicU64 = AtomicU64::new(0);
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let last = LAST_FULL_WARN.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) >= 60_000 && LAST_FULL_WARN.compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            log::warn!("[数据中台] 并发槽位满载({}/ {})，本轮暂停领取；若长期出现请检查在途任务是否卡住", current_active, MAX_CONCURRENT);
+        }
         return 0; // 没有可用槽位，跳过本轮
     }
 
@@ -307,40 +319,62 @@ fn process_task_with_retry(task: serde_json::Value) {
                 log::info!("[数据中台] ✗ {}/{} 对象已删除，删除无效任务", source_type, source_id);
                 return;
             }
-            // 不支持的文件格式：标记 unsupported 终态，不参与重试，冷启动也不重置
-            if e.starts_with(UNSUPPORTED_PREFIX) {
-                let _ = crate::database::run(
-                    "UPDATE knowledge_push_queue SET status='unsupported', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
-                    &[json!(retry_count + 1), json!(&e), json!(id)],
-                );
-                log::info!("[数据中台] ✗ {}/{} {}", source_type, source_id, e.trim_start_matches(UNSUPPORTED_PREFIX));
-                return;
-            }
-            // 不可重试错误（如视觉模型解析失败）：直接标记 failed，不做任务级重试
-            if e.starts_with(NON_RETRYABLE_PREFIX) {
-                let _ = crate::database::run(
-                    "UPDATE knowledge_push_queue SET status='failed', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
-                    &[json!(retry_count + 1), json!(&e), json!(id)],
-                );
-                log::info!("[数据中台] ✗ {}/{} 不可重试失败: {}", source_type, source_id, e);
-                return;
-            }
-            // 失败：退回 pending 或标记 failed
-            if retry_count + 1 >= 3 {
-                let _ = crate::database::run(
-                    "UPDATE knowledge_push_queue SET status='failed', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
-                    &[json!(retry_count + 1), json!(&e), json!(id)],
-                );
-                log::info!("[数据中台] ✗ {}/{} 超过最大重试次数: {}", source_type, source_id, e);
-            } else {
-                let _ = crate::database::run(
-                    "UPDATE knowledge_push_queue SET status='pending', debounce_until=datetime('now','localtime','+5 seconds'), retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
-                    &[json!(retry_count + 1), json!(&e), json!(id)],
-                );
-                log::info!("[数据中台] ⚠ {}/{} 重试 {}/3: {}", source_type, source_id, retry_count + 1, e);
+            match decide_failure_action(&e, retry_count) {
+                // 不支持的文件格式：标记 unsupported 终态，不参与重试，冷启动也不重置
+                FailureAction::Unsupported => {
+                    let _ = crate::database::run(
+                        "UPDATE knowledge_push_queue SET status='unsupported', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+                        &[json!(retry_count + 1), json!(&e), json!(id)],
+                    );
+                    log::info!("[数据中台] ✗ {}/{} {}", source_type, source_id, e.trim_start_matches(UNSUPPORTED_PREFIX));
+                }
+                // 不可重试错误（如视觉模型解析失败）：直接标记 failed，不做任务级重试
+                FailureAction::NoRetry => {
+                    let _ = crate::database::run(
+                        "UPDATE knowledge_push_queue SET status='failed', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+                        &[json!(retry_count + 1), json!(&e), json!(id)],
+                    );
+                    log::info!("[数据中台] ✗ {}/{} 不可重试失败: {}", source_type, source_id, e);
+                }
+                // 预算耗尽续跑：退回 pending、retry 清零、30s debounce（OCR 结果有缓存，每轮有净进展）
+                FailureAction::Progress => {
+                    let _ = crate::database::run(
+                        "UPDATE knowledge_push_queue SET status='pending', retry_count=0, debounce_until=datetime('now','localtime','+30 seconds'), last_error='', updated_at=datetime('now','localtime') WHERE id=?1",
+                        &[json!(id)],
+                    );
+                    log::info!("[数据中台] ⏳ {}/{} 续跑: {}", source_type, source_id, e.trim_start_matches(PROGRESS_PREFIX));
+                }
+                // 超过最大重试：标记 failed
+                FailureAction::GiveUp => {
+                    let _ = crate::database::run(
+                        "UPDATE knowledge_push_queue SET status='failed', retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+                        &[json!(retry_count + 1), json!(&e), json!(id)],
+                    );
+                    log::info!("[数据中台] ✗ {}/{} 超过最大重试次数: {}", source_type, source_id, e);
+                }
+                // 普通失败：退回 pending，5s 防抖，消耗一次重试预算
+                FailureAction::Retry => {
+                    let _ = crate::database::run(
+                        "UPDATE knowledge_push_queue SET status='pending', debounce_until=datetime('now','localtime','+5 seconds'), retry_count=?1, last_error=?2, updated_at=datetime('now','localtime') WHERE id=?3",
+                        &[json!(retry_count + 1), json!(&e), json!(id)],
+                    );
+                    log::info!("[数据中台] ⚠ {}/{} 重试 {}/3: {}", source_type, source_id, retry_count + 1, e);
+                }
             }
         }
     }
+}
+
+/// 失败处置动作（纯决策，便于测试）。前缀优先级高于重试计数：
+/// __PROGRESS__ 无论已重试几次都续跑且不消耗重试预算（它不是错误，是断点）。
+enum FailureAction { Unsupported, NoRetry, Progress, GiveUp, Retry }
+
+fn decide_failure_action(err: &str, retry_count: i64) -> FailureAction {
+    if err.starts_with(UNSUPPORTED_PREFIX) { FailureAction::Unsupported }
+    else if err.starts_with(NON_RETRYABLE_PREFIX) { FailureAction::NoRetry }
+    else if err.starts_with(PROGRESS_PREFIX) { FailureAction::Progress }
+    else if retry_count + 1 >= 3 { FailureAction::GiveUp }
+    else { FailureAction::Retry }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1156,11 +1190,18 @@ fn ingest_pending_todos() {
 /// 兜底补漏：知识化但从未入过 source 的邮件（notify 丢失/崩溃窗口）→ 重新入队走统一队列路径。
 /// 不再直接 extract+INSERT：避免绕过队列的清洗/幂等 upsert，且内嵌图 OCR（extract_email 现含）
 /// 属重 IO，绝不能跑在数据中台主循环里。
+/// 邮件补漏查询：知识化、从未入过 source、且队列无任何在途/终态记录。
+/// 在途/终态排除（对齐 FILE 补漏范式）是关键：曾因"只查 source_data"叠加卡住的
+/// OCR 任务，每 200ms 把同一批 12 封邮件反复入队成风暴（5042 行日志/17747 次入队）。
+const EMAIL_BACKFILL_QUERY: &str = "SELECT e.id FROM emails e \
+    WHERE e.ai_category='knowledge' AND e.is_deleted=0 \
+    AND NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type='EMAIL' AND sd.source_id=e.id) \
+    AND NOT EXISTS (SELECT 1 FROM knowledge_push_queue q WHERE q.source_type='EMAIL' AND q.source_id=e.id \
+                    AND q.status IN ('pending','processing','failed','unsupported')) \
+    LIMIT 20";
+
 fn ingest_pending_emails() {
-    let rows = match crate::database::all(
-        "SELECT e.id FROM emails e WHERE e.ai_category='knowledge' AND e.is_deleted=0 AND NOT EXISTS (SELECT 1 FROM source_data sd WHERE sd.source_type='EMAIL' AND sd.source_id=e.id) LIMIT 20",
-        &[],
-    ) {
+    let rows = match crate::database::all(EMAIL_BACKFILL_QUERY, &[]) {
         Ok(r) => r,
         Err(e) => {
             log::info!("[数据中台] ⚠ 查询邮件失败: {}", e);
@@ -1344,6 +1385,7 @@ pub fn cleanup_orphan_source_data() {
 #[cfg(test)]
 mod tests {
     use super::assemble_pdf_pages;
+    use super::{decide_failure_action, EMAIL_BACKFILL_QUERY, FailureAction};
 
     #[test]
     fn assemble_keeps_page_order_regardless_of_completion_order() {
@@ -1359,5 +1401,32 @@ mod tests {
     fn assemble_empty_all_returns_empty() {
         let mut parts: Vec<Option<String>> = vec![None; 3];
         assert_eq!(assemble_pdf_pages(&mut parts), "");
+    }
+
+    #[test]
+    fn failure_action_prefers_progress_over_retry_cap() {
+        // 续跑不是错误：即便重试计数已顶格也必须走 Progress（且队列侧清零 retry）
+        assert!(matches!(decide_failure_action("__PROGRESS__OCR 未完成", 7), FailureAction::Progress));
+        assert!(matches!(decide_failure_action("__UNSUPPORTED__格式", 0), FailureAction::Unsupported));
+        assert!(matches!(decide_failure_action("__NO_RETRY__视觉失败", 0), FailureAction::NoRetry));
+        assert!(matches!(decide_failure_action("网络抖动", 1), FailureAction::Retry));
+        assert!(matches!(decide_failure_action("网络抖动", 2), FailureAction::GiveUp));
+    }
+
+    #[test]
+    fn email_backfill_excludes_inflight_and_terminal() {
+        let (_dir, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| c.execute_batch(
+            "CREATE TABLE emails(id TEXT PRIMARY KEY, ai_category TEXT, is_deleted INTEGER DEFAULT 0);
+             CREATE TABLE source_data(source_type TEXT, source_id TEXT);
+             CREATE TABLE knowledge_push_queue(source_type TEXT, source_id TEXT, status TEXT);
+             INSERT INTO emails VALUES('e1','knowledge',0),('e2','knowledge',0),('e3','knowledge',0),('e4','knowledge',0),('e5','knowledge',0),('e6','ignore',0);
+             INSERT INTO knowledge_push_queue VALUES('EMAIL','e2','pending'),('EMAIL','e3','failed'),('EMAIL','e5','unsupported'),('EMAIL','e6','pending');
+             INSERT INTO source_data VALUES('EMAIL','e4');"
+        )).unwrap();
+        let rows = crate::database::all(EMAIL_BACKFILL_QUERY, &[]).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap_or("")).collect();
+        // 只有"知识化+无 source+队列无任何记录"的 e1 会被补；在途 e2/终态 e3·e5/已入库 e4/非知识 e6 全排除
+        assert_eq!(ids, vec!["e1"]);
     }
 }
