@@ -706,6 +706,8 @@ function enterAnnotate(id: string) {
   annotations.length = 0
   tableRevisions.value = []
   annotateId.value = id
+  // 批注面板在消息尾部展开，先归队到底确保可见
+  nextTick(() => backToBottom())
 }
 function exitAnnotate() {
   annotateId.value = null

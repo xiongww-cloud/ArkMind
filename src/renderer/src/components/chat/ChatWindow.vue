@@ -524,6 +524,9 @@ function enterAnnotate(id: string) {
   annotations.length = 0
   tableRevisions.value = []
   annotateId.value = id
+  // 批注面板在消息尾部展开，先归队到底确保可见
+  stickToBottom.value = true
+  nextTick(() => { const el = chatListRef.value; if (el) el.scrollTop = el.scrollHeight })
 }
 function exitAnnotate() {
   annotateId.value = null
