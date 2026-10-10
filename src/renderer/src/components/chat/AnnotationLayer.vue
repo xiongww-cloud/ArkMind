@@ -54,7 +54,7 @@ defineExpose({ close: () => { bubble.value = null; composer.value = null } })
     <button v-if="bubble && active" type="button"
       class="fixed z-[95] annotate-skip px-2.5 py-1 rounded-full bg-slate-800/95 text-white text-[10px] shadow-lg hover:bg-slate-700 transition-colors"
       :style="{ left: bubble.x + 'px', top: bubble.y + 'px', transform: 'translateX(-50%)' }"
-      @mousedown.prevent="openComposer">✎ 批注</button>
+      @mousedown.prevent="openComposer">✎ 修订</button>
     <div v-if="composer && active" class="fixed z-[96] annotate-skip w-[264px] rounded-xl border border-brand-300 bg-white shadow-xl p-2.5"
       :style="{ left: clampComposerX(composer.x) + 'px', top: composer.y + 'px', transform: 'translateX(-50%)' }">
       <p class="text-[10px] text-surface-400 leading-snug max-h-[42px] overflow-hidden mb-1.5">选中：{{ composer.text }}</p>
@@ -63,7 +63,7 @@ defineExpose({ close: () => { bubble.value = null; composer.value = null } })
       <div class="flex justify-end gap-1.5 mt-1.5">
         <button type="button" @click="cancelComposer" class="px-2 py-0.5 text-[10px] text-surface-400 hover:text-surface-600">取消</button>
         <button type="button" :disabled="!composer.note.trim()" @click="confirmAdd"
-          class="px-2.5 py-0.5 text-[10px] font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">添加批注</button>
+          class="px-2.5 py-0.5 text-[10px] font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed">添加修订</button>
       </div>
     </div>
   </Teleport>

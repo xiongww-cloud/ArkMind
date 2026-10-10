@@ -215,14 +215,14 @@ export function buildRevisionMessage(tables: TableRevision[], annotations: Annot
   if (!withDiff.length && !notes.length) return ''
   const lines: string[] = ['【答复修订】请基于你上一条答复输出修订版，未提及的内容逐字保留，不得增删：']
   if (withDiff.length) {
-    lines.push('一、表格变更（逐项应用，输出修订后的完整表格；未提及的行列保持原值）：')
+    lines.push('一、表格修改（逐项应用，输出修订后的完整表格；未提及的行列保持原值）：')
     for (const { tb, i } of withDiff) {
       lines.push(`${withDiff.length > 1 ? `第${i + 1}个表格` : '该表格'}（表头：${tb.headerLabel}）：`)
       lines.push(tb.diff)
     }
   }
   if (notes.length) {
-    lines.push(`${withDiff.length ? '二' : '一'}、正文批注（仅改写下列片段所在语句/段落，其余一字不动；批注目标定位含糊时先追问，不得凭猜测改）：`)
+    lines.push(`${withDiff.length ? '二' : '一'}、正文修改要求（仅改写下列片段所在语句/段落，其余一字不动；修改目标定位含糊时先追问，不得凭猜测改）：`)
     notes.forEach((a, i) => lines.push(`${i + 1}. 关于「${a.text}」：${a.note}`))
   }
   return lines.join('\n')
