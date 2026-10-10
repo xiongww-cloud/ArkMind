@@ -943,10 +943,10 @@ onUnmounted(() => {
                   <AppIcon name="file" size="10" class="opacity-80" />{{ name }}
                 </span>
               </div>
-              <div v-if="msg.role === 'user' && !agent.isChatting.value && !msg.error" class="flex justify-end items-center gap-0.5 px-1 py-0.5">
-                <button class="w-5 h-5 flex items-center justify-center rounded text-[#c7c7cc] hover:text-[#2563eb] transition-colors" v-tooltip="'复制'" @click="copyUserMsg(msg)"><AppIcon name="copy" size="11" /></button>
-                <button class="w-5 h-5 flex items-center justify-center rounded text-[#c7c7cc] hover:text-red-500 transition-colors" v-tooltip="'撤回：移除此后全部对话'" @click="askWithdraw(idx)"><AppIcon name="undo" size="11" /></button>
-              </div>
+            </div>
+            <div v-if="msg.role === 'user' && !agent.isChatting.value && !msg.error" class="flex justify-end items-center gap-0.5 px-1 py-0.5">
+              <button class="w-5 h-5 flex items-center justify-center rounded text-[#c7c7cc] hover:text-[#2563eb] transition-colors" v-tooltip="'复制'" @click="copyUserMsg(msg)"><AppIcon name="copy" size="11" /></button>
+              <button class="w-5 h-5 flex items-center justify-center rounded text-[#c7c7cc] hover:text-red-500 transition-colors" v-tooltip="'撤回：移除此后全部对话'" @click="askWithdraw(idx)"><AppIcon name="undo" size="11" /></button>
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
               <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm w-full" :class="{ 'thinking-bubble': msg.isThinking }">
