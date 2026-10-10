@@ -9,7 +9,6 @@ const emit = defineEmits<{ remove: [index: number]; submit: []; cancel: [] }>()
   <div class="annotate-skip mt-1.5 rounded-xl border border-brand-200 bg-brand-50/40 overflow-hidden">
     <div class="px-3 py-2 flex items-center justify-between border-b border-brand-100">
       <span class="text-[10px] font-semibold text-brand-800">批注修订中 —— 选中正文文字可加批注，表格可直接改</span>
-      <button type="button" class="text-[10px] text-surface-400 hover:text-surface-600" @click="emit('cancel')">退出批注</button>
     </div>
     <div v-if="items.length" class="px-3 py-2 space-y-1.5">
       <div v-for="(a, i) in items" :key="i" class="flex items-start gap-2 text-[10px] leading-snug">
@@ -23,8 +22,12 @@ const emit = defineEmits<{ remove: [index: number]; submit: []; cancel: [] }>()
     </div>
     <div class="px-3 pb-2.5 pt-1 flex items-center justify-between">
       <span class="text-[10px] text-surface-400">{{ items.length ? `${items.length} 条批注` : '表格改动或将正文批注加入后一并提交' }}</span>
-      <button type="button" @click="emit('submit')"
-        class="px-3 py-1 rounded-lg text-[10px] font-medium bg-brand-600 text-white hover:bg-brand-700 shadow-sm">提交修订</button>
+      <div class="flex items-center gap-2">
+        <button type="button" @click="emit('cancel')"
+          class="px-3 py-1 rounded-lg text-[10px] text-surface-500 hover:text-surface-700 hover:bg-white/70">取消</button>
+        <button type="button" @click="emit('submit')"
+          class="px-3 py-1 rounded-lg text-[10px] font-medium bg-brand-600 text-white hover:bg-brand-700 shadow-sm">提交修订</button>
+      </div>
     </div>
   </div>
 </template>
