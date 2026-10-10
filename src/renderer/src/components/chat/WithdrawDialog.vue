@@ -30,9 +30,9 @@ watch(() => props.visible, (v) => { if (v) delFiles.value = false })
             </label>
             <p v-if="!delFiles" class="text-[10px] text-surface-400 mt-1 ml-[22px]">不勾选则保留在右侧「交付文件」面板，可随时删除</p>
           </div>
-          <div class="flex justify-end gap-2">
-            <button @click="emit('cancel')" class="px-4 py-1.5 text-xs font-medium rounded-lg border border-surface-200 text-surface-600 hover:bg-surface-50 transition-colors">取消</button>
-            <button @click="emit('confirm', delFiles)" class="px-4 py-1.5 text-xs font-medium rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors">撤回</button>
+          <div class="flex items-center justify-end gap-2">
+            <button @click="emit('cancel')" class="btn-secondary text-xs">取消</button>
+            <button @click="emit('confirm', delFiles)" class="btn-danger text-xs">确认撤回</button>
           </div>
         </div>
       </div>
