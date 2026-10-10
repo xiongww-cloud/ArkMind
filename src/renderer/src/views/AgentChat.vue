@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, reactive, onMounted, onActivated, onDeactivated, onUnmounted, nextTick, watch } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
@@ -14,7 +14,9 @@ import { ProjectCard, TodoCard, ObjectList } from '@/components/renderer'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import MessageBody from '@/components/chat/MessageBody.vue'
-import { hasInteractive } from '@/utils/uiBlocks'
+import AnnotationLayer from '@/components/chat/AnnotationLayer.vue'
+import AnnotatePanel from '@/components/chat/AnnotatePanel.vue'
+import { hasInteractive, buildRevisionMessage, type Annotation } from '@/utils/uiBlocks'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
 import { useLiveProgress } from '@/composables/useLiveProgress'
@@ -690,6 +692,29 @@ function clarificationReply(msgId?: string): string {
   return arr.slice(i + 1).find(x => x.role === 'user')?.content || ''
 }
 
+// ─── 批注修订（仅最后一条 AI 答复可批注；表格改动+正文批注统一提交）───
+const annotateId = ref<string | null>(null)
+const annotations = reactive<Annotation[]>([])
+const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[] } | null> = {}
+function enterAnnotate(id: string) {
+  if (agent.isChatting.value) return
+  annotations.length = 0
+  annotateId.value = id
+}
+function exitAnnotate() {
+  annotateId.value = null
+  annotations.length = 0
+}
+function submitAnnotation() {
+  const tables = mbRefs[annotateId.value || '']?.getRevisions() ?? []
+  const text = buildRevisionMessage(tables, [...annotations])
+  if (!text) { toast({ message: '请先修改表格或添加正文批注', type: 'info' }); return }
+  exitAnnotate()
+  submitClarification(text)
+}
+watch(() => agent.isChatting.value, (v) => { if (v) exitAnnotate() })
+watch(currentSessionId, () => exitAnnotate())
+
 async function stopAgent() {
   try {
     const { agentCancel } = await import('@/api/db-client')
@@ -867,16 +892,26 @@ onUnmounted(() => {
                   <span class="text-[12px] text-[#8e8e93]">· {{ wProgress || '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
                 </div>
                 <div v-else-if="agent.isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
+                <AnnotationLayer v-else-if="annotateId === (msg.id || '')" :active="true" @add="annotations.push($event)">
+                  <MessageBody class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[msg.id || ''] = el }" @send="submitClarification" />
+                </AnnotationLayer>
                 <MessageBody v-else-if="hasInteractive(msg.content)" class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" @send="submitClarification" />
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
               </div>
               <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
                 <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" v-tooltip="'复制答案'"><AppIcon name="copy" class="w-3 h-3" /></button>
+                <button v-if="idx === currentSession.messages.length - 1 && !agent.isChatting.value && !msg.error"
+                  class="annotate-skip px-2 h-6 rounded-md text-[10px] transition-all" :class="annotateId === (msg.id || '') ? 'text-brand-600 font-medium bg-brand-50' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'"
+                  @click="annotateId === (msg.id || '') ? exitAnnotate() : enterAnnotate(msg.id || '')">
+                  {{ annotateId === (msg.id || '') ? '退出批注' : '批注' }}
+                </button>
                 <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" v-tooltip="'查看 Workspace'">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 17V7m0 10a2 2 0 01-2-2V9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2m-6 0h6"/></svg>
                 </button>
               </div>
               <div v-if="showWorkspaceIdx === idx && msg.workspace" class="mt-1 p-3 bg-[#f8f9fa] border border-[#e5e5ea] rounded-xl text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-[#3a3a3c] max-h-[300px] overflow-y-auto">{{ msg.workspace }}</div>
+              <AnnotatePanel v-if="annotateId === (msg.id || '')" class="annotate-skip mt-1.5" :items="annotations"
+                @remove="annotations.splice($event, 1)" @submit="submitAnnotation" @cancel="exitAnnotate" />
               <div v-if="!msg.isThinking && msg.documents?.length" class="mt-1.5 flex flex-col gap-1.5">
                 <DocumentObject v-for="d in msg.documents" :key="d.file_id" :doc="d" />
               </div>

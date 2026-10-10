@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, reactive, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -9,7 +9,9 @@ import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import MessageBody from '@/components/chat/MessageBody.vue'
-import { hasInteractive } from '@/utils/uiBlocks'
+import AnnotationLayer from '@/components/chat/AnnotationLayer.vue'
+import AnnotatePanel from '@/components/chat/AnnotatePanel.vue'
+import { hasInteractive, buildRevisionMessage, type Annotation } from '@/utils/uiBlocks'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
 import { useLiveProgress } from '@/composables/useLiveProgress'
@@ -481,6 +483,30 @@ function clarificationReply(msgId?: string): string {
   return messages.value.slice(i + 1).find(x => x.role === 'user')?.content || ''
 }
 
+// ─── 批注修订（仅最后一条 AI 答复可批注；表格改动+正文批注统一提交）───
+const annotateId = ref<string | null>(null)
+const annotations = reactive<Annotation[]>([])
+const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[] } | null> = {}
+function enterAnnotate(id: string) {
+  if (agent.isChatting.value) return
+  annotations.length = 0
+  annotateId.value = id
+}
+function exitAnnotate() {
+  annotateId.value = null
+  annotations.length = 0
+}
+function submitAnnotation() {
+  const tables = mbRefs[annotateId.value || '']?.getRevisions() ?? []
+  const text = buildRevisionMessage(tables, [...annotations])
+  if (!text) { import('@/composables/useToast').then(m => m.toast({ message: '请先修改表格或添加正文批注', type: 'info' })); return }
+  exitAnnotate()
+  submitClarification(text)
+}
+// 开始流式回复即退出批注（编辑态不跨轮残留）；切换/新建会话同理
+watch(() => agent.isChatting.value, (v) => { if (v) exitAnnotate() })
+watch(sessionId, () => exitAnnotate())
+
 /// 输入框键盘契约：⏎ 发送 / ⇧⏎ 换行（textarea 默认）/ Esc 收起窗口
 function onComposerKey(e: KeyboardEvent) {
   if (e.key === 'Escape') { e.preventDefault(); hideWindow(); return }
@@ -553,13 +579,23 @@ onUnmounted(() => {
                 <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
                 <span class="text-[12px] text-[#8e8e93]">· {{ wProgress || '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
               </div>
+              <AnnotationLayer v-else-if="annotateId === (m.id || '')" class="msg-a__body" :active="true" @add="annotations.push($event)">
+                <MessageBody :raw="m.content" :msg-id="m.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[m.id || ''] = el }" @send="submitClarification" />
+              </AnnotationLayer>
               <MessageBody v-else-if="!m.thinking && hasInteractive(m.content)" class="msg-a__body" :raw="m.content" :msg-id="m.id || ''" @send="submitClarification" />
               <div v-else class="msg-a__body markdown-body" :class="{ 'thinking-bubble': m.thinking }"
                 v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
               <div v-if="!m.thinking" class="msg-a__meta">
                 <span>{{ fmtTime(m.timestamp) }}</span>
                 <span v-if="m.assistants?.length" class="via-chip">via {{ m.assistants.join(' · ') }}</span>
+                <button v-if="m.id === messages[messages.length - 1]?.id && !agent.isChatting.value && !m.error"
+                  :class="['annotate-skip', annotateId === (m.id || '') ? 'text-brand-600 font-medium' : 'text-surface-300 hover:text-brand-600']"
+                  @click="annotateId === (m.id || '') ? exitAnnotate() : enterAnnotate(m.id || '')">
+                  {{ annotateId === (m.id || '') ? '退出批注' : '批注' }}
+                </button>
               </div>
+              <AnnotatePanel v-if="annotateId === (m.id || '')" class="annotate-skip mt-1" :items="annotations"
+                @remove="annotations.splice($event, 1)" @submit="submitAnnotation" @cancel="exitAnnotate" />
               <div v-if="!m.thinking && m.documents?.length" class="mt-1 flex flex-col gap-1.5">
                 <DocumentObject v-for="d in m.documents" :key="d.file_id" :doc="d" />
               </div>

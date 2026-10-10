@@ -203,6 +203,31 @@ export function hasInteractive(raw: string): boolean {
   return /(^|\n)```ui-block/.test(raw || '') || /(^|\n)\|/.test(raw || '')
 }
 
+// ─── 批注修订消息组装 ─────────────────────────────────────────
+
+export interface Annotation { text: string; note: string }
+export interface TableRevision { diff: string; headerLabel: string }
+
+/** 表格 diff + 正文批注 → 【答复修订】消息（自包含处理指令）；无任何变更返回 '' */
+export function buildRevisionMessage(tables: TableRevision[], annotations: Annotation[]): string {
+  const withDiff = tables.map((tb, i) => ({ tb, i })).filter(x => x.tb.diff.trim())
+  const notes = annotations.filter(a => a.note.trim() && a.text.trim())
+  if (!withDiff.length && !notes.length) return ''
+  const lines: string[] = ['【答复修订】请基于你上一条答复输出修订版，未提及的内容逐字保留，不得增删：']
+  if (withDiff.length) {
+    lines.push('一、表格变更（逐项应用，输出修订后的完整表格；未提及的行列保持原值）：')
+    for (const { tb, i } of withDiff) {
+      lines.push(`${withDiff.length > 1 ? `第${i + 1}个表格` : '该表格'}（表头：${tb.headerLabel}）：`)
+      lines.push(tb.diff)
+    }
+  }
+  if (notes.length) {
+    lines.push(`${withDiff.length ? '二' : '一'}、正文批注（仅改写下列片段所在语句/段落，其余一字不动；批注目标定位含糊时先追问，不得凭猜测改）：`)
+    notes.forEach((a, i) => lines.push(`${i + 1}. 关于「${a.text}」：${a.note}`))
+  }
+  return lines.join('\n')
+}
+
 /** GFM 表格源文本 → 行列单元格（去首尾竖线、trim）；非法结构返回 null（降级普通 markdown） */
 export function parseMarkdownTable(src: string): { headers: string[], rows: string[][] } | null {
   const lines = src.trim().split('\n')
