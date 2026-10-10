@@ -213,7 +213,7 @@ export function buildRevisionMessage(tables: TableRevision[], annotations: Annot
   const withDiff = tables.map((tb, i) => ({ tb, i })).filter(x => x.tb.diff.trim())
   const notes = annotations.filter(a => a.note.trim() && a.text.trim())
   if (!withDiff.length && !notes.length) return ''
-  const lines: string[] = ['【答复修订】请基于你上一条答复输出修订版，下列修订逐项应用，允许随修订结果作对齐性重排：']
+  const lines: string[] = ['【答复修订】请基于你上一条答复输出修订版，下列修订逐项应用，允许随修订结果对序号、行号、章节等作对齐性重排：']
   if (withDiff.length) {
     lines.push('一、表格修改：')
     for (const { tb, i } of withDiff) {
