@@ -33,10 +33,10 @@ pub use kb_memory_commands::*;
         "SELECT s.id, s.title, s.created_at, s.updated_at, lm.last_msg AS last_msg_at, \
          (SELECT json_group_array(json_object('id', m.id, 'role', m.role, 'content', m.content, 'status', m.status, 'created_at', m.created_at, 'metadata', m.metadata)) \
           FROM chat_messages m \
-          WHERE m.id IN (SELECT id FROM chat_messages WHERE session_id=s.id ORDER BY id DESC LIMIT 10) \
-          ORDER BY m.id ASC) as messages \
+         WHERE m.id IN (SELECT id FROM chat_messages WHERE session_id=s.id AND status!='withdrawn' ORDER BY id DESC LIMIT 10) \
+         ORDER BY m.id ASC) as messages \
          FROM chat_sessions s \
-         LEFT JOIN (SELECT session_id, MAX(created_at) AS last_msg FROM chat_messages GROUP BY session_id) lm ON lm.session_id = s.id \
+         LEFT JOIN (SELECT session_id, MAX(created_at) AS last_msg FROM chat_messages WHERE status!='withdrawn' GROUP BY session_id) lm ON lm.session_id = s.id \
          ORDER BY COALESCE(lm.last_msg, s.updated_at, s.created_at) DESC LIMIT 100",
         &[],
     ).unwrap_or_default();
@@ -56,12 +56,12 @@ pub use kb_memory_commands::*;
     let limit = limit.unwrap_or(10);
     let rows = match before_id {
         Some(bid) => database::all(
-            "SELECT id, role, content, status, metadata, created_at FROM chat_messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
-            &[json!(session_id), json!(bid), json!(limit)]
+            "SELECT id, role, content, status, metadata, created_at FROM chat_messages WHERE session_id=?1 AND status!='withdrawn' AND id<?2 ORDER BY id DESC LIMIT ?3",
+            &[json!(session_id), json!(bid), json!(limit as i64)]
         ).unwrap_or_default(),
         None => database::all(
-            "SELECT id, role, content, status, metadata, created_at FROM chat_messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2",
-            &[json!(session_id), json!(limit)]
+            "SELECT id, role, content, status, metadata, created_at FROM chat_messages WHERE session_id=?1 AND status!='withdrawn' ORDER BY id DESC LIMIT ?2",
+            &[json!(session_id), json!(limit as i64)]
         ).unwrap_or_default(),
     };
     // 反转为正序（从旧到新）
@@ -357,6 +357,96 @@ pub fn cleanup_chat_messages(max_compressed_per_session: i64) {
     ).ok();
     // 存量快呼会话标题回填（占位 → 首问 30 字，幂等；会话已进列表须可辨识）
     backfill_fab_titles();
+}
+
+/// 消息撤回：锚定用户消息（原文匹配，附件消息按前缀）及其后全部逻辑删除（status='withdrawn'），
+/// 并对跨轮元数据全面断代——tool_metadata（上下文工具注入源）/ session_state（工作记忆）/
+/// 压缩摘要 一并清除、compressed 消息还原，撤回后的世界在每条上下文通道上都成立。
+/// delete_files=true 时顺带删除范围内 AI 生成文件（走会话释放链，引用计数保护与手动删除同规则）。
+#[tauri::command]
+pub async fn kb_withdraw_messages(session_id: String, anchor_text: String, delete_files: Option<bool>) -> Result<Value, String> {
+    let anchor = anchor_text.trim();
+    if anchor.is_empty() { return Err("撤回锚点为空".into()); }
+    let pattern = format!("{}\n\n<<<ATTACHMENTS>>>%", crate::database::escape_like(anchor));
+    let row = database::get(
+        "SELECT id FROM chat_messages WHERE session_id=?1 AND role='user' AND (content=?2 OR content LIKE ?3 ESCAPE '\\') ORDER BY id DESC LIMIT 1",
+        &[json!(&session_id), json!(anchor), json!(&pattern)],
+    ).map_err(|e| e.to_string())?.ok_or("未找到要撤回的消息")?;
+    let from_id = row["id"].as_i64().ok_or("消息 id 异常")?;
+
+    // 范围内生成文件（撤回标记前后均可，metadata 不受 status 影响）
+    let mut files: Vec<Value> = Vec::new();
+    let meta_rows = database::all(
+        "SELECT metadata FROM chat_messages WHERE session_id=?1 AND id>=?2 AND role='assistant' AND metadata IS NOT NULL AND metadata != ''",
+        &[json!(&session_id), json!(from_id)],
+    ).unwrap_or_default();
+    for mr in &meta_rows {
+        let Ok(m) = serde_json::from_str::<Value>(mr["metadata"].as_str().unwrap_or("")) else { continue };
+        if let Some(docs) = m["documents"].as_array() {
+            for d in docs {
+                if let Some(fid) = d["file_id"].as_str() {
+                    files.push(json!({"id": fid, "name": d["file_name"].as_str().unwrap_or("")}));
+                }
+            }
+        }
+    }
+    let mut files_deleted = 0usize;
+    if delete_files == Some(true) && !files.is_empty() {
+        let ids: Vec<String> = files.iter().filter_map(|f| f["id"].as_str().map(String::from)).collect();
+        files_deleted = ids.len();
+        crate::services::doc_writer::release_generated_for_sessions(&[session_id.clone()], &ids);
+    }
+
+    let withdrawn = database::run(
+        "UPDATE chat_messages SET status='withdrawn' WHERE session_id=?1 AND id>=?2 AND status='active'",
+        &[json!(&session_id), json!(from_id)],
+    ).map(|r| r.changes).unwrap_or(0);
+    let _ = database::run(
+        "UPDATE chat_sessions SET tool_metadata='{}', session_state=NULL, context_metadata=NULL, updated_at=datetime('now','localtime') WHERE id=?1",
+        &[json!(&session_id)],
+    );
+    let _ = database::run(
+        "UPDATE chat_messages SET status='active' WHERE session_id=?1 AND status='compressed'",
+        &[json!(&session_id)],
+    );
+    Ok(json!({ "success": true, "withdrawn_count": withdrawn, "files": files, "files_deleted": files_deleted }))
+}
+
+/// 会话生成文件清单（交付抽屉数据源）：与会话消息存活无关，附"来源是否仍在会话中"标记
+#[tauri::command]
+pub async fn kb_session_files(session_id: String) -> Result<Value, String> {
+    let rows = database::all(
+        "SELECT fa.id AS id, fa.original_name AS name, fa.file_ext AS ext, fa.file_size AS size, fr.created_at AS created_at, \
+         EXISTS(SELECT 1 FROM chat_messages m WHERE m.session_id=?1 AND m.status='active' AND instr(COALESCE(m.metadata,''), fa.id)>0) AS live_src \
+         FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id \
+         WHERE fr.entity_type='generated' AND fr.entity_id=?1 ORDER BY fr.created_at DESC",
+        &[json!(&session_id)],
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({ "success": true, "files": rows }))
+}
+
+/// 单文件存在性（消息内文档卡片删除后灰壳判定）
+#[tauri::command]
+pub async fn kb_file_exists(file_id: String) -> Result<Value, String> {
+    let c: i64 = database::get("SELECT COUNT(*) AS c FROM file_assets WHERE id=?1", &[json!(&file_id)])
+        .ok().flatten().and_then(|r| r["c"].as_i64()).unwrap_or(0);
+    Ok(json!({ "success": true, "exists": c > 0 }))
+}
+
+/// 单条释放会话生成文件（消息卡/抽屉删除按钮，asset 语义）：清该资产全部 generated 关系；
+/// 无 generated 残留时清内容快照并按剩余引用（资料库/项目/邮件等）决定物理回收——与手动删除同规则
+#[tauri::command]
+pub async fn kb_release_generated_file(file_id: String) -> Result<Value, String> {
+    let _ = database::run(
+        "DELETE FROM file_relations WHERE file_id=?1 AND entity_type='generated'", &[json!(&file_id)]);
+    let remains: i64 = database::get(
+        "SELECT COUNT(*) AS c FROM file_relations WHERE file_id=?1 AND entity_type='generated'", &[json!(&file_id)],
+    ).ok().flatten().and_then(|r| r["c"].as_i64()).unwrap_or(0);
+    if remains == 0 {
+        let _ = database::run("DELETE FROM generated_docs WHERE file_id=?1", &[json!(&file_id)]);
+        crate::commands::file_commands::release_asset_if_orphan(&file_id);
+    }
+    Ok(json!({ "success": true }))
 }
 
 #[cfg(test)]

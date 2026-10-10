@@ -1298,7 +1298,29 @@ export async function kbFabSaveMessage(data: {
 }
 /** 清空全部快速唤起浮窗会话 */
 export async function kbClearFabSessions(): Promise<SuccessResponse> {
-  return invoke('kb_clear_fab_sessions')
+  return invoke('kb_clear_fab_sessions', {})
+}
+
+export interface WithdrawnFile { id: string; name: string }
+export async function kbWithdrawMessages(sessionId: string, anchorText: string, deleteFiles: boolean):
+  Promise<{ success: boolean; withdrawn_count: number; files: WithdrawnFile[]; files_deleted: number }> {
+  return invoke('kb_withdraw_messages', { sessionId, anchorText, deleteFiles })
+}
+
+export interface SessionFile {
+  id: string; name: string; ext: string | null; size: number | null
+  created_at: string | null; live_src: number
+}
+export async function kbSessionFiles(sessionId: string): Promise<{ success: boolean; files: SessionFile[] }> {
+  return invoke('kb_session_files', { sessionId })
+}
+
+export async function kbFileExists(fileId: string): Promise<{ success: boolean; exists: boolean }> {
+  return invoke('kb_file_exists', { fileId })
+}
+
+export async function kbReleaseGeneratedFile(fileId: string): Promise<SuccessResponse> {
+  return invoke('kb_release_generated_file', { fileId })
 }
 
 // ─── Sprite Window API ───────────────────────────────────────────

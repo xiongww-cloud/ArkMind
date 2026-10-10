@@ -328,7 +328,7 @@ pub fn run() {
             commands::storage_migrate, commands::storage_migrate_progress, commands::storage_default_path,
             // KB
             commands::kb_get_config, commands::kb_update_config, commands::kb_import_file, commands::kb_save_note,
-            commands::kb_search, commands::kb_delete, commands::kb_list_documents, commands::kb_chat, commands::kb_agent_chat, commands::agent_cancel, commands::kb_save_sessions, commands::kb_load_sessions, commands::kb_load_session_messages, commands::kb_delete_session, commands::fab_resolve_session, commands::fab_new_session, commands::kb_clear_fab_sessions, commands::kb_fab_load_history, commands::kb_fab_save_message,
+            commands::kb_search, commands::kb_delete, commands::kb_list_documents, commands::kb_chat, commands::kb_agent_chat, commands::agent_cancel, commands::kb_save_sessions, commands::kb_load_sessions, commands::kb_load_session_messages, commands::kb_delete_session, commands::kb_withdraw_messages, commands::kb_session_files, commands::kb_file_exists, commands::kb_release_generated_file, commands::fab_resolve_session, commands::fab_new_session, commands::kb_clear_fab_sessions, commands::kb_fab_load_history, commands::kb_fab_save_message,
             commands::kb_diagnose, commands::kb_search_debug, commands::kb_data_browse, commands::kb_browse_parents, commands::kb_browse_vectors, commands::kb_inspect_fts5,
             commands::kb_fts5_inspector, commands::kb_get_table_chunks, commands::execute_production_rag,
             commands::kb_test_embedding, commands::kb_test_chat,

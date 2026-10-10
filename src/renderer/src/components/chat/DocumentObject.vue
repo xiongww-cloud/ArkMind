@@ -1,11 +1,28 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { toast } from '@/composables/useToast'
-import { previewFile, exportFile, copyFileToClipboard } from '@/api/db-client'
+import { dangerConfirm } from '@/composables/useConfirm'
+import { previewFile, exportFile, copyFileToClipboard, kbFileExists, kbReleaseGeneratedFile } from '@/api/db-client'
 import AppIcon from '@/components/common/AppIcon.vue'
 import type { GeneratedDocument } from '@/composables/useAgentChat'
 
 const props = defineProps<{ doc: GeneratedDocument }>()
+const missing = ref(false)
+onMounted(async () => {
+  try { missing.value = !(await kbFileExists(props.doc.file_id))?.exists } catch { /* 查询失败按存在渲染 */ }
+})
+async function onDelete() {
+  const ok = await dangerConfirm({ title: '删除文件', message: `「${props.doc.file_name}」将从资料库、知识库与消息卡片中移除`, confirmText: '删除' })
+  if (!ok) return
+  try {
+    await kbReleaseGeneratedFile(props.doc.file_id)
+    missing.value = true
+    toast({ message: '已删除', type: 'success' })
+    window.dispatchEvent(new CustomEvent('ark:files-changed'))
+  } catch (e: any) {
+    toast({ message: e?.message || '删除失败', type: 'error' })
+  }
+}
 
 const fileExt = computed(() => {
   const t = (props.doc.file_type || '').toLowerCase()
@@ -57,26 +74,30 @@ async function onCopy() {
 <template>
   <div
     class="group flex items-center gap-2.5 px-3 py-2 rounded-xl border border-[#e5e5ea] bg-[#f8f9fa] hover:bg-white transition-colors w-full max-w-[360px]"
+    :class="missing ? 'opacity-60' : ''"
   >
     <div
       class="w-9 h-9 rounded-lg flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0"
-      :class="isExcel ? 'bg-[#107c41]' : 'bg-[#2b579a]'"
+      :class="missing ? 'bg-surface-300' : (isExcel ? 'bg-[#107c41]' : 'bg-[#2b579a]')"
     >
-      {{ extBadge }}
+      {{ missing ? '—' : extBadge }}
     </div>
     <div class="min-w-0 flex-1">
-      <!-- 点击文件名预览（与资料库文件行一致） -->
+      <!-- 点击文件名预览（与资料库文件行一致）；文件已删除→灰壳留档"生成过"的事实 -->
       <div
-        class="text-[12px] font-medium text-[#1c1c1e] truncate hover:text-blue-600 transition-colors cursor-pointer"
+        class="text-[12px] font-medium text-[#1c1c1e] truncate" :class="missing ? 'line-through text-surface-400' : 'hover:text-blue-600 transition-colors cursor-pointer'"
         v-tooltip.auto="doc.file_name"
-        @click="onPreview"
+        @click="!missing && onPreview()"
       >
         {{ doc.file_name }}
       </div>
-      <div class="text-[10px] text-[#8e8e93]">{{ sizeText }} · {{ isExcel ? 'Excel' : 'Word' }}</div>
+      <div class="text-[10px]" :class="missing ? 'text-red-400' : 'text-[#8e8e93]'">
+        <template v-if="missing">文件已删除</template>
+        <template v-else>{{ sizeText }} · {{ isExcel ? 'Excel' : 'Word' }}</template>
+      </div>
     </div>
-    <!-- 下载/复制纯 icon，hover 浮现（与资料库行内按钮一致） -->
-    <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+    <!-- 下载/复制/删除纯 icon，hover 浮现（与资料库行内按钮一致） -->
+    <div v-if="!missing" class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
       <button
         class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-brand-600 transition-colors"
         v-tooltip="'下载'"
@@ -90,6 +111,13 @@ async function onCopy() {
         @click="onCopy"
       >
         <AppIcon name="copy" size="13" />
+      </button>
+      <button
+        class="w-6 h-6 flex items-center justify-center rounded text-surface-400 hover:text-red-500 transition-colors"
+        v-tooltip="'删除文件'"
+        @click="onDelete"
+      >
+        <AppIcon name="trash" size="13" />
       </button>
     </div>
   </div>

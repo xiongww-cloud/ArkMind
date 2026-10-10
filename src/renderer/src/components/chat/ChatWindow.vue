@@ -3,7 +3,8 @@ import { ref, computed, reactive, nextTick, onMounted, onUnmounted, watch } from
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { fabResolveSession, fabNewSession, kbFabLoadHistory } from '@/api/db-client'
+import { fabResolveSession, fabNewSession, kbFabLoadHistory, kbWithdrawMessages, type WithdrawnFile } from '@/api/db-client'
+import WithdrawDialog from '@/components/chat/WithdrawDialog.vue'
 import { useAgentChat, type ChatMessage, extractDocumentsFromToolLog, parseDocumentsMetadata, parseClarificationMetadata } from '@/composables/useAgentChat'
 import AttachmentChips from '@/components/chat/AttachmentChips.vue'
 import DocumentObject from '@/components/chat/DocumentObject.vue'
@@ -487,6 +488,32 @@ function clarificationReply(msgId?: string): string {
 const annotateId = ref<string | null>(null)
 const annotations = reactive<Annotation[]>([])
 const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[] } | null> = {}
+
+// ─── 撤回：任意用户消息起，其后全部移出会话与上下文；可选连带删除生成文件 ───
+const withdrawTarget = ref<{ text: string; files: WithdrawnFile[]; idx: number } | null>(null)
+function askWithdraw(anchor: ChatMessage) {
+  if (!anchor || anchor.role !== 'user') return
+  // visibleMessages 可能是尾部切片：截断点按全量 messages 的真实下标计算
+  const idx = messages.value.findIndex(x => x.id === anchor.id)
+  if (idx < 0) return
+  const files = messages.value.slice(idx + 1).flatMap(m => (m.documents || []).map(d => ({ id: d.file_id, name: d.file_name })))
+  withdrawTarget.value = { text: anchor.content || '', files, idx }
+}
+async function doWithdraw(deleteFiles: boolean) {
+  const t = withdrawTarget.value
+  if (!t) return
+  withdrawTarget.value = null
+  try {
+    const r = await kbWithdrawMessages(sessionId.value || '', t.text, deleteFiles)
+    if (r.success) {
+      messages.value = messages.value.slice(0, t.idx)
+      exitAnnotate()
+      import('@/composables/useToast').then(m => m.toast({ message: `已撤回 ${r.withdrawn_count} 条消息${r.files_deleted ? `，删除 ${r.files_deleted} 个文件` : ''}`, type: 'success' }))
+    }
+  } catch (e: any) {
+    import('@/composables/useToast').then(m => m.toast({ message: `撤回失败：${e?.message || e}`, type: 'error' }))
+  }
+}
 function enterAnnotate(id: string) {
   if (agent.isChatting.value) return
   annotations.length = 0
@@ -566,6 +593,8 @@ onUnmounted(() => {
           <div v-for="(m, mi) in visibleMessages" :key="m.id || mi" class="msg-block">
             <div v-if="m.role === 'user'" class="msg-q" :class="{ faded: isFaded(m) }">
               <span class="msg-q__who">我</span><span class="msg-q__text">{{ displayContent(m.content) }}</span>
+              <button v-if="!agent.isChatting.value" class="shrink-0 self-center ml-1 px-1.5 py-0.5 rounded text-[9px] text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                @click="askWithdraw(m)">撤回</button>
               <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1" />
               <div v-else-if="m.content?.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1">
                 <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="px-1.5 py-0.5 rounded text-[10px] bg-[#f1f5f9] text-[#64748b]">{{ name }}</span>
@@ -642,6 +671,8 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+  <WithdrawDialog :visible="!!withdrawTarget" :anchor-text="withdrawTarget?.text || ''" :files="withdrawTarget?.files || []"
+    @confirm="doWithdraw" @cancel="withdrawTarget = null" />
 </div>
 </template>
 
