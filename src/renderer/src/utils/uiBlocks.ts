@@ -225,6 +225,7 @@ export function buildRevisionMessage(tables: TableRevision[], annotations: Annot
     lines.push(`${withDiff.length ? '二' : '一'}、正文修改要求：`)
     notes.forEach((a, i) => lines.push(`${i + 1}. 关于「${a.text}」：${a.note}`))
   }
+  lines.push('有疑问时可以询问我')
   return lines.join('\n')
 }
 
