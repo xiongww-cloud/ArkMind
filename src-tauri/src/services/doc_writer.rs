@@ -1480,9 +1480,11 @@ fn build_xlsx(content: &Value) -> Result<Vec<u8>, String> {
         if children.is_empty() && sheets.len() == 1 {
             return Err("content 缺少可写入的单元格内容".to_string());
         }
-        let explicit = apply_xlsx_children(ws, children)?;
-        // 列宽自适应兜底：模型未显式指定列宽的列按内容显示宽度定宽（CJK 计 2）
-        autofit_xlsx_widths(ws, children, &explicit);
+        // 列宽规划先行：自适应宽度在写入前落定（后续显式 column_width 指令仍可覆盖），
+        // 超上限列纳入 wrap 集——长内容换行而非撑爆列宽
+        let (col_widths, wrap_cols) = plan_xlsx_columns(children);
+        for (col, w) in col_widths { let _ = ws.set_column_width(col as u16, w); }
+        apply_xlsx_children(ws, children, &wrap_cols)?;
     }
 
     // save 到临时文件后读回字节（save 权威 API 接受路径）
@@ -1523,22 +1525,34 @@ fn collect_disp_width(v: &Value) -> usize {
     }
 }
 
-/// 自适应列宽兜底：仅对未显式设置过列宽的列，按内容显示宽度定宽；
-/// 纯数字列=定宽数字格式右对齐，固定 12（防止价格带小数位撑爆）；短列维持默认。
-/// row 行与 table 行统一按绝对列号对齐（合并表格单元格列偏移与写行序一致）。
-fn autofit_xlsx_widths(ws: &mut rust_xlsxwriter::Worksheet, children: &[Value], explicit: &std::collections::HashSet<usize>) {
+/// 单元格文本是否含显式换行（含则强制 wrap，多行内容不再塌成一行）
+fn cell_has_newline(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.contains('\n'),
+        Value::Array(a) => a.iter().any(cell_has_newline),
+        Value::Object(o) => o.values().any(cell_has_newline),
+        _ => false,
+    }
+}
+
+/// 列宽与换行规划（确定性排版兜底，先于写入执行）：按内容显示宽度定宽——
+/// min(max+3, 40)；显示宽 ≤8.43 的短列不设自定义；纯数字列固定 12；
+/// 超上限的列封顶 40 并纳入 wrap 集（单元格自动换行、行高由 Excel 按内容展开）。
+/// 显式 column_width 指令在写入阶段仍会覆盖规划值（显式意图优先）。
+const XLSX_COL_MIN_W: f64 = 8.43;
+const XLSX_COL_MAX_W: f64 = 40.0;
+fn plan_xlsx_columns(children: &[Value]) -> (std::collections::HashMap<usize, f64>, std::collections::HashSet<usize>) {
     use std::collections::HashMap;
-    const MIN_W: f64 = 8.43;
-    const MAX_W: f64 = 48.0;
-    let mut widths: HashMap<usize, usize> = HashMap::new();
-    let mut numeric: HashMap<usize, bool> = HashMap::new();
+    // col → (最长显示宽, 是否纯数字列)
+    let mut maxes: HashMap<usize, (usize, Option<bool>)> = HashMap::new();
     let mut bump = |col: usize, w: usize, all_num: Option<bool>| {
-        let e = widths.entry(col).or_insert(0);
-        if w > *e { *e = w; }
-        if let Some(n) = all_num {
-            let a = numeric.entry(col).or_insert(true);
-            *a &= n;
-        }
+        let e = maxes.entry(col).or_insert((0, None));
+        if w > e.0 { e.0 = w; }
+        e.1 = match (e.1, all_num) {
+            (Some(a), Some(n)) => Some(a && n),
+            (None, Some(n)) => Some(n),
+            (a, None) => a,
+        };
     };
     for child in children {
         if let Some(cells) = child.as_array() {
@@ -1560,8 +1574,7 @@ fn autofit_xlsx_widths(ws: &mut rust_xlsxwriter::Worksheet, children: &[Value], 
             }
             "table" => {
                 let start = child["col"].as_u64().unwrap_or(0) as usize;
-                let header_w = child["headers"].as_array().map(|h| h.iter().map(collect_disp_width).collect::<Vec<_>>());
-                if let Some(hw) = header_w { for (i, w) in hw.into_iter().enumerate() { bump(start + i, w, Some(false)); } }
+                if let Some(h) = child["headers"].as_array() { for (i, w) in h.iter().map(collect_disp_width).enumerate() { bump(start + i, w, Some(false)); } }
                 if let Some(rows) = child["rows"].as_array() {
                     for r in rows {
                         let Some(cs) = r.as_array().or_else(|| r["cells"].as_array()) else { continue };
@@ -1572,11 +1585,18 @@ fn autofit_xlsx_widths(ws: &mut rust_xlsxwriter::Worksheet, children: &[Value], 
             _ => {}
         }
     }
-    for (col, w) in widths {
-        if explicit.contains(&col) || w <= MIN_W as usize { continue; }
-        let target = if numeric.get(&col) == Some(&true) { 12.0 } else { (w + 3) as f64 };
-        let _ = ws.set_column_width(col as u16, target.clamp(MIN_W, MAX_W));
+    let mut widths = std::collections::HashMap::new();
+    let mut wrap = std::collections::HashSet::new();
+    for (col, (max_w, all_num)) in maxes {
+        if all_num == Some(true) { widths.insert(col, 12.0); continue; }
+        if max_w + 3 > XLSX_COL_MAX_W as usize {
+            widths.insert(col, XLSX_COL_MAX_W);
+            wrap.insert(col);
+        } else if max_w as f64 > XLSX_COL_MIN_W {
+            widths.insert(col, (max_w + 3) as f64);
+        }
     }
+    (widths, wrap)
 }
 
 /// 方案报价单 xlsx（替代前端 ExcelJS 旧导出）：rust_xlsxwriter 写入——
@@ -1745,16 +1765,16 @@ pub fn build_solution_quote_xlsx(data: &Value) -> Result<Vec<u8>, String> {
 fn apply_xlsx_children(
     ws: &mut rust_xlsxwriter::Worksheet,
     children: &[Value],
-) -> Result<std::collections::HashSet<usize>, String> {
+    wrap_cols: &std::collections::HashSet<usize>,
+) -> Result<(), String> {
     use rust_xlsxwriter::{Chart, ChartType, Image};
 
     let mut row_cursor: u32 = 0;
-    let mut explicit_cols: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for child in children {
         // 容错1：子块本身就是数组 → 视为一行 cells（模型常直接给 [["a","b"],[1,2]]）
         if let Some(cells) = child.as_array() {
-            write_xlsx_row(ws, cells, false, &mut row_cursor)?;
+            write_xlsx_row(ws, cells, false, &mut row_cursor, wrap_cols)?;
             continue;
         }
         if !child.is_object() {
@@ -1776,7 +1796,7 @@ fn apply_xlsx_children(
                     continue;
                 };
                 let is_header = child["header"].as_bool().unwrap_or(false);
-                write_xlsx_row(ws, cells, is_header, &mut row_cursor)?;
+                write_xlsx_row(ws, cells, is_header, &mut row_cursor, wrap_cols)?;
             }
             "column_width" | "column_widths" => {
                 if let Some(widths) = child["widths"].as_array() {
@@ -1784,7 +1804,6 @@ fn apply_xlsx_children(
                         let width = w.as_f64().unwrap_or(10.0);
                         ws.set_column_width(i as u16, width)
                             .map_err(|e| format!("设置列宽失败: {}", e))?;
-                        explicit_cols.insert(i);
                     }
                 }
             }
@@ -1874,7 +1893,7 @@ fn apply_xlsx_children(
             _ => log::warn!("[文档生成] 未知 Excel 块类型「{}」，已跳过: {}", kind, child),
         }
     }
-    Ok(explicit_cols)
+    Ok(())
 }
 
 /// 写入一行单元格并推进 row_cursor（供 row 分支与数组容错共用）
@@ -1884,6 +1903,7 @@ fn write_xlsx_row(
     cells: &[Value],
     is_header: bool,
     row_cursor: &mut u32,
+    wrap_cols: &std::collections::HashSet<usize>,
 ) -> Result<(), String> {
     use rust_xlsxwriter::XlsxError;
 
@@ -1896,11 +1916,15 @@ fn write_xlsx_row(
         let col = ci as u16;
         // 归一预设字体（宋体11pt）：build_cell_format 内已对有格式单元格补齐；
         // "零格式"单元格（如显式 border:false）在调用侧补齐——所有 xlsx 文字统一宋体11
-        let fmt = Some(build_cell_format(cell, is_header).unwrap_or_else(|| {
+        let mut fmt = Some(build_cell_format(cell, is_header).unwrap_or_else(|| {
             rust_xlsxwriter::Format::new()
                 .set_font_name(XLSX_PRESET_FONT)
                 .set_font_size(XLSX_PRESET_SIZE_PT)
         }));
+        // 换行兜底：列宽规划判定的超宽列 / 单元格自带显式换行 → wrap（行高自适应展开）
+        if wrap_cols.contains(&ci) || cell_has_newline(cell) {
+            fmt = fmt.map(|f| f.set_text_wrap());
+        }
 
         // 公式：带样式写入
         if let Some(formula) = cell.get("formula").and_then(|f| f.as_str()) {
@@ -3045,6 +3069,20 @@ mod tests {
         zip2.by_name("xl/worksheets/sheet1.xml").expect("sheet2").read_to_string(&mut xml2).expect("read2");
         assert!(xml2.contains("width=\"30\"") || xml2.contains("width=\"30."), "显式列宽保留");
         assert!(xml2.contains("width=\"25."), "未显式列仍自适应");
+
+        // 超上限长文本：列宽封顶 40，单元格自动换行（wrapText），行高由 Excel 展开
+        let long = "内".repeat(60);
+        let content3 = json!({"sheets": [{"name": "S1", "children": [
+            {"type": "row", "cells": ["编号", long]}
+        ]}]});
+        let bytes3 = super::build_xlsx(&content3).expect("build xlsx3");
+        let mut zip3 = zip::ZipArchive::new(std::io::Cursor::new(&bytes3)).expect("zip3");
+        let mut xml3 = String::new();
+        zip3.by_name("xl/worksheets/sheet1.xml").expect("sheet3").read_to_string(&mut xml3).expect("read3");
+        assert!(xml3.contains("width=\"40"), "超宽列封顶 40 不再无限撑宽");
+        let mut styles3 = String::new();
+        zip3.by_name("xl/styles.xml").expect("styles3").read_to_string(&mut styles3).expect("read styles3");
+        assert!(styles3.contains("wrapText=\"1\""), "超宽列单元格换行");
     }
 
     #[test]
