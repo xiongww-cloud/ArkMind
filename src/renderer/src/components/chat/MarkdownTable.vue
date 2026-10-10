@@ -113,11 +113,12 @@ function buildRevision(): { diff: string; headerLabel: string } {
     lines.push(`- 新增列「${name}」（${anchorColLabel(ac.anchor) || '置于表末，'}自上而下各行值）：${vals.join('；')}`)
   }
   for (const r of [...deletedRows.value].sort((a, b) => a - b))
-    lines.push(`- 删除${rowLabel(r)}行（原：${t.rows[r].join(' | ')}）`)
+    lines.push(`- 删除${rowLabel(r)}行`)
   for (const [k, v] of Object.entries(cellEdits.value)) {
     const [r, c] = k.split(':').map(Number)
     if (deletedRows.value.includes(r) || deletedCols.value.includes(c)) continue
-    lines.push(`- ${rowLabel(r)}的「${colName(c)}」格：${t.rows[r][c] || '（空）'} → ${v || '（空）'}`)
+    const old = t.rows[r][c] || '（空）'
+    lines.push(`- ${rowLabel(r)}的「${colName(c)}」格：${old.length > 24 ? old.slice(0, 24) + '…' : old} → ${v || '（空）'}`)
   }
   for (const { ar } of liveAddedRows.value) {
     const cells = colViews.value.map(cv => ar.cells[colKey(cv)] ?? '')
@@ -156,52 +157,50 @@ defineExpose({
     </table>
   </div>
 
-  <!-- 编辑态（批注模式内）：操作按钮悬停显形 -->
-  <div v-else class="md-table-root group/tbl overflow-x-auto border border-brand-200 rounded-lg bg-white p-1.5">
-    <table class="text-[11px] border-collapse">
+  <!-- 编辑态（修订模式内）：与只读态同款骨架（.markdown-body），操作仅在悬停的行/列浮出深色胶囊 -->
+  <div v-else class="md-table-root markdown-body overflow-x-auto">
+    <table>
       <thead>
         <tr>
-          <th v-for="cv in colViews" :key="colKey(cv)" class="border border-surface-200 bg-surface-50 p-0.5 align-top">
+          <th v-for="cv in colViews" :key="colKey(cv)" class="relative !p-0 group/col">
             <input v-if="cv.k === 'b'" :value="colName(cv.c)" @input="headerEdits[cv.c] = ($event.target as HTMLInputElement).value"
-              class="min-w-[52px] w-full px-1 py-0.5 text-[11px] font-medium bg-transparent outline-none border-b border-transparent focus:border-brand-400" />
+              class="w-full min-w-[56px] !py-2 px-3 text-[12px] font-semibold text-left bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <input v-else v-model="addedCols[cv.i].header" placeholder="新列名"
-              class="min-w-[52px] w-full px-1 py-0.5 text-[11px] font-medium bg-transparent outline-none border-b border-brand-300 focus:border-brand-400" />
-            <div class="flex items-center justify-end gap-1 px-0.5 opacity-0 group-hover/tbl:opacity-100 transition-opacity">
+              class="w-full min-w-[56px] !py-2 px-3 text-[12px] font-semibold text-left bg-brand-50/50 outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
+            <div class="absolute top-1 right-1 z-10 flex items-center gap-1 rounded-full bg-slate-800/95 px-1.5 py-0.5 shadow-lg opacity-0 group-hover/col:opacity-100 transition-opacity">
               <button type="button" @click="insertColAt(cv.k === 'b' ? cv.c : addedCols[cv.i].anchor)"
-                class="text-[10px] text-surface-400 hover:text-brand-600 leading-none" title="在此列右侧插入新列">＋</button>
+                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-white" title="在此列右侧插入新列">＋</button>
               <button v-if="cv.k === 'b'" type="button" @click="delCol(cv.c)"
-                class="text-[10px] text-surface-400 hover:text-red-500 leading-none px-0.5" title="删除此列">×</button>
+                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-red-300" title="删除此列">×</button>
               <button v-else type="button" @click="addedCols[cv.i].dead = true"
-                class="text-[10px] text-surface-400 hover:text-red-500 leading-none px-0.5" title="删除新增列">×</button>
+                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-red-300" title="删除此列">×</button>
             </div>
           </th>
-          <th class="w-12 border-none align-middle"><button type="button" @click="insertColAt('end')" class="text-[10px] text-brand-600 hover:underline whitespace-nowrap px-1 opacity-0 group-hover/tbl:opacity-100 transition-opacity">+ 列</button></th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="rv in rowViews" :key="rowKey(rv)">
-          <td v-for="cv in colViews" :key="colKey(cv)" class="border border-surface-200 p-0"
-            :class="cv.k === 'c' ? 'bg-brand-50/30' : (rv.k === 'a' ? 'bg-emerald-50/30' : '')">
+        <tr v-for="rv in rowViews" :key="rowKey(rv)" class="group/row">
+          <td v-for="(cv, ci) in colViews" :key="colKey(cv)" class="relative !p-0"
+            :class="cv.k === 'c' ? 'bg-brand-50/50' : (rv.k === 'a' ? 'bg-emerald-50/40' : '')">
             <input v-if="rv.k === 'b' && cv.k === 'b'" :value="curCell(rv.r, cv.c)" @input="setCell(rv.r, cv.c, ($event.target as HTMLInputElement).value)"
-              class="w-full min-w-[46px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
+              class="w-full min-w-[46px] !py-2 px-3 text-[12px] bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <input v-else-if="rv.k === 'b' && cv.k === 'c'" :value="addedCols[cv.i].vals[rowKey(rv)] ?? ''" @input="addedCols[cv.i].vals[rowKey(rv)] = ($event.target as HTMLInputElement).value"
-              class="w-full min-w-[46px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
+              class="w-full min-w-[46px] !py-2 px-3 text-[12px] bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <input v-else-if="rv.k === 'a' && cv.k === 'b'" :value="addedRows[rv.i].cells[colKey(cv)] ?? ''" @input="addedRows[rv.i].cells[colKey(cv)] = ($event.target as HTMLInputElement).value"
-              class="w-full min-w-[46px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
+              class="w-full min-w-[46px] !py-2 px-3 text-[12px] bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <input v-else :value="addedRows[(rv as { k: 'a'; i: number }).i].cells[colKey(cv)] ?? ''" @input="addedRows[(rv as { k: 'a'; i: number }).i].cells[colKey(cv)] = ($event.target as HTMLInputElement).value"
-              class="w-full min-w-[46px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
-          </td>
-          <td class="border-none whitespace-nowrap pl-1 opacity-0 group-hover/tbl:opacity-100 transition-opacity">
-            <button v-if="rv.k === 'b'" type="button" @click="insertRowAt(rv.r)" class="text-[10px] text-surface-400 hover:text-brand-600 leading-none px-0.5" title="在此行下方插入新行">＋</button>
-            <button v-if="rv.k === 'b'" type="button" @click="delRow(rv.r)" class="text-[10px] text-surface-400 hover:text-red-500 leading-none px-0.5" title="删除此行">×</button>
-            <button v-else type="button" @click="addedRows[rv.i].dead = true" class="text-[10px] text-surface-400 hover:text-red-500 leading-none px-0.5" title="删除新增行">×</button>
+              class="w-full min-w-[46px] !py-2 px-3 text-[12px] bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
+            <div v-if="ci === 0" class="absolute top-1 right-1 z-10 flex items-center gap-1 rounded-full bg-slate-800/95 px-1.5 py-0.5 shadow-lg opacity-0 group-hover/row:opacity-100 transition-opacity">
+              <button v-if="rv.k === 'b'" type="button" @click="insertRowAt(rv.r)"
+                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-white" title="在此行下方插入新行">＋</button>
+              <button v-if="rv.k === 'b'" type="button" @click="delRow(rv.r)"
+                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-red-300" title="删除此行">×</button>
+              <button v-else type="button" @click="addedRows[rv.i].dead = true"
+                class="text-[10px] leading-none px-0.5 text-white/60 hover:text-red-300" title="删除此行">×</button>
+            </div>
           </td>
         </tr>
       </tbody>
     </table>
-    <div class="flex items-center justify-between px-1 pt-1">
-      <button type="button" @click="insertRowAt('end')" class="text-[10px] text-brand-600 hover:underline opacity-0 group-hover/tbl:opacity-100 transition-opacity">+ 行</button>
-      <span v-if="changeCount" class="text-[10px] text-surface-400 opacity-0 group-hover/tbl:opacity-100 transition-opacity">已修改 {{ changeCount }} 处</span>
-    </div>
   </div>
 </template>

@@ -213,9 +213,9 @@ export function buildRevisionMessage(tables: TableRevision[], annotations: Annot
   const withDiff = tables.map((tb, i) => ({ tb, i })).filter(x => x.tb.diff.trim())
   const notes = annotations.filter(a => a.note.trim() && a.text.trim())
   if (!withDiff.length && !notes.length) return ''
-  const lines: string[] = ['【答复修订】请基于你上一条答复输出修订版，未提及的内容逐字保留，不得增删：']
+  const lines: string[] = ['【答复修订】请基于你上一条答复输出修订版：下列修订逐项应用；承载实际内容的语句、单元格一律保持原样，不得改写、润色或增删；仅当某处内容本身不承载实际信息（如序号、编号类顺序标记）时，允许随修订结果作对齐性重排：']
   if (withDiff.length) {
-    lines.push('一、表格修改（逐项应用，输出修订后的完整表格；未提及的行列保持原值）：')
+    lines.push('一、表格修改（逐项应用，输出修订后的完整表格；未提及的行列保持原值，序号类对齐重排除外）：')
     for (const { tb, i } of withDiff) {
       lines.push(`${withDiff.length > 1 ? `第${i + 1}个表格` : '该表格'}（表头：${tb.headerLabel}）：`)
       lines.push(tb.diff)
