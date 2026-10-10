@@ -208,21 +208,21 @@ export function hasInteractive(raw: string): boolean {
 export interface Annotation { text: string; note: string }
 export interface TableRevision { diff: string; headerLabel: string }
 
-/** 表格 diff + 正文批注 → 【答复修订】消息（自包含处理指令）；无任何变更返回 '' */
+/** 表格 diff + 正文批注 → 【答复修订】消息（精简指令版：约束定位实验，退化项再精准加回）；无任何变更返回 '' */
 export function buildRevisionMessage(tables: TableRevision[], annotations: Annotation[]): string {
   const withDiff = tables.map((tb, i) => ({ tb, i })).filter(x => x.tb.diff.trim())
   const notes = annotations.filter(a => a.note.trim() && a.text.trim())
   if (!withDiff.length && !notes.length) return ''
-  const lines: string[] = ['【答复修订】请基于你上一条答复输出修订版：下列修订逐项应用；承载实际内容的语句、单元格一律保持原样，不得改写、润色或增删；仅当某处内容本身不承载实际信息（如序号、编号类顺序标记）时，允许随修订结果作对齐性重排：']
+  const lines: string[] = ['【答复修订】请基于你上一条答复输出修订版，下列修订逐项应用，允许随修订结果作对齐性重排：']
   if (withDiff.length) {
-    lines.push('一、表格修改（逐项应用，输出修订后的完整表格；未提及的行列保持原值，序号类对齐重排除外；单元格内换行以 <br> 呈现，每行记录一行文本）：')
+    lines.push('一、表格修改：')
     for (const { tb, i } of withDiff) {
       lines.push(`${withDiff.length > 1 ? `第${i + 1}个表格` : '该表格'}（表头：${tb.headerLabel}）：`)
       lines.push(tb.diff)
     }
   }
   if (notes.length) {
-    lines.push(`${withDiff.length ? '二' : '一'}、正文修改要求（仅改写下列片段所在语句/段落，其余一字不动；修改目标定位含糊时先追问，不得凭猜测改）：`)
+    lines.push(`${withDiff.length ? '二' : '一'}、正文修改要求：`)
     notes.forEach((a, i) => lines.push(`${i + 1}. 关于「${a.text}」：${a.note}`))
   }
   return lines.join('\n')
