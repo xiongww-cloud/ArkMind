@@ -11,13 +11,14 @@ const emit = defineEmits<{ remove: [index: number]; submit: []; cancel: [] }>()
       <span class="text-[10px] font-semibold text-brand-800">批注修订中 —— 选中正文文字可加批注，表格可直接改</span>
     </div>
     <div v-if="items.length" class="px-3 py-2 space-y-1.5">
-      <div v-for="(a, i) in items" :key="i" class="flex items-start gap-2 text-[10px] leading-snug">
-        <span class="w-4 h-4 rounded-full bg-white border border-brand-200 text-brand-700 flex items-center justify-center flex-shrink-0 mt-px">{{ i + 1 }}</span>
-        <div class="flex-1 min-w-0">
+      <div v-for="(a, i) in items" :key="i"
+        class="flex items-center gap-2 rounded-lg bg-white border border-brand-100 px-2.5 py-1.5 text-[10px] shadow-sm">
+        <span class="w-4 h-4 rounded-full bg-brand-50 border border-brand-200 text-brand-700 font-semibold flex items-center justify-center flex-shrink-0">{{ i + 1 }}</span>
+        <div class="flex-1 min-w-0 leading-snug">
           <span class="text-surface-400">「{{ a.text.length > 40 ? a.text.slice(0, 40) + '…' : a.text }}」</span>
           <span class="text-surface-700"> → {{ a.note }}</span>
         </div>
-        <button type="button" class="text-surface-300 hover:text-red-500 leading-none mt-px" @click="emit('remove', i)">×</button>
+        <button type="button" class="text-surface-300 hover:text-red-500 leading-none flex-shrink-0" @click="emit('remove', i)">×</button>
       </div>
     </div>
     <div class="px-3 pb-2.5 pt-1 flex items-center justify-between">
