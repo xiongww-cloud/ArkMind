@@ -57,7 +57,7 @@ defineExpose({ close: () => { bubble.value = null; composer.value = null } })
   <div ref="root" :class="active ? 'selection-[color:#1e40af] selection:bg-blue-100' : ''"><slot /></div>
   <Teleport to="body">
     <button v-if="bubble && active" type="button"
-      class="fixed z-[95] annotate-skip px-2.5 py-1 rounded-full bg-slate-800/95 text-white text-[10px] shadow-lg hover:bg-slate-700 transition-colors"
+      class="fixed z-[95] annotate-skip px-2.5 py-1 rounded-lg border border-surface-200 bg-white text-[10px] text-surface-600 shadow-lg hover:text-brand-600 hover:border-brand-300 transition-colors"
       :style="{ left: bubble.x + 'px', top: bubble.y + 'px', transform: 'translateX(-50%)' }"
       @mousedown.prevent="openComposer">✎ 修订</button>
     <div v-if="composer && active" class="fixed z-[96] annotate-skip w-[264px] rounded-xl border border-brand-300 bg-white shadow-xl p-2.5"
