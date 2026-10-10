@@ -1544,11 +1544,19 @@ fn cell_has_newline(v: &Value) -> bool {
     }
 }
 
+/// 数字形态文本：纯整数/小数/千分位/百分号——模型常把序号数量给成 "1","2" 字符串
+fn is_numberish(s: &str) -> bool {
+    let t = s.trim().replace(',', "");
+    let t = t.trim_end_matches('%');
+    !t.is_empty() && t.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-')
+}
+
 /// 列宽与排版规划（确定性排版兜底，先于写入执行）：按内容显示宽度定宽——
 /// min(max+3, 40)；显示宽 ≤8.43 的短列不设自定义；
 /// 超上限的列封顶 40 并纳入 wrap 集（单元格自动换行、行高由 Excel 按内容展开）；
 /// 纯数字短列（序号/年份型，表头不计入数字判定）→ center 集：写入时框架补居中。
 /// 较宽数字列（金额）保持 Excel 默认右对齐。显式 column_width 指令在写入阶段仍覆盖规划值。
+/// 标题/注释行（≥2 格仅首格非空的"补空串"形态）不贡献宽度不参与判定，防长标题撑歪列规划。
 const XLSX_COL_MIN_W: f64 = 8.43;
 const XLSX_COL_MAX_W: f64 = 40.0;
 fn plan_xlsx_columns(children: &[Value]) -> (std::collections::HashMap<usize, f64>, std::collections::HashSet<usize>, std::collections::HashSet<usize>) {
@@ -1576,11 +1584,21 @@ fn plan_xlsx_columns(children: &[Value]) -> (std::collections::HashMap<usize, f6
             "row" => {
                 let is_header = child["header"].as_bool().unwrap_or(false);
                 if let Some(cells) = child["cells"].as_array() {
+                    // 标题/注释行：≥2 格且仅一格非空（模型补空串习惯 ["响应表标题","","",""]）→ 整行不参规划
+                    if !is_header && cells.len() >= 2 && cells.iter().filter(|c| collect_disp_width(c) > 0).count() == 1 {
+                        continue;
+                    }
                     for (i, c) in cells.iter().enumerate() {
-                        // 表头行只贡献宽度不掺和数字判定（"序号"二字是 string，不该拉低 all_num）
+                        // 表头行与空格只贡献宽度不掺和数字判定；数字形态字符串（"1"、"2"）等同数字
                         let all_num = if is_header { None } else {
-                            Some(matches!(c, Value::Number(_))
-                                || matches!(c, Value::Object(o) if o.get("type").and_then(|t| t.as_str()) == Some("number")))
+                            match c {
+                                Value::Number(_) => Some(true),
+                                Value::Object(o) if o.get("type").and_then(|t| t.as_str()) == Some("number") => Some(true),
+                                Value::String(s) if s.trim().is_empty() => None,
+                                Value::String(s) if is_numberish(s) => Some(true),
+                                Value::String(_) => Some(false),
+                                _ => None,
+                            }
                         };
                         bump(i, collect_disp_width(c), all_num);
                     }
@@ -3129,6 +3147,23 @@ mod tests {
         let mut styles4 = String::new();
         zip4.by_name("xl/styles.xml").expect("styles4").read_to_string(&mut styles4).expect("read styles4");
         assert!(styles4.contains("horizontal=\"center\""), "纯数字短列居中");
+
+        // 复刻真实响应表 sheet：["标题","","",""] 补空串式标题行不得污染列规划；字符串序号仍判为数字列居中
+        let content5 = json!({"sheets": [{"name": "S1", "children": [
+            {"type": "row", "cells": [{"type": "string", "text": "华为 S12700H-8 技术参数响应表", "align": "center", "bold": true}, "", "", ""]},
+            {"type": "row", "header": true, "cells": ["序号", "招标参数", "投标参数", "偏离情况"]},
+            {"type": "row", "cells": ["1", "交换容量≥1900Tbps，包转发率≥460000Mpps，背板带宽冗余≥1.5倍", "本次投标产品为华为S12700H-8，交换容量1900Tbps完全满足线速转发", "无偏离"]},
+            {"type": "row", "cells": ["2", "支持独立的硬件监控模块", "本次投标产品为华为S12700H-8，配备独立监控模块支持1+1备份", "无偏离"]}
+        ]}]});
+        let bytes5 = super::build_xlsx(&content5).expect("build xlsx5");
+        let mut zip5 = zip::ZipArchive::new(std::io::Cursor::new(&bytes5)).expect("zip5");
+        let mut xml5 = String::new();
+        zip5.by_name("xl/worksheets/sheet1.xml").expect("sheet5").read_to_string(&mut xml5).expect("read5");
+        assert!(!xml5.contains("min=\"1\""), "序号列不得被 28 字标题撑宽: {}", &xml5[..xml5.len().min(400)]);
+        assert!(xml5.contains("width=\"40"), "超长文本列封顶");
+        let mut styles5 = String::new();
+        zip5.by_name("xl/styles.xml").expect("styles5").read_to_string(&mut styles5).expect("read styles5");
+        assert!(styles5.contains("horizontal=\"center\""), "字符串序号列居中");
     }
 
     /// 样式字段不得虚增列宽：带 bold/align/border 的短文本列维持默认宽
