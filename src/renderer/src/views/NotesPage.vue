@@ -132,9 +132,9 @@ async function loadNotes() {
         break
       }
       case 'uncategorized': {
-        // "未分类"= 无笔记本归属且无项目关联的虚拟集合（AI 建档不传 notebook 即落入此类，归集入口）
+        // "未分类"= 无笔记本归属、无项目关联且非闪记的虚拟集合（AI 建档不传 notebook 即落入此类，归集入口；闪记有专属视图）
         const rr: any = await notesV2ListAll()
-        r = { notes: ((rr?.notes || []) as any[]).filter((n: any) => !n.notebook_id && !(n.project_ids && String(n.project_ids).trim())) }
+        r = { notes: ((rr?.notes || []) as any[]).filter((n: any) => !n.is_daily && !n.notebook_id && !(n.project_ids && String(n.project_ids).trim())) }
         break
       }
       case 'daily': r = await notesV2ListDaily(); break
