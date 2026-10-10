@@ -5,8 +5,9 @@ import { renderMdInline } from '@/composables/useAgentChat'
 
 /**
  * 对话内 markdown 表格 → 用户直编。操作日志式：编辑动作本身即变更记录（格改/删行/删列/改名/增列/增行），
- * 提交 = 变更说明消息（不含全表），AI 逐项机械应用。删行作废该行改格，删列作废该列改格。
- * 只读态与 marked 渲染同观感：.markdown-body 全局表格样式 + 单元格行内 markdown（**粗体**等）。
+ * 提交 = 变更说明消息（不含全表、空值留空、增删带位置），AI 逐项机械应用。
+ * 行列插入用锚点制（anchor=插在某原行/列之后，'end'=表末）；增列/增行的格值以视图键映射存储，
+ * 行列死活只打标记——彻底免除索引位移记账。只读态沿用全局 .markdown-body 表格样式 + 单元格行内 markdown。
  */
 const props = defineProps<{ md: string }>()
 const emit = defineEmits<{ submit: [text: string] }>()
@@ -25,14 +26,40 @@ watch(table, async (t) => {
     }
 }, { immediate: true })
 
-const cellEdits = ref<Record<string, string>>({})      // `${r}:${c}`(原坐标) -> 新值
-const deletedRows = ref<number[]>([])                   // 原行号
-const deletedCols = ref<number[]>([])                   // 原列号
-const headerEdits = ref<Record<number, string>>({})    // 原列号 -> 新列名
-const addedCols = ref<{ header: string; values: string[] }[]>([]) // values 按可见行序
-const addedRows = ref<string[][]>([])                   // 按可见列序
+type Anchor = number | 'end'
+const cellEdits = ref<Record<string, string>>({})        // `${r}:${c}`(原坐标) -> 新值
+const deletedRows = ref<number[]>([])
+const deletedCols = ref<number[]>([])
+const headerEdits = ref<Record<number, string>>({})
+const addedCols = ref<{ header: string; vals: Record<string, string>; anchor: Anchor; dead: boolean }[]>([])
+const addedRows = ref<{ cells: Record<string, string>; anchor: Anchor; dead: boolean }[]>([])
 
 const baseCols = computed(() => table.value ? table.value.headers.map((_, c) => c).filter(c => !deletedCols.value.includes(c)) : [])
+const liveRowIdx = computed(() => table.value ? table.value.rows.map((_, r) => r).filter(r => !deletedRows.value.includes(r)) : [])
+
+type ColView = { k: 'b'; c: number } | { k: 'c'; i: number }
+type RowView = { k: 'b'; r: number } | { k: 'a'; i: number }
+const colKey = (v: ColView) => v.k === 'b' ? `b${v.c}` : `c${v.i}`
+const rowKey = (v: RowView) => v.k === 'b' ? `b${v.r}` : `a${v.i}`
+const colViews = computed<ColView[]>(() => {
+  const out: ColView[] = []
+  for (const c of baseCols.value) {
+    out.push({ k: 'b', c })
+    addedCols.value.forEach((ac, i) => { if (!ac.dead && ac.anchor === c) out.push({ k: 'c', i }) })
+  }
+  addedCols.value.forEach((ac, i) => { if (!ac.dead && ac.anchor === 'end') out.push({ k: 'c', i }) })
+  return out
+})
+const rowViews = computed<RowView[]>(() => {
+  const out: RowView[] = []
+  for (const r of liveRowIdx.value) {
+    out.push({ k: 'b', r })
+    addedRows.value.forEach((ar, i) => { if (!ar.dead && ar.anchor === r) out.push({ k: 'a', i }) })
+  }
+  addedRows.value.forEach((ar, i) => { if (!ar.dead && ar.anchor === 'end') out.push({ k: 'a', i }) })
+  return out
+})
+
 const colName = (c: number) => headerEdits.value[c] ?? table.value!.headers[c]
 const curCell = (r: number, c: number) => cellEdits.value[`${r}:${c}`] ?? table.value!.rows[r][c]
 const setCell = (r: number, c: number, v: string) => {
@@ -40,43 +67,36 @@ const setCell = (r: number, c: number, v: string) => {
   if (v === table.value!.rows[r][c]) delete cellEdits.value[k]
   else cellEdits.value[k] = v
 }
-const delRow = (r: number) => {
+function delRow(r: number) {
   if (deletedRows.value.includes(r)) return
-  const pos = liveRowIdx.value.indexOf(r)
   deletedRows.value.push(r)
   for (const k of Object.keys(cellEdits.value)) if (k.startsWith(`${r}:`)) delete cellEdits.value[k]
-  addedCols.value.forEach(ac => ac.values.splice(pos, 1))
 }
-const delCol = (c: number) => {
+function delCol(c: number) {
   if (deletedCols.value.includes(c)) return
-  const vis = table.value!.headers.map((_, x) => x).filter(x => !deletedCols.value.includes(x))
-  const pos = vis.indexOf(c)
   deletedCols.value.push(c)
   for (const k of Object.keys(cellEdits.value)) if (k.endsWith(`:${c}`)) delete cellEdits.value[k]
-  addedRows.value = addedRows.value.map(row => { const r = [...row]; r.splice(pos, 1); return r })
 }
-const liveRowIdx = computed(() => table.value ? table.value.rows.map((_, r) => r).filter(r => !deletedRows.value.includes(r)) : [])
-const rowLabel = (r: number) => {
+function insertColAt(anchor: Anchor) { addedCols.value.push({ header: '', vals: {}, anchor, dead: false }) }
+function insertRowAt(anchor: Anchor) { addedRows.value.push({ cells: {}, anchor, dead: false }) }
+
+const liveAddedCols = computed(() => addedCols.value.map((ac, i) => ({ ac, i })).filter(x => !x.ac.dead))
+const liveAddedRows = computed(() => addedRows.value.map((ar, i) => ({ ar, i })).filter(x => !x.ar.dead))
+const changeCount = computed(() =>
+  Object.keys(cellEdits.value).length + deletedRows.value.length + deletedCols.value.length
+  + Object.keys(headerEdits.value).length + liveAddedCols.value.length + liveAddedRows.value.length)
+
+/** 行标识：首存活列当前值（编辑后），无值退回原行号 */
+function rowLabel(r: number): string {
   const first = baseCols.value[0]
   const v = first === undefined ? '' : curCell(r, first)
   return v ? `「${v}」` : `第${r + 1}行`
 }
-const setAddedCell = (ai: number, ci: number, v: string) => { const row = addedRows.value[ai]; if (row) row[ci] = v }
-
-const changeCount = computed(() =>
-  Object.keys(cellEdits.value).length + deletedRows.value.length + deletedCols.value.length
-  + Object.keys(headerEdits.value).length + addedCols.value.length + addedRows.value.length)
-
-function addRow() {
-  const n = baseCols.value.length + addedCols.value.length
-  addedRows.value.push(Array.from({ length: n }, () => ''))
+function anchorColLabel(a: Anchor): string {
+  return a === 'end' || deletedCols.value.includes(a) ? '' : `位于「${colName(a)}」列之后，`
 }
-function popRow(i: number) { addedRows.value.splice(i, 1) }
-function addCol() {
-  const rows = liveRowIdx.value.length + addedRows.value.length
-  addedCols.value.push({ header: '', values: Array.from({ length: rows }, () => '') })
-  for (const row of addedRows.value) row.push('')
-}
+function anchorRowDesc(a: Anchor): string {
+  return a === 'end' || deletedRows.value.includes(a) ? '在表末' : `在${rowLabel(a)}之后`}
 
 function buildChanges(): string {
   const t = table.value!
@@ -85,10 +105,14 @@ function buildChanges(): string {
     lines.push(`- 列「${t.headers[c]}」更名为「${headerEdits.value[c]}」`)
   for (const c of [...deletedCols.value].sort((a, b) => a - b))
     lines.push(`- 删除列「${headerEdits.value[c] ?? t.headers[c]}」`)
-  addedCols.value.forEach((ac, k) => {
-    const vals = [...liveRowIdx.value.map(r => curCellAddCol(r, k)), ...addedRows.value.map(row => row[baseCols.value.length + k] ?? '')]
-    lines.push(`- 新增列「${ac.header.trim() || `新列${k + 1}`}」（自上而下各行值）：${vals.map(v => v.trim() || '—').join('；')}`)
-  })
+  let anon = 0
+  for (const { ac } of liveAddedCols.value) {
+    const vals = rowViews.value.map(v => ac.vals[rowKey(v)] ?? '')
+    const header = ac.header.trim()
+    if (!header && !vals.some(v => v.trim())) { anon++; continue }
+    const name = header || `新列${++anon}`
+    lines.push(`- 新增列「${name}」（${anchorColLabel(ac.anchor) || '置于表末，'}自上而下各行值）：${vals.join('；')}`)
+  }
   for (const r of [...deletedRows.value].sort((a, b) => a - b))
     lines.push(`- 删除${rowLabel(r)}行（原：${t.rows[r].join(' | ')}）`)
   for (const [k, v] of Object.entries(cellEdits.value)) {
@@ -96,11 +120,13 @@ function buildChanges(): string {
     if (deletedRows.value.includes(r) || deletedCols.value.includes(c)) continue
     lines.push(`- ${rowLabel(r)}的「${colName(c)}」格：${t.rows[r][c] || '（空）'} → ${v || '（空）'}`)
   }
-  for (const row of addedRows.value)
-    lines.push(`- 新增行：${row.map((v, i) => v.trim() || (i < baseCols.value.length ? '—' : '')).filter(Boolean).join(' | ')}`)
+  for (const { ar } of liveAddedRows.value) {
+    const cells = colViews.value.map(cv => ar.cells[colKey(cv)] ?? '')
+    if (!cells.some(v => v.trim())) continue
+    lines.push(`- ${anchorRowDesc(ar.anchor)}新增行：${cells.join(' | ')}`)
+  }
   return lines.length > 1 ? lines.join('\n') : ''
 }
-function curCellAddCol(r: number, k: number) { return addedCols.value[k]?.values[liveRowIdx.value.indexOf(r)] ?? '' }
 
 function submit() {
   const text = buildChanges()
@@ -115,7 +141,7 @@ function cancel() {
 </script>
 
 <template>
-  <!-- 非表格/解析失败：理论上不会被挂载，防御性原样输出 -->
+  <!-- 非表格/解析失败：防御性原样输出 -->
   <pre v-if="!table" class="text-[11px] whitespace-pre-wrap text-surface-600">{{ md }}</pre>
 
   <!-- 只读态：全局 markdown-body 表格观感 + 悬浮编辑入口（单元格行内 markdown 异步渲染，就绪前显原文） -->
@@ -130,48 +156,51 @@ function cancel() {
       class="absolute top-1 right-1 px-2 py-0.5 rounded-md border border-surface-200 bg-white/95 text-[10px] text-surface-500 hover:text-brand-600 hover:border-brand-300 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">✎ 编辑表格</button>
   </div>
 
-  <!-- 编辑态：操作日志收集，提交变更说明 -->
+  <!-- 编辑态：操作日志 + 锚点插入 -->
   <div v-else class="overflow-x-auto border border-brand-200 rounded-lg bg-white p-1.5">
-    <table class="w-full text-[11px] border-collapse">
+    <table class="text-[11px] border-collapse">
       <thead>
         <tr>
-          <th v-for="c in baseCols" :key="'h' + c" class="border border-surface-200 bg-surface-50 p-0.5">
-            <div class="flex items-center gap-0.5">
-              <input :value="colName(c)" @input="headerEdits[c] = ($event.target as HTMLInputElement).value"
-                class="min-w-[54px] w-full px-1 py-0.5 text-[11px] font-medium bg-transparent outline-none border-b border-transparent focus:border-brand-400" />
-              <button type="button" @click="delCol(c)" class="px-0.5 text-surface-300 hover:text-red-500 leading-none">×</button>
+          <th v-for="cv in colViews" :key="colKey(cv)" class="border border-surface-200 bg-surface-50 p-0.5 align-top">
+            <input v-if="cv.k === 'b'" :value="colName(cv.c)" @input="headerEdits[cv.c] = ($event.target as HTMLInputElement).value"
+              class="min-w-[52px] w-full px-1 py-0.5 text-[11px] font-medium bg-transparent outline-none border-b border-transparent focus:border-brand-400" />
+            <input v-else v-model="addedCols[cv.i].header" placeholder="新列名"
+              class="min-w-[52px] w-full px-1 py-0.5 text-[11px] font-medium bg-transparent outline-none border-b border-brand-300 focus:border-brand-400" />
+            <div class="flex items-center justify-end gap-1 px-0.5">
+              <button type="button" @click="insertColAt(cv.k === 'b' ? cv.c : addedCols[cv.i].anchor)"
+                class="text-[10px] text-surface-400 hover:text-brand-600 leading-none" title="在此列右侧插入新列">＋</button>
+              <button v-if="cv.k === 'b'" type="button" @click="delCol(cv.c)"
+                class="text-[10px] text-surface-400 hover:text-red-500 leading-none px-0.5" title="删除此列">×</button>
+              <button v-else type="button" @click="addedCols[cv.i].dead = true"
+                class="text-[10px] text-surface-400 hover:text-red-500 leading-none px-0.5" title="删除新增列">×</button>
             </div>
           </th>
-          <th v-for="(ac, k) in addedCols" :key="'ha' + k" class="border border-brand-200 bg-brand-50/40 p-0.5">
-            <input v-model="ac.header" placeholder="新列名"
-              class="min-w-[54px] w-full px-1 py-0.5 text-[11px] font-medium bg-transparent outline-none focus:border-brand-400" />
-          </th>
-          <th class="w-14 border-none"><button type="button" @click="addCol" class="text-[10px] text-brand-600 hover:underline whitespace-nowrap px-1">+ 列</button></th>
+          <th class="w-12 border-none align-middle"><button type="button" @click="insertColAt('end')" class="text-[10px] text-brand-600 hover:underline whitespace-nowrap px-1">+ 列</button></th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="r in liveRowIdx" :key="'r' + r">
-          <td v-for="c in baseCols" :key="'c' + c" class="border border-surface-200 p-0">
-            <input :value="curCell(r, c)" @input="setCell(r, c, ($event.target as HTMLInputElement).value)"
-              class="w-full min-w-[48px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
+        <tr v-for="rv in rowViews" :key="rowKey(rv)">
+          <td v-for="cv in colViews" :key="colKey(cv)" class="border border-surface-200 p-0"
+            :class="cv.k === 'c' ? 'bg-brand-50/30' : (rv.k === 'a' ? 'bg-emerald-50/30' : '')">
+            <input v-if="rv.k === 'b' && cv.k === 'b'" :value="curCell(rv.r, cv.c)" @input="setCell(rv.r, cv.c, ($event.target as HTMLInputElement).value)"
+              class="w-full min-w-[46px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
+            <input v-else-if="rv.k === 'b' && cv.k === 'c'" :value="addedCols[cv.i].vals[rowKey(rv)] ?? ''" @input="addedCols[cv.i].vals[rowKey(rv)] = ($event.target as HTMLInputElement).value"
+              class="w-full min-w-[46px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
+            <input v-else-if="rv.k === 'a' && cv.k === 'b'" :value="addedRows[rv.i].cells[colKey(cv)] ?? ''" @input="addedRows[rv.i].cells[colKey(cv)] = ($event.target as HTMLInputElement).value"
+              class="w-full min-w-[46px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
+            <input v-else :value="addedRows[(rv as { k: 'a'; i: number }).i].cells[colKey(cv)] ?? ''" @input="addedRows[(rv as { k: 'a'; i: number }).i].cells[colKey(cv)] = ($event.target as HTMLInputElement).value"
+              class="w-full min-w-[46px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
           </td>
-          <td v-for="(ac, k) in addedCols" :key="'ca' + k" class="border border-brand-200 bg-brand-50/30 p-0">
-            <input :value="curCellAddCol(r, k)" @input="ac.values[liveRowIdx.indexOf(r)] = ($event.target as HTMLInputElement).value"
-              class="w-full min-w-[48px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
+          <td class="border-none whitespace-nowrap pl-1">
+            <button v-if="rv.k === 'b'" type="button" @click="insertRowAt(rv.r)" class="text-[10px] text-surface-400 hover:text-brand-600 leading-none px-0.5" title="在此行下方插入新行">＋</button>
+            <button v-if="rv.k === 'b'" type="button" @click="delRow(rv.r)" class="text-[10px] text-surface-400 hover:text-red-500 leading-none px-0.5" title="删除此行">×</button>
+            <button v-else type="button" @click="addedRows[rv.i].dead = true" class="text-[10px] text-surface-400 hover:text-red-500 leading-none px-0.5" title="删除新增行">×</button>
           </td>
-          <td class="border-none text-center"><button type="button" @click="delRow(r)" class="text-surface-300 hover:text-red-500 px-1 leading-none" title="删除此行">×</button></td>
-        </tr>
-        <tr v-for="(row, ai) in addedRows" :key="'ar' + ai">
-          <td v-for="(cell, ci) in row" :key="'ac' + ci" class="border border-emerald-200 bg-emerald-50/30 p-0">
-            <input :value="cell" @input="setAddedCell(ai, ci, ($event.target as HTMLInputElement).value)"
-              class="w-full min-w-[48px] px-1.5 py-1 text-[11px] bg-transparent outline-none focus:bg-white focus:ring-1 focus:ring-brand-300" />
-          </td>
-          <td class="border-none text-center"><button type="button" @click="popRow(ai)" class="text-surface-300 hover:text-red-500 px-1 leading-none">×</button></td>
         </tr>
       </tbody>
     </table>
     <div class="flex items-center justify-between px-1 pt-1.5">
-      <button type="button" @click="addRow" class="text-[10px] text-brand-600 hover:underline">+ 行</button>
+      <button type="button" @click="insertRowAt('end')" class="text-[10px] text-brand-600 hover:underline">+ 行</button>
       <div class="flex items-center gap-2.5">
         <span v-if="changeCount" class="text-[10px] text-surface-400">已修改 {{ changeCount }} 处</span>
         <button type="button" @click="cancel" class="text-[10px] text-surface-400 hover:text-surface-600">取消</button>
