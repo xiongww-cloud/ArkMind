@@ -142,3 +142,75 @@ export function tableDiffText(b: UiTableBlock, orig: Record<string, string>[], s
   if (!parts.length) return null
   return [`【组件提交·清单修订】${b.title}`, ...parts].join('\n')
 }
+
+// ─── 交互切分：ui-block fence + GFM 表格段（代码围栏内一律不识别） ───────────
+
+export type ISeg = { kind: 'md' | 'block' | 'table'; text: string }
+
+const TABLE_SEP_RE = /^\s*\|?[\s:|-]+\|?\s*$/
+
+/** 逐行扫描切分：闭合 ui-block fence → block；围栏外连续 | 行块（≥2 行且第二行为分隔行）→ table；其余归 md */
+export function splitInteractive(raw: string): ISeg[] {
+  const segs: ISeg[] = []
+  const lines = (raw || '').split('\n')
+  let mdBuf: string[] = []
+  const flushMd = () => { if (mdBuf.length) { segs.push({ kind: 'md', text: mdBuf.join('\n') }); mdBuf = [] } }
+  let i = 0
+  let inFence = false
+  let fenceLang = ''
+  while (i < lines.length) {
+    const line = lines[i]
+    const fence = line.trimStart().match(/^```(\S*)/)
+    if (fence) {
+      if (!inFence) {
+        inFence = true; fenceLang = fence[1] || ''
+        if (fenceLang === 'ui-block') {
+          const body: string[] = []
+          i++
+          while (i < lines.length && !lines[i].trimStart().startsWith('```')) { body.push(lines[i]); i++ }
+          if (i < lines.length) i++ // 闭合行
+          inFence = false
+          flushMd()
+          segs.push({ kind: 'block', text: body.join('\n').trim() })
+          continue
+        }
+        mdBuf.push(line); i++; continue
+      }
+      inFence = false
+      mdBuf.push(line); i++; continue
+    }
+    if (inFence) { mdBuf.push(line); i++; continue }
+    // 表格块：本行 | 开头 + 下一行是分隔行 + 再下一行 | 开头（至少一行数据）
+    if (line.trimStart().startsWith('|') && i + 2 < lines.length + 1
+      && lines[i + 1] && TABLE_SEP_RE.test(lines[i + 1]) && lines[i + 1].includes('|')
+      && lines[i + 2] && lines[i + 2].trimStart().startsWith('|')) {
+      const tbl: string[] = [line, lines[i + 1]]
+      let j = i + 2
+      while (j < lines.length && lines[j].trimStart().startsWith('|')) { tbl.push(lines[j]); j++ }
+      flushMd()
+      segs.push({ kind: 'table', text: tbl.join('\n') })
+      i = j
+      continue
+    }
+    mdBuf.push(line); i++
+  }
+  flushMd()
+  if (!segs.length) segs.push({ kind: 'md', text: raw })
+  return segs
+}
+
+export function hasInteractive(raw: string): boolean {
+  return /(^|\n)```ui-block/.test(raw || '') || /(^|\n)\|/.test(raw || '')
+}
+
+/** GFM 表格源文本 → 行列单元格（去首尾竖线、trim）；非法结构返回 null（降级普通 markdown） */
+export function parseMarkdownTable(src: string): { headers: string[], rows: string[][] } | null {
+  const lines = src.trim().split('\n')
+  if (lines.length < 3) return null
+  const cells = (l: string) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim())
+  const headers = cells(lines[0])
+  if (!headers.length) return null
+  const rows = lines.slice(2).map(cells).map(r => { while (r.length < headers.length) r.push(''); return r.slice(0, headers.length) })
+  if (!rows.length) return null
+  return { headers, rows }
+}
