@@ -1480,7 +1480,9 @@ fn build_xlsx(content: &Value) -> Result<Vec<u8>, String> {
         if children.is_empty() && sheets.len() == 1 {
             return Err("content 缺少可写入的单元格内容".to_string());
         }
-        apply_xlsx_children(ws, children)?;
+        let explicit = apply_xlsx_children(ws, children)?;
+        // 列宽自适应兜底：模型未显式指定列宽的列按内容显示宽度定宽（CJK 计 2）
+        autofit_xlsx_widths(ws, children, &explicit);
     }
 
     // save 到临时文件后读回字节（save 权威 API 接受路径）
@@ -1492,6 +1494,89 @@ fn build_xlsx(content: &Value) -> Result<Vec<u8>, String> {
     let bytes = std::fs::read(&tmp).map_err(|e| format!("读取生成文件失败: {}", e));
     let _ = std::fs::remove_file(&tmp);
     bytes
+}
+
+/// 单字符显示宽度：CJK/全角→2，半角（含 \t）→1
+fn char_disp(c: char) -> usize {
+    let u = c as u32;
+    let wide = (0x1100..=0x115F).contains(&u) || (0x2E80..=0xA4CF).contains(&u)
+        || (0xAC00..=0xD7A3).contains(&u) || (0xF900..=0xFAFF).contains(&u)
+        || (0xFE30..=0xFE6F).contains(&u) || (0xFF00..=0xFF60).contains(&u)
+        || (0xFFE0..=0xFFE6).contains(&u);
+    if wide { 2 } else { 1 }
+}
+
+/// 文本显示宽度：多行取最长行（wrap 单元格列宽按行计）
+fn text_disp_width(s: &str) -> usize {
+    s.split('\n').map(|line| line.chars().map(char_disp).sum()).max().unwrap_or(0)
+}
+
+/// 递归收集值的显示文本宽度（含 md 标记——宁可高估不可低估）：
+/// 字符串→自身宽；数字→字面；数组/对象→递归求和
+fn collect_disp_width(v: &Value) -> usize {
+    match v {
+        Value::String(s) => text_disp_width(s),
+        Value::Number(n) => text_disp_width(&n.to_string()),
+        Value::Array(a) => a.iter().map(collect_disp_width).sum(),
+        Value::Object(o) => o.values().map(collect_disp_width).sum(),
+        _ => 0,
+    }
+}
+
+/// 自适应列宽兜底：仅对未显式设置过列宽的列，按内容显示宽度定宽；
+/// 纯数字列=定宽数字格式右对齐，固定 12（防止价格带小数位撑爆）；短列维持默认。
+/// row 行与 table 行统一按绝对列号对齐（合并表格单元格列偏移与写行序一致）。
+fn autofit_xlsx_widths(ws: &mut rust_xlsxwriter::Worksheet, children: &[Value], explicit: &std::collections::HashSet<usize>) {
+    use std::collections::HashMap;
+    const MIN_W: f64 = 8.43;
+    const MAX_W: f64 = 48.0;
+    let mut widths: HashMap<usize, usize> = HashMap::new();
+    let mut numeric: HashMap<usize, bool> = HashMap::new();
+    let mut bump = |col: usize, w: usize, all_num: Option<bool>| {
+        let e = widths.entry(col).or_insert(0);
+        if w > *e { *e = w; }
+        if let Some(n) = all_num {
+            let a = numeric.entry(col).or_insert(true);
+            *a &= n;
+        }
+    };
+    for child in children {
+        if let Some(cells) = child.as_array() {
+            for (i, c) in cells.iter().enumerate() { bump(i, collect_disp_width(c), None); }
+            continue;
+        }
+        if !child.is_object() { continue; }
+        let raw_kind = child["type"].as_str().unwrap_or("").trim().to_lowercase();
+        let kind = if raw_kind.is_empty() && child["cells"].is_array() { "row".to_string() } else { raw_kind };
+        match kind.as_str() {
+            "row" => {
+                if let Some(cells) = child["cells"].as_array() {
+                    for (i, c) in cells.iter().enumerate() {
+                        let is_num = matches!(c, Value::Number(_))
+                            || matches!(c, Value::Object(o) if o.get("type").and_then(|t| t.as_str()) == Some("number"));
+                        bump(i, collect_disp_width(c), if is_num { Some(true) } else { Some(false) });
+                    }
+                }
+            }
+            "table" => {
+                let start = child["col"].as_u64().unwrap_or(0) as usize;
+                let header_w = child["headers"].as_array().map(|h| h.iter().map(collect_disp_width).collect::<Vec<_>>());
+                if let Some(hw) = header_w { for (i, w) in hw.into_iter().enumerate() { bump(start + i, w, Some(false)); } }
+                if let Some(rows) = child["rows"].as_array() {
+                    for r in rows {
+                        let Some(cs) = r.as_array().or_else(|| r["cells"].as_array()) else { continue };
+                        for (i, c) in cs.iter().enumerate() { bump(start + i, collect_disp_width(c), None); }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (col, w) in widths {
+        if explicit.contains(&col) || w <= MIN_W as usize { continue; }
+        let target = if numeric.get(&col) == Some(&true) { 12.0 } else { (w + 3) as f64 };
+        let _ = ws.set_column_width(col as u16, target.clamp(MIN_W, MAX_W));
+    }
 }
 
 /// 方案报价单 xlsx（替代前端 ExcelJS 旧导出）：rust_xlsxwriter 写入——
@@ -1660,10 +1745,11 @@ pub fn build_solution_quote_xlsx(data: &Value) -> Result<Vec<u8>, String> {
 fn apply_xlsx_children(
     ws: &mut rust_xlsxwriter::Worksheet,
     children: &[Value],
-) -> Result<(), String> {
+) -> Result<std::collections::HashSet<usize>, String> {
     use rust_xlsxwriter::{Chart, ChartType, Image};
 
     let mut row_cursor: u32 = 0;
+    let mut explicit_cols: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     for child in children {
         // 容错1：子块本身就是数组 → 视为一行 cells（模型常直接给 [["a","b"],[1,2]]）
@@ -1698,6 +1784,7 @@ fn apply_xlsx_children(
                         let width = w.as_f64().unwrap_or(10.0);
                         ws.set_column_width(i as u16, width)
                             .map_err(|e| format!("设置列宽失败: {}", e))?;
+                        explicit_cols.insert(i);
                     }
                 }
             }
@@ -1787,7 +1874,7 @@ fn apply_xlsx_children(
             _ => log::warn!("[文档生成] 未知 Excel 块类型「{}」，已跳过: {}", kind, child),
         }
     }
-    Ok(())
+    Ok(explicit_cols)
 }
 
 /// 写入一行单元格并推进 row_cursor（供 row 分支与数组容错共用）
@@ -2933,6 +3020,33 @@ mod tests {
 
     /// xlsx：styles.xml 含宋体 + 11pt（build_cell_format 缺省补齐 + 调用侧零格式归一）；
     /// text_type=caption → 9pt
+    /// 列宽自适应：CJK 显示宽定列、短列维持默认、显式 column_width 不被覆盖
+    #[test]
+    fn autofit_xlsx_column_widths() {
+        use std::io::Read as _;
+        let content = json!({"sheets": [{"name": "S1", "children": [
+            {"type": "row", "cells": ["设备名称", "说明列内容比较长比较长"]},
+            {"type": "row", "cells": ["简短", 48]}
+        ]}]});
+        let bytes = super::build_xlsx(&content).expect("build xlsx");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+        let mut xml = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml").expect("sheet").read_to_string(&mut xml).expect("read");
+        assert!(xml.contains("width=\"25."), "长列应≈11字×2+3（px 往返小数）: {}", &xml[..xml.len().min(500)]);
+        assert!(!xml.contains("min=\"1\""), "短列（显示宽≤8.43）不设自定义宽");
+
+        let content2 = json!({"sheets": [{"name": "S1", "children": [
+            {"type": "column_width", "widths": [30]},
+            {"type": "row", "cells": ["设备名称", "说明列内容比较长比较长"]}
+        ]}]});
+        let bytes2 = super::build_xlsx(&content2).expect("build xlsx2");
+        let mut zip2 = zip::ZipArchive::new(std::io::Cursor::new(&bytes2)).expect("zip2");
+        let mut xml2 = String::new();
+        zip2.by_name("xl/worksheets/sheet1.xml").expect("sheet2").read_to_string(&mut xml2).expect("read2");
+        assert!(xml2.contains("width=\"30\"") || xml2.contains("width=\"30."), "显式列宽保留");
+        assert!(xml2.contains("width=\"25."), "未显式列仍自适应");
+    }
+
     #[test]
     fn xlsx_preset_font_in_styles() {
         use std::io::Read as _;
