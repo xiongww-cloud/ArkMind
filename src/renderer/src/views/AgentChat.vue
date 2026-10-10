@@ -967,7 +967,7 @@ onUnmounted(() => {
                 <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" v-tooltip="'复制答案'"><AppIcon name="copy" class="w-3 h-3" /></button>
                 <button v-if="idx === currentSession.messages.length - 1 && !agent.isChatting.value && !msg.error"
                   class="annotate-skip w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="annotateId === (msg.id || '') ? 'text-brand-600 bg-brand-50' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'"
-                  v-tooltip="annotateId === (msg.id || '') ? '退出批注' : '批注修订'"
+                  v-tooltip="annotateId === (msg.id || '') ? '取消批注' : '批注修订'"
                   @click="annotateId === (msg.id || '') ? exitAnnotate() : enterAnnotate(msg.id || '')"><AppIcon name="edit" size="12" /></button>
                 <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" v-tooltip="'查看 Workspace'">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 17V7m0 10a2 2 0 01-2-2V9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2m-6 0h6"/></svg>

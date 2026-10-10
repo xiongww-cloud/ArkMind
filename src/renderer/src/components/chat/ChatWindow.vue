@@ -621,7 +621,7 @@ onUnmounted(() => {
                 <span v-if="m.assistants?.length" class="via-chip">via {{ m.assistants.join(' · ') }}</span>
                 <button v-if="m.id === messages[messages.length - 1]?.id && !agent.isChatting.value && !m.error"
                   :class="['annotate-skip w-5 h-5 -mr-1 flex items-center justify-center rounded transition-colors', annotateId === (m.id || '') ? 'text-brand-600 bg-brand-50' : 'text-surface-300 hover:text-brand-600']"
-                  v-tooltip="annotateId === (m.id || '') ? '退出批注' : '批注修订'"
+                  v-tooltip="annotateId === (m.id || '') ? '取消批注' : '批注修订'"
                   @click="annotateId === (m.id || '') ? exitAnnotate() : enterAnnotate(m.id || '')">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.9 4.4l2.7 2.7-11 11-3.6.9.9-3.6 11-11z"/><path d="M14.5 6.8l2.7 2.7"/></svg>
                 </button>
