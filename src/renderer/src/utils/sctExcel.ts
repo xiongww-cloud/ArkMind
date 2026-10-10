@@ -365,7 +365,17 @@ export function parseSCTSheet(
       }
       if (quantity <= 0) quantity = 1
 
-      const { cleanModel, customName } = parseHardwareName(rawName)
+      const { cleanModel: parsedModel, customName } = parseHardwareName(rawName)
+      // 散配包行：本行组名不是型号，真实型号取下一行的"型号"列（退而取名称列/原值）
+      let modelSource = rawName
+      if (rawName.includes('散配包')) {
+        const next = rows[rowIdx + 1]
+        if (next && !isSummaryRow(next))
+          modelSource = cellAt(next, mapping, 'model') || cellAt(next, mapping, 'deviceName') || rawName
+      }
+      // 型号 "_" 之后为版本/扩展尾巴，一律截掉（显示名 rawName/customName 不受影响）
+      const parsed = modelSource === rawName ? parsedModel : (parseHardwareName(modelSource).cleanModel || modelSource)
+      const cleanModel = (parsed.split('_')[0] || '').trim() || parsed
 
       hardwareItems.push({
         uid: guid('hw', ++uidCounter),

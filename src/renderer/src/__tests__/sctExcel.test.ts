@@ -213,6 +213,27 @@ describe('sctExcel.parseSCTSheet', () => {
     expect(hardwareItems[0].cleanModel).toBe('DCS虚拟化套件 8')
   })
 
+  it('散配包组：型号取下一行型号列并截断下划线尾巴', () => {
+    const sheet = makeSCTSheet([
+      makeRow(3, ['sitecfgid.1,', '1', 'S5735 散配包', '', '', '', '1', '100', '100', '']),
+      makeRow(4, ['sitecfgid.2,', '', '', 'S5735-L24T4XE-A_V200R024C10', '描述', '', '', '', '', '']),
+      makeRow(5, ['sitecfgid.3,', '2', 'CloudEngine S6730', '', '', '', '1', '50', '50', ''])
+    ])
+    const { hardwareItems } = parseSCTSheet(sheet)
+    const bulk = hardwareItems.find(h => h.rawName.includes('散配包'))
+    expect(bulk?.cleanModel).toBe('S5735-L24T4XE-A')
+    expect(bulk?.rawName).toBe('S5735 散配包')
+  })
+
+  it('普通硬件型号下划线截断，显示名保留原文', () => {
+    const sheet = makeSCTSheet([
+      makeRow(3, ['sitecfgid.1,', '1', 'S5735-L24T4XE-A_V200R024C10_S2', '', '', '', '1', '100', '100', ''])
+    ])
+    const { hardwareItems } = parseSCTSheet(sheet)
+    expect(hardwareItems[0].cleanModel).toBe('S5735-L24T4XE-A')
+    expect(hardwareItems[0].rawName).toBe('S5735-L24T4XE-A_V200R024C10_S2')
+  })
+
   it('服务分组：生成服务父项 + 收集下方明细行作为子项', () => {
     const sheet = makeSCTSheet([
       makeRow(3, [
