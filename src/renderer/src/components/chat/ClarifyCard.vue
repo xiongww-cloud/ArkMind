@@ -31,7 +31,7 @@ const parsedReply = computed(() => {
   marks.forEach((m, i) => {
     const start = m.at + `${m.q.prompt.replace(/[？?]\s*$/, '')}：`.length
     const end = i + 1 < marks.length ? marks[i + 1].at : t.length
-    answers[m.q.question_id] = t.slice(start, end).replace(/；\s*$/, '').replace(/。\s*请继续执行。\s*$/, '').trim()
+    answers[m.q.question_id] = t.slice(start, end).replace(/；?\s*\d+\.\s*$/, '').replace(/；\s*$/, '').replace(/。\s*请继续执行。\s*$/, '').trim()
   })
   return { skipped: false, answers }
 })
