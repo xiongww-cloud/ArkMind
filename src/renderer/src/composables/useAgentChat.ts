@@ -6,6 +6,21 @@ import { pickRetrievalPhrase } from '@/utils/chat'
 import { renderObjectReference } from '@/components/renderer'
 
 // ─── Markdown Renderer ──────────────────────────────────────────
+/** 行级 markdown 渲染（**粗体**、`代码`、链接等）→ 单行 HTML，表格单元格等内联场景专用 */
+export async function renderMdInline(text: string): Promise<string> {
+  if (!text) return ''
+  try {
+    const mod = await import('marked')
+    const Marked = mod.Marked || (mod as any).default?.Marked || (mod as any).default
+    if (Marked && typeof Marked === 'function') {
+      const marked = new Marked({ gfm: true, breaks: false })
+      return sanitizeHtml(String(marked.parseInline?.(text) ?? ''))
+    }
+    const { marked } = mod as any
+    return sanitizeHtml(String(marked?.parseInline?.(text) ?? ''))
+  } catch { return '' }
+}
+
 export async function renderMd(text: string): Promise<string> {
   if (!text) return ''
   try {

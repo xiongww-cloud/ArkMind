@@ -1,16 +1,29 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { parseMarkdownTable } from '@/utils/uiBlocks'
+import { renderMdInline } from '@/composables/useAgentChat'
 
 /**
  * 对话内 markdown 表格 → 用户直编。操作日志式：编辑动作本身即变更记录（格改/删行/删列/改名/增列/增行），
  * 提交 = 变更说明消息（不含全表），AI 逐项机械应用。删行作废该行改格，删列作废该列改格。
+ * 只读态与 marked 渲染同观感：.markdown-body 全局表格样式 + 单元格行内 markdown（**粗体**等）。
  */
 const props = defineProps<{ md: string }>()
 const emit = defineEmits<{ submit: [text: string] }>()
 
 const table = computed(() => parseMarkdownTable(props.md))
 const editing = ref(false)
+
+const inlineHtml = ref<Record<string, string>>({})
+watch(table, async (t) => {
+  if (!t) return
+  for (let c = 0; c < t.headers.length; c++) inlineHtml.value[`h:${c}`] = await renderMdInline(t.headers[c])
+  for (let r = 0; r < t.rows.length; r++)
+    for (let c = 0; c < t.headers.length; c++) {
+      const raw = t.rows[r][c]
+      if (raw) inlineHtml.value[`${r}:${c}`] = await renderMdInline(raw)
+    }
+}, { immediate: true })
 
 const cellEdits = ref<Record<string, string>>({})      // `${r}:${c}`(原坐标) -> 新值
 const deletedRows = ref<number[]>([])                   // 原行号
@@ -105,12 +118,14 @@ function cancel() {
   <!-- 非表格/解析失败：理论上不会被挂载，防御性原样输出 -->
   <pre v-if="!table" class="text-[11px] whitespace-pre-wrap text-surface-600">{{ md }}</pre>
 
-  <!-- 只读态：普通表格 + 悬浮编辑入口 -->
-  <div v-else-if="!editing" class="group relative overflow-x-auto">
-    <table class="w-full text-[11px] border-collapse my-0.5">
-      <thead><tr><th v-for="(h, c) in table.headers" :key="c" class="text-left font-medium text-surface-500 border border-surface-200 bg-surface-50 px-1.5 py-1 whitespace-nowrap">{{ h }}</th></tr></thead>
-      <tbody><tr v-for="(row, r) in table.rows" :key="r"><td v-for="(cell, c) in row" :key="c" class="border border-surface-200 px-1.5 py-1 text-surface-700">{{ cell }}</td></tr></tbody>
-    </table>
+  <!-- 只读态：全局 markdown-body 表格观感 + 悬浮编辑入口（单元格行内 markdown 异步渲染，就绪前显原文） -->
+  <div v-else-if="!editing" class="group relative">
+    <div class="markdown-body">
+      <table>
+        <thead><tr><th v-for="(h, c) in table.headers" :key="c"><span v-if="inlineHtml['h:' + c]" v-html="inlineHtml['h:' + c]" />{{ inlineHtml['h:' + c] ? '' : h }}</th></tr></thead>
+        <tbody><tr v-for="(row, r) in table.rows" :key="r"><td v-for="(cell, c) in row" :key="c"><span v-if="inlineHtml[r + ':' + c]" v-html="inlineHtml[r + ':' + c]" />{{ inlineHtml[r + ':' + c] ? '' : cell }}</td></tr></tbody>
+      </table>
+    </div>
     <button type="button" @click="editing = true"
       class="absolute top-1 right-1 px-2 py-0.5 rounded-md border border-surface-200 bg-white/95 text-[10px] text-surface-500 hover:text-brand-600 hover:border-brand-300 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">✎ 编辑表格</button>
   </div>
