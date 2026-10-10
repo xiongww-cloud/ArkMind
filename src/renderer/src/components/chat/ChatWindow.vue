@@ -641,11 +641,11 @@ onUnmounted(() => {
               </div>
             </div>
             <div v-if="m.role === 'user' && !agent.isChatting.value && !m.error" class="flex justify-end items-center gap-0.5 px-0.5 -mt-0.5">
-              <button class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors" v-tooltip="'复制'" @click="copyUserMsg(m)">
-                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
-              </button>
               <button class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 transition-colors" v-tooltip="'撤回：移除此后全部对话'" @click="askWithdraw(m)">
                 <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 010 11H11"/></svg>
+              </button>
+              <button class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors" v-tooltip="'复制'" @click="copyUserMsg(m)">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
               </button>
             </div>
           </div>
