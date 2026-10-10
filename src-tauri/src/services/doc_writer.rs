@@ -1482,9 +1482,9 @@ fn build_xlsx(content: &Value) -> Result<Vec<u8>, String> {
         }
         // 列宽规划先行：自适应宽度在写入前落定（后续显式 column_width 指令仍可覆盖），
         // 超上限列纳入 wrap 集——长内容换行而非撑爆列宽
-        let (col_widths, wrap_cols) = plan_xlsx_columns(children);
+        let (col_widths, wrap_cols, center_cols) = plan_xlsx_columns(children);
         for (col, w) in col_widths { let _ = ws.set_column_width(col as u16, w); }
-        apply_xlsx_children(ws, children, &wrap_cols)?;
+        apply_xlsx_children(ws, children, &wrap_cols, &center_cols)?;
     }
 
     // save 到临时文件后读回字节（save 权威 API 接受路径）
@@ -1544,13 +1544,14 @@ fn cell_has_newline(v: &Value) -> bool {
     }
 }
 
-/// 列宽与换行规划（确定性排版兜底，先于写入执行）：按内容显示宽度定宽——
-/// min(max+3, 40)；显示宽 ≤8.43 的短列不设自定义；纯数字列固定 12；
-/// 超上限的列封顶 40 并纳入 wrap 集（单元格自动换行、行高由 Excel 按内容展开）。
-/// 显式 column_width 指令在写入阶段仍会覆盖规划值（显式意图优先）。
+/// 列宽与排版规划（确定性排版兜底，先于写入执行）：按内容显示宽度定宽——
+/// min(max+3, 40)；显示宽 ≤8.43 的短列不设自定义；
+/// 超上限的列封顶 40 并纳入 wrap 集（单元格自动换行、行高由 Excel 按内容展开）；
+/// 纯数字短列（序号/年份型，表头不计入数字判定）→ center 集：写入时框架补居中。
+/// 较宽数字列（金额）保持 Excel 默认右对齐。显式 column_width 指令在写入阶段仍覆盖规划值。
 const XLSX_COL_MIN_W: f64 = 8.43;
 const XLSX_COL_MAX_W: f64 = 40.0;
-fn plan_xlsx_columns(children: &[Value]) -> (std::collections::HashMap<usize, f64>, std::collections::HashSet<usize>) {
+fn plan_xlsx_columns(children: &[Value]) -> (std::collections::HashMap<usize, f64>, std::collections::HashSet<usize>, std::collections::HashSet<usize>) {
     use std::collections::HashMap;
     // col → (最长显示宽, 是否纯数字列)
     let mut maxes: HashMap<usize, (usize, Option<bool>)> = HashMap::new();
@@ -1573,17 +1574,21 @@ fn plan_xlsx_columns(children: &[Value]) -> (std::collections::HashMap<usize, f6
         let kind = if raw_kind.is_empty() && child["cells"].is_array() { "row".to_string() } else { raw_kind };
         match kind.as_str() {
             "row" => {
+                let is_header = child["header"].as_bool().unwrap_or(false);
                 if let Some(cells) = child["cells"].as_array() {
                     for (i, c) in cells.iter().enumerate() {
-                        let is_num = matches!(c, Value::Number(_))
-                            || matches!(c, Value::Object(o) if o.get("type").and_then(|t| t.as_str()) == Some("number"));
-                        bump(i, collect_disp_width(c), if is_num { Some(true) } else { Some(false) });
+                        // 表头行只贡献宽度不掺和数字判定（"序号"二字是 string，不该拉低 all_num）
+                        let all_num = if is_header { None } else {
+                            Some(matches!(c, Value::Number(_))
+                                || matches!(c, Value::Object(o) if o.get("type").and_then(|t| t.as_str()) == Some("number")))
+                        };
+                        bump(i, collect_disp_width(c), all_num);
                     }
                 }
             }
             "table" => {
                 let start = child["col"].as_u64().unwrap_or(0) as usize;
-                if let Some(h) = child["headers"].as_array() { for (i, w) in h.iter().map(collect_disp_width).enumerate() { bump(start + i, w, Some(false)); } }
+                if let Some(h) = child["headers"].as_array() { for (i, w) in h.iter().map(collect_disp_width).enumerate() { bump(start + i, w, None); } }
                 if let Some(rows) = child["rows"].as_array() {
                     for r in rows {
                         let Some(cs) = r.as_array().or_else(|| r["cells"].as_array()) else { continue };
@@ -1596,8 +1601,13 @@ fn plan_xlsx_columns(children: &[Value]) -> (std::collections::HashMap<usize, f6
     }
     let mut widths = std::collections::HashMap::new();
     let mut wrap = std::collections::HashSet::new();
+    let mut center = std::collections::HashSet::new();
     for (col, (max_w, all_num)) in maxes {
-        if all_num == Some(true) { widths.insert(col, 12.0); continue; }
+        if all_num == Some(true) {
+            if (max_w + 3) as f64 <= XLSX_COL_MIN_W { center.insert(col); }
+            else { widths.insert(col, (max_w + 3) as f64); }
+            continue;
+        }
         if max_w + 3 > XLSX_COL_MAX_W as usize {
             widths.insert(col, XLSX_COL_MAX_W);
             wrap.insert(col);
@@ -1605,7 +1615,12 @@ fn plan_xlsx_columns(children: &[Value]) -> (std::collections::HashMap<usize, f6
             widths.insert(col, (max_w + 3) as f64);
         }
     }
-    (widths, wrap)
+    (widths, wrap, center)
+}
+
+/// 单元格是否显式给了水平对齐（显式优先，框架不覆写）
+fn cell_has_align(v: &Value) -> bool {
+    matches!(v, Value::Object(o) if o.contains_key("align"))
 }
 
 /// 方案报价单 xlsx（替代前端 ExcelJS 旧导出）：rust_xlsxwriter 写入——
@@ -1775,6 +1790,7 @@ fn apply_xlsx_children(
     ws: &mut rust_xlsxwriter::Worksheet,
     children: &[Value],
     wrap_cols: &std::collections::HashSet<usize>,
+    center_cols: &std::collections::HashSet<usize>,
 ) -> Result<(), String> {
     use rust_xlsxwriter::{Chart, ChartType, Image};
 
@@ -1783,7 +1799,7 @@ fn apply_xlsx_children(
     for child in children {
         // 容错1：子块本身就是数组 → 视为一行 cells（模型常直接给 [["a","b"],[1,2]]）
         if let Some(cells) = child.as_array() {
-            write_xlsx_row(ws, cells, false, &mut row_cursor, wrap_cols)?;
+            write_xlsx_row(ws, cells, false, &mut row_cursor, wrap_cols, center_cols)?;
             continue;
         }
         if !child.is_object() {
@@ -1805,7 +1821,7 @@ fn apply_xlsx_children(
                     continue;
                 };
                 let is_header = child["header"].as_bool().unwrap_or(false);
-                write_xlsx_row(ws, cells, is_header, &mut row_cursor, wrap_cols)?;
+                write_xlsx_row(ws, cells, is_header, &mut row_cursor, wrap_cols, center_cols)?;
             }
             "column_width" | "column_widths" => {
                 if let Some(widths) = child["widths"].as_array() {
@@ -1913,6 +1929,7 @@ fn write_xlsx_row(
     is_header: bool,
     row_cursor: &mut u32,
     wrap_cols: &std::collections::HashSet<usize>,
+    center_cols: &std::collections::HashSet<usize>,
 ) -> Result<(), String> {
     use rust_xlsxwriter::XlsxError;
 
@@ -1933,6 +1950,10 @@ fn write_xlsx_row(
         // 换行兜底：列宽规划判定的超宽列 / 单元格自带显式换行 → wrap（行高自适应展开）
         if wrap_cols.contains(&ci) || cell_has_newline(cell) {
             fmt = fmt.map(|f| f.set_text_wrap());
+        }
+        // 纯数字短列（序号型）框架补居中；模型显式给过 align 则不覆写
+        if center_cols.contains(&ci) && !cell_has_align(cell) {
+            fmt = fmt.map(|f| f.set_align(rust_xlsxwriter::FormatAlign::Center));
         }
 
         // 公式：带样式写入
@@ -3092,6 +3113,22 @@ mod tests {
         let mut styles3 = String::new();
         zip3.by_name("xl/styles.xml").expect("styles3").read_to_string(&mut styles3).expect("read styles3");
         assert!(styles3.contains("wrapText=\"1\""), "超宽列单元格换行");
+
+        // 序号型纯数字短列（表头是文字，不掺和数字判定）：不设自定义宽 + 数字格居中
+        let content4 = json!({"sheets": [{"name": "S1", "children": [
+            {"type": "row", "header": true, "cells": [{"type": "string", "text": "序号"}, {"type": "string", "text": "设备说明内容"}]},
+            {"type": "row", "cells": [1, "AB"]},
+            {"type": "row", "cells": [2, "CD"]}
+        ]}]});
+        let bytes4 = super::build_xlsx(&content4).expect("build xlsx4");
+        let mut zip4 = zip::ZipArchive::new(std::io::Cursor::new(&bytes4)).expect("zip4");
+        let mut xml4 = String::new();
+        zip4.by_name("xl/worksheets/sheet1.xml").expect("sheet4").read_to_string(&mut xml4).expect("read4");
+        assert!(!xml4.contains("min=\"1\""), "序号列不再固定 12，维持默认窄宽");
+        assert!(xml4.contains("min=\"2\""), "说明列按内容定宽");
+        let mut styles4 = String::new();
+        zip4.by_name("xl/styles.xml").expect("styles4").read_to_string(&mut styles4).expect("read styles4");
+        assert!(styles4.contains("horizontal=\"center\""), "纯数字短列居中");
     }
 
     /// 样式字段不得虚增列宽：带 bold/align/border 的短文本列维持默认宽
