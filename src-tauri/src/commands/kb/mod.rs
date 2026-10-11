@@ -374,14 +374,16 @@ pub fn cleanup_chat_messages(max_compressed_per_session: i64) {
 /// 压缩摘要 一并清除、compressed 消息还原，撤回后的世界在每条上下文通道上都成立。
 /// delete_files=true 时顺带删除范围内 AI 生成文件（走会话释放链，引用计数保护与手动删除同规则）。
 #[tauri::command]
-pub async fn kb_withdraw_messages(session_id: String, anchor_text: String, delete_files: Option<bool>) -> Result<Value, String> {
+pub async fn kb_withdraw_messages(session_id: String, anchor_text: String, delete_files: Option<bool>, nth: Option<i64>) -> Result<Value, String> {
     let anchor = anchor_text.trim();
     if anchor.is_empty() { return Err("撤回锚点为空".into()); }
     let pattern = format!("{}\n\n<<<ATTACHMENTS>>>%", crate::database::escape_like(anchor));
+    // 锚点定位：仅 active 用户消息；同文本多条时按前端序号（nth，0 起）取第 n 条——
+    // 曾经"无 status 过滤 + DESC 取最新"导致撤回重复文本时锚点被最后一条截胡，早期消息诈尸
     let row = database::get(
-        "SELECT id FROM chat_messages WHERE session_id=?1 AND role='user' AND (content=?2 OR content LIKE ?3 ESCAPE '\\') ORDER BY id DESC LIMIT 1",
-        &[json!(&session_id), json!(anchor), json!(&pattern)],
-    ).map_err(|e| e.to_string())?.ok_or("未找到要撤回的消息")?;
+        "SELECT id FROM chat_messages WHERE session_id=?1 AND role='user' AND status='active' AND (content=?2 OR content LIKE ?3 ESCAPE '\\') ORDER BY id ASC LIMIT 1 OFFSET ?4",
+        &[json!(&session_id), json!(anchor), json!(&pattern), json!(nth.unwrap_or(0).max(0))],
+    ).map_err(|e| e.to_string())?.ok_or("未找到要撤回的消息（可能已被撤回或内容已变化）")?;
     let from_id = row["id"].as_i64().ok_or("消息 id 异常")?;
 
     // 范围内生成文件（撤回标记前后均可，metadata 不受 status 影响）
@@ -411,6 +413,9 @@ pub async fn kb_withdraw_messages(session_id: String, anchor_text: String, delet
         "UPDATE chat_messages SET status='withdrawn' WHERE session_id=?1 AND id>=?2 AND status='active'",
         &[json!(&session_id), json!(from_id)],
     ).map(|r| r.changes).unwrap_or(0);
+    if withdrawn == 0 {
+        return Ok(json!({ "success": false, "error": "撤回范围为空（锚点之后没有活跃消息）" }));
+    }
     let _ = database::run(
         "UPDATE chat_sessions SET tool_metadata='{}', session_state=NULL, context_metadata=NULL, updated_at=datetime('now','localtime') WHERE id=?1",
         &[json!(&session_id)],

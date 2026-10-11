@@ -765,13 +765,17 @@ watch(() => agent.isChatting.value, (v) => { if (v) exitAnnotate() })
 watch(currentSessionId, () => { exitAnnotate(); if (filesOpen.value) loadSessionFiles() })
 
 // ─── 撤回：任意用户消息起，其后全部移出会话与上下文；可选连带删除生成文件 ───
-const withdrawTarget = ref<{ text: string; files: WithdrawnFile[]; idx: number } | null>(null)
+const withdrawTarget = ref<{ text: string; files: WithdrawnFile[]; idx: number; nth: number; attachments: any[] } | null>(null)
 function askWithdraw(idx: number) {
   const arr = currentSession.value?.messages || []
   const anchor = arr[idx]
   if (!anchor || anchor.role !== 'user') return
   const files = arr.slice(idx + 1).flatMap(m => (m.documents || []).map(d => ({ id: d.file_id, name: d.file_name })))
-  withdrawTarget.value = { text: anchor.content || '', files, idx }
+  // 同文本序号：后端锚点按"第 n 条同文本 active 消息"定位（历史行含 ATTACHMENTS 后缀，按基底文本比对）
+  const base = (c: string) => (c || '').split('\n\n<<<ATTACHMENTS>>>')[0]
+  const text = base(anchor.content || '')
+  const nth = arr.slice(0, idx + 1).filter(m => m.role === 'user' && base(m.content || '') === text).length - 1
+  withdrawTarget.value = { text, files, idx, nth, attachments: (anchor as any).attachments || [] }
 }
 async function doWithdraw(deleteFiles: boolean) {
   const t = withdrawTarget.value
@@ -780,13 +784,21 @@ async function doWithdraw(deleteFiles: boolean) {
   const sid = currentSessionId.value
   if (!sid) return
   try {
-    const r = await kbWithdrawMessages(sid, t.text, deleteFiles)
+    const r = await kbWithdrawMessages(sid, t.text, deleteFiles, t.nth)
     if (r.success) {
       const s = currentSession.value
       if (s) { s.messages.splice(t.idx); saveToStorage(s) }
       exitAnnotate()
       toast({ message: `已撤回 ${r.withdrawn_count} 条消息${r.files_deleted ? `，删除 ${r.files_deleted} 个文件` : ''}`, type: 'success' })
       if (filesOpen.value) loadSessionFiles()
+      // 撤回回喂：修改后一键重发（本会话内消息带完整附件；历史消息无附件路径仅回文本）
+      if (t.text) {
+        inputMessage.value = t.text
+        if (t.attachments?.length) pendingAttachments.value = t.attachments
+        nextTick(() => { const el = textareaRef.value; if (el) { el.focus(); el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px' } })
+      }
+    } else {
+      toast({ message: r.error || '撤回失败：范围为空', type: 'error' })
     }
   } catch (e: any) { toast({ message: `撤回失败：${e?.message || e}`, type: 'error' }) }
 }

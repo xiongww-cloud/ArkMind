@@ -1302,9 +1302,9 @@ export async function kbClearFabSessions(): Promise<SuccessResponse> {
 }
 
 export interface WithdrawnFile { id: string; name: string }
-export async function kbWithdrawMessages(sessionId: string, anchorText: string, deleteFiles: boolean):
-  Promise<{ success: boolean; withdrawn_count: number; files: WithdrawnFile[]; files_deleted: number }> {
-  return invoke('kb_withdraw_messages', { sessionId, anchorText, deleteFiles })
+export async function kbWithdrawMessages(sessionId: string, anchorText: string, deleteFiles: boolean, nth = 0):
+  Promise<{ success: boolean; error?: string; withdrawn_count: number; files: WithdrawnFile[]; files_deleted: number }> {
+  return invoke('kb_withdraw_messages', { sessionId, anchorText, deleteFiles, nth })
 }
 
 export interface SessionFile {

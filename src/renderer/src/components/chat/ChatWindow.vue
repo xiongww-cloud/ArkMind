@@ -494,14 +494,18 @@ const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: 
 const tableRevisions = ref<TableRevision[]>([])
 
 // ─── 撤回：任意用户消息起，其后全部移出会话与上下文；可选连带删除生成文件 ───
-const withdrawTarget = ref<{ text: string; files: WithdrawnFile[]; idx: number } | null>(null)
+const withdrawTarget = ref<{ text: string; files: WithdrawnFile[]; idx: number; nth: number; attachments: any[] } | null>(null)
 function askWithdraw(anchor: ChatMessage) {
   if (!anchor || anchor.role !== 'user') return
   // visibleMessages 可能是尾部切片：截断点按全量 messages 的真实下标计算
   const idx = messages.value.findIndex(x => x.id === anchor.id)
   if (idx < 0) return
   const files = messages.value.slice(idx + 1).flatMap(m => (m.documents || []).map(d => ({ id: d.file_id, name: d.file_name })))
-  withdrawTarget.value = { text: anchor.content || '', files, idx }
+  // 同文本序号：后端锚点按"第 n 条同文本 active 消息"定位（历史行含 ATTACHMENTS 后缀，按基底文本比对）
+  const base = (c: string) => (c || '').split('\n\n<<<ATTACHMENTS>>>')[0]
+  const text = base(anchor.content || '')
+  const nth = messages.value.slice(0, idx + 1).filter(m => m.role === 'user' && base(m.content || '') === text).length - 1
+  withdrawTarget.value = { text, files, idx, nth, attachments: (anchor as any).attachments || [] }
 }
 async function copyUserMsg(m: ChatMessage) {
   try { await navigator.clipboard.writeText((m.content || '').trim()); import('@/composables/useToast').then(t => t.toast({ message: '已复制', type: 'success' })) }
@@ -512,11 +516,19 @@ async function doWithdraw(deleteFiles: boolean) {
   if (!t) return
   withdrawTarget.value = null
   try {
-    const r = await kbWithdrawMessages(sessionId.value || '', t.text, deleteFiles)
+    const r = await kbWithdrawMessages(sessionId.value || '', t.text, deleteFiles, t.nth)
     if (r.success) {
       messages.value = messages.value.slice(0, t.idx)
       exitAnnotate()
       import('@/composables/useToast').then(m => m.toast({ message: `已撤回 ${r.withdrawn_count} 条消息${r.files_deleted ? `，删除 ${r.files_deleted} 个文件` : ''}`, type: 'success' }))
+      // 撤回回喂：修改后一键重发
+      if (t.text) {
+        inputText.value = t.text
+        if (t.attachments?.length) pendingAttachments.value = t.attachments
+        nextTick(() => { const el = composerRef.value; if (el) { el.focus(); el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 80) + 'px' } })
+      }
+    } else {
+      import('@/composables/useToast').then(m => m.toast({ message: r.error || '撤回失败：范围为空', type: 'error' }))
     }
   } catch (e: any) {
     import('@/composables/useToast').then(m => m.toast({ message: `撤回失败：${e?.message || e}`, type: 'error' }))
