@@ -148,10 +148,11 @@ struct SseState {
 }
 
 /// flush 积压未发的 token（失败路径也要 flush：保证前端已有内容与 partial 一致，续写无缝衔接）
-/// to_ui=DELIVERY 通道授权（OutputClass 裁决），owner=token 归属（"main" 或子 Agent id）
-fn flush_pending_tokens(st: &mut SseState, to_ui: bool, owner: &str, sid: &str, app: &Option<tauri::AppHandle>) {
+/// to_ui=DELIVERY 通道授权（OutputClass 裁决）；thought_to_ui=思考流通道（!silent：主链+全部子链直出，后台运行体安静）
+/// owner=token 归属（"main" 或子 Agent id）
+fn flush_pending_tokens(st: &mut SseState, to_ui: bool, thought_to_ui: bool, owner: &str, sid: &str, app: &Option<tauri::AppHandle>) {
     if !st.thought_buf.is_empty() {
-        if to_ui {
+        if thought_to_ui {
             if let Some(ref h) = app {
                 let _ = h.emit("agent:thought", json!({"text": &st.thought_buf, "owner": owner, "sid": sid}));
             }
@@ -389,7 +390,7 @@ async fn stream_once(
             let first = st.reasoning.is_empty();
             st.reasoning.push_str(rtok);
             st.thought_buf.push_str(rtok);
-            if to_ui && (first || st.thought_buf.len() >= 50 || rtok.contains('\n')) {
+            if !silent && (first || st.thought_buf.len() >= 50 || rtok.contains('\n')) {
                 if let Some(ref h) = app {
                     let _ = h.emit("agent:thought", json!({"text": &st.thought_buf, "owner": owner, "sid": sid_str.clone()}));
                 }
@@ -417,7 +418,7 @@ async fn stream_once(
     // 失败退出（流错误/取消）：flush 积压 token 保证前端与 partial 一致
     macro_rules! fail {
         ($msg:expr, $cancelled:expr) => {{
-            flush_pending_tokens(&mut st, to_ui, &owner, &sid_str, &app_handle);
+            flush_pending_tokens(&mut st, to_ui, !silent, &owner, &sid_str, &app_handle);
             let has_tool_calls = !st.tca.is_empty() || st.suppress_tokens;
             let tool_args_chars = st.tca.iter().map(|(_, _, a)| a.len()).sum();
             let partial = st.full.clone();
@@ -475,7 +476,7 @@ async fn stream_once(
     if !st.buf.is_empty() { st.buf.push('\n'); }
     while try_process_one(&mut st, &app_handle) {}
     // 流结束后 flush 残余 buffer
-    flush_pending_tokens(&mut st, to_ui, &owner, &sid_str, &app_handle);
+    flush_pending_tokens(&mut st, to_ui, !silent, &owner, &sid_str, &app_handle);
     log::info!("SSE stream end +{}ms tokens={} len={} tool_calls={} done={} finish={} err={}",
         t0.elapsed().as_millis(), st.count, st.full.len(), st.tca.len(), st.done, st.got_finish, st.server_err.is_some());
 
