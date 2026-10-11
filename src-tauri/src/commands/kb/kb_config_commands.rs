@@ -187,6 +187,23 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                         .unwrap_or_else(|| "unknown panic".to_string());
                     log::error!("[Save] 持久化段 panic（done 已照常发出）: {}", msg);
                 }
+                // ★ 终答收尾（框架兜底，模型忘 delete 的常态化修复）：
+                //   最后在途步 = 终答交付本身 → 落定；全部完成 → 清空计划并推 null 快照（Dock 即时消失）；
+                //   未完成（pending/failed 残留）仅落定 active 并保留显示——用户可让 AI 继续没完成的。
+                //   追问挂起（clarification）不是终答，跳过；取消/报错走 Err 分支不经过此处。
+                if v["result_type"].as_str() != Some("clarification") {
+                    if let Some(ref sid) = session_id {
+                        if let Some(mut sess) = crate::services::agent_workflow::session::load_session_state(sid) {
+                            let mut changed = false;
+                            if let Some(pl) = sess.plan.as_mut() { if pl.complete_active() { changed = true; } }
+                            if sess.plan.as_ref().map_or(false, |p| p.all_done()) { sess.plan = None; changed = true; }
+                            if changed {
+                                crate::services::agent_workflow::session::save_session_state(sid, &sess);
+                                let _ = app_handle.emit("agent:plan", json!({"sid": sid, "plan": sess.plan.as_ref().map(|p| p.to_payload())}));
+                            }
+                        }
+                    }
+                }
                 log::info!("[Done] emitted sid={}", v["sid"].as_str().unwrap_or(""));
                 let _ = app_handle.emit("agent:done", &v);
                 if let Some(ans) = v["answer"].as_str() { if !ans.is_empty() { let preview: String = ans.chars().take(100).collect(); println!("[Agent] 响应: {}", preview); } }
