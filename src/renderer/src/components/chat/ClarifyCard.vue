@@ -114,28 +114,27 @@ function skipWithDefaults() {
         <div v-for="(q, i) in clarification.questions" :key="q.question_id" class="pt-0.5">
           <p class="text-[12px] font-medium text-surface-700 mb-1.5 leading-snug">{{ i + 1 }}. {{ q.prompt }}</p>
           <input v-if="q.type === 'text'" v-model="answers[q.question_id]" type="text"
-            class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="输入答复..." />
+            class="w-full border border-surface-200 rounded-md px-2.5 py-1 text-[11px] outline-none focus:border-brand-400" placeholder="输入答复..." />
           <div v-else class="space-y-1">
             <button v-for="opt in q.options" :key="opt" type="button" @click="toggle(q, opt)"
-              class="w-full text-left px-2.5 py-1.5 rounded-lg border text-[11px] flex items-center gap-2 transition-colors"
+              class="w-full text-left px-2.5 py-1 rounded-md border text-[11px] flex items-center gap-2 transition-colors"
               :class="isPicked(q, opt) ? 'border-brand-500 bg-brand-50 text-brand-800 font-medium' : 'border-surface-200 text-surface-600 hover:border-brand-300 hover:bg-brand-50/40'">
-              <span class="w-3.5 h-3.5 rounded-full border flex items-center justify-center flex-shrink-0"
+              <span class="w-3 h-3 rounded-full border flex items-center justify-center flex-shrink-0"
                 :class="isPicked(q, opt) ? 'border-brand-600 bg-brand-600' : 'border-surface-300'">
-                <svg v-if="isPicked(q, opt)" class="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                <svg v-if="isPicked(q, opt)" class="w-2 h-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
               </span>
               {{ opt }}
             </button>
             <input v-if="customOpen[q.question_id] || custom[q.question_id]" v-model="custom[q.question_id]" type="text"
-              class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400"
+              class="w-full border border-surface-200 rounded-md px-2.5 py-1 text-[11px] outline-none focus:border-brand-400"
               :placeholder="q.type === 'multiple_choice' ? '补充其他答案（并入已选项）...' : '自定义答案...'" autofocus />
             <button v-else type="button" @click="openCustom(q)" class="text-[10px] text-surface-400 hover:text-brand-600 px-1">+ 其他（自行填写）</button>
           </div>
         </div>
-        <div class="flex items-center justify-between pt-0.5">
-          <button type="button" class="text-[10px] text-surface-400 hover:text-surface-600 transition-colors" @click="skipWithDefaults">先不补充，按默认假设继续</button>
+        <div class="flex items-center justify-end gap-2 pt-0.5">
+          <button type="button" @click="skipWithDefaults" class="btn-secondary text-xs">先不补充，按默认假设继续</button>
           <button type="button" :disabled="!anyAnswered" @click="submit"
-            class="px-3.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
-            :class="anyAnswered ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'"
+            :class="anyAnswered ? 'btn-primary text-xs' : 'inline-flex items-center h-6 px-2.5 rounded-md text-xs font-medium bg-surface-100 text-surface-400 cursor-not-allowed'"
           >确认并继续</button>
         </div>
       </template>
