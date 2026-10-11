@@ -397,7 +397,7 @@ function resetPanel() {
   hasMore.value = false
 }
 
-/// 显式开新会话（不等 30 分钟轮转）：**懒实体化**——后端只打标记不建行，
+/// 显式开新会话（不等续接窗口轮转）：**懒实体化**——后端只打标记不建行，
 /// 下一条消息发送时才真正创建（点了不发消息不会堆积空白会话）；回答进行中不打断，旧回复落旧会话
 async function newSession() {
   if (agent.isChatting.value) {
@@ -421,7 +421,7 @@ async function send() {
     return
   }
 
-  // 发送前轮转判定：距上次提问 >30min（或会话已删/追问超时）→ 新会话并清面板
+  // 发送前轮转判定：距上次提问超出续接窗口（设置可调，默认 10min；或会话已删/追问超时）→ 新会话并清面板
   try {
     const r = await fabResolveSession()
     if (r.rotated && messages.value.length) resetPanel()

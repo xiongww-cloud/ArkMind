@@ -13,6 +13,7 @@ import {
   pipelineRevectorize, pipelineRetryFailed,
   pipelineDebugStatus, knowledgePipelineStatus,
   getLogs, clearLogs,
+  getSystemSetting, setSystemSetting,
 } from '@/api/db-client'
 import { openUrl } from '@tauri-apps/plugin-opener'
 
@@ -378,6 +379,7 @@ async function loadAiConfig() {
     webSearchKey.value = config.webSearch?.apiKey || ''
     loadNotifyConfig()
   loadHotkeyConfig()
+  loadFabRotate()
   } catch (e) {
     console.warn('Failed to load AI config:', e)
   }
@@ -763,6 +765,24 @@ const notifyIntervalOptions = [
   { value: 1440, label: '24 小时' },
 ]
 const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.value === notifyInterval.value)?.label || '1 小时')
+
+// ─── 对话续接窗口（浮窗快呼轮转判定，默认 10 分钟）───
+const FAB_ROTATE_KEY = 'fab_rotate_minutes'
+const fabRotateMins = ref('10')
+
+async function loadFabRotate() {
+  try {
+    const r = await getSystemSetting(FAB_ROTATE_KEY)
+    const v = parseInt(r.value || '')
+    fabRotateMins.value = Number.isFinite(v) && v >= 1 && v <= 240 ? String(v) : '10'
+  } catch {}
+}
+
+async function saveFabRotate(e: Event) {
+  const v = (e.target as HTMLSelectElement).value
+  fabRotateMins.value = v
+  try { await setSystemSetting(FAB_ROTATE_KEY, v) } catch {}
+}
 
 // ─── 浮窗快呼快捷键 ─────────────────────────────────────────
 const isMacPlatform = typeof navigator !== 'undefined' && (
@@ -2044,6 +2064,20 @@ async function saveProfileEditor() {
                   <button class="text-[10px] text-brand-600 hover:underline" @click="startHotkeyRecord">修改</button>
                   <button v-if="hotkey !== hotkeyDefault" class="text-[10px] text-surface-400 hover:text-surface-600" @click="resetHotkeyDefault">默认</button>
                 </div>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-[12px] font-medium text-surface-700">对话续接窗口</p>
+                  <p class="text-[10px] text-surface-400">浮窗中超过该时长未提问，下一条将开启新会话；待追问的卡片 24 小时内仍续接</p>
+                </div>
+                <select class="flex-shrink-0 px-2.5 py-1.5 rounded-lg border border-surface-200 bg-white text-[11px] text-surface-700 outline-none focus:border-brand-400 cursor-pointer"
+                  :value="fabRotateMins" @change="saveFabRotate">
+                  <option value="5">5 分钟</option>
+                  <option value="10">10 分钟</option>
+                  <option value="15">15 分钟</option>
+                  <option value="30">30 分钟</option>
+                  <option value="60">60 分钟</option>
+                </select>
               </div>
             </div>
           </div>

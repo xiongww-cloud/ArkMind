@@ -84,17 +84,27 @@ pub use kb_memory_commands::*;
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 快呼浮窗会话 — 30 分钟提问窗口轮转 + Gemini 式统一当前对话
+// 快呼浮窗会话 — 可配提问窗口轮转（默认 10 分钟）+ Gemini 式统一当前对话
 //   · 全局指针 KV（fab_session_state={id,last}）单一写入者 = kb_agent_chat
 //     每次发送（任一窗口）→ 浮窗唤开即续"上次聊到的地方"
-//   · 轮转仅在浮窗发送时判定：距上次提问 ≤30min 续；追问卡片冻结 ≤24h；
+//   · 轮转仅在浮窗发送时判定：距上次提问在窗口内续（fab_rotate_minutes，默认 10min）；追问卡片冻结 ≤24h；
 //     当前会话已被列表删除 / 首次无状态 → 新建 fab-<uuid>（决定不写状态）
 //   · 打开面板永不轮转：始终淡显当前会话上一轮，提问才切换
 //   · 会话在智能问答列表全量可见（无前缀排除、不 GC），标题=首问 30 字
 // ═══════════════════════════════════════════════════════════════════
 const FAB_SESSION_PREFIX: &str = "fab-";
 const FAB_LEGACY_SESSION: &str = "fab-main-session";
-const FAB_SESSION_WINDOW_SECS: i64 = 30 * 60;
+/// 对话续接窗口默认值（分钟），可被 system_settings.fab_rotate_minutes 覆盖
+pub(crate) const FAB_ROTATE_DEFAULT_MINS: i64 = 10;
+
+/// 读配置的续接窗口秒数：缺失/非法回退默认 10 分钟，clamp 1..240
+fn fab_rotate_window_secs() -> i64 {
+    let mins = database::get("SELECT value FROM system_settings WHERE key='fab_rotate_minutes'", &[])
+        .ok().flatten()
+        .and_then(|r| r["value"].as_str().and_then(|v| v.trim().parse::<i64>().ok()))
+        .unwrap_or(FAB_ROTATE_DEFAULT_MINS);
+    mins.clamp(1, 240) * 60
+}
 const FAB_CLARIFICATION_GRACE_SECS: i64 = 24 * 3600;
 const FAB_TITLE_PLACEHOLDER: &str = "快速唤起";
 
@@ -102,9 +112,9 @@ const FAB_TITLE_PLACEHOLDER: &str = "快速唤起";
 pub(crate) enum FabAction { Keep, Rotate }
 
 /// 轮转判定（纯函数，可单测）：now/last 为 epoch 秒
-pub(crate) fn decide_fab_rotation(now: i64, last: i64, has_pending_clarification: bool) -> FabAction {
+pub(crate) fn decide_fab_rotation(now: i64, last: i64, has_pending_clarification: bool, window_secs: i64) -> FabAction {
     let elapsed = now.saturating_sub(last);
-    if elapsed <= FAB_SESSION_WINDOW_SECS { return FabAction::Keep; }
+    if elapsed <= window_secs { return FabAction::Keep; }
     if has_pending_clarification && elapsed <= FAB_CLARIFICATION_GRACE_SECS { return FabAction::Keep; }
     FabAction::Rotate
 }
@@ -217,7 +227,7 @@ fn fab_evaluate(now: i64) -> (Option<String>, FabAction) {
     }
     let pending = cur_id.as_deref().map_or(false, |id| fab_has_pending_clarification(id));
     let action = match (cur_id.as_ref(), last) {
-        (Some(_), Some(l)) => decide_fab_rotation(now, l, pending),
+        (Some(_), Some(l)) => decide_fab_rotation(now, l, pending, fab_rotate_window_secs()),
         (Some(_), None) => FabAction::Keep, // 刚接管/时间戳缺失：视为窗口内
         (None, _) => FabAction::Rotate,
     };
@@ -457,29 +467,36 @@ mod fab_rotation_tests {
 
     #[test]
     fn keeps_within_window() {
-        assert_eq!(decide_fab_rotation(1000, 1000 - 29 * MIN, false), FabAction::Keep);
+        assert_eq!(decide_fab_rotation(1000, 1000 - 29 * MIN, false, 30 * MIN), FabAction::Keep);
         // 恰好 30 分钟边界：维持
-        assert_eq!(decide_fab_rotation(1000, 1000 - 30 * MIN, false), FabAction::Keep);
+        assert_eq!(decide_fab_rotation(1000, 1000 - 30 * MIN, false, 30 * MIN), FabAction::Keep);
     }
 
     #[test]
     fn rotates_after_window_without_pending() {
-        assert_eq!(decide_fab_rotation(1000, 1000 - 31 * MIN, false), FabAction::Rotate);
-        assert_eq!(decide_fab_rotation(1000, 1000 - 10 * 60 * MIN, false), FabAction::Rotate);
+        assert_eq!(decide_fab_rotation(1000, 1000 - 31 * MIN, false, 30 * MIN), FabAction::Rotate);
+        assert_eq!(decide_fab_rotation(1000, 1000 - 10 * 60 * MIN, false, 30 * MIN), FabAction::Rotate);
+    }
+
+    #[test]
+    fn honors_custom_configured_window() {
+        // 配置口径 10 分钟：9 分钟续、11 分钟轮转
+        assert_eq!(decide_fab_rotation(1000, 1000 - 9 * MIN, false, 10 * MIN), FabAction::Keep);
+        assert_eq!(decide_fab_rotation(1000, 1000 - 11 * MIN, false, 10 * MIN), FabAction::Rotate);
     }
 
     #[test]
     fn clarification_freezes_rotation_up_to_24h() {
-        assert_eq!(decide_fab_rotation(1000, 1000 - 45 * MIN, true), FabAction::Keep);
+        assert_eq!(decide_fab_rotation(1000, 1000 - 45 * MIN, true, 30 * MIN), FabAction::Keep);
         // 恰好 24h 边界：仍冻结
-        assert_eq!(decide_fab_rotation(1000, 1000 - 24 * 60 * MIN, true), FabAction::Keep);
+        assert_eq!(decide_fab_rotation(1000, 1000 - 24 * 60 * MIN, true, 30 * MIN), FabAction::Keep);
         // 超时视为放弃作答 → 轮转
-        assert_eq!(decide_fab_rotation(1000, 1000 - 25 * 60 * MIN, true), FabAction::Rotate);
+        assert_eq!(decide_fab_rotation(1000, 1000 - 25 * 60 * MIN, true, 30 * MIN), FabAction::Rotate);
     }
 
     #[test]
     fn clock_skew_last_in_future_keeps() {
-        assert_eq!(decide_fab_rotation(1000, 1200, false), FabAction::Keep);
+        assert_eq!(decide_fab_rotation(1000, 1200, false, 30 * MIN), FabAction::Keep);
     }
 
     #[test]
