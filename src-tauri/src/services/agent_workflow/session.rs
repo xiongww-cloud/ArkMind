@@ -40,6 +40,9 @@ pub struct SessionMemory {
     pub(crate) access_counter: usize,
     pub(crate) search_keywords: Vec<Vec<String>>,
     pub(crate) tool_history: Vec<String>,  // 工具调用历史（用于生成检索计划）
+    /// 执行计划快照（ext_tool_plan 唯一事实源）：随会话记忆持久化——
+    /// 追问续答/熔断续聊跨 run 恢复；撤回断代置 session_state=NULL 时同灭
+    pub(crate) plan: Option<crate::services::agent_workflow::plan::PlanSnapshot>,
     pub(crate) prompt_tokens: i64,  // 累计 prompt tokens
     pub(crate) completion_tokens: i64,  // 累计 cached tokens
     pub(crate) cached_tokens: i64,  // 累计 cached tokens
@@ -91,6 +94,7 @@ impl SessionMemory {
             access_counter: 0,
             search_keywords: Vec::new(),
             tool_history: Vec::new(),
+            plan: None,
             prompt_tokens: 0,
             completion_tokens: 0,
             cached_tokens: 0,

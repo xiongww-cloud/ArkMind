@@ -429,7 +429,7 @@ async function send() {
 
   agent.stopAllTypewriters(messages.value)
   agentRun.resetParticipants()
-  agentRun.setRunSid(sessionId.value || ''); agentRun.clearPlan()
+  agentRun.setRunSid(sessionId.value || '')
   const atts = [...pendingAttachments.value]
   inputText.value = ''; pendingAttachments.value = []
   nextTick(() => { if (composerRef.value) composerRef.value.style.height = 'auto' })

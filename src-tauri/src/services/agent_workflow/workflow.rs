@@ -234,19 +234,11 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true, None).await
 }
 
-/// plan 围栏采纳：本轮文本含 {"type":"plan"} → 状态机重置接管；同结构重复声明 no-op。返回新步骤数（变更时）。
-fn adopt_plan(cur: &mut Option<crate::services::agent_workflow::plan::WorkflowPlan>, text: &str) -> Option<usize> {
-    let fresh = crate::services::agent_workflow::plan::plan_from_text(text)?;
-    if cur.as_ref().map(|p| p.to_payload()) == Some(fresh.to_payload()) { return None }
-    let n = fresh.steps.len();
-    *cur = Some(fresh);
-    Some(n)
-}
-
-fn emit_plan_snapshot(plan: &Option<crate::services::agent_workflow::plan::WorkflowPlan>, app_handle: &Option<tauri::AppHandle>, sid_out: &str, silent: bool) {
-    if silent || plan.is_none() { return }
+/// 计划快照推送：前端 Dock 纯投影（含 null——删除/清空即时消失）。事实源 = session.plan（工具唯一写入口）
+fn emit_plan_snapshot(plan: Option<&crate::services::agent_workflow::plan::PlanSnapshot>, app_handle: &Option<tauri::AppHandle>, sid_out: &str, silent: bool) {
+    if silent { return }
     if let Some(ref h) = app_handle {
-        let _ = h.emit("agent:plan", serde_json::json!({"sid": sid_out, "plan": plan.as_ref().map(|p| p.to_payload())}));
+        let _ = h.emit("agent:plan", serde_json::json!({"sid": sid_out, "plan": plan.map(|p| p.to_payload())}));
     }
 }
 
@@ -543,6 +535,10 @@ pub async fn agent_chat_workflow_internal(
     // ★ 归属会话身份：生成文档 relation 行写 entity_id（委托子循环经共享 main_session 自动继承）
     if session.owner_session_id.is_none() {
         session.owner_session_id = session_id.clone();
+    }
+    // ★ 计划恢复：run 开头同步权威快照（含 null——上一 run 的 Dock 残留即时清除；有计划则带进度复活）
+    if is_root && !silent {
+        emit_plan_snapshot(session.plan.as_ref(), &app_handle, &sid_out, false);
     }
 
     // ★ 从 DB 加载历史消息
@@ -873,10 +869,11 @@ pub async fn agent_chat_workflow_internal(
     let (mut iters, mut pt, mut _ct) = (0i32, 0i64, 0i64);
     let mut _cached_total: i64 = 0;
     let mut _prev_pt: i64 = 0;
-    let mut budget = 300i32;  // 增加到300分
+    let mut budget = 300i32;  // 基础预算；create 计划时按步数放大（几何扣费保留）
+    let mut budget_total = 300i32;
     let mut search_cost = 8i32;  // 降低初始消耗到8分
-    // ★ plan 状态机（主 Agent 专属）：围栏采纳 → 委托推进；步内工具轮计数与软上限
-    let mut plan: Option<crate::services::agent_workflow::plan::WorkflowPlan> = None;
+    // ★ 执行计划：事实源在 session.plan（ext_tool_plan 唯一写入口，跨 run 持久化恢复）；
+    //   委托/工具轮事件为兜底推进；step_calls 为本 run 的当前步工具轮计数
     let mut step_calls: i32 = 0;
     let mut max_iters_dyn = max_iters;
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -949,16 +946,16 @@ pub async fn agent_chat_workflow_internal(
                     .sum::<i64>());
                 (text_len + tc_len) / 3
             }).sum();
-            let plan_line = match plan.as_ref() {
+            let plan_line = if is_root { match session.plan.as_ref() {
                             Some(pl) => {
                                 let cap_note = if step_calls >= crate::services::agent_workflow::plan::STEP_TOOL_SOFT_CAP { "【本步工具轮已达上限 10：若已有可交付结论，用一句话交接并直接进入下一步（系统会自动落定本步）；仍有缺口则在最终答复中列明，勿在本步继续发散】" } else { "" };
-                                format!("\n- 执行计划（系统自动跟踪，无需回写状态）: 共 {} 步 · 已完成 {} · 当前步工具轮 {}/10 {}", pl.steps.len(), pl.done_count(), step_calls, cap_note)
+                                format!("\n- 执行计划（经 ext_tool_plan 管理：显式 update 为主，委托/工具轮自动兜底）: 共 {} 步 · 已完成 {} · 当前步工具轮 {}/10 {}", pl.steps.len(), pl.done_count(), step_calls, cap_note)
                             }
                             None => String::new(),
-                        };
+                        } } else { String::new() };
             let budget_info = format!(
-                "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽{}",
-                scratchpad, cn_now_str(), iters, search_cost, budget, status, context_tokens, plan_line
+                "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: {} 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽{}",
+                scratchpad, cn_now_str(), iters, search_cost, budget, status, budget_total, context_tokens, plan_line
             );
             // 移除上一轮的动态上下文消息
             if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
@@ -1028,24 +1025,6 @@ pub async fn agent_chat_workflow_internal(
                 context_tokens, round_pt, hit_rate, round_ct, pt, session.prompt_tokens, session.completion_tokens);
         }
         let ac = ac_owned.as_str();
-        // ★ plan 检测：本轮文本（过渡语或答复开头）含 plan 围栏即接管状态机
-        if is_root {
-            if let Some(n) = adopt_plan(&mut plan, ac) {
-                max_iters_dyn = crate::services::agent_workflow::plan::max_iters_for(Some(n), max_iters_dyn);
-                step_calls = 0;
-                emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
-            }
-            // ★ 文本落定：模型在本轮产出正文（步骤过渡语 / 最终答复）即视为当前步收尾——
-            //   检索/写入型步骤不再只能等委托信号，进度提示与模型行为不再互相误导
-            if !ac.trim().is_empty() {
-                if let Some(pl) = plan.as_mut() {
-                    if pl.complete_active() {
-                        step_calls = 0;
-                        emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
-                    }
-                }
-            }
-        }
         let mut tcs: Option<Vec<Value>> = if tcs_streamed.is_empty() { None } else { Some(tcs_streamed) };
         // ★ 始终计算清理后的 content（剥离工具调用标记），后续所有展示/保存/判定都使用干净文本
         let cleaned_ac = clean_tool_markers(ac, true);
@@ -1121,9 +1100,16 @@ pub async fn agent_chat_workflow_internal(
             }
             Some(ref calls) if !calls.is_empty() => {
                 // ★ 工具轮：不再向前端推送 interim 内容，检索期间保持预设文案
-                if let Some(pl) = plan.as_mut() {
-                    if !pl.states.iter().any(|x| *x == crate::services::agent_workflow::plan::StepState::Active) { pl.begin_next_pending(); }
-                    step_calls += 1;
+                if is_root {
+                    let mut lit = false;
+                    if let Some(pl) = session.plan.as_mut() {
+                        if !pl.states.iter().any(|x| *x == crate::services::agent_workflow::plan::StepState::Active) { lit = pl.begin_next_pending(); }
+                        step_calls += 1;
+                    }
+                    if lit {
+                        if let Some(ref sid) = session_id { save_session_state(sid, &session); }
+                        emit_plan_snapshot(session.plan.as_ref(), &app_handle, &sid_out, silent);
+                    }
                 }
                 // ★ 预算检查：不足时强制回答（在工具调用之前检查）
                 if budget < search_cost {
@@ -1576,6 +1562,20 @@ pub async fn agent_chat_workflow_internal(
                         "ext_tool_report" => {
                             (tools::report::execute(&a), vec![])
                         }
+                        "ext_tool_plan" => {
+                            // ★ 执行计划工具：唯一事实源 session.plan；即时落盘（不等轮末）+ 快照推送 + 预算/轮上限联动
+                            let outcome = crate::services::agent_workflow::plan::execute_tool(&a, session);
+                            if let Some(n) = outcome.created_steps {
+                                let add = crate::services::agent_workflow::plan::PLAN_BUDGET_PER_STEP * n as i32;
+                                budget += add;
+                                budget_total += add;
+                                max_iters_dyn = crate::services::agent_workflow::plan::max_iters_for(Some(n), max_iters_dyn);
+                                step_calls = 0;
+                            }
+                            if is_root { if let Some(ref sid) = session_id { save_session_state(sid, &session); } }
+                            emit_plan_snapshot(session.plan.as_ref(), &app_handle, &sid_out, silent);
+                            (outcome.envelope, vec![])
+                        }
                         "ext_tool_watch" => {
                             (tools::watch::execute(&a), vec![])
                         }
@@ -1599,12 +1599,13 @@ pub async fn agent_chat_workflow_internal(
                             let expected_output = a["expected_output"].as_str().unwrap_or("");
                             // ★ 路由决策日志：记录 LLM 选中的目标（未命中时与注入清单对照）
                             log::info!("[Route] 选择委托 agent_id={} task={:.80}", agent_id, task);
-                            // ★ plan：委托开始 → 按目标 Agent 名推进步（hint 互含，无则最早 pending）
-                            if is_root && plan.is_some() {
+                            // ★ plan（兜底）：委托开始 → 按目标 Agent 名推进步；模型显式 update 为主
+                            if is_root && session.plan.is_some() {
                                 let pname = crate::database::get("SELECT name FROM agent_profiles WHERE id=?1 AND status='active'", &[json!(agent_id)])
                                     .ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default();
-                                if let Some(pl) = plan.as_mut() { pl.advance_on_delegate(&pname); }
-                                emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
+                                if let Some(pl) = session.plan.as_mut() { pl.advance_on_delegate(&pname); }
+                                if let Some(ref sid) = session_id { save_session_state(sid, &session); }
+                                emit_plan_snapshot(session.plan.as_ref(), &app_handle, &sid_out, silent);
                             }
                             // ★ 共享完整上下文：全量 messages 快照直传（废除 recent_messages 20条×200字摘要）；
                             //   context 仅保留主 Agent 显式补充的结构化引用
@@ -1621,8 +1622,9 @@ pub async fn agent_chat_workflow_internal(
                             match serde_json::from_str::<Value>(&res) {
                                 Ok(v) => {
                                     if is_root && v["data"]["success"].as_bool() == Some(true) {
-                                    if let Some(pl) = plan.as_mut() { if pl.complete_active() { step_calls = 0; } }
-                                    emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
+                                    if let Some(pl) = session.plan.as_mut() { if pl.complete_active() { step_calls = 0; } }
+                                    if let Some(ref sid) = session_id { save_session_state(sid, &session); }
+                                    emit_plan_snapshot(session.plan.as_ref(), &app_handle, &sid_out, silent);
                                 }
                                 if v["data"]["cancelled"].as_bool() == Some(true) {
                                         if let Some(ref k) = cancel_key { cancel_session(k); } else { cancel_session(""); }
@@ -1839,16 +1841,16 @@ pub async fn agent_chat_workflow_internal(
                             .sum::<i64>());
                         (text_len + tc_len) / 3
                     }).sum();
-                     let plan_line = match plan.as_ref() {
+                     let plan_line = if is_root { match session.plan.as_ref() {
                                      Some(pl) => {
                                          let cap_note = if step_calls >= crate::services::agent_workflow::plan::STEP_TOOL_SOFT_CAP { "【本步工具轮已达上限 10：若已有可交付结论，用一句话交接并直接进入下一步（系统会自动落定本步）；仍有缺口则在最终答复中列明，勿在本步继续发散】" } else { "" };
-                                         format!("\n- 执行计划（系统自动跟踪，无需回写状态）: 共 {} 步 · 已完成 {} · 当前步工具轮 {}/10 {}", pl.steps.len(), pl.done_count(), step_calls, cap_note)
+                                         format!("\n- 执行计划（经 ext_tool_plan 管理：显式 update 为主，委托/工具轮自动兜底）: 共 {} 步 · 已完成 {} · 当前步工具轮 {}/10 {}", pl.steps.len(), pl.done_count(), step_calls, cap_note)
                                      }
                                      None => String::new(),
-                                 };
+                                 } } else { String::new() };
                      let budget_info = format!(
-                        "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽{}",
-                        scratchpad, cn_now_str(), iters, search_cost, budget, status, context_tokens, plan_line
+                        "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: {} 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽{}",
+                        scratchpad, cn_now_str(), iters, search_cost, budget, status, budget_total, context_tokens, plan_line
                     );
                     // 移除上一轮的动态上下文消息
                     if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {

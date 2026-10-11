@@ -101,6 +101,8 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
         "ext_tool_ask_user".to_string(),
         // 关注管理：用户对话中明示"盯着X"的承接入口（观察池写入），无它则只能口头答应
         "ext_tool_watch".to_string(),
+        // 执行计划（多步任务自管理；主 Agent 专属，子 Agent 不可用）
+        "ext_tool_plan".to_string(),
         // 通知清单核对（action 级授权，workflow 守卫判定）：主窗口只读 list/get；
         // 写权 create/update/delete 留在分析师与专业助手，调用会被守卫拒绝并给出委托指引
         "ext_tool_manage_notification:list".to_string(),

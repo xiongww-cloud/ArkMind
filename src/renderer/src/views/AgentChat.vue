@@ -581,7 +581,7 @@ async function handleSendMessage() {
   agent.isChatting.value = true
   agent.setThinkingProgress('')
   agentRun.resetParticipants()
-  agentRun.setRunSid(session.id); agentRun.clearPlan()
+  agentRun.setRunSid(session.id)
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
   session.messages.push(aiMsg)
   // ★ 初始默认"思考中"，工具调用时才切换预设文本

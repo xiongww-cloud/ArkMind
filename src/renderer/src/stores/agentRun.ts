@@ -6,7 +6,7 @@ import { listen } from '@tauri-apps/api/event'
  *  ★ 并发安全：tauri 事件全窗口广播，所有 agent:* payload 带 sid（归属会话）；
  *  本窗口只应用与 runSid（当前运行会话）匹配的事件，并行会话互不串扰。 */
 export interface PlanStepLive { title: string; agent: string; state: 'pending' | 'active' | 'done' }
-export interface PlanState { title: string; steps: PlanStepLive[]; finished: boolean }
+export interface PlanState { title: string; steps: PlanStepLive[] }
 
 export interface AgentRunState {
   /** 当前正在执行的子 Agent（null = 主 Agent 或空闲）；只驱动气泡内轨迹行 */
@@ -50,15 +50,9 @@ export const useAgentRunStore = defineStore('agentRun', {
     },
     applyPlan(payload: { sid?: string; plan?: { title: string; steps: PlanStepLive[] } | null } | null) {
       if (!this.matchSid(payload)) return
-      this.plan = payload?.plan ? { title: payload.plan.title, steps: payload.plan.steps, finished: false } : null
+      this.plan = payload?.plan ? { title: payload.plan.title, steps: payload.plan.steps } : null
     },
     clearPlan() { this.plan = null },
-    /** run 终态（done/error）：Dock 淡出倒计时由此启动；未落定的 active 步如实回退 pending（不假绿） */
-    markPlanRunEnd() {
-      if (!this.plan || this.plan.finished) return
-      this.plan.finished = true
-      this.plan.steps = this.plan.steps.map(st => st.state === 'active' ? { ...st, state: 'pending' as const } : st)
-    },
     /** 每轮发送开始时调用：清空上轮署名（done 处理器读取 participants 之后才会再次重置） */
     resetParticipants() {
       this.participants = []
@@ -118,6 +112,6 @@ export function initAgentRunListeners() {
     }
   }).catch(() => { listenersBound = false })
   listen<{ sid?: string; plan?: { title: string; steps: PlanStepLive[] } | null }>('agent:plan', (ev) => store.applyPlan(ev.payload)).catch(() => {})
-  listen<{ sid?: string }>('agent:done', (ev) => { if (store.matchSid(ev.payload)) { store.clearAgent(); store.markPlanRunEnd() } }).catch(() => { listenersBound = false })
-  listen<{ sid?: string }>('agent:error', (ev) => { if (store.matchSid(ev.payload)) { store.clearAgent(); store.markPlanRunEnd() } }).catch(() => { listenersBound = false })
+  listen<{ sid?: string }>('agent:done', (ev) => { if (store.matchSid(ev.payload)) store.clearAgent() }).catch(() => { listenersBound = false })
+  listen<{ sid?: string }>('agent:error', (ev) => { if (store.matchSid(ev.payload)) store.clearAgent() }).catch(() => { listenersBound = false })
 }
