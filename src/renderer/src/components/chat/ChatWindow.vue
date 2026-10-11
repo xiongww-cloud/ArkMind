@@ -12,6 +12,7 @@ import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import MessageBody from '@/components/chat/MessageBody.vue'
 import AnnotationLayer from '@/components/chat/AnnotationLayer.vue'
 import AnnotatePanel from '@/components/chat/AnnotatePanel.vue'
+import PlanDock from '@/components/chat/PlanDock.vue'
 import { hasInteractive, buildRevisionMessage, type Annotation, type TableRevision } from '@/utils/uiBlocks'
 import { uploadPasteFile } from '@/utils/pasteUpload'
 import { useAgentRunStore } from '@/stores/agentRun'
@@ -428,6 +429,7 @@ async function send() {
 
   agent.stopAllTypewriters(messages.value)
   agentRun.resetParticipants()
+  agentRun.setRunSid(sessionId.value || ''); agentRun.clearPlan()
   const atts = [...pendingAttachments.value]
   inputText.value = ''; pendingAttachments.value = []
   nextTick(() => { if (composerRef.value) composerRef.value.style.height = 'auto' })
@@ -552,7 +554,7 @@ function onComposerKey(e: KeyboardEvent) {
 }
 
 async function stopAgent() {
-  await agent.stopAgent(() => messages.value)
+  await agent.stopAgent(() => messages.value, sessionId.value)
   scrollChat(true)
 }
 
@@ -618,9 +620,9 @@ onUnmounted(() => {
                 <span class="text-[12px] text-[#8e8e93]">· {{ wProgress || '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
               </div>
               <AnnotationLayer v-else-if="annotateId === (m.id || '')" class="msg-a__body" :active="true" @add="annotations.push($event)">
-                <MessageBody :raw="m.content" :msg-id="m.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[m.id || ''] = el }" :plan-live="m.id === messages[messages.length - 1]?.id" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (m.id || '')) tableRevisions = r }" />
+                <MessageBody :raw="m.content" :msg-id="m.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[m.id || ''] = el }" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (m.id || '')) tableRevisions = r }" />
               </AnnotationLayer>
-              <MessageBody v-else-if="!m.thinking && hasInteractive(m.content)" class="msg-a__body" :raw="m.content" :msg-id="m.id || ''" :plan-live="m.id === messages[messages.length - 1]?.id" @send="submitClarification" />
+              <MessageBody v-else-if="!m.thinking && hasInteractive(m.content)" class="msg-a__body" :raw="m.content" :msg-id="m.id || ''" @send="submitClarification" />
               <div v-else class="msg-a__body markdown-body" :class="{ 'thinking-bubble': m.thinking }"
                 v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
               <!-- 思考流（本轮瞬态：流式滚动自动跟底，正文开始折叠为一行可展开） -->
@@ -674,6 +676,8 @@ onUnmounted(() => {
       </div>
     </transition>
 
+    <!-- 执行计划 Dock（输入卡上方，滚动不离场；后端 agent:plan 事件驱动） -->
+    <PlanDock />
     <!-- 输入卡（底部常驻） -->
     <div class="composer">
       <div v-if="pendingAttachments.length" class="composer-attach">

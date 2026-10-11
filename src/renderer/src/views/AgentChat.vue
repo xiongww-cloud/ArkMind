@@ -8,6 +8,7 @@ import { dangerConfirm } from '@/composables/useConfirm'
 import { kbAgentChat, kbChat, notesV2Create, fetchNotebooks, kbSaveSessions, kbLoadSessions, kbLoadSessionMessages, kbDeleteSession, kbWithdrawMessages, kbSessionFiles, kbReleaseGeneratedFile, previewFile, exportFile, copyFileToClipboard, type WithdrawnFile, type SessionFile } from '@/api/db-client'
 import WithdrawDialog from '@/components/chat/WithdrawDialog.vue'
 import SessionFilesPanel from '@/components/chat/SessionFilesPanel.vue'
+import PlanDock from '@/components/chat/PlanDock.vue'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { useAgentChat, type ChatMessage as AgentChatMessage, type GeneratedDocument, type ClarificationData, extractDocumentsFromToolLog, parseDocumentsMetadata, parseClarificationMetadata } from '@/composables/useAgentChat'
@@ -579,6 +580,7 @@ async function handleSendMessage() {
   agent.isChatting.value = true
   agent.setThinkingProgress('')
   agentRun.resetParticipants()
+  agentRun.setRunSid(session.id); agentRun.clearPlan()
   const aiMsg: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', isThinking: true, toolCalls: [], timestamp: Date.now() }
   session.messages.push(aiMsg)
   // ★ 初始默认"思考中"，工具调用时才切换预设文本
@@ -625,21 +627,25 @@ async function handleSendMessage() {
   //   reject 后永久卡"思考中"且 invoke 永不发起）
   try {
     // ★ Real Cognitive Stream: 实时进度（优先展示后端 msg，如"已路由到「XX」"，否则随机话术）
-    unlistenProgress = await listen<{msg?:string}>('agent:progress', (ev) => {
+    unlistenProgress = await listen<{msg?:string;sid?:string}>('agent:progress', (ev) => {
+      if (ev.payload?.sid && ev.payload.sid !== session.id) return
       agent.setThinkingProgress(ev.payload?.msg || pickRetrievalPhrase())
       scrollToBottomIfNear()
     })
-    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => {
+    unlistenThought = await listen<{text:string;sid?:string}>('agent:thought', (ev) => {
       if (agent.thoughtCollapsed.value) return
+      if (ev.payload?.sid && ev.payload.sid !== session.id) return
       agent.thought.value += ev.payload?.text || ''
       scrollToBottomIfNear()
     })
-    unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
+    unlistenToken = await listen<{token:string;sid?:string}>('agent:token', (ev) => {
+      if (ev.payload?.sid && ev.payload.sid !== session.id) return
       tokenQueue.push(ev.payload.token)
     })
     stickToBottom.value = true; scrollToBottomIfNear()
     // ★ 监听 agent:done 事件（后台任务完成时触发）
     unlistenDone = await listen<any>('agent:done', async (ev) => {
+      if (ev.payload?.sid && ev.payload.sid !== session.id) return
       console.log('[FE] done received')
       flushTokenQueue()
       collapseThought()
@@ -675,6 +681,7 @@ async function handleSendMessage() {
 
     // ★ 监听 agent:error 事件
     unlistenError = await listen<any>('agent:error', (ev) => {
+      if (ev.payload?.sid && ev.payload.sid !== session.id) return
       flushTokenQueue()
       collapseThought()
       aiMsg.isThinking = false
@@ -808,7 +815,7 @@ async function cpFile(f: SessionFile) {
 async function stopAgent() {
   try {
     const { agentCancel } = await import('@/api/db-client')
-    await agentCancel()
+    await agentCancel(agentRun.runSid || undefined)
     agent.isChatting.value = false
     // C4 修复：停止时 unlisten 所有旧 listener，防止重发时重复处理
     unlistenProgress?.(); unlistenProgress = null
@@ -992,9 +999,9 @@ onUnmounted(() => {
                 </div>
                 <div v-else-if="agent.isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
                 <AnnotationLayer v-else-if="annotateId === (msg.id || '')" :active="true" @add="annotations.push($event)">
-                  <MessageBody class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[msg.id || ''] = el }" :plan-live="idx === currentSession.messages.length - 1" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (msg.id || '')) tableRevisions = r }" />
+                  <MessageBody class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[msg.id || ''] = el }" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (msg.id || '')) tableRevisions = r }" />
                 </AnnotationLayer>
-                <MessageBody v-else-if="hasInteractive(msg.content)" class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :plan-live="idx === currentSession.messages.length - 1" @send="submitClarification" />
+                <MessageBody v-else-if="hasInteractive(msg.content)" class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" @send="submitClarification" />
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
                 <!-- 思考流（本轮瞬态：流式滚动自动跟底，正文开始折叠为一行可展开，刷新/历史不存在） -->
                 <div v-if="agent.thought.value && (msg.id || '') === agent.thoughtMsgId.value" class="mt-1">
@@ -1044,6 +1051,7 @@ onUnmounted(() => {
     <!-- Input Bar -->
     <div class="flex-shrink-0 px-4 pb-4 pt-2 bg-surface-50/30">
       <div class="max-w-3xl mx-auto">
+        <PlanDock />
         <div class="flex items-start justify-between gap-2 mb-1.5">
           <AttachmentChips v-if="pendingAttachments.length" :files="pendingAttachments" removable @remove="removeAttachment" />
           <p class="text-[10px] text-surface-300 pr-1 flex-shrink-0 mt-0.5 ml-auto">↵ 发送 · Shift+↵ 换行</p>

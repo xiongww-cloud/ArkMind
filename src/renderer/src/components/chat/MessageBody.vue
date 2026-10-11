@@ -5,13 +5,12 @@ import { renderMd, useAgentChat } from '@/composables/useAgentChat'
 import { toast } from '@/composables/useToast'
 import UiBlock from '@/components/chat/UiBlock.vue'
 import MarkdownTable from '@/components/chat/MarkdownTable.vue'
-import PlanCard from '@/components/chat/PlanCard.vue'
 
-const props = defineProps<{ raw: string; msgId: string; annotate?: boolean; planLive?: boolean }>()
+const props = defineProps<{ raw: string; msgId: string; annotate?: boolean }>()
 const emit = defineEmits<{ send: [text: string]; 'revision-change': [revisions: { diff: string; headerLabel: string }[]] }>()
 const agent = useAgentChat()
 
-const segs = computed(() => splitInteractive(props.raw))
+const segs = computed(() => splitInteractive(props.raw).filter(sg => !(sg.kind === 'block' && planOf(sg.text))))
 const htmls = reactive<Record<number, string>>({})
 
 type TableInst = { getRevision: () => { diff: string; headerLabel: string }; hasChanges: () => boolean; reset: () => void } | null
@@ -43,7 +42,7 @@ function sendFromBlock(text: string) {
   emit('send', text)
 }
 
-// block 段中的 plan 卡单独渲染（同一围栏 JSON 只解析一次，按文本缓存）
+// plan 围栏检测（历史消息里整段隐藏：计划进度已归后端状态机 + 底部 Dock，消息流不复述）
 const planCache = new Map<string, ReturnType<typeof parseUiBlock>>()
 function planOf(text: string) {
   if (!planCache.has(text)) planCache.set(text, parseUiBlock(text))
@@ -55,10 +54,7 @@ function planOf(text: string) {
 <template>
   <div class="space-y-1">
     <template v-for="(seg, i) in segs" :key="i">
-      <template v-if="seg.kind === 'block'">
-        <PlanCard v-if="planOf(seg.text)" :title="planOf(seg.text)!.title" :steps="planOf(seg.text)!.steps" :msg-id="msgId" :live="!!planLive" />
-        <UiBlock v-else :raw="seg.text" :msg-id="msgId" @send="sendFromBlock" />
-      </template>
+      <UiBlock v-if="seg.kind === 'block'" :raw="seg.text" :msg-id="msgId" @send="sendFromBlock" />
       <MarkdownTable v-else-if="seg.kind === 'table'" :md="seg.text" :forced="!!annotate" :ref="(el) => setTableRef(i, el)" @revised="emit('revision-change', getRevisions())" />
       <!-- md 段：htmls 未就绪时留空（异步渲染瞬时）；与旧整段渲染行为一致 -->
       <div v-else class="markdown-body" v-html="htmls[i] || ''" />

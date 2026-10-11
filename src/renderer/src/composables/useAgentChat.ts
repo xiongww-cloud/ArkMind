@@ -351,10 +351,10 @@ export function useAgentChat() {
   }
 
   // ── stopAgent ──
-  async function stopAgent(getMessages: () => ChatMessage[]) {
+  async function stopAgent(getMessages: () => ChatMessage[], sessionId?: string) {
     try {
       const { agentCancel } = await import('@/api/db-client')
-      await agentCancel()
+      await agentCancel(sessionId)
       isChatting.value = false
       const msgs = getMessages()
       const lastMsg = msgs[msgs.length - 1]
@@ -371,6 +371,9 @@ export function useAgentChat() {
   // ── startAgentChat ──
   async function startAgentChat(query: string, options: AgentChatOptions) {
     const { getMessage, scrollFn, onDone, onError, onStartAnswer, onFinish, sessionId, attachments, invokeFn } = options
+    // ★ 并发安全：事件带 sid（归属会话）；本 run 只消费自己会话的事件
+    const mySid = sessionId || ''
+    const fromMyRun = (p: any): boolean => !mySid || !p?.sid || p.sid === mySid
 
     isChatting.value = true
     setThinkingProgress('思考中')
@@ -384,13 +387,14 @@ export function useAgentChat() {
 
     try {
       // ★ 实时进度（优先展示后端 msg，如"已路由到「XX」"，否则随机话术）
-      const unlistenProgress = await listen<{ msg?: string }>('agent:progress', (ev) => {
+      const unlistenProgress = await listen<{ msg?: string; sid?: string }>('agent:progress', (ev) => {
+        if (!fromMyRun(ev.payload)) return
         setThinkingProgress(ev.payload?.msg || pickRetrievalPhrase())
         scrollFn()
       })
       // ★ 思考流增量（to_ui 裁决已在后端把关：只有面向窗口输出的 run 会发）
-      const unlistenThought = await listen<{ text: string }>('agent:thought', (ev) => {
-        if (thoughtCollapsed.value) return
+      const unlistenThought = await listen<{ text: string; sid?: string }>('agent:thought', (ev) => {
+        if (thoughtCollapsed.value || !fromMyRun(ev.payload)) return
         thought.value += ev.payload?.text || ''
         scrollFn()
       })
@@ -421,12 +425,14 @@ export function useAgentChat() {
         }
         scrollFn()
       }, 15)
-      const unlistenToken = await listen<{ token: string }>('agent:token', (ev) => {
+      const unlistenToken = await listen<{ token: string; sid?: string }>('agent:token', (ev) => {
+        if (!fromMyRun(ev.payload)) return
         tokenQueue.push(ev.payload.token)
       })
 
       // ★ invoke 已移至所有 listener 注册之后（见下方）
       const unlistenDone = await listen<any>('agent:done', async (ev) => {
+        if (!fromMyRun(ev.payload)) return
         flushTokenQueue()
         if (!thoughtCollapsed.value && thought.value) { thoughtCollapsed.value = true; thoughtSecs.value = Math.max(1, Math.round((Date.now() - thoughtT0) / 1000)) }
         const result = ev.payload
@@ -478,6 +484,7 @@ export function useAgentChat() {
       })
 
       const unlistenError = await listen<any>('agent:error', (ev) => {
+        if (!fromMyRun(ev.payload)) return
         flushTokenQueue()
         collapseThought()
         const msg = getMessage()

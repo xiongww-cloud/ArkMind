@@ -1126,8 +1126,8 @@ export async function kbAgentChat(
 }> {
   return invoke('kb_agent_chat', { data })
 }
-export async function agentCancel(): Promise<{ success: boolean }> {
-  return invoke('agent_cancel')
+export async function agentCancel(sessionId?: string): Promise<{ success: boolean }> {
+  return invoke('agent_cancel', { data: { sessionId: sessionId || '' } })
 }
 export async function kbDiagnose(): Promise<KbDiagnoseResult> {
   return invoke('kb_diagnose')
