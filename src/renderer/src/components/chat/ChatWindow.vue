@@ -169,24 +169,21 @@ const messages = ref<ChatMessage[]>([])
 // 当前对话 id（全局指针，B 单流：任一窗口发送即切换；供分页与发送上下文使用）
 const sessionId = ref('')
 
-// ─── 快呼语义：召唤只淡显上一轮问答，新问题/主动展开才见全历史 ───
+// ─── 快呼语义：召唤初始只展示上一轮问答（正常亮度），新问题/主动展开才见全历史 ───
 const revealOlder = ref(false)
-const fadedIds = ref<Set<string>>(new Set())
 const lastRoundCount = ref(0)
 
-/// 载入/复位时快照"最后一轮"（尾 assistant + 其前 user，或尾 user 单条）作淡显对象
-function applyLastRoundFaint() {
+/// 载入/复位时快照"最后一轮"（尾 assistant + 其前 user，或尾 user 单条）——初始仅显示这几条
+function applyLastRoundSnapshot() {
   const ms = messages.value
-  const ids = new Set<string>()
   let count = 0
   if (ms.length) {
     const last = ms[ms.length - 1]
-    if (last.role === 'assistant' && last.id) { ids.add(last.id); count = 1 }
+    if (last.role === 'assistant' && last.id) count = 1
     const back = ms[ms.length - 1 - count]
-    if (count && back?.role === 'user' && back.id) { ids.add(back.id); count++ }
-    if (!count && last.id) { ids.add(last.id); count = 1 }
+    if (count && back?.role === 'user' && back.id) count++
+    if (!count && last.id) count = 1
   }
-  fadedIds.value = ids
   lastRoundCount.value = count
 }
 
@@ -195,7 +192,6 @@ const visibleMessages = computed(() => {
   return messages.value.slice(Math.max(0, messages.value.length - lastRoundCount.value))
 })
 const hasStream = computed(() => visibleMessages.value.length > 0 || agent.isChatting.value)
-function isFaded(m: ChatMessage): boolean { return !revealOlder.value && !!m.id && fadedIds.value.has(m.id) }
 
 async function expandToOlder() {
   revealOlder.value = true
@@ -308,7 +304,7 @@ async function loadHistory() {
     const msgs = r.messages || []
     messages.value = msgs.map(mapHistoryMessage)
     hasMore.value = msgs.length >= 10
-    applyLastRoundFaint()
+    applyLastRoundSnapshot()
     for (const msg of messages.value) {
       if (msg.role === 'assistant' && msg.content) {
         agent.renderMd(msg.content).then(h => { if (h && msg.id) agent.rendered.value[msg.id] = h })
@@ -392,7 +388,6 @@ async function hideWindow() {
 function resetPanel() {
   agent.stopAllTypewriters(messages.value)
   messages.value = []
-  fadedIds.value = new Set()
   lastRoundCount.value = 0
   hasMore.value = false
 }
@@ -428,9 +423,8 @@ async function send() {
     sessionId.value = r.sessionId
   } catch (e) { console.error('[Chat] 会话解析失败:', e) }
 
-  // 新问题即展开全历史并解除淡显
+  // 新问题即展开全历史
   revealOlder.value = true
-  fadedIds.value = new Set()
 
   agent.stopAllTypewriters(messages.value)
   agentRun.resetParticipants()
@@ -574,7 +568,7 @@ onMounted(async () => {
   unlistenReset = await listen('chat:reset', async () => {
     if (!agent.isChatting.value) await loadHistory()
     revealOlder.value = false
-    applyLastRoundFaint()
+    applyLastRoundSnapshot()
     await nextTick()
     focusComposer()
   })
@@ -608,14 +602,14 @@ onUnmounted(() => {
             <span class="text-[10px] text-[#94a3b8]">加载中...</span>
           </div>
           <div v-for="(m, mi) in visibleMessages" :key="m.id || mi" class="msg-block">
-            <div v-if="m.role === 'user'" class="msg-q" :class="{ faded: isFaded(m) }">
+            <div v-if="m.role === 'user'" class="msg-q">
               <span class="msg-q__who">我</span><span class="msg-q__text">{{ displayContent(m.content) }}</span>
               <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1" />
               <div v-else-if="m.content?.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1">
                 <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="px-1.5 py-0.5 rounded text-[10px] bg-[#f1f5f9] text-[#64748b]">{{ name }}</span>
               </div>
             </div>
-            <div v-else class="msg-a" :class="{ faded: isFaded(m) }">
+            <div v-else class="msg-a">
               <div v-if="m.error" class="text-[11px] text-red-500">{{ m.error }}</div>
               <!-- 委托轨迹行：子 Agent 执行中且正文尚未流出时，顶替"思考中"占位 -->
               <div v-else-if="m.thinking && !agent.rendered.value[m.id || ''] && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
@@ -814,7 +808,6 @@ onUnmounted(() => {
 .msg-a__meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 9px; color: #c7c7cc; }
 .via-chip { padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #8e8e93; line-height: 1.4; }
 
-.faded { opacity: 0.42; }
 
 /* ═══ 面板生长/淡入 ═══ */
 .stream-enter-active { transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.33, 1, 0.68, 1); }
