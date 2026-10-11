@@ -101,6 +101,10 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
         "ext_tool_ask_user".to_string(),
         // 关注管理：用户对话中明示"盯着X"的承接入口（观察池写入），无它则只能口头答应
         "ext_tool_watch".to_string(),
+        // 通知清单核对（action 级授权，workflow 守卫判定）：主窗口只读 list/get；
+        // 写权 create/update/delete 留在分析师与专业助手，调用会被守卫拒绝并给出委托指引
+        "ext_tool_manage_notification:list".to_string(),
+        "ext_tool_manage_notification:get".to_string(),
     ];
     if crate::services::web_search::is_configured() {
         base.into_iter().chain(crate::services::web_search::WEB_TOOL_NAMES.iter().map(|s| s.to_string())).collect()

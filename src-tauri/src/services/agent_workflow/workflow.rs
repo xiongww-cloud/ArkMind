@@ -200,6 +200,35 @@ pub(crate) fn build_delegate_snapshot(
     snap
 }
 
+/// action 级授权判定。裸工具名在 allowed 中 = 全动作放行（分析师/子 Agent）；
+/// ext_tool_manage_notification 额外支持「name:action」粒度条目——主 Agent 只授予
+/// list/get 核对，发卡写权留在分析师与专业助手。schema 恒为全量下发（共享前缀缓存），
+/// 能力闸口在此判定。
+pub(crate) fn tool_granted(allowed: &[String], name: &str, arguments: &str) -> bool {
+    if allowed.iter().any(|a| a == name) { return true; }
+    if name == "ext_tool_manage_notification" {
+        if let Ok(v) = serde_json::from_str::<Value>(arguments) {
+            let act = v["action"].as_str().unwrap_or("").to_ascii_lowercase();
+            let key = format!("{}:{}", name, act);
+            return allowed.iter().any(|x| x == &key);
+        }
+    }
+    false
+}
+
+/// 未授权拒绝的差异化指引：通知写操作被拒时说清正确出路（委托/分析师），避免模型转述成"环境限制"
+pub(crate) fn forbidden_summary(name: &str, arguments: &str) -> String {
+    if name == "ext_tool_manage_notification" {
+        if let Ok(v) = serde_json::from_str::<Value>(arguments) {
+            let act = v["action"].as_str().unwrap_or("").to_ascii_lowercase();
+            if matches!(act.as_str(), "create" | "update" | "delete") {
+                return format!("通知管理的「{}」操作未对本会话开放：主窗口仅授权 list/get 核对；需要发卡或处置通知时委托具备通知能力的专业 Agent，或由后台分析师执行。", act);
+            }
+        }
+    }
+    format!("工具「{}」在当前任务中未授权，已跳过执行。", name)
+}
+
 #[tauri::command]
 pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, max_iterations: Option<i32>, app_handle: Option<tauri::AppHandle>, silent: bool, session_id: Option<String>, allowed_tools: Option<Vec<String>>) -> Result<Value, String> {
     agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true, None).await
@@ -1127,11 +1156,11 @@ pub async fn agent_chat_workflow_internal(
                     } else {
                         // 工具集守卫：不在允许范围内的工具不执行（如周期分析只允许只读+通知）
                         if let Some(ref allowed) = allowed_tools {
-                            if !allowed.iter().any(|a| a == &tc.function.name) {
+                            if !tool_granted(allowed, &tc.function.name, &tc.function.arguments) {
                                 let env = serde_json::json!({
                                     "result_type": "tool_forbidden",
                                     "data": {"name": tc.function.name},
-                                    "summary": format!("工具「{}」在当前任务中未授权，已跳过执行。", tc.function.name)
+                                    "summary": forbidden_summary(&tc.function.name, &tc.function.arguments)
                                 });
                                 if !silent { if let Some(ref h) = app_handle {
                                     let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": tc.function.name, "forbidden": true}));
@@ -1779,12 +1808,12 @@ pub async fn agent_chat_workflow_internal(
 mod tests {
     use super::append_documents_note;
     use super::{pick_direct_out, build_delegate_snapshot, normalize_ask_args, format_clarification_answer, pick_clarification_out, append_delegated_note};
+    use super::{tool_granted, forbidden_summary};
     use crate::services::agent_workflow::{ChatMessage, FunctionCall, MessageRole, ToolCall};
 
     /// 轮末记账：正文与工具参数均按**字符**计（非字节）；缺字段容错为 0
     #[test]
-    fn round_output_chars_counts_chars_not_bytes() {
-        assert_eq!(super::round_output_chars("方案正文", &[]), 4);
+    fn round_output_chars_counts_chars_not_bytes() {        assert_eq!(super::round_output_chars("方案正文", &[]), 4);
         assert_eq!(super::round_output_chars("", &[serde_json::json!({"function":{"arguments":"{\"a\":\"中文\"}"}})]), 10);
         assert_eq!(super::round_output_chars("尾", &[serde_json::json!({})]), 1);
     }
@@ -2099,5 +2128,29 @@ mod tests {
             append_documents_note(&mut c2, meta);
             assert_eq!(c2, "原文", "meta={:?}", meta);
         }
+    }
+
+    #[test]
+    fn action_granted_notification_scoping() {
+        let main_allowed: Vec<String> = vec![
+            "ext_tool_watch".into(),
+            "ext_tool_manage_notification:list".into(),
+            "ext_tool_manage_notification:get".into(),
+        ];
+        assert!(tool_granted(&main_allowed, "ext_tool_watch", "{}"));
+        assert!(tool_granted(&main_allowed, "ext_tool_manage_notification", "{\"action\":\"list\"}"));
+        assert!(tool_granted(&main_allowed, "ext_tool_manage_notification", "{\"action\":\"get\"}"));
+        assert!(!tool_granted(&main_allowed, "ext_tool_manage_notification", "{\"action\":\"create\"}"));
+        assert!(!tool_granted(&main_allowed, "ext_tool_manage_notification", "{}"));
+        let analyst: Vec<String> = vec!["ext_tool_manage_notification".into()];
+        assert!(tool_granted(&analyst, "ext_tool_manage_notification", "{\"action\":\"create\"}"));
+    }
+
+    #[test]
+    fn forbidden_summary_routes_write_rejection_to_guidance() {
+        let s = forbidden_summary("ext_tool_manage_notification", "{\"action\":\"create\"}");
+        assert!(s.contains("未对本会话开放") && s.contains("委托"));
+        let g = forbidden_summary("ext_tool_watch", "{}");
+        assert!(g.contains("未授权"));
     }
 }
