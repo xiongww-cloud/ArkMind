@@ -502,6 +502,7 @@ function onFeedScroll() {
 }
 
 let unlistenProgress: (() => void) | null = null
+let unlistenThought: (() => void) | null = null
 let unlistenToken: (() => void) | null = null
 let unlistenDone: (() => void) | null = null
 let unlistenError: (() => void) | null = null
@@ -563,8 +564,8 @@ async function handleSendMessage() {
   if (pendingAttachments.value.some(a => a.uploading)) { toast({ message: '附件仍在上传，请稍候', type: 'error' }); return }
   console.log('[FE] handleSendMessage BUILD=streamfix-0719')
   // ★ 防御：清理上一轮可能泄漏的 listener，防止旧 listener 把新 token 写进旧气泡
-  try { unlistenProgress?.(); unlistenToken?.(); unlistenDone?.(); unlistenError?.() } catch {}
-  unlistenProgress = null; unlistenToken = null; unlistenDone = null; unlistenError = null
+  try { unlistenProgress?.(); unlistenThought?.(); unlistenToken?.(); unlistenDone?.(); unlistenError?.() } catch {}
+  unlistenProgress = null; unlistenThought = null; unlistenToken = null; unlistenDone = null; unlistenError = null
   if (q.length > MAX_INPUT_LENGTH) { toast({ message: `输入内容过长（${q.length}/${MAX_INPUT_LENGTH}），请精简后重试`, type: 'error' }); return }
   // ★ 无会话时自动创建一个（首次发消息即建会话）
   if (!currentSession.value) { newSession() }
@@ -582,6 +583,18 @@ async function handleSendMessage() {
   session.messages.push(aiMsg)
   // ★ 初始默认"思考中"，工具调用时才切换预设文本
   agent.setThinkingProgress('思考中')
+  // 思考流：本轮瞬态，正文开始流出即折叠为"思考了 N 秒"一行（可展开回看）
+  agent.thought.value = ''
+  agent.thoughtCollapsed.value = false
+  agent.thoughtSecs.value = 0
+  agent.thoughtMsgId.value = aiMsg.id || ''
+  const thoughtT0 = Date.now()
+  const collapseThought = () => {
+    if (!agent.thoughtCollapsed.value && agent.thought.value) {
+      agent.thoughtCollapsed.value = true
+      agent.thoughtSecs.value = Math.max(1, Math.round((Date.now() - thoughtT0) / 1000))
+    }
+  }
   // ★ 实时 token 流（打字机队列）
   const tokenQueue: string[] = []
   let tokenIdx = 0
@@ -597,7 +610,7 @@ async function handleSendMessage() {
   }
   let lastRenderTime = 0
   const tokenTick = () => {
-    if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) agent.setThinkingProgress(''); aiMsg.content += tokenQueue[tokenIdx++] }
+    if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) { agent.setThinkingProgress(''); collapseThought() }; aiMsg.content += tokenQueue[tokenIdx++] }
     const now = Date.now()
     if (aiMsg.id && aiMsg.content && now - lastRenderTime > 200) {
       lastRenderTime = now
@@ -616,6 +629,11 @@ async function handleSendMessage() {
       agent.setThinkingProgress(ev.payload?.msg || pickRetrievalPhrase())
       scrollToBottomIfNear()
     })
+    unlistenThought = await listen<{text:string}>('agent:thought', (ev) => {
+      if (agent.thoughtCollapsed.value) return
+      agent.thought.value += ev.payload?.text || ''
+      scrollToBottomIfNear()
+    })
     unlistenToken = await listen<{token:string}>('agent:token', (ev) => {
       tokenQueue.push(ev.payload.token)
     })
@@ -624,6 +642,7 @@ async function handleSendMessage() {
     unlistenDone = await listen<any>('agent:done', async (ev) => {
       console.log('[FE] done received')
       flushTokenQueue()
+      collapseThought()
       const result = ev.payload
       aiMsg.isThinking = false
       if (result.success) {
@@ -651,16 +670,17 @@ async function handleSendMessage() {
       // ★ 保存会话到数据库（确保 AI 回复被持久化；显式存回提问时的会话）
       saveToStorage(session)
       
-      try { unlistenDone(); unlistenToken(); unlistenProgress(); unlistenError() } catch (e) { console.error('[KB] unlisten failed:', e) }
+      try { unlistenDone(); unlistenThought(); unlistenToken(); unlistenProgress(); unlistenError() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
 
     // ★ 监听 agent:error 事件
     unlistenError = await listen<any>('agent:error', (ev) => {
       flushTokenQueue()
+      collapseThought()
       aiMsg.isThinking = false
       aiMsg.error = ev.payload.error || 'AI 服务异常'
       agent.isChatting.value = false; scrollToBottomIfNear()
-      try { unlistenError(); unlistenDone(); unlistenToken(); unlistenProgress() } catch {}
+      try { unlistenError(); unlistenThought(); unlistenDone(); unlistenToken(); unlistenProgress() } catch {}
     })
 
     // ★ 调用命令（立即返回，不等待结果）
@@ -670,14 +690,14 @@ async function handleSendMessage() {
       aiMsg.isThinking = false
       aiMsg.error = String(err)
       agent.isChatting.value = false; scrollToBottomIfNear()
-      try { unlistenDone?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
+      try { unlistenDone?.(); unlistenThought?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
     })
   } catch (e: any) {
     flushTokenQueue()
     aiMsg.isThinking = false
     aiMsg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
     agent.isChatting.value = false; scrollToBottomIfNear()
-    try { unlistenDone?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
+    try { unlistenDone?.(); unlistenThought?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
   }
 }
 
@@ -792,6 +812,7 @@ async function stopAgent() {
     agent.isChatting.value = false
     // C4 修复：停止时 unlisten 所有旧 listener，防止重发时重复处理
     unlistenProgress?.(); unlistenProgress = null
+    unlistenThought?.(); unlistenThought = null
     unlistenToken?.(); unlistenToken = null
     unlistenDone?.(); unlistenDone = null
     unlistenError?.(); unlistenError = null
@@ -888,6 +909,7 @@ onUnmounted(() => {
   if (activeTokenTimer) { clearInterval(activeTokenTimer); activeTokenTimer = null }
   activeTokenConsume = null
   unlistenProgress?.()
+  unlistenThought?.()
   unlistenToken?.()
   unlistenDone?.()
   unlistenError?.()
@@ -974,7 +996,6 @@ onUnmounted(() => {
                 </AnnotationLayer>
                 <MessageBody v-else-if="hasInteractive(msg.content)" class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" @send="submitClarification" />
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
-              </div>
                 <!-- 思考流（本轮瞬态：流式滚动自动跟底，正文开始折叠为一行可展开，刷新/历史不存在） -->
                 <div v-if="agent.thought.value && (msg.id || '') === agent.thoughtMsgId.value" class="mt-1">
                   <div v-if="!agent.thoughtCollapsed.value" ref="thoughtBoxRef"
@@ -988,6 +1009,7 @@ onUnmounted(() => {
                       class="mt-1 max-h-[160px] overflow-y-auto rounded-lg bg-[#f7f7f9] border border-[#ececf0] px-2.5 py-1.5 text-[11px] leading-relaxed text-[#8e8e93] whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
                   </template>
                 </div>
+              </div>
               <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
                 <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" v-tooltip="'复制答案'"><AppIcon name="copy" class="w-3 h-3" /></button>
                 <button v-if="idx === currentSession.messages.length - 1 && !agent.isChatting.value && !msg.error"
