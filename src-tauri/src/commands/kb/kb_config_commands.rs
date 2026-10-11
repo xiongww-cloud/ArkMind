@@ -130,6 +130,8 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
         let result = crate::services::agent_workflow::agent_chat_workflow(query, attachments, max_iter, Some(app_handle.clone()), false, session_id.clone(), Some(main_agent_tools)).await;
         match result {
             Ok(mut v) => {
+                // ★ 保存段全面防护：任何 panic 都不得阻断下方 done 事件（前端终态优先于持久化）
+                let save_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // ★ 框架自动发卡：本轮委托上报的 confirmations（主 Agent 未自行追问时）
                 crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v);
                 // ★ 保存 assistant 消息到 DB（纯内容，无 metadata）
@@ -158,10 +160,10 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                     if let Some(c) = clarification { meta_map.insert("clarification".to_string(), c); }
                     if !assistants.is_empty() { meta_map.insert("assistants".to_string(), json!(assistants)); }
                     let metadata = if meta_map.is_empty() { Value::Null } else { Value::Object(meta_map) };
-                    let _ = crate::database::run(
+                    if let Err(e) = crate::database::run(
                         "INSERT INTO chat_messages(session_id, role, content, metadata) VALUES(?1, 'assistant', ?2, ?3)",
                         &[json!(sid), json!(answer), metadata],
-                    );
+                    ) { log::error!("[Save] assistant 消息落库失败: {}", e); }
                     // ★ 保存本轮工具数据到 session 级别（覆盖式，不含 content/role）
                     let mut tool_meta = serde_json::Map::new();
                     if let Some(tool_log) = v.get("tool_log").and_then(|v| v.as_array()) {
@@ -171,10 +173,17 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                     }
                     if let Some(cd) = v.get("context_docs") { tool_meta.insert("context_docs".to_string(), cd.clone()); }
                     let tool_meta_str = serde_json::Value::Object(tool_meta).to_string();
-                    let _ = crate::database::run(
+                    if let Err(e) = crate::database::run(
                         "UPDATE chat_sessions SET tool_metadata=?1, updated_at=datetime('now','localtime') WHERE id=?2",
                         &[json!(tool_meta_str), json!(sid)],
-                    );
+                    ) { log::error!("[Save] tool_metadata 更新失败: {}", e); }
+                }
+                }));
+                if let Err(p) = save_res {
+                    let msg = p.downcast_ref::<String>().cloned()
+                        .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "unknown panic".to_string());
+                    log::error!("[Save] 持久化段 panic（done 已照常发出）: {}", msg);
                 }
                 log::info!("[Done] emitted sid={}", v["sid"].as_str().unwrap_or(""));
                 let _ = app_handle.emit("agent:done", &v);

@@ -103,6 +103,15 @@ impl WorkflowPlan {
         }
     }
 
+    /// 工具轮且无在途步 → 点亮最早 pending（检索型步骤同样要有"进行中"状态，进度提示不再失真）。
+    /// 已有 active 时幂等 no-op。
+    pub fn begin_next_pending(&mut self) {
+        if self.states.contains(&StepState::Active) { return }
+        if let Some(i) = self.states.iter().position(|s| *s == StepState::Pending) {
+            self.states[i] = StepState::Active;
+        }
+    }
+
     /// 委托成功返回：当前 active 步落定 done
     pub fn complete_active(&mut self) -> bool {
         if let Some(i) = self.states.iter().position(|s| *s == StepState::Active) {
@@ -209,6 +218,25 @@ mod tests {
         assert!(p.complete_active());
         p.advance_on_delegate("投标助手");
         assert_eq!(p.states[2], StepState::Active); // 关键：同名已有一步 done 不拦后续
+    }
+
+    #[test]
+    fn search_only_plan_advances_via_begin_and_complete() {
+        // 检索型步骤（无委托）：工具轮 begin 点亮 → 模型输出文本 complete 落定 → 下一步可点亮
+        let mut p = plan_from_text(
+            "x\n```ui-block\n{\"type\":\"plan\",\"title\":\"t\",\"steps\":[{\"title\":\"检索核对\"},{\"title\":\"汇总\"}]}\n```"
+        ).unwrap();
+        assert_eq!(p.states, vec![StepState::Pending, StepState::Pending]);
+        p.begin_next_pending();
+        assert_eq!(p.states, vec![StepState::Active, StepState::Pending]);
+        p.begin_next_pending(); // 已有在途不重复点亮
+        assert_eq!(p.states, vec![StepState::Active, StepState::Pending]);
+        assert!(p.complete_active());
+        assert_eq!(p.states, vec![StepState::Done, StepState::Pending]);
+        p.begin_next_pending();
+        assert_eq!(p.states, vec![StepState::Done, StepState::Active]);
+        assert!(p.complete_active());
+        assert!(p.all_done());
     }
 
     #[test]

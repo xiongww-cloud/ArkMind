@@ -951,7 +951,7 @@ pub async fn agent_chat_workflow_internal(
             }).sum();
             let plan_line = match plan.as_ref() {
                             Some(pl) => {
-                                let cap_note = if step_calls >= crate::services::agent_workflow::plan::STEP_TOOL_SOFT_CAP { "【本步工具轮已达上限 10：收敛该步（收尾或报缺口）后进入下一步，勿继续展开】" } else { "" };
+                                let cap_note = if step_calls >= crate::services::agent_workflow::plan::STEP_TOOL_SOFT_CAP { "【本步工具轮已达上限 10：若已有可交付结论，用一句话交接并直接进入下一步（系统会自动落定本步）；仍有缺口则在最终答复中列明，勿在本步继续发散】" } else { "" };
                                 format!("\n- 执行计划（系统自动跟踪，无需回写状态）: 共 {} 步 · 已完成 {} · 当前步工具轮 {}/10 {}", pl.steps.len(), pl.done_count(), step_calls, cap_note)
                             }
                             None => String::new(),
@@ -1035,6 +1035,16 @@ pub async fn agent_chat_workflow_internal(
                 step_calls = 0;
                 emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
             }
+            // ★ 文本落定：模型在本轮产出正文（步骤过渡语 / 最终答复）即视为当前步收尾——
+            //   检索/写入型步骤不再只能等委托信号，进度提示与模型行为不再互相误导
+            if !ac.trim().is_empty() {
+                if let Some(pl) = plan.as_mut() {
+                    if pl.complete_active() {
+                        step_calls = 0;
+                        emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
+                    }
+                }
+            }
         }
         let mut tcs: Option<Vec<Value>> = if tcs_streamed.is_empty() { None } else { Some(tcs_streamed) };
         // ★ 始终计算清理后的 content（剥离工具调用标记），后续所有展示/保存/判定都使用干净文本
@@ -1111,7 +1121,10 @@ pub async fn agent_chat_workflow_internal(
             }
             Some(ref calls) if !calls.is_empty() => {
                 // ★ 工具轮：不再向前端推送 interim 内容，检索期间保持预设文案
-                if plan.is_some() { step_calls += 1; }
+                if let Some(pl) = plan.as_mut() {
+                    if !pl.states.iter().any(|x| *x == crate::services::agent_workflow::plan::StepState::Active) { pl.begin_next_pending(); }
+                    step_calls += 1;
+                }
                 // ★ 预算检查：不足时强制回答（在工具调用之前检查）
                 if budget < search_cost {
                     if !silent { if let Some(ref h) = app_handle {
@@ -1828,7 +1841,7 @@ pub async fn agent_chat_workflow_internal(
                     }).sum();
                      let plan_line = match plan.as_ref() {
                                      Some(pl) => {
-                                         let cap_note = if step_calls >= crate::services::agent_workflow::plan::STEP_TOOL_SOFT_CAP { "【本步工具轮已达上限 10：收敛该步（收尾或报缺口）后进入下一步，勿继续展开】" } else { "" };
+                                         let cap_note = if step_calls >= crate::services::agent_workflow::plan::STEP_TOOL_SOFT_CAP { "【本步工具轮已达上限 10：若已有可交付结论，用一句话交接并直接进入下一步（系统会自动落定本步）；仍有缺口则在最终答复中列明，勿在本步继续发散】" } else { "" };
                                          format!("\n- 执行计划（系统自动跟踪，无需回写状态）: 共 {} 步 · 已完成 {} · 当前步工具轮 {}/10 {}", pl.steps.len(), pl.done_count(), step_calls, cap_note)
                                      }
                                      None => String::new(),
