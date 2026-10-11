@@ -504,6 +504,7 @@ function onFeedScroll() {
 
 let unlistenProgress: (() => void) | null = null
 let unlistenThought: (() => void) | null = null
+let unlistenAnswer: (() => void) | null = null
 let unlistenToken: (() => void) | null = null
 let unlistenDone: (() => void) | null = null
 let unlistenError: (() => void) | null = null
@@ -565,8 +566,8 @@ async function handleSendMessage() {
   if (pendingAttachments.value.some(a => a.uploading)) { toast({ message: '附件仍在上传，请稍候', type: 'error' }); return }
   console.log('[FE] handleSendMessage BUILD=streamfix-0719')
   // ★ 防御：清理上一轮可能泄漏的 listener，防止旧 listener 把新 token 写进旧气泡
-  try { unlistenProgress?.(); unlistenThought?.(); unlistenToken?.(); unlistenDone?.(); unlistenError?.() } catch {}
-  unlistenProgress = null; unlistenThought = null; unlistenToken = null; unlistenDone = null; unlistenError = null
+  try { unlistenProgress?.(); unlistenThought?.(); unlistenAnswer?.(); unlistenToken?.(); unlistenDone?.(); unlistenError?.() } catch {}
+  unlistenProgress = null; unlistenThought = null; unlistenAnswer = null; unlistenToken = null; unlistenDone = null; unlistenError = null
   if (q.length > MAX_INPUT_LENGTH) { toast({ message: `输入内容过长（${q.length}/${MAX_INPUT_LENGTH}），请精简后重试`, type: 'error' }); return }
   // ★ 无会话时自动创建一个（首次发消息即建会话）
   if (!currentSession.value) { newSession() }
@@ -612,7 +613,7 @@ async function handleSendMessage() {
   }
   let lastRenderTime = 0
   const tokenTick = () => {
-    if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) { agent.setThinkingProgress(''); collapseThought() }; aiMsg.content += tokenQueue[tokenIdx++] }
+    if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) agent.setThinkingProgress(''); aiMsg.content += tokenQueue[tokenIdx++] }
     const now = Date.now()
     if (aiMsg.id && aiMsg.content && now - lastRenderTime > 200) {
       lastRenderTime = now
@@ -638,6 +639,11 @@ async function handleSendMessage() {
       agent.thought.value += ev.payload?.text || ''
       scrollToBottomIfNear()
     })
+    unlistenAnswer = await listen<{stage?:string;sid?:string}>('agent:status', (ev) => {
+      if (ev.payload?.stage !== 'answer') return
+      if (ev.payload?.sid && ev.payload.sid !== session.id) return
+      collapseThought()
+    })
     unlistenToken = await listen<{token:string;sid?:string}>('agent:token', (ev) => {
       if (ev.payload?.sid && ev.payload.sid !== session.id) return
       tokenQueue.push(ev.payload.token)
@@ -645,7 +651,7 @@ async function handleSendMessage() {
     stickToBottom.value = true; scrollToBottomIfNear()
     // ★ 监听 agent:done 事件（后台任务完成时触发）
     unlistenDone = await listen<any>('agent:done', async (ev) => {
-      if (ev.payload?.sid && ev.payload.sid !== session.id) return
+      if (ev.payload?.sid && ev.payload.sid !== session.id) { console.warn('[sid-filter] drop done', ev.payload.sid, session.id); return }
       console.log('[FE] done received')
       flushTokenQueue()
       collapseThought()
@@ -676,7 +682,7 @@ async function handleSendMessage() {
       // ★ 保存会话到数据库（确保 AI 回复被持久化；显式存回提问时的会话）
       saveToStorage(session)
       
-      try { unlistenDone(); unlistenThought(); unlistenToken(); unlistenProgress(); unlistenError() } catch (e) { console.error('[KB] unlisten failed:', e) }
+      try { unlistenDone(); unlistenThought(); unlistenAnswer?.(); unlistenToken(); unlistenProgress(); unlistenError() } catch (e) { console.error('[KB] unlisten failed:', e) }
     })
 
     // ★ 监听 agent:error 事件
@@ -687,7 +693,7 @@ async function handleSendMessage() {
       aiMsg.isThinking = false
       aiMsg.error = ev.payload.error || 'AI 服务异常'
       agent.isChatting.value = false; scrollToBottomIfNear()
-      try { unlistenError(); unlistenThought(); unlistenDone(); unlistenToken(); unlistenProgress() } catch {}
+      try { unlistenError(); unlistenThought(); unlistenAnswer?.(); unlistenDone(); unlistenToken(); unlistenProgress() } catch {}
     })
 
     // ★ 调用命令（立即返回，不等待结果）
@@ -697,14 +703,14 @@ async function handleSendMessage() {
       aiMsg.isThinking = false
       aiMsg.error = String(err)
       agent.isChatting.value = false; scrollToBottomIfNear()
-      try { unlistenDone?.(); unlistenThought?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
+      try { unlistenDone?.(); unlistenThought?.(); unlistenAnswer?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
     })
   } catch (e: any) {
     flushTokenQueue()
     aiMsg.isThinking = false
     aiMsg.error = typeof e === 'string' ? e : (e.message || e.toString?.() || 'AI 服务异常')
     agent.isChatting.value = false; scrollToBottomIfNear()
-    try { unlistenDone?.(); unlistenThought?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
+    try { unlistenDone?.(); unlistenThought?.(); unlistenAnswer?.(); unlistenToken?.(); unlistenProgress?.(); unlistenError?.() } catch {}
   }
 }
 
@@ -819,7 +825,7 @@ async function stopAgent() {
     agent.isChatting.value = false
     // C4 修复：停止时 unlisten 所有旧 listener，防止重发时重复处理
     unlistenProgress?.(); unlistenProgress = null
-    unlistenThought?.(); unlistenThought = null
+    unlistenThought?.(); unlistenAnswer?.(); unlistenThought = null
     unlistenToken?.(); unlistenToken = null
     unlistenDone?.(); unlistenDone = null
     unlistenError?.(); unlistenError = null

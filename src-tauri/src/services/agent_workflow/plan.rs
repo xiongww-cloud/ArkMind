@@ -196,6 +196,22 @@ mod tests {
     }
 
     #[test]
+    fn same_agent_multi_steps_advance_in_order() {
+        // 投标助手负责第 1、3 步：done 后再委托同名 → 必须推进第 3 步（历史 guard 版会卡死）
+        let fenced = "{\"type\":\"plan\",\"title\":\"t\",\"steps\":[{\"title\":\"a\",\"agent\":\"投标助手\"},{\"title\":\"b\",\"agent\":\"方案\"},{\"title\":\"c\",\"agent\":\"投标助手\"}]}";
+        let v: serde_json::Value = serde_json::from_str(fenced).unwrap();
+        let mut p = parse_plan(&v).unwrap();
+        p.advance_on_delegate("投标助手");
+        assert_eq!(p.states[0], StepState::Active);
+        assert!(p.complete_active());
+        p.advance_on_delegate("方案");
+        assert_eq!(p.states[1], StepState::Active);
+        assert!(p.complete_active());
+        p.advance_on_delegate("投标助手");
+        assert_eq!(p.states[2], StepState::Active); // 关键：同名已有一步 done 不拦后续
+    }
+
+    #[test]
     fn max_iters_scales_with_plan() {
         assert_eq!(max_iters_for(None, 20), 20);
         assert_eq!(max_iters_for(Some(2), 20), 20); // 4*2+4=12 → clamp 20

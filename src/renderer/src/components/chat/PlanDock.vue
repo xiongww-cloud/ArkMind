@@ -15,9 +15,11 @@ watch(() => agentRun.plan, () => {
   hidden.value = false
   if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null }
 })
-watch(() => agentRun.plan?.steps.map(s => s.state).join(','), (sig) => {
+watch(() => (agentRun.plan ? agentRun.plan.steps.map(x => x.state).join(',') + '|' + (agentRun.plan.finished ? 1 : 0) : ''), (sig) => {
   if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null }
-  if (sig && agentRun.plan && agentRun.plan.steps.every(s => s.state === 'done')) {
+  if (!sig || !agentRun.plan) return
+  const over = sig.endsWith('1|1') || sig.endsWith('|1')
+  if (over || agentRun.plan.steps.every(x => x.state === 'done')) {
     fadeTimer = setTimeout(() => { hidden.value = true }, 5000)
   }
 })
@@ -43,7 +45,7 @@ const allDone = () => !!agentRun.plan && agentRun.plan.steps.length > 0 && doneC
           <span class="w-1.5 h-1.5 rounded-full bg-brand-600"></span>
         </span>
         <span class="text-[11px] font-semibold text-surface-700 tabular-nums flex-shrink-0">{{ doneCount() }}/{{ agentRun.plan.steps.length }}</span>
-        <span class="text-[11px] text-surface-500 truncate flex-1 text-left">{{ activeStep()?.title || (allDone() ? '全部步骤完成' : agentRun.plan.title) }}</span>
+        <span class="text-[11px] text-surface-500 truncate flex-1 text-left">{{ activeStep()?.title || (allDone() ? '全部步骤完成' : (agentRun.plan.finished ? '任务结束（部分步骤未走完，见答复说明）' : agentRun.plan.title)) }}</span>
         <span v-if="activeStep()?.agent" class="text-[9px] px-1.5 py-[1px] rounded-full bg-brand-50 text-brand-600 flex-shrink-0 max-w-[90px] truncate">{{ activeStep()!.agent }}</span>
         <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 transition-transform flex-shrink-0" :class="expanded ? 'rotate-180' : ''" />
       </button>

@@ -176,6 +176,7 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                         &[json!(tool_meta_str), json!(sid)],
                     );
                 }
+                log::info!("[Done] emitted sid={}", v["sid"].as_str().unwrap_or(""));
                 let _ = app_handle.emit("agent:done", &v);
                 if let Some(ans) = v["answer"].as_str() { if !ans.is_empty() { let preview: String = ans.chars().take(100).collect(); println!("[Agent] 响应: {}", preview); } }
             }
@@ -199,7 +200,7 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(query, vec![], None, Some(app_handle.clone()), false, None, Some(tools)).await;
         match result {
-            Ok(mut v) => { crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v); let _ = app_handle.emit("agent:done", &v); }
+            Ok(mut v) => { crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v); log::info!("[Done] kb_chat emitted"); let _ = app_handle.emit("agent:done", &v); }
             Err(e) => {
                 if e == "cancelled" {
                     let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true,"sid":""}));

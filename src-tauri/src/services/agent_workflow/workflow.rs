@@ -1607,7 +1607,7 @@ pub async fn agent_chat_workflow_internal(
                             // ★ 取消透传 + 委托扣费（合并解析；解析失败也扣基础额度，防绕过）
                             match serde_json::from_str::<Value>(&res) {
                                 Ok(v) => {
-                                    if is_root && v["success"].as_bool() == Some(true) {
+                                    if is_root && v["data"]["success"].as_bool() == Some(true) {
                                     if let Some(pl) = plan.as_mut() { if pl.complete_active() { step_calls = 0; } }
                                     emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
                                 }

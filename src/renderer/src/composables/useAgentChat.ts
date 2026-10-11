@@ -399,6 +399,11 @@ export function useAgentChat() {
         scrollFn()
       })
       // ★ 实时 token 流（打字机队列）
+      // ★ answer 阶段 = 最终答复开始（interim/工具轮不发）：思考流折叠的精确触发点
+      const unlistenAnswer = await listen<{ stage?: string; sid?: string }>('agent:status', (ev) => {
+        if (ev.payload?.stage !== 'answer' || !fromMyRun(ev.payload)) return
+        collapseThought()
+      })
       const tokenQueue: string[] = []
       let tokenIdx = 0
       let tokenFlushed = false
@@ -417,7 +422,7 @@ export function useAgentChat() {
       }
       const tokenTimer = setInterval(() => {
         const msg = getMessage(); if (!msg) return
-        if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) { setThinkingProgress(''); collapseThought() } ; msg.content += tokenQueue[tokenIdx++] }
+        if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) setThinkingProgress(''); msg.content += tokenQueue[tokenIdx++] }
         const now = Date.now()
         if (msg.id && msg.content && now - lastRenderTime > 200) {
           lastRenderTime = now
@@ -524,6 +529,7 @@ export function useAgentChat() {
         try {
           unlistenProgress()
           unlistenThought()
+          unlistenAnswer()
           unlistenToken()
           unlistenDone()
           unlistenError()
