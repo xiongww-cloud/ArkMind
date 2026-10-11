@@ -46,6 +46,7 @@ pub(crate) fn is_sub_agent_forbidden_tool(name: &str) -> bool {
 /// history: 主会话 messages 快照（调用点 clone，入口截尾防御后作为子 Agent 初始上下文）
 /// main_session: 主会话工作记忆——子 Agent 写穿共享（visited/tool_history/token 累计直接回写），
 ///   顺序 await 无竞态，返回后主会话天然持有子 Agent 的全部状态增量
+/// parent_sid: 父会话 id——子链共享父的取消键与事件归属（前端按 sid 过滤，并行会话互不串扰）
 pub async fn execute_delegate_agent(
     agent_id: &str,
     task: &str,
@@ -55,6 +56,7 @@ pub async fn execute_delegate_agent(
     delegate_depth: u8,
     history: Vec<ChatMessage>,
     main_session: &mut SessionMemory,
+    parent_sid: Option<String>,
 ) -> String {
     // 参数校验
     if agent_id.is_empty() {
@@ -117,6 +119,7 @@ pub async fn execute_delegate_agent(
         temperature: first["temperature"].as_f64(),
         agent_id: Some(agent_id.to_string()),
         agent_class: Some(out_class.key().to_string()),
+        cancel_sid: parent_sid.clone(),
     };
 
     // ★ 无任何业务工具（仅自动注入的 report）：框架直接短路——不烧一轮 LLM、不靠模型复述状态行，
@@ -168,8 +171,8 @@ pub async fn execute_delegate_agent(
     // ★ 委托可见性：status 携带结构化身份（agent_id/agent_name），前端状态条显示当前干活的子 Agent
     let emit_handle = app_handle.clone();
     if let Some(ref h) = emit_handle {
-        let _ = h.emit("agent:status", json!({"stage":"delegating","agent_id":agent_id,"agent_name":agent_name,"msg":format!("委托「{}」处理中...", agent_name)}));
-        let _ = h.emit("agent:progress", json!({"msg":format!("已路由到「{}」，处理中...", agent_name)}));
+        let _ = h.emit("agent:status", json!({"stage":"delegating","sid":parent_sid.clone().unwrap_or_default(),"agent_id":agent_id,"agent_name":agent_name,"msg":format!("委托「{}」处理中...", agent_name)}));
+        let _ = h.emit("agent:progress", json!({"msg":format!("已路由到「{}」，处理中...", agent_name),"sid":parent_sid.clone().unwrap_or_default()}));
     }
 
     // 使用 Box::pin 解决递归 async 调用（session 写穿共享：无独立 load/save，状态直接回写主会话）
@@ -206,7 +209,7 @@ pub async fn execute_delegate_agent(
         Err(_) => "failed",
     };
     if let Some(ref h) = emit_handle {
-        let _ = h.emit("agent:status", json!({"stage":"delegate-done","agent_id":agent_id,"agent_name":agent_name,"delegate_status":rough_status}));
+        let _ = h.emit("agent:status", json!({"stage":"delegate-done","sid":parent_sid.clone().unwrap_or_default(),"agent_id":agent_id,"agent_name":agent_name,"delegate_status":rough_status}));
     }
 
     match result {

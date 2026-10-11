@@ -5,13 +5,14 @@ use crate::services::search_assets;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
+
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
 pub(crate) mod prompt;
 pub(crate) mod schemas;
 pub(crate) mod session;
+pub(crate) mod plan;
 pub(crate) mod llm;
 pub(crate) mod output_class;
 pub(crate) mod tools;
@@ -64,12 +65,24 @@ pub enum ResponseType {
     ObjectReference,
 }
 
-// ★ Agent 停止信号
-pub(crate) static AGENT_CANCEL: AtomicBool = AtomicBool::new(false);
+// ★ Agent 停止信号：按会话记账（并行安全）——停止一个会话不影响其他会话在跑的 run。
+// 空串作"无会话归属"运行体的兜底 key。
+pub(crate) static AGENT_CANCELLED: Lazy<std::sync::Mutex<std::collections::HashSet<String>>> =
+    Lazy::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
-/// 取消当前 Agent 循环
-pub fn cancel_agent() {
-    AGENT_CANCEL.store(true, Ordering::Release);
+pub fn cancel_session(sid: &str) {
+    if let Ok(mut s) = AGENT_CANCELLED.lock() { s.insert(sid.to_string()); }
+}
+pub fn session_cancelled(sid: &str) -> bool {
+    AGENT_CANCELLED.lock().map(|s| s.contains(sid)).unwrap_or(false)
+}
+pub fn clear_session_cancel(sid: &str) {
+    if let Ok(mut s) = AGENT_CANCELLED.lock() { s.remove(sid); }
+}
+
+/// 取消当前 Agent 循环（旧接口兼容：按会话取消）
+pub fn cancel_agent(session_id: &str) {
+    cancel_session(if session_id.is_empty() { "" } else { session_id });
 }
 
 // Data structures

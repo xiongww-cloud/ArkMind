@@ -149,11 +149,11 @@ struct SseState {
 
 /// flush 积压未发的 token（失败路径也要 flush：保证前端已有内容与 partial 一致，续写无缝衔接）
 /// to_ui=DELIVERY 通道授权（OutputClass 裁决），owner=token 归属（"main" 或子 Agent id）
-fn flush_pending_tokens(st: &mut SseState, to_ui: bool, owner: &str, app: &Option<tauri::AppHandle>) {
+fn flush_pending_tokens(st: &mut SseState, to_ui: bool, owner: &str, sid: &str, app: &Option<tauri::AppHandle>) {
     if !st.thought_buf.is_empty() {
         if to_ui {
             if let Some(ref h) = app {
-                let _ = h.emit("agent:thought", json!({"text": &st.thought_buf, "owner": owner}));
+                let _ = h.emit("agent:thought", json!({"text": &st.thought_buf, "owner": owner, "sid": sid}));
             }
         }
         st.thought_buf.clear();
@@ -161,7 +161,7 @@ fn flush_pending_tokens(st: &mut SseState, to_ui: bool, owner: &str, app: &Optio
     if !st.suppress_tokens && !st.token_buf.is_empty() {
         if to_ui {
             if let Some(ref h) = app {
-                let _ = h.emit("agent:token", json!({"token": &st.token_buf, "owner": owner}));
+                let _ = h.emit("agent:token", json!({"token": &st.token_buf, "owner": owner, "sid": sid}));
             }
         }
         st.token_buf.clear();
@@ -176,6 +176,8 @@ pub struct LlmOverrides {
     pub temperature: Option<f64>,
     /// 委托路径注入：当前子 Agent 的 id，随 writing 心跳下发供前端按 Agent 分桶显示（主流程为 None）
     pub agent_id: Option<String>,
+    /// 取消归属会话（per-session 停止信号；workflow 注入，委托子链共享父会话）
+    pub cancel_sid: Option<String>,
     /// 委托路径注入：产出类别 key（natural/deliverable），心跳据此让前端选择字数/步数展示口径
     pub agent_class: Option<String>,
 }
@@ -186,7 +188,7 @@ pub async fn call_llm_streaming(messages: &[ChatMessage], tools: Option<&Value>,
 }
 
 /// 内部实现：silent=true 时不发任何聊天生命周期事件（子Agent/后台运行体使用）
-/// cancel_aware=false 时完全不读取/响应全局 AGENT_CANCEL（独立后台运行体与聊天"停止"互不误伤）
+/// cancel_aware=false 时完全不读取/响应会话取消信号（独立后台运行体与聊天"停止"互不误伤）
 ///
 /// 流中断自动恢复（上限 2 次重试）：
 /// - 已产出正文且无工具调用 → 续写模式（assistant 半截 + 续写指令），新 token 接在半截之后推送
@@ -200,7 +202,7 @@ pub async fn call_llm_streaming_inner(messages: &[ChatMessage], tools: Option<&V
     loop {
         attempt += 1;
         // 重试间隙响应取消信号（流内检查只在收到 chunk 时触发）
-        if cancel_aware && AGENT_CANCEL.load(Ordering::Acquire) {
+        if cancel_aware && overrides.cancel_sid.as_deref().map_or(false, crate::services::agent_workflow::session_cancelled) {
             return Err("cancelled".into());
         }
         let attempt_msgs: Vec<ChatMessage> = if accumulated.is_empty() {
@@ -323,6 +325,7 @@ async fn stream_once(
     };
     let to_ui = !silent && streams_user;
     let owner = overrides.agent_id.clone().unwrap_or_else(|| "main".to_string());
+    let sid_str = overrides.cancel_sid.clone().unwrap_or_default();
 
     // 逐行解析 SSE：data: 前缀仅认行首，一行到达即完整事件（内容含 "data:" 不再破坏边界）
     let try_process_one = |st: &mut SseState, app: &Option<tauri::AppHandle>| -> bool {
@@ -366,7 +369,7 @@ async fn stream_once(
                                         .unwrap_or(0);
                                     if marker > st.token_buf_start {
                                         if to_ui { if let Some(ref h) = app {
-                                            let _ = h.emit("agent:token", json!({"token": &st.token_buf[..marker - st.token_buf_start], "owner": owner}));
+                                            let _ = h.emit("agent:token", json!({"token": &st.token_buf[..marker - st.token_buf_start], "owner": owner, "sid": sid_str.clone()}));
                                         } }
                                     }
                                     st.suppress_tokens = true;
@@ -374,7 +377,7 @@ async fn stream_once(
                                     st.token_buf_start = st.full.len();
                                 } else if st.token_buf.len() >= 50 || tok.contains('\n') {
                                     if to_ui { if let Some(ref h) = app {
-                                        let _ = h.emit("agent:token", json!({"token": &st.token_buf, "owner": owner}));
+                                        let _ = h.emit("agent:token", json!({"token": &st.token_buf, "owner": owner, "sid": sid_str.clone()}));
                                     } }
                                     st.token_buf.clear();
                                     st.token_buf_start = st.full.len();
@@ -388,7 +391,7 @@ async fn stream_once(
             st.thought_buf.push_str(rtok);
             if to_ui && (first || st.thought_buf.len() >= 50 || rtok.contains('\n')) {
                 if let Some(ref h) = app {
-                    let _ = h.emit("agent:thought", json!({"text": &st.thought_buf, "owner": owner}));
+                    let _ = h.emit("agent:thought", json!({"text": &st.thought_buf, "owner": owner, "sid": sid_str.clone()}));
                 }
                 st.thought_buf.clear();
             }
@@ -414,7 +417,7 @@ async fn stream_once(
     // 失败退出（流错误/取消）：flush 积压 token 保证前端与 partial 一致
     macro_rules! fail {
         ($msg:expr, $cancelled:expr) => {{
-            flush_pending_tokens(&mut st, to_ui, &owner, &app_handle);
+            flush_pending_tokens(&mut st, to_ui, &owner, &sid_str, &app_handle);
             let has_tool_calls = !st.tca.is_empty() || st.suppress_tokens;
             let tool_args_chars = st.tca.iter().map(|(_, _, a)| a.len()).sum();
             let partial = st.full.clone();
@@ -457,13 +460,13 @@ async fn stream_once(
                     .find(|(_, n, a)| !a.is_empty() && !n.is_empty())
                     .map(|(_, n, _)| n.clone())
                     .unwrap_or_default();
-                let _ = h.emit("agent:status", json!({"stage":"writing","agent_id":overrides.agent_id.clone().unwrap_or_default(),"class":overrides.agent_class.clone().unwrap_or_default(),"chars":produced,"tools":tool_steps,"stool":stool,"targs":targs,"pending":inflight}));
+                let _ = h.emit("agent:status", json!({"stage":"writing","agent_id":overrides.agent_id.clone().unwrap_or_default(),"class":overrides.agent_class.clone().unwrap_or_default(),"chars":produced,"tools":tool_steps,"stool":stool,"targs":targs,"pending":inflight,"sid":sid_str.clone()}));
             }
             st.prog_last_chars = produced;
             st.prog_last_at = std::time::Instant::now();
         }
         if st.done { break; }
-        if cancel_aware && AGENT_CANCEL.load(Ordering::Acquire) {
+        if cancel_aware && overrides.cancel_sid.as_deref().map_or(false, crate::services::agent_workflow::session_cancelled) {
             fail!("cancelled".to_string(), true);
         }
     }
@@ -472,7 +475,7 @@ async fn stream_once(
     if !st.buf.is_empty() { st.buf.push('\n'); }
     while try_process_one(&mut st, &app_handle) {}
     // 流结束后 flush 残余 buffer
-    flush_pending_tokens(&mut st, to_ui, &owner, &app_handle);
+    flush_pending_tokens(&mut st, to_ui, &owner, &sid_str, &app_handle);
     log::info!("SSE stream end +{}ms tokens={} len={} tool_calls={} done={} finish={} err={}",
         t0.elapsed().as_millis(), st.count, st.full.len(), st.tca.len(), st.done, st.got_finish, st.server_err.is_some());
 

@@ -234,6 +234,22 @@ pub async fn agent_chat_workflow(user_query: String, attachments: Vec<Value>, ma
     agent_chat_workflow_internal(user_query, attachments, max_iterations, app_handle, silent, session_id, allowed_tools, None, true, 0, true, false, None, true, None).await
 }
 
+/// plan 围栏采纳：本轮文本含 {"type":"plan"} → 状态机重置接管；同结构重复声明 no-op。返回新步骤数（变更时）。
+fn adopt_plan(cur: &mut Option<crate::services::agent_workflow::plan::WorkflowPlan>, text: &str) -> Option<usize> {
+    let fresh = crate::services::agent_workflow::plan::plan_from_text(text)?;
+    if cur.as_ref().map(|p| p.to_payload()) == Some(fresh.to_payload()) { return None }
+    let n = fresh.steps.len();
+    *cur = Some(fresh);
+    Some(n)
+}
+
+fn emit_plan_snapshot(plan: &Option<crate::services::agent_workflow::plan::WorkflowPlan>, app_handle: &Option<tauri::AppHandle>, sid_out: &str, silent: bool) {
+    if silent || plan.is_none() { return }
+    if let Some(ref h) = app_handle {
+        let _ = h.emit("agent:plan", serde_json::json!({"sid": sid_out, "plan": plan.as_ref().map(|p| p.to_payload())}));
+    }
+}
+
 /// 一轮 LLM 产出落定的字符数——正文口径（轮末记账用）：
 /// 文本按字符计；工具参数中「文档生成」的 content JSON **只累计字符串值**（剔除结构键/转义噪音，
 /// 实测 JSON 骨架占 20-30% 虚高），其余工具按参数字符计；非法 JSON 退回字符数
@@ -409,9 +425,9 @@ pub(crate) fn append_delegated_note(content: &mut String, metadata: Option<&str>
 }
 
 /// 内部工作流函数，支持自定义 system_prompt
-/// is_root: true=顶层工作流（控制 AGENT_CANCEL 生命周期），false=子Agent（保留取消信号向上传播）
+/// is_root: true=顶层工作流（控制会话取消键生命周期），false=子Agent（保留取消信号向上传播）
 /// delegate_depth: 当前委托深度（0=主Agent，≥1=子Agent）
-/// respond_cancel: false=独立后台运行体，完全无视全局 AGENT_CANCEL（与聊天"停止"互不干扰）
+/// respond_cancel: false=独立后台运行体，完全无视会话取消信号（与聊天"停止"互不干扰）
 /// shared_history: Some=共享上下文模式（委托子Agent）：直接以主会话消息快照起步，
 ///   跳过新会话构造/本轮 query 追加/system 重写——messages[0] 保持主 Agent 完整 system，
 ///   与主会话形成字节级一致前缀，最大化端点 Prefix Caching 命中
@@ -480,15 +496,18 @@ pub async fn agent_chat_workflow_internal(
         String::new()
     };
     // ★ 仅顶层工作流重置取消信号；子Agent保留信号向上传播；独立后台运行体不触碰该全局信号
-    if is_root && respond_cancel { AGENT_CANCEL.store(false, Ordering::Release); }
+    let cancel_key: Option<String> = session_id.clone()
+        .or_else(|| delegate_run.as_ref().and_then(|d| d.llm.cancel_sid.clone()));
+    let sid_out: String = cancel_key.clone().unwrap_or_default();
+    if is_root && respond_cancel { if let Some(ref k) = cancel_key { clear_session_cancel(k); } }
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
     let max_iters = max_iterations.unwrap_or(20).clamp(2, 40);
-    if query.is_empty() { return Ok(json!({"success":true,"result_type":"answer","answer":"请输入问题。","iterations":0})); }
+    if query.is_empty() { return Ok(json!({"sid": sid_out.clone(),"success":true,"result_type":"answer","answer":"请输入问题。","iterations":0})); }
     crate::services::chat_api::invalidate_chat_config_cache();
     { let mut c = API_CACHE.write().unwrap_or_else(|e| e.into_inner()); c.3 = Instant::now() - std::time::Duration::from_secs(60); }
     let (_, api_key, _model) = get_api_endpoint();
-    if api_key.is_empty() { return Ok(json!({"success":true,"result_type":"answer","answer":"请先在系统设置中配置 Chat API 密钥。"})); }
+    if api_key.is_empty() { return Ok(json!({"sid": sid_out.clone(),"success":true,"result_type":"answer","answer":"请先在系统设置中配置 Chat API 密钥。"})); }
 
     // ★ 请求级 tools：canonical 模式下与白名单解耦——主/子 Agent 同一份全量清单，
     //   保证 tools 字段字节级一致（前缀缓存把 tools 计入前缀，不一致则共享历史段全灭）；
@@ -652,7 +671,7 @@ pub async fn agent_chat_workflow_internal(
     // ★ 保存 user 消息到 DB（历史加载完成后，避免重复）
     // ★ 解析附件并构建增强消息
     let augmented_query = if !attachments.is_empty() {
-        if let Some(ref h) = app_handle { let _ = h.emit("agent:progress", serde_json::json!({"msg":"正在解析附件..."})); }
+        if let Some(ref h) = app_handle { let _ = h.emit("agent:progress", serde_json::json!({"sid": sid_out.clone(),"msg":"正在解析附件..."})); }
         let mut blocks = Vec::new();
         let mut total_bytes = 0usize;
         const TOTAL_CAP: usize = 100000;
@@ -667,7 +686,7 @@ pub async fn agent_chat_workflow_internal(
                     if text.len() > ATTACH_SUMMARIZE_THRESHOLD {
                         // ★ 大附件：切片提炼，不截断
                         if let Some(ref h) = app_handle {
-                            let _ = h.emit("agent:progress", serde_json::json!({"msg": format!("检测到超大附件「{}」，正在切片提炼…", name)}));
+                            let _ = h.emit("agent:progress", serde_json::json!({"sid": sid_out.clone(),"msg": format!("检测到超大附件「{}」，正在切片提炼…", name)}));
                         }
                         let distilled = summarize_large_attachment(&text, &app_handle).await;
                         total_bytes += distilled.len();
@@ -856,6 +875,10 @@ pub async fn agent_chat_workflow_internal(
     let mut _prev_pt: i64 = 0;
     let mut budget = 300i32;  // 增加到300分
     let mut search_cost = 8i32;  // 降低初始消耗到8分
+    // ★ plan 状态机（主 Agent 专属）：围栏采纳 → 委托推进；步内工具轮计数与软上限
+    let mut plan: Option<crate::services::agent_workflow::plan::WorkflowPlan> = None;
+    let mut step_calls: i32 = 0;
+    let mut max_iters_dyn = max_iters;
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     
     // System Prompt 注入可用 Agent 列表；【关于我】仅智能问答主Agent注入（分析师/子Agent不注入）
@@ -884,20 +907,20 @@ pub async fn agent_chat_workflow_internal(
 
     loop {
         // ★ 检查停止信号（仅顶层清除标志，子Agent保留信号向上传播；独立后台运行体跳过）
-        if respond_cancel && AGENT_CANCEL.load(Ordering::Acquire) {
-            if is_root { AGENT_CANCEL.store(false, Ordering::Release); }
+        if respond_cancel { if let Some(ref k) = cancel_key { if session_cancelled(k) {
+            if is_root { clear_session_cancel(k); }
             log::info!("收到停止信号，中断执行");
             let ws = session.generate_scratchpad();
-            return Ok(json!({"success":true,"result_type":"answer","answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
-        }
-        
+            return Ok(json!({"sid": sid_out.clone(),"success":true,"result_type":"answer","answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
+            } } }
+
         log::info!("预算: {}/300 cost={}", budget, search_cost);
         // ★ 状态事件携带子 Agent 身份（delegate_label=Some 时），前端状态条据此显示"谁在干活"
         let thinking_status = match &delegate_label {
-            Some((aid, aname)) => json!({"stage":"thinking","agent_id":aid,"agent_name":aname,"msg":format!("{} · 思考中...", aname)}),
-            None => json!({"stage":"thinking","msg":"思考中..."}),
+            Some((aid, aname)) => json!({"sid": sid_out.clone(),"stage":"thinking","agent_id":aid,"agent_name":aname,"msg":format!("{} · 思考中...", aname)}),
+            None => json!({"sid": sid_out.clone(),"stage":"thinking","msg":"思考中..."}),
         };
-        if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", thinking_status); let _ = h.emit("agent:progress", json!({"msg":"思考中..."})); } }
+        if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", thinking_status); let _ = h.emit("agent:progress", json!({"sid": sid_out.clone(),"msg":"思考中..."})); } }
         // ★ 每轮注意力衰减（Residual 方式：new_score = old_score * 0.95 + gain）
         // gain 在 update_from_tool_result / UpdateObject effect 中通过 EMA 完成
         // 这里只做衰减，不做加分
@@ -917,7 +940,7 @@ pub async fn agent_chat_workflow_internal(
         // ★ 首轮/无工具轮：在 LLM 调用前注入动态上下文（后续轮次由循环末尾注入）
         {
             let scratchpad = session.generate_scratchpad();
-            let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
+            let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张：停止新增检索，按计划完成当前步骤或逐项说明剩余步骤与原因" };
             // ★ 计算当前上下文 token 数
             let context_tokens: i64 = messages.iter().map(|m| {
                 let text_len = m.content.as_ref().map_or(0, |s| s.len() as i64);
@@ -926,9 +949,16 @@ pub async fn agent_chat_workflow_internal(
                     .sum::<i64>());
                 (text_len + tc_len) / 3
             }).sum();
+            let plan_line = match plan.as_ref() {
+                            Some(pl) => {
+                                let cap_note = if step_calls >= crate::services::agent_workflow::plan::STEP_TOOL_SOFT_CAP { "【本步工具轮已达上限 10：收敛该步（收尾或报缺口）后进入下一步，勿继续展开】" } else { "" };
+                                format!("\n- 执行计划（系统自动跟踪，无需回写状态）: 共 {} 步 · 已完成 {} · 当前步工具轮 {}/10 {}", pl.steps.len(), pl.done_count(), step_calls, cap_note)
+                            }
+                            None => String::new(),
+                        };
             let budget_info = format!(
-                "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
-                scratchpad, cn_now_str(), iters, search_cost, budget, status, context_tokens
+                "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽{}",
+                scratchpad, cn_now_str(), iters, search_cost, budget, status, context_tokens, plan_line
             );
             // 移除上一轮的动态上下文消息
             if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
@@ -962,16 +992,16 @@ pub async fn agent_chat_workflow_internal(
                 // 若直接发 error 会让前端提前拆掉 done/token 监听，导致父流程最终回复丢失（仅刷新可见）
                 // 取消例外：走 done 的 cancelled 通道，不弹错误
                 if !silent && delegate_depth == 0 && !was_cancelled { if let Some(ref h) = app_handle {
-                    let _ = h.emit("agent:error", json!({"error": e}));
+                    let _ = h.emit("agent:error", json!({"sid": sid_out.clone(),"error": e}));
                 } }
-                return Ok(json!({"success":false,"answer":format!("LLM 调用失败: {}", e),"iterations":iters,"cancelled":was_cancelled}));
+                return Ok(json!({"sid": sid_out.clone(),"success":false,"answer":format!("LLM 调用失败: {}", e),"iterations":iters,"cancelled":was_cancelled}));
             }
         };
         // ★ 轮末落定即记账并广播（子 Agent 多轮逐批叠加；主 Agent 无分桶消费者不发事件）
         confirmed_chars += round_output_chars(&ac_owned, &tcs_streamed);
         if !silent && delegate_depth > 0 {
             if let (Some((aid, _)), Some(ref h)) = (&delegate_label, &app_handle) {
-                let _ = h.emit("agent:status", json!({"stage":"writing","agent_id":aid,"chars":confirmed_chars,"confirmed":confirmed_chars,"stool":"","pending":0}));
+                let _ = h.emit("agent:status", json!({"sid": sid_out.clone(),"stage":"writing","agent_id":aid,"chars":confirmed_chars,"confirmed":confirmed_chars,"stool":"","pending":0}));
             }
         }
         if let Some(u) = usage {
@@ -998,6 +1028,14 @@ pub async fn agent_chat_workflow_internal(
                 context_tokens, round_pt, hit_rate, round_ct, pt, session.prompt_tokens, session.completion_tokens);
         }
         let ac = ac_owned.as_str();
+        // ★ plan 检测：本轮文本（过渡语或答复开头）含 plan 围栏即接管状态机
+        if is_root {
+            if let Some(n) = adopt_plan(&mut plan, ac) {
+                max_iters_dyn = crate::services::agent_workflow::plan::max_iters_for(Some(n), max_iters_dyn);
+                step_calls = 0;
+                emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
+            }
+        }
         let mut tcs: Option<Vec<Value>> = if tcs_streamed.is_empty() { None } else { Some(tcs_streamed) };
         // ★ 始终计算清理后的 content（剥离工具调用标记），后续所有展示/保存/判定都使用干净文本
         let cleaned_ac = clean_tool_markers(ac, true);
@@ -1066,32 +1104,33 @@ pub async fn agent_chat_workflow_internal(
                 }
 
                 log::info!("[Agent] 最终答案: len={}, preview={}", answer.len(), answer.chars().take(50).collect::<String>());
-                if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": &answer})); } }
+                if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"sid": sid_out.clone(),"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"sid": sid_out.clone(),"answer": &answer})); } }
                 if !answer.is_empty() { session.record_observation(&answer); }
                 if let Some(ref sid) = session_id { save_session_state(sid, &session); }
-                let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"result_type":"answer","answer":answer,"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
+                let ws = session.generate_scratchpad(); return Ok(json!({"sid": sid_out.clone(),"success":true,"result_type":"answer","answer":answer,"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
             }
             Some(ref calls) if !calls.is_empty() => {
                 // ★ 工具轮：不再向前端推送 interim 内容，检索期间保持预设文案
+                if plan.is_some() { step_calls += 1; }
                 // ★ 预算检查：不足时强制回答（在工具调用之前检查）
                 if budget < search_cost {
                     if !silent { if let Some(ref h) = app_handle {
                         let kw = calls.first().and_then(|tc| tc["function"]["arguments"].as_str().map(|s| s.to_string())).unwrap_or_default();
-                        let _ = h.emit("agent:budget-low", json!({"remaining":budget,"cost":search_cost,"next_query":kw}));
+                        let _ = h.emit("agent:budget-low", json!({"sid": sid_out.clone(),"remaining":budget,"cost":search_cost,"next_query":kw}));
                     } }
-                    messages.push(ChatMessage{role:MessageRole::User,content:Some("预算不足，请直接总结已获取的信息。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+                    messages.push(ChatMessage{role:MessageRole::User,content:Some("预算不足，停止调用工具。请按此前 plan 步骤逐项输出最终答复：汇总所有已完成子任务的产出，明确列出未执行的步骤与原因；禁止只报告最近一段。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel, &llm_overrides).await.unwrap_or_else(|e| { log::warn!("[Agent] 预算不足总结失败: {e}"); format!("总结失败: {e}") });
                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                     let ws = session.generate_scratchpad();
-                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": &ans})); } }
-                    return Ok(json!({"success":true,"result_type":"answer","answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
+                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"sid": sid_out.clone(),"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"sid": sid_out.clone(),"answer": &ans})); } }
+                    return Ok(json!({"sid": sid_out.clone(),"success":true,"result_type":"answer","answer":ans,"workspace":ws,"iterations":iters,"budget_exhausted":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
                 }
-                if iters >= max_iters {
-                    messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，请直接总结。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
+                if iters >= max_iters_dyn {
+                    messages.push(ChatMessage{role:MessageRole::User,content:Some("已达到工具调用上限，停止调用工具。按此前 plan 步骤逐项聚合全部已完成产出，未执行步骤须列明与原因；禁止只复述最近一段。".into()),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel, &llm_overrides).await.unwrap_or_else(|e| { log::warn!("[Agent] 迭代上限总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
-                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); } }
-                    return Ok(json!({"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
+                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"sid": sid_out.clone(),"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"sid": sid_out.clone(),"answer": ans})); } }
+                    return Ok(json!({"sid": sid_out.clone(),"success":true,"answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
                 }
 
     let mut current_round = json!({"round":iters,"thought":ac,"tools":[]});
@@ -1123,8 +1162,8 @@ pub async fn agent_chat_workflow_internal(
                             _ => None,
                         };
                         let (said, sanme) = match &delegate_label { Some((aid, aname)) => (aid.as_str(), aname.as_str()), None => ("", "") };
-                        let _ = h.emit("agent:status", json!({"stage":"tool_start","tool":tc.function.name,"label":tool_display_label(&tc.function.name),"agent_id":said,"agent_name":sanme,"target":target.unwrap_or_default()}));
-                        let _ = h.emit("agent:progress", json!({"msg": format!("正在{}...", if tc.function.name.starts_with("ext_tool_search") { "检索知识库" } else if tc.function.name.starts_with("ext_tool_object") { "查询数据" } else { "处理中" })}));
+                        let _ = h.emit("agent:status", json!({"sid": sid_out.clone(),"stage":"tool_start","tool":tc.function.name,"label":tool_display_label(&tc.function.name),"agent_id":said,"agent_name":sanme,"target":target.unwrap_or_default()}));
+                        let _ = h.emit("agent:progress", json!({"sid": sid_out.clone(),"msg": format!("正在{}...", if tc.function.name.starts_with("ext_tool_search") { "检索知识库" } else if tc.function.name.starts_with("ext_tool_object") { "查询数据" } else { "处理中" })}));
                     }
                 } }
                 // ═══ 并行工具调度：async 工具并行执行，sync 工具顺序执行 ═══
@@ -1150,20 +1189,20 @@ pub async fn agent_chat_workflow_internal(
                     let key = (tc.function.name.clone(), tc.function.arguments.clone());
                     if let Some(cached) = dedup_cache.get(&key) {
                         if !silent { if let Some(ref h) = app_handle {
-                            let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": tc.function.name, "cached": true, "result_len": cached.len()}));
+                            let _ = h.emit("agent:tool-result", json!({"sid": sid_out.clone(),"round": iters, "tool": tc.function.name, "cached": true, "result_len": cached.len()}));
                         } }
                         cached_results_map.insert(i, cached.clone());
                     } else {
                         // 工具集守卫：不在允许范围内的工具不执行（如周期分析只允许只读+通知）
                         if let Some(ref allowed) = allowed_tools {
                             if !tool_granted(allowed, &tc.function.name, &tc.function.arguments) {
-                                let env = serde_json::json!({
+                                let env = serde_json::json!({"sid": sid_out.clone(),
                                     "result_type": "tool_forbidden",
                                     "data": {"name": tc.function.name},
                                     "summary": forbidden_summary(&tc.function.name, &tc.function.arguments)
                                 });
                                 if !silent { if let Some(ref h) = app_handle {
-                                    let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": tc.function.name, "forbidden": true}));
+                                    let _ = h.emit("agent:tool-result", json!({"sid": sid_out.clone(),"round": iters, "tool": tc.function.name, "forbidden": true}));
                                 } }
                                 cached_results_map.insert(i, env.to_string());
                                 continue;
@@ -1547,6 +1586,13 @@ pub async fn agent_chat_workflow_internal(
                             let expected_output = a["expected_output"].as_str().unwrap_or("");
                             // ★ 路由决策日志：记录 LLM 选中的目标（未命中时与注入清单对照）
                             log::info!("[Route] 选择委托 agent_id={} task={:.80}", agent_id, task);
+                            // ★ plan：委托开始 → 按目标 Agent 名推进步（hint 互含，无则最早 pending）
+                            if is_root && plan.is_some() {
+                                let pname = crate::database::get("SELECT name FROM agent_profiles WHERE id=?1 AND status='active'", &[json!(agent_id)])
+                                    .ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default();
+                                if let Some(pl) = plan.as_mut() { pl.advance_on_delegate(&pname); }
+                                emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
+                            }
                             // ★ 共享完整上下文：全量 messages 快照直传（废除 recent_messages 20条×200字摘要）；
                             //   context 仅保留主 Agent 显式补充的结构化引用
                             let ctx = a.get("context").cloned()
@@ -1556,13 +1602,17 @@ pub async fn agent_chat_workflow_internal(
                             let snapshot = build_delegate_snapshot(&messages, &completed_round);
                             let res = crate::services::delegate_agent::execute_delegate_agent(
                                 agent_id, task, Some(&ctx), expected_output, app_handle.clone(), delegate_depth,
-                                snapshot, session,
+                                snapshot, session, cancel_key.clone(),
                             ).await;
                             // ★ 取消透传 + 委托扣费（合并解析；解析失败也扣基础额度，防绕过）
                             match serde_json::from_str::<Value>(&res) {
                                 Ok(v) => {
-                                    if v["data"]["cancelled"].as_bool() == Some(true) {
-                                        AGENT_CANCEL.store(true, Ordering::Release);
+                                    if is_root && v["success"].as_bool() == Some(true) {
+                                    if let Some(pl) = plan.as_mut() { if pl.complete_active() { step_calls = 0; } }
+                                    emit_plan_snapshot(&plan, &app_handle, &sid_out, silent);
+                                }
+                                if v["data"]["cancelled"].as_bool() == Some(true) {
+                                        if let Some(ref k) = cancel_key { cancel_session(k); } else { cancel_session(""); }
                                     }
                                     let iters = v["data"]["iterations"].as_i64().unwrap_or(1) as i32;
                                     budget -= 30 + iters * 2;
@@ -1604,7 +1654,7 @@ pub async fn agent_chat_workflow_internal(
                     let key = (tc.function.name.clone(), tc.function.arguments.clone());
                     dedup_cache.insert(key, result.clone());
                     if !silent { if let Some(ref h) = app_handle {
-                        let _ = h.emit("agent:tool-result", json!({"round": iters, "tool": tc.function.name, "result_len": result.chars().count()}));
+                        let _ = h.emit("agent:tool-result", json!({"sid": sid_out.clone(),"round": iters, "tool": tc.function.name, "result_len": result.chars().count()}));
                     } }
                     let parsed_args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                     round_tools.push(json!({"tool":tc.function.name,"args":parsed_args,"result":result,"result_len":result.chars().count()}));
@@ -1648,8 +1698,8 @@ pub async fn agent_chat_workflow_internal(
                     let answer = format_clarification_answer(ask_data["reason"].as_str().unwrap_or(""), &questions);
                     log::info!("[追问] 本轮挂起等待用户: {} 个问题", questions.len());
                     if !silent { if let Some(ref h) = app_handle {
-                        let _ = h.emit("agent:status", json!({"stage":"answer"}));
-                        let _ = h.emit("agent:final-answer", json!({"answer": answer}));
+                        let _ = h.emit("agent:status", json!({"sid": sid_out.clone(),"stage":"answer"}));
+                        let _ = h.emit("agent:final-answer", json!({"sid": sid_out.clone(),"answer": answer}));
                     } }
                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                     let ws = session.generate_scratchpad();
@@ -1679,8 +1729,8 @@ pub async fn agent_chat_workflow_internal(
                     log::info!("[委托直出] 命中：单委托直出, answer_len={}", answer.len());
                     // ★ 与正常回答路径对齐：委托直出同样向前端广播最终答案
                     if !silent { if let Some(ref h) = app_handle {
-                        let _ = h.emit("agent:status", json!({"stage":"answer"}));
-                        let _ = h.emit("agent:final-answer", json!({"answer": answer}));
+                        let _ = h.emit("agent:status", json!({"sid": sid_out.clone(),"stage":"answer"}));
+                        let _ = h.emit("agent:final-answer", json!({"sid": sid_out.clone(),"answer": answer}));
                     } }
                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                     let ws = session.generate_scratchpad();
@@ -1753,9 +1803,9 @@ pub async fn agent_chat_workflow_internal(
                     messages.push(ChatMessage{role:MessageRole::User,content:Some(format!("【系统提示】{circuit_break_reason}。请根据已有 Known Facts 直接总结回答。")),tool_calls:None,tool_call_id:None,name:None,reasoning_content:None});
                     let ans = call_llm_without_tools(&messages, &app_handle, silent, respond_cancel, &llm_overrides).await.unwrap_or_else(|e| { log::warn!("[Agent] 熔断总结失败: {e}"); format!("总结失败: {e}") });
                     let ws = session.generate_scratchpad();
-                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"answer": ans})); } }
+                    if !silent { if let Some(ref h) = app_handle { let _ = h.emit("agent:status", json!({"sid": sid_out.clone(),"stage":"answer"})); let _ = h.emit("agent:final-answer", json!({"sid": sid_out.clone(),"answer": ans})); } }
                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }
-                    return Ok(json!({"success":true,"result_type":"answer","answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
+                    return Ok(json!({"sid": sid_out.clone(),"success":true,"result_type":"answer","answer":ans,"workspace":ws,"iterations":iters,"circuit_breaker":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
                 }
 
                 // ★ 扣减预算（工具执行后，下一轮生效）
@@ -1767,7 +1817,7 @@ pub async fn agent_chat_workflow_internal(
                 // 工具结果成为稳定前缀，可被 prompt cache 命中
                 {
                     let scratchpad = session.generate_scratchpad();
-                    let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张，请优先总结已有信息" };
+                    let status = if budget >= 100 { "预算充足" } else if budget >= 50 { "预算偏低" } else { "预算紧张：停止新增检索，按计划完成当前步骤或逐项说明剩余步骤与原因" };
                     // ★ 计算当前上下文 token 数
                     let context_tokens: i64 = messages.iter().map(|m| {
                         let text_len = m.content.as_ref().map_or(0, |s| s.len() as i64);
@@ -1776,9 +1826,16 @@ pub async fn agent_chat_workflow_internal(
                             .sum::<i64>());
                         (text_len + tc_len) / 3
                     }).sum();
+                     let plan_line = match plan.as_ref() {
+                                     Some(pl) => {
+                                         let cap_note = if step_calls >= crate::services::agent_workflow::plan::STEP_TOOL_SOFT_CAP { "【本步工具轮已达上限 10：收敛该步（收尾或报缺口）后进入下一步，勿继续展开】" } else { "" };
+                                         format!("\n- 执行计划（系统自动跟踪，无需回写状态）: 共 {} 步 · 已完成 {} · 当前步工具轮 {}/10 {}", pl.steps.len(), pl.done_count(), step_calls, cap_note)
+                                     }
+                                     None => String::new(),
+                                 };
                      let budget_info = format!(
-                        "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽",
-                        scratchpad, cn_now_str(), iters, search_cost, budget, status, context_tokens
+                        "当前会话工作记忆\n{}\n\n当前时间: {}\n\n搜索预算系统（单次对话）:\n- 总预算: 300 分\n- 计算方式: 每轮扣减，首次8分，逐轮×1.2递增（如8→9→11→13→...）\n- 当前轮次: 第{}轮，本轮将消耗: {}分\n- 剩余预算: {}/300 — {}\n- 当前上下文: {} tokens\n- 建议: 信息足够时主动回答，不要等到预算耗尽{}",
+                        scratchpad, cn_now_str(), iters, search_cost, budget, status, context_tokens, plan_line
                     );
                     // 移除上一轮的动态上下文消息
                     if let Some(pos) = messages.iter().rposition(|m| m.content.as_deref().map_or(false, |c| c.starts_with("[DYNAMIC_CONTEXT]"))) {
@@ -1799,7 +1856,7 @@ pub async fn agent_chat_workflow_internal(
                     save_session_state(sid, &session);
                 }
             }
-            _ => { if let Some(ref sid) = session_id { save_session_state(sid, &session); } let ws = session.generate_scratchpad(); return Ok(json!({"success":true,"result_type":"answer","answer":format!("根据当前信息：\n\n{}",effective_ac),"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log})); }
+            _ => { if let Some(ref sid) = session_id { save_session_state(sid, &session); } let ws = session.generate_scratchpad(); return Ok(json!({"sid": sid_out.clone(),"success":true,"result_type":"answer","answer":format!("根据当前信息：\n\n{}",effective_ac),"workspace":ws,"iterations":iters,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log})); }
         }
     }
 }

@@ -181,10 +181,10 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
             }
             Err(e) => {
                 if e == "cancelled" {
-                    let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true}));
+                    let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true,"sid": session_id.clone().unwrap_or_default()}));
                 } else {
                     eprintln!("[Agent] 错误: {}", e);
-                    let _ = app_handle.emit("agent:error", json!({"error": e}));
+                    let _ = app_handle.emit("agent:error", json!({"error": e, "sid": session_id.clone().unwrap_or_default()}));
                 }
             }
         }
@@ -202,17 +202,17 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
             Ok(mut v) => { crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v); let _ = app_handle.emit("agent:done", &v); }
             Err(e) => {
                 if e == "cancelled" {
-                    let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true}));
+                    let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true,"sid":""}));
                 } else {
-                    let _ = app_handle.emit("agent:error", json!({"error": e}));
+                    let _ = app_handle.emit("agent:error", json!({"error": e, "sid": ""}));
                 }
             }
         }
     });
     Ok(())
 }
-#[tauri::command] pub async fn agent_cancel() -> Result<Value, String> {
-    crate::services::agent_workflow::cancel_agent();
+#[tauri::command] pub async fn agent_cancel(data: Value) -> Result<Value, String> {
+    crate::services::agent_workflow::cancel_agent(data["sessionId"].as_str().unwrap_or(""));
     Ok(json!({"success": true}))
 }
 
