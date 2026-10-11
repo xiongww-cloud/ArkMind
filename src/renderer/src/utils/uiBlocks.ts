@@ -42,9 +42,11 @@ export interface UiField {
 export interface UiFormBlock { type: 'form'; title: string; submit_label?: string; fields: UiField[] }
 export interface UiColumn { key: string; label: string }
 export interface UiTableBlock { type: 'table'; title: string; columns: UiColumn[]; rows: Record<string, string>[] }
-export type UiBlock = UiFormBlock | UiTableBlock
+export interface UiPlanStep { title: string; agent?: string }
+export interface UiPlanBlock { type: 'plan'; title: string; steps: UiPlanStep[] }
+export type UiBlock = UiFormBlock | UiTableBlock | UiPlanBlock
 
-export const LIMITS = { maxBlocksPerReply: 3, formFields: 8, tableRows: 30, tableCols: 8, textLen: 120 }
+export const LIMITS = { maxBlocksPerReply: 3, formFields: 8, tableRows: 30, tableCols: 8, textLen: 120, planSteps: 10 }
 
 function withinLimits(b: any): boolean {
   if (!b || typeof b !== 'object') return false
@@ -61,6 +63,11 @@ function withinLimits(b: any): boolean {
     if (!Array.isArray(b.rows) || b.rows.length > LIMITS.tableRows) return false
     return b.columns.every((c: any) => c && typeof c.key === 'string' && typeof c.label === 'string' && t(c.label))
   }
+  if (b.type === 'plan') {
+    if (!Array.isArray(b.steps) || !b.steps.length || b.steps.length > LIMITS.planSteps) return false
+    return b.steps.every((s: any) => s && typeof s.title === 'string' && s.title.trim() && t(s.title)
+      && (s.agent === undefined || (typeof s.agent === 'string' && s.agent.length <= 20)))
+  }
   return false
 }
 
@@ -68,7 +75,12 @@ function withinLimits(b: any): boolean {
 export function parseUiBlock(jsonText: string): UiBlock | null {
   try {
     const b = JSON.parse(jsonText)
-    return withinLimits(b) ? (b as UiBlock) : null
+    if (!withinLimits(b)) return null
+    if (b.type === 'plan') {
+      b.title = String(b.title).slice(0, LIMITS.textLen)
+      b.steps = b.steps.map((s: UiPlanStep) => ({ title: s.title.trim().slice(0, LIMITS.textLen), ...(s.agent ? { agent: s.agent.trim() } : {}) }))
+    }
+    return b as UiBlock
   } catch { return null }
 }
 

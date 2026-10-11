@@ -992,9 +992,9 @@ onUnmounted(() => {
                 </div>
                 <div v-else-if="agent.isTypewriting(msg)" class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
                 <AnnotationLayer v-else-if="annotateId === (msg.id || '')" :active="true" @add="annotations.push($event)">
-                  <MessageBody class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[msg.id || ''] = el }" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (msg.id || '')) tableRevisions = r }" />
+                  <MessageBody class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[msg.id || ''] = el }" :plan-live="idx === currentSession.messages.length - 1" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (msg.id || '')) tableRevisions = r }" />
                 </AnnotationLayer>
-                <MessageBody v-else-if="hasInteractive(msg.content)" class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" @send="submitClarification" />
+                <MessageBody v-else-if="hasInteractive(msg.content)" class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" :plan-live="idx === currentSession.messages.length - 1" @send="submitClarification" />
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
                 <!-- 思考流（本轮瞬态：流式滚动自动跟底，正文开始折叠为一行可展开，刷新/历史不存在） -->
                 <div v-if="agent.thought.value && (msg.id || '') === agent.thoughtMsgId.value" class="mt-1">

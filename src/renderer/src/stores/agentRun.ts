@@ -3,11 +3,19 @@ import { listen } from '@tauri-apps/api/event'
 
 /** 委托可观测性：子 Agent 执行轨迹状态（每个 webview 窗口一份 pinia 实例，
  *  主窗 AgentChat 与浮窗 ChatWindow 在各自入口分别注册监听） */
+/** 计划清单（瞬态：live plan 卡上报结构，委托事件推进进度；不落库） */
+export interface PlanState {
+  steps: { title: string; agent?: string }[]
+  states: ('pending' | 'active' | 'done')[]
+  ownerMsgId: string
+}
+
 export interface AgentRunState {
   /** 当前正在执行的子 Agent（null = 主 Agent 或空闲）；只驱动气泡内轨迹行 */
   currentAgent: { id: string; name: string } | null
   /** 本轮参与过的子 Agent 名称（去重保序），agent:done 时由前端写入消息的 assistants 署名 */
   participants: string[]
+  plan: PlanState | null
   /** 生成心跳：按子 Agent id 分桶的产出进度。展示口径：写参数期显示"生成内容 · N 字"、
    *  工具执行期显示"正在：动作"、交付型正文期显示"生成 · N 字"（不再有虚指的"步数"） */
   writingByAgent: Record<string, { chars: number; tools: number; deliverable: boolean; stool?: string; cur?: string; pending?: number; confirmed?: number }>
@@ -19,6 +27,7 @@ export const useAgentRunStore = defineStore('agentRun', {
   state: (): AgentRunState => ({
     currentAgent: null,
     participants: [],
+    plan: null,
     writingByAgent: {},
   }),
   actions: {
@@ -26,10 +35,38 @@ export const useAgentRunStore = defineStore('agentRun', {
       this.currentAgent = { id, name }
       this.writingByAgent = {}
       if (name && !this.participants.includes(name)) this.participants.push(name)
+      this.advancePlan(name)
     },
     clearAgent() {
       this.currentAgent = null
       this.writingByAgent = {}
+      this.finishActivePlan()
+    },
+    /** live plan 卡上报步骤结构（重新声明即接管；同结构仅换归属消息） */
+    setPlan(steps: { title: string; agent?: string }[], msgId: string) {
+      if (this.plan && JSON.stringify(this.plan.steps) === JSON.stringify(steps)) { this.plan.ownerMsgId = msgId; return }
+      this.plan = { steps: steps.map(s => ({ title: s.title, ...(s.agent ? { agent: s.agent } : {}) })), states: steps.map(() => 'pending'), ownerMsgId: msgId }
+    },
+    /** 委托开始/子 Agent 活动 → 推进最早匹配步；同名步已在途/已落定则幂等 no-op */
+    advancePlan(agentName: string) {
+      const p = this.plan
+      if (!p) return
+      const n = agentName.toLowerCase()
+      const match = (i: number) => {
+        const a = p.steps[i].agent?.toLowerCase()
+        return !!a && (n.includes(a) || a.includes(n))
+      }
+      if (p.states.some((st, i) => match(i) && st !== 'pending')) return
+      let idx = p.steps.findIndex((_, i) => p.states[i] === 'pending' && match(i))
+      if (idx < 0) idx = p.states.findIndex(st => st === 'pending')
+      if (idx >= 0) p.states[idx] = 'active'
+    },
+    /** 委托结束/主 Agent 回到思考或作答 → 当前步落定 */
+    finishActivePlan() {
+      const p = this.plan
+      if (!p) return
+      const i = p.states.findIndex(st => st === 'active')
+      if (i >= 0) p.states[i] = 'done'
     },
     /** 每轮发送开始时调用：清空上轮署名（done 处理器读取 participants 之后才会再次重置） */
     resetParticipants() {
