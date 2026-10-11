@@ -201,10 +201,18 @@ pub fn clean_tool_markers(text: &str, strip_ext_tool: bool) -> String {
     let mut out = text.to_string();
     let re_dsml = regex::Regex::new(r"(?i)[|｜‖]*DSML[|｜‖]*").unwrap();
     out = re_dsml.replace_all(&out, "").to_string();
-    let re_xml = regex::Regex::new(r"(?s)<tool_calls>.*?</tool_calls>").unwrap();
+    // 成对标记：整段剥离
+    let re_xml = regex::Regex::new(r"(?s)<tool_calls>.*?</<tool_calls>").unwrap();
     out = re_xml.replace_all(&out, "").to_string();
-    let re_tool_call = regex::Regex::new(r"(?s)<tool_call>.*?</tool_call>").unwrap();
+    let re_tool_call = regex::Regex::new(r"(?s)<tool_call>.*?</<tool_call>").unwrap();
     out = re_tool_call.replace_all(&out, "").to_string();
+    // ★ 未闭合残标：只剥到行尾，绝不吞后续正文——曾以 (?s) 贪到文档尾，501 字答复被清空即判"残留"重试，断尾事故根源
+    let re_xml_open = regex::Regex::new(r"(?m)<tool_calls>[^\n]*").unwrap();
+    out = re_xml_open.replace_all(&out, "").to_string();
+    let re_tool_call_open = regex::Regex::new(r"(?m)<tool_call[^\n]*").unwrap();
+    out = re_tool_call_open.replace_all(&out, "").to_string();
+    let re_invoke_open = regex::Regex::new(r"(?m)<invoke[^\n]*").unwrap();
+    out = re_invoke_open.replace_all(&out, "").to_string();
     if strip_ext_tool {
         let re_tool = regex::Regex::new(r"(?s)ext_tool_\w+\s*\([^)]*\)").unwrap();
         out = re_tool.replace_all(&out, "").to_string();
@@ -215,10 +223,68 @@ pub fn clean_tool_markers(text: &str, strip_ext_tool: bool) -> String {
     out.trim().to_string()
 }
 
+/// 原文是否含任何工具标记字面量（清洗判空时的"残留"判定依据：无字面标记不应判残留）
+pub fn has_tool_markers_literal(text: &str) -> bool {
+    text.contains("<tool_call") || text.contains("<invoke") || text.contains("DSML")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn clean_keeps_body_after_unclosed_marker() {
+        // 事故精确复现：未闭合标记行后跟整篇正文——只剥标记行，正文必须完整保留
+        let text = "<tool_call>\n| 1 | core | 2 |\n|---|---|---|\n| 2 | x | 3 |";
+        let cleaned = clean_tool_markers(text, false);
+        assert!(cleaned.contains("| 2 | x | 3 |"), "body must survive: {}", cleaned);
+        assert!(!cleaned.contains("<tool_call"));
+    }
+
+    #[test]
+    fn clean_removes_closed_pairs_entirely() {
+        let text = "pre\n<tool_calls>\n{\"a\":1}\n</<tool_calls>\npost";
+        assert_eq!(clean_tool_markers(text, false), "pre\n\npost");
+    }
+
+    #[test]
+    fn clean_unclosed_xml_strips_to_line_end() {
+        let text = "head\n<tool_calls> broken tail\nsecond line";
+        let cleaned = clean_tool_markers(text, false);
+        assert!(cleaned.contains("second line") && cleaned.contains("head"));
+        assert!(!cleaned.contains("<tool_calls>"));
+    }
+
+    #[test]
+    fn clean_unclosed_invoke_strips_to_line_end() {
+        let text = "a\n<invoke name=\"x\" ok";
+        let cleaned = clean_tool_markers(text, false);
+        assert!(cleaned.starts_with("a"));
+        assert!(!cleaned.contains("<invoke"));
+    }
+
+    #[test]
+    fn clean_closed_then_unclosed() {
+        let text = "S\n<tool_call>{\"q\":1}</<tool_call>\n<tool_call> broken\nE";
+        let cleaned = clean_tool_markers(text, false);
+        assert!(cleaned.contains("S") && cleaned.contains("E"));
+        assert!(!cleaned.contains("{\"q\":1}") && !cleaned.contains("<tool_call"));
+    }
+
+    #[test]
+    fn clean_plain_text_untouched() {
+        let text = "md\n\n## h\n- 3 < 5 and a > b";
+        assert_eq!(clean_tool_markers(text, false), text);
+    }
+
+    #[test]
+    fn marker_literal_detection() {
+        assert!(has_tool_markers_literal("<tool_call>x"));
+        assert!(has_tool_markers_literal("<tool_calls>y"));
+        assert!(has_tool_markers_literal("<invoke z"));
+        assert!(has_tool_markers_literal("a |DSML| b"));
+        assert!(!has_tool_markers_literal("plain text with xml"));
+    }
     #[test]
     fn tool_schemas_have_no_mojibake_and_valid_json() {
         let src = include_str!("schemas.rs");

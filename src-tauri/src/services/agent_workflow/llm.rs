@@ -375,7 +375,7 @@ async fn stream_once(
                                     st.suppress_tokens = true;
                                     st.token_buf.clear();
                                     st.token_buf_start = st.full.len();
-                                } else if st.token_buf.len() >= 50 || tok.contains('\n') {
+                                } else if st.token_buf.len() >= 16 || tok.contains('\n') {
                                     if to_ui { if let Some(ref h) = app {
                                         let _ = h.emit("agent:token", json!({"token": &st.token_buf, "owner": owner, "sid": sid_str.clone()}));
                                     } }
@@ -524,6 +524,10 @@ pub(crate) async fn call_llm_without_tools(messages: &[ChatMessage], app_handle:
         let cleaned = clean_tool_markers(&content, false);
         if !cleaned.trim().is_empty() {
             return Ok(cleaned);
+        }
+        // ★ 清洗为空但原文有正文且不含任何标记字面量 → 非工具残留（清洗误伤兜底）：返回原文，不进重试烧轮次
+        if !content.trim().is_empty() && !crate::services::agent_workflow::schemas::has_tool_markers_literal(&content) {
+            return Ok(content.trim().to_string());
         }
         if attempt >= MAX_ATTEMPTS {
             log::warn!("[call_llm_without_tools] 重试{}次后仍为空，返回兜底文案", attempt);
