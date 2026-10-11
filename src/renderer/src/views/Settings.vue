@@ -768,19 +768,21 @@ const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.val
 
 // ─── 对话续接窗口（浮窗快呼轮转判定，默认 10 分钟）───
 const FAB_ROTATE_KEY = 'fab_rotate_minutes'
+const FAB_ROTATE_OPTIONS = [5, 10, 15, 30, 60]
 const fabRotateMins = ref('10')
+const fabRotateOpen = ref(false)
 
 async function loadFabRotate() {
   try {
     const r = await getSystemSetting(FAB_ROTATE_KEY)
     const v = parseInt(r.value || '')
-    fabRotateMins.value = Number.isFinite(v) && v >= 1 && v <= 240 ? String(v) : '10'
+    fabRotateMins.value = FAB_ROTATE_OPTIONS.includes(v) ? String(v) : '10'
   } catch {}
 }
 
-async function saveFabRotate(e: Event) {
-  const v = (e.target as HTMLSelectElement).value
+async function saveFabRotate(v: string) {
   fabRotateMins.value = v
+  fabRotateOpen.value = false
   try { await setSystemSetting(FAB_ROTATE_KEY, v) } catch {}
 }
 
@@ -2070,14 +2072,20 @@ async function saveProfileEditor() {
                   <p class="text-[12px] font-medium text-surface-700">对话续接窗口</p>
                   <p class="text-[10px] text-surface-400">浮窗中超过该时长未提问，下一条将开启新会话；待追问的卡片 24 小时内仍续接</p>
                 </div>
-                <select class="flex-shrink-0 px-2.5 py-1.5 rounded-lg border border-surface-200 bg-white text-[11px] text-surface-700 outline-none focus:border-brand-400 cursor-pointer"
-                  :value="fabRotateMins" @change="saveFabRotate">
-                  <option value="5">5 分钟</option>
-                  <option value="10">10 分钟</option>
-                  <option value="15">15 分钟</option>
-                  <option value="30">30 分钟</option>
-                  <option value="60">60 分钟</option>
-                </select>
+                <div class="relative flex-shrink-0 w-[104px]" @focusout="(e: FocusEvent) => { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) fabRotateOpen = false }">
+                  <button @click="fabRotateOpen = !fabRotateOpen"
+                    class="w-full flex items-center justify-between h-8 bg-white border border-surface-200 rounded-lg px-2.5 text-[11px] text-slate-700 outline-none transition-colors hover:border-surface-300">
+                    <span>{{ fabRotateMins }} 分钟</span>
+                    <AppIcon name="chevron-down" class="w-3 h-3 text-slate-400 transition-transform" :class="fabRotateOpen ? 'rotate-180' : ''" />
+                  </button>
+                  <div v-if="fabRotateOpen" class="absolute top-full right-0 mt-1 z-50 w-full bg-white rounded-lg shadow-lg border border-slate-100 py-1">
+                    <button v-for="m in FAB_ROTATE_OPTIONS" :key="m" @click="saveFabRotate(String(m))"
+                      class="w-full px-3 py-1.5 text-[11px] text-left transition-colors"
+                      :class="fabRotateMins === String(m) ? 'text-brand-600 bg-brand-50/50 font-medium' : 'text-slate-600 hover:bg-slate-50'">
+                      {{ m }} 分钟
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
