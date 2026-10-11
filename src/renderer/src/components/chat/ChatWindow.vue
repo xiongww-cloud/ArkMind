@@ -486,6 +486,13 @@ function clarificationReply(msgId?: string): string {
 
 // ─── 批注修订（仅最后一条 AI 答复可批注；表格改动+正文批注统一提交）───
 const annotateId = ref<string | null>(null)
+const thoughtExpanded = ref(false)
+const thoughtBoxRef = ref<HTMLElement | null>(null)
+watch(() => agent.thought.value.length, () => {
+  if (agent.thoughtCollapsed.value) return
+  nextTick(() => { const raw: any = thoughtBoxRef.value; const el = Array.isArray(raw) ? raw[raw.length - 1] : raw; if (el) el.scrollTop = el.scrollHeight })
+})
+watch(() => agent.thoughtCollapsed.value, (v) => { if (v) thoughtExpanded.value = false })
 const annotations = reactive<Annotation[]>([])
 const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[]; resetTableRevision: (i: number) => void } | null> = {}
 const tableRevisions = ref<TableRevision[]>([])
@@ -622,6 +629,19 @@ onUnmounted(() => {
               <MessageBody v-else-if="!m.thinking && hasInteractive(m.content)" class="msg-a__body" :raw="m.content" :msg-id="m.id || ''" @send="submitClarification" />
               <div v-else class="msg-a__body markdown-body" :class="{ 'thinking-bubble': m.thinking }"
                 v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
+              <!-- 思考流（本轮瞬态：流式滚动自动跟底，正文开始折叠为一行可展开） -->
+              <div v-if="agent.thought.value && (m.id || '') === agent.thoughtMsgId.value" class="mt-1">
+                <div v-if="!agent.thoughtCollapsed.value" ref="thoughtBoxRef"
+                  class="max-h-[80px] overflow-y-auto rounded-lg bg-surface-50 border border-surface-100 px-2.5 py-1.5 text-[11px] leading-relaxed text-surface-400 whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
+                <template v-else>
+                  <button type="button" class="flex items-center gap-1 text-[10px] text-surface-300 hover:text-brand-600 transition-colors" @click="thoughtExpanded = !thoughtExpanded">
+                    <svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="thoughtExpanded ? 'M6 9l6 6 6-6' : 'M9 6l6 6-6 6'"/></svg>
+                    思考了 {{ agent.thoughtSecs.value }} 秒 · {{ agent.thought.value.length.toLocaleString() }} 字
+                  </button>
+                  <div v-if="thoughtExpanded" ref="thoughtBoxRef"
+                    class="mt-1 max-h-[130px] overflow-y-auto rounded-lg bg-surface-50 border border-surface-100 px-2.5 py-1.5 text-[11px] leading-relaxed text-surface-400 whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
+                </template>
+              </div>
               <div v-if="!m.thinking" class="msg-a__meta">
                 <span>{{ fmtTime(m.timestamp) }}</span>
                 <span v-if="m.assistants?.length" class="via-chip">via {{ m.assistants.join(' · ') }}</span>

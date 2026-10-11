@@ -268,6 +268,12 @@ export function useAgentChat() {
   const renderedProgress = ref('')
   const rendered = ref<Record<string, string>>({})
 
+  // ── 思考流（agent:thought 瞬态通道：不入消息、不持久化，正文开始即折叠）──
+  const thought = ref('')
+  const thoughtCollapsed = ref(false)
+  const thoughtSecs = ref(0)
+  const thoughtMsgId = ref('')
+
   // ── setThinkingProgress ──
   const THINKING_SPINNER = '<span class="thinking-spinner"></span>'
   function setThinkingProgress(text: string) {
@@ -368,12 +374,24 @@ export function useAgentChat() {
 
     isChatting.value = true
     setThinkingProgress('思考中')
+    // 思考流：本轮专属，重置后随 agent:thought 增量累积
+    thought.value = ''
+    thoughtCollapsed.value = false
+    thoughtSecs.value = 0
+    thoughtMsgId.value = getMessage()?.id || ''
+    const thoughtT0 = Date.now()
     scrollFn()
 
     try {
       // ★ 实时进度（优先展示后端 msg，如"已路由到「XX」"，否则随机话术）
       const unlistenProgress = await listen<{ msg?: string }>('agent:progress', (ev) => {
         setThinkingProgress(ev.payload?.msg || pickRetrievalPhrase())
+        scrollFn()
+      })
+      // ★ 思考流增量（to_ui 裁决已在后端把关：只有面向窗口输出的 run 会发）
+      const unlistenThought = await listen<{ text: string }>('agent:thought', (ev) => {
+        if (thoughtCollapsed.value) return
+        thought.value += ev.payload?.text || ''
         scrollFn()
       })
       // ★ 实时 token 流（打字机队列）
@@ -387,9 +405,15 @@ export function useAgentChat() {
         const msg = getMessage(); if (!msg) return
         while (tokenIdx < tokenQueue.length) msg.content += tokenQueue[tokenIdx++]
       }
+      const collapseThought = () => {
+        if (!thoughtCollapsed.value && thought.value) {
+          thoughtCollapsed.value = true
+          thoughtSecs.value = Math.max(1, Math.round((Date.now() - thoughtT0) / 1000))
+        }
+      }
       const tokenTimer = setInterval(() => {
         const msg = getMessage(); if (!msg) return
-        if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) setThinkingProgress(''); msg.content += tokenQueue[tokenIdx++] }
+        if (tokenIdx < tokenQueue.length) { if (tokenIdx === 0) { setThinkingProgress(''); collapseThought() } ; msg.content += tokenQueue[tokenIdx++] }
         const now = Date.now()
         if (msg.id && msg.content && now - lastRenderTime > 200) {
           lastRenderTime = now
@@ -404,6 +428,7 @@ export function useAgentChat() {
       // ★ invoke 已移至所有 listener 注册之后（见下方）
       const unlistenDone = await listen<any>('agent:done', async (ev) => {
         flushTokenQueue()
+        if (!thoughtCollapsed.value && thought.value) { thoughtCollapsed.value = true; thoughtSecs.value = Math.max(1, Math.round((Date.now() - thoughtT0) / 1000)) }
         const result = ev.payload
         const msg = getMessage()
         if (msg) { msg.thinking = false; msg.isThinking = false }
@@ -454,6 +479,7 @@ export function useAgentChat() {
 
       const unlistenError = await listen<any>('agent:error', (ev) => {
         flushTokenQueue()
+        collapseThought()
         const msg = getMessage()
         if (msg) { msg.thinking = false; msg.isThinking = false; msg.error = ev.payload.error || 'AI 服务异常' }
         isChatting.value = false
@@ -490,6 +516,7 @@ export function useAgentChat() {
         clearInterval(tokenTimer)
         try {
           unlistenProgress()
+          unlistenThought()
           unlistenToken()
           unlistenDone()
           unlistenError()
@@ -509,6 +536,10 @@ export function useAgentChat() {
     thinkingProgress,
     renderedProgress,
     rendered,
+    thought,
+    thoughtCollapsed,
+    thoughtSecs,
+    thoughtMsgId,
     setThinkingProgress,
     pickToolStatus,
     renderMd,

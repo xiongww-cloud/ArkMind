@@ -698,6 +698,13 @@ function clarificationReply(msgId?: string): string {
 
 // ─── 批注修订（仅最后一条 AI 答复可批注；表格改动+正文批注统一提交）───
 const annotateId = ref<string | null>(null)
+const thoughtExpanded = ref(false)
+const thoughtBoxRef = ref<HTMLElement | null>(null)
+watch(() => agent.thought.value.length, () => {
+  if (agent.thoughtCollapsed.value) return
+  nextTick(() => { const raw: any = thoughtBoxRef.value; const el = Array.isArray(raw) ? raw[raw.length - 1] : raw; if (el) el.scrollTop = el.scrollHeight })
+})
+watch(() => agent.thoughtCollapsed.value, (v) => { if (v) thoughtExpanded.value = false })
 const annotations = reactive<Annotation[]>([])
 const mbRefs: Record<string, { getRevisions: () => { diff: string; headerLabel: string }[]; resetTableRevision: (i: number) => void } | null> = {}
 const tableRevisions = ref<TableRevision[]>([])
@@ -968,6 +975,19 @@ onUnmounted(() => {
                 <MessageBody v-else-if="hasInteractive(msg.content)" class="text-[12px] text-[#3a3a3c] leading-relaxed" :raw="msg.content" :msg-id="msg.id || ''" @send="submitClarification" />
                 <div v-else class="text-[12px] text-[#3a3a3c] leading-relaxed markdown-body" :style="{ opacity: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 1 : 0, transform: (renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中') ? 'translateY(0)' : 'translateY(12px)', transition: 'opacity 1s ease, transform 1s ease' }" v-html="renderedContent(msg.id || '') || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
               </div>
+                <!-- 思考流（本轮瞬态：流式滚动自动跟底，正文开始折叠为一行可展开，刷新/历史不存在） -->
+                <div v-if="agent.thought.value && (msg.id || '') === agent.thoughtMsgId.value" class="mt-1">
+                  <div v-if="!agent.thoughtCollapsed.value" ref="thoughtBoxRef"
+                    class="max-h-[96px] overflow-y-auto rounded-lg bg-[#f7f7f9] border border-[#ececf0] px-2.5 py-1.5 text-[11px] leading-relaxed text-[#8e8e93] whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
+                  <template v-else>
+                    <button type="button" class="flex items-center gap-1 text-[10px] text-[#c7c7cc] hover:text-[#2563eb] transition-colors" @click="thoughtExpanded = !thoughtExpanded">
+                      <AppIcon :name="thoughtExpanded ? 'chevron-down' : 'chevron-right'" size="10" />
+                      思考了 {{ agent.thoughtSecs.value }} 秒 · {{ agent.thought.value.length.toLocaleString() }} 字
+                    </button>
+                    <div v-if="thoughtExpanded" ref="thoughtBoxRef"
+                      class="mt-1 max-h-[160px] overflow-y-auto rounded-lg bg-[#f7f7f9] border border-[#ececf0] px-2.5 py-1.5 text-[11px] leading-relaxed text-[#8e8e93] whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
+                  </template>
+                </div>
               <div v-if="!msg.isThinking && msg.content" class="flex items-center gap-1 px-1.5 py-1.5">
                 <button @click="copyAnswer(idx)" class="w-6 h-6 flex items-center justify-center rounded-md text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5 transition-all" v-tooltip="'复制答案'"><AppIcon name="copy" class="w-3 h-3" /></button>
                 <button v-if="idx === currentSession.messages.length - 1 && !agent.isChatting.value && !msg.error"

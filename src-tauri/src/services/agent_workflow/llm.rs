@@ -137,6 +137,7 @@ struct SseState {
     count: u64,
     token_buf: String,
     token_buf_start: usize, // token_buf 在 full 中的起始位置
+    thought_buf: String,    // 思考流批量缓冲（与 token 同窗口节流，前端渲染风暴防线）
     suppress_tokens: bool,
     done: bool,               // 已收到 [DONE]（或 error 事件），终止流读取
     got_finish: bool,         // 已收到 finish_reason（stop/tool_calls/length 等）
@@ -149,6 +150,14 @@ struct SseState {
 /// flush 积压未发的 token（失败路径也要 flush：保证前端已有内容与 partial 一致，续写无缝衔接）
 /// to_ui=DELIVERY 通道授权（OutputClass 裁决），owner=token 归属（"main" 或子 Agent id）
 fn flush_pending_tokens(st: &mut SseState, to_ui: bool, owner: &str, app: &Option<tauri::AppHandle>) {
+    if !st.thought_buf.is_empty() {
+        if to_ui {
+            if let Some(ref h) = app {
+                let _ = h.emit("agent:thought", json!({"text": &st.thought_buf, "owner": owner}));
+            }
+        }
+        st.thought_buf.clear();
+    }
     if !st.suppress_tokens && !st.token_buf.is_empty() {
         if to_ui {
             if let Some(ref h) = app {
@@ -299,7 +308,7 @@ async fn stream_once(
 
     let mut st = SseState {
         buf: String::new(), pending: Vec::new(), full: String::new(), reasoning: String::new(), tca: Vec::new(),
-        usage: None, count: 0, token_buf: String::new(), token_buf_start: 0,
+        usage: None, count: 0, token_buf: String::new(), token_buf_start: 0, thought_buf: String::new(),
         suppress_tokens: false, done: false, got_finish: false, finish: None,
         server_err: None, prog_last_chars: 0, prog_last_at: std::time::Instant::now(),
     };
@@ -372,15 +381,18 @@ async fn stream_once(
                                 }
                             }
                         }
-                        // reasoning_content → 累积并推送到前端显示思考过程
-                        if let Some(rtok) = delta["reasoning_content"].as_str() {
-                            st.reasoning.push_str(rtok);
-                            if to_ui {
-                                if let Some(ref h) = app {
-                                    let _ = h.emit("agent:thought", json!({"text": rtok, "owner": owner}));
-                                }
-                            }
-                        }
+        // reasoning_content → 累积并推送到前端显示思考过程（批量窗：首段立发，其后 ≥50字/换行 一批）
+        if let Some(rtok) = delta["reasoning_content"].as_str() {
+            let first = st.reasoning.is_empty();
+            st.reasoning.push_str(rtok);
+            st.thought_buf.push_str(rtok);
+            if to_ui && (first || st.thought_buf.len() >= 50 || rtok.contains('\n')) {
+                if let Some(ref h) = app {
+                    let _ = h.emit("agent:thought", json!({"text": &st.thought_buf, "owner": owner}));
+                }
+                st.thought_buf.clear();
+            }
+        }
                         // tool_calls delta → 按 index 累积
                         if let Some(tds) = delta["tool_calls"].as_array() {
                             for td in tds {
