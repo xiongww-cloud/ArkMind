@@ -760,9 +760,9 @@ let loopStatusTimer: ReturnType<typeof setInterval> | null = null
 const notifyIntervalOptions = [
   { value: 0, label: '仅启动时' },
   { value: 60, label: '1 小时' },
+  { value: 120, label: '2 小时' },
+  { value: 240, label: '4 小时' },
   { value: 360, label: '6 小时' },
-  { value: 720, label: '12 小时' },
-  { value: 1440, label: '24 小时' },
 ]
 const notifyIntervalLabel = computed(() => notifyIntervalOptions.find(o => o.value === notifyInterval.value)?.label || '1 小时')
 
@@ -875,7 +875,9 @@ async function loadNotifyConfig() {
     const r = await notificationConfigGet()
     if (r.config) {
       notifyEnabled.value = r.config.enabled !== '0'
-      notifyInterval.value = r.config.startup_only === '1' ? 0 : (parseInt(r.config.interval_minutes) || 60)
+      // 旧存档 12h/24h 档已下线：归一到 1 小时显示，用户不动则下次保存即落新档
+      const iv = r.config.startup_only === '1' ? 0 : (parseInt(r.config.interval_minutes) || 60)
+      notifyInterval.value = notifyIntervalOptions.some(o => o.value === iv) ? iv : 60
       focusText.value = (r.config.analysis_focus || '').trim()
     }
   } catch {}
