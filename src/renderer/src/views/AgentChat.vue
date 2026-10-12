@@ -310,6 +310,8 @@ function newSession() {
   const id = crypto.randomUUID()
   sessions.value.unshift({ id, name: '新对话', messages: [], createdAt: new Date().toLocaleString('sv-SE'), updatedAt: new Date().toLocaleString('sv-SE') })
   currentSessionId.value = id; saveToStorage()
+  // 新会话无计划上下文：清掉上一会话残留的 Dock（agentRun 是全局 store）
+  restorePlanDock('')
 }
 
 // ★ 会话加载序号守卫：KeepAlive 首挂时 onMounted/onActivated 并发加载，晚发请求的结果必须覆盖早到者
@@ -389,6 +391,8 @@ onActivated(async () => {
   }
   initialScrollDone = false
   nextTick(() => scrollToBottomIfNear())
+  // KeepAlive 激活不走 selectSession：独立刷新当前会话的计划投影（覆盖离开本页期间浮窗/分析师对 plan 的增删）
+  restorePlanDock(currentSessionId.value || '')
 })
 async function selectSession(id: string) {
   currentSessionId.value = id; agent.rendered.value = {}
@@ -403,7 +407,23 @@ async function selectSession(id: string) {
       return Promise.resolve()
     }))
   }
-  scrollToBottomIfNear()
+  // 切会话必须归队底部（用户预期：新上下文从最新一条开始）；scrollToBottomIfNear 的 stick 判定
+  // 会被切换瞬间的内容置空滚动静默置 false，导致"if near"分支直接吞掉归位——force 走 backToBottom，
+  // 350ms 补刀对付图片/表格等迟到撑高（ChatWindow loadHistory 同款兜底）
+  backToBottom()
+  setTimeout(() => backToBottom(), 350)
+  // Dock 恢复路径：会话切换/启动落位后投影该会话持久化计划（后端 session.plan 唯一事实源；
+  // run 中跳过——事件流自带快照）。setRunSid('') 须在 applyPlan 前，防 matchSid 归属过滤拦下新会话快照
+  restorePlanDock(id)
+}
+
+async function restorePlanDock(sid: string) {
+  if (agent.isChatting.value) return
+  agentRun.setRunSid('')
+  try {
+    const r = await invoke<{ success: boolean; plan: { title: string; steps: any[] } | null }>('plan_get', { sid })
+    agentRun.applyPlan({ sid, plan: r?.plan ?? null })
+  } catch (e) { console.warn('[AgentChat] plan_get 恢复失败（保持现状，下一次 run 快照纠正）:', e) }
 }
 const currentSession = computed(() => sessions.value.find(s => s.id === currentSessionId.value) || null)
 
@@ -522,7 +542,7 @@ async function confirmDeleteSession(id: string) {
   if (currentSessionId.value === id) {
     const nextId = sessions.value[0]?.id ?? null
     if (nextId) await selectSession(nextId)
-    else currentSessionId.value = null
+    else { currentSessionId.value = null; restorePlanDock('') }
   }
   sessionDirty.value = true; saveToStorage()
   toast({ message: '会话已删除', type: 'success' })
