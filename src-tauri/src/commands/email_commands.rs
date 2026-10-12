@@ -131,7 +131,7 @@ pub async fn email_delete_account(id: String) -> Result<Value, String> {
 /// 时间基准：received_at（拉取时已归一为本地 "%Y-%m-%d %H:%M:%S"），空值旧行退化 created_at。
 /// 单封邮件删除动作完全复用 email_delete_account 模板：资产收集→图谱/FTS 除名→引用行→本体→孤儿回收。
 pub(crate) fn cleanup_expired_emails() -> usize {
-    let accounts = match database::all("SELECT id, retention_months FROM email_accounts", &[]) {
+    let accounts = match database::all("SELECT id, name, retention_months FROM email_accounts", &[]) {
         Ok(rows) => rows,
         Err(_) => return 0,
     };
@@ -150,14 +150,29 @@ pub(crate) fn cleanup_expired_emails() -> usize {
         if ids.is_empty() { continue; }
         let assets = crate::commands::file_commands::collect_entity_asset_ids("email", &ids);
         for eid in &ids { crate::services::knowledge_lifecycle::notify_deleted("EMAIL", eid); }
-        let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let vals: Vec<Value> = ids.iter().map(|s| json!(s)).collect();
-        database::run(&format!("DELETE FROM file_relations WHERE entity_type='email' AND entity_id IN ({ph})"), &vals).ok();
-        database::run(&format!("DELETE FROM email_attachments WHERE email_id IN ({ph})"), &vals).ok();
-        database::run(&format!("DELETE FROM emails WHERE id IN ({ph})"), &vals).ok();
-        for aid in &assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
-        removed += ids.len();
-        log::info!("[邮件保留期] 账户 {}（{}）超期 {} 个月：物理删除 {} 封", account_id, acc["name"].as_str().unwrap_or(""), months, ids.len());
+        // 分块 DELETE（900/批，远低于 SQLITE 变量上限）：首次开启保留期时过期邮件可达数千封，
+        // 单条超长 IN 列表会因参数超限整条失败；失败记 error 不再 .ok() 静默——
+        // 行残留属可再犯状态，下一 24h 周期天然重试（notify 幂等、游标不动）
+        let mut failed = false;
+        for chunk in ids.chunks(900) {
+            let ph = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let vals: Vec<Value> = chunk.iter().map(|s| json!(s)).collect();
+            for sql in [
+                format!("DELETE FROM file_relations WHERE entity_type='email' AND entity_id IN ({ph})"),
+                format!("DELETE FROM email_attachments WHERE email_id IN ({ph})"),
+                format!("DELETE FROM emails WHERE id IN ({ph})"),
+            ] {
+                if let Err(e) = database::run(&sql, &vals) {
+                    failed = true;
+                    log::error!("[邮件保留期] 批量删除失败（下轮重试）: {} — {}", sql, e);
+                }
+            }
+        }
+        if !failed {
+            for aid in &assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
+            removed += ids.len();
+        }
+        log::info!("[邮件保留期] 账户 {}（{}）超期 {} 个月：清理 {} 封", acc["id"].as_str().unwrap_or(""), acc["name"].as_str().unwrap_or(""), months, if failed { 0 } else { ids.len() });
     }
     if removed > 0 { database::save().ok(); }
     removed
@@ -1073,15 +1088,22 @@ mod email_img_tests {
 mod email_retention_tests {
     use super::cleanup_expired_emails;
     use crate::database;
+    use serde_json::json;
 
-    fn seed() {
+    fn create_tables() {
         database::with_db(|c| c.execute_batch(
             "CREATE TABLE email_accounts(id TEXT PRIMARY KEY, name TEXT DEFAULT '', retention_months INTEGER DEFAULT 0, last_sync_inbox_uid INTEGER DEFAULT 0, last_sync_sent_uid INTEGER DEFAULT 0);
              CREATE TABLE emails(id TEXT PRIMARY KEY, account_id TEXT, folder TEXT DEFAULT 'INBOX', received_at TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')), is_deleted INTEGER DEFAULT 0);
              CREATE TABLE file_relations(entity_type TEXT, entity_id TEXT, file_id TEXT DEFAULT '');
              CREATE TABLE email_attachments(email_id TEXT, file_asset_id TEXT DEFAULT '');
-             CREATE TABLE knowledge_push_queue(id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT, source_id TEXT, operation TEXT, status TEXT, debounce_until TEXT);
-             INSERT INTO email_accounts(id,name,retention_months,last_sync_inbox_uid,last_sync_sent_uid) VALUES
+             CREATE TABLE knowledge_push_queue(id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT, source_id TEXT, operation TEXT, status TEXT, debounce_until TEXT);"
+        )).unwrap();
+    }
+
+    fn seed() {
+        create_tables();
+        database::with_db(|c| c.execute_batch(
+            "INSERT INTO email_accounts(id,name,retention_months,last_sync_inbox_uid,last_sync_sent_uid) VALUES
                ('acc-1m','月限',1,900,950), ('acc-forever','永久',0,700,710);
              INSERT INTO emails(id,account_id,folder,received_at) VALUES('e-old-sent','acc-1m','SENT','2024-01-01 08:00:00');
              INSERT INTO emails(id,account_id,folder,received_at,is_deleted) VALUES('e-old-soft','acc-1m','INBOX','2024-02-01 08:00:00',1);
@@ -1113,6 +1135,25 @@ mod email_retention_tests {
             c.query_row("SELECT last_sync_inbox_uid,last_sync_sent_uid FROM email_accounts WHERE id='acc-1m'", [], |r| Ok((r.get(0)?, r.get(1)?)))
         ).unwrap();
         assert_eq!((i, s), (900, 950), "游标绝不动（防历史重拉）");
+    }
+
+    /// 分块回归钉：过期量超过单批 900（首次开启保留期的存量老账户形态）必须全量删净——
+    /// 曾被单条超长 IN 列表的 SQLITE 变量上限整条驳回且被 .ok() 静默
+    #[test]
+    fn oversized_expiry_deletes_across_chunk_boundary() {
+        let (_dir, _g) = database::db_core::test_util::setup_test_db();
+        create_tables();
+        database::with_db(|c| c.execute_batch(
+            "INSERT INTO email_accounts(id,name,retention_months) VALUES('acc-big','大账户',1);"
+        )).unwrap();
+        for n in 0..951 {
+            database::run(
+                "INSERT INTO emails(id,account_id,folder,received_at) VALUES(?1,'acc-big','INBOX','2024-01-01 08:00:00')",
+                &[json!(format!("e-{:04}", n))],
+            ).unwrap();
+        }
+        assert_eq!(cleanup_expired_emails(), 951, "跨块全量清理");
+        assert_eq!(scalar("SELECT COUNT(*) c FROM emails"), 0);
     }
 }
 
