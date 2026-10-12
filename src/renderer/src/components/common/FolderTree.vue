@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 
 interface Folder { id: string; name: string; parent_id?: string|null; project_id?: string|null; sort_order?: number; _depth?: number; _hasChildren?: boolean }
@@ -22,6 +22,14 @@ const emit = defineEmits<{
 
 // ─── Tree building ──────────────────────────────────────────────
 const collapsedFolders = ref<Set<string>>(new Set())
+// 首载默认全折叠（对齐资料库树：AssetLibrary.loadFolders 一次性折叠全部；仅初始化一次，后续增删不打扰用户开合状态）
+let foldersInitCollapsed = false
+watch(() => props.folders, (fs) => {
+  if (!foldersInitCollapsed && fs.length) {
+    foldersInitCollapsed = true
+    collapsedFolders.value = new Set(fs.map(f => f.id))
+  }
+}, { immediate: true })
 function toggleFolder(id: string) {
   const s = new Set(collapsedFolders.value)
   if (s.has(id)) s.delete(id); else s.add(id)
@@ -159,16 +167,16 @@ defineExpose({ startAddFolder })
       <!-- 目录树节点 -->
       <template v-for="d in folderTree" :key="d.id">
         <div v-if="isDragging && dragInsert?.targetId===d.id && dragInsert?.side==='above'" class="insertion-line" :style="{ marginLeft: `${4 + (d._depth||0) * 16}px` }"></div>
-        <div v-if="editingFolderId===d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${12 + (d._depth||0) * 12}px` }">
-          <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
+        <div v-if="editingFolderId===d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${2 + (d._depth||0) * 12}px` }">
+          <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 relative left-[5px]"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
           <span v-else class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
           <input data-folder-edit v-model="folderEditName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="confirmRename(d.id)" @blur="confirmRename(d.id)"/>
         </div>
-        <div v-else :data-drop-target="d.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedId===d.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragFolderId===d.id?'opacity-30':'', dropHighlightOn && effectiveDragTargetId===d.id && dragFolderId!==d.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="emit('select', d.id)" @mousedown="startFolderDrag($event, d.id)" :style="{ paddingLeft: `${12 + (d._depth||0) * 12}px` }">
+        <div v-else :data-drop-target="d.id" class="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs text-left transition-colors rounded-lg group relative overflow-hidden select-none" :class="[isDragging ? 'cursor-grabbing' : 'cursor-pointer', selectedId===d.id?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', isDragging && dragFolderId===d.id?'opacity-30':'', dropHighlightOn && effectiveDragTargetId===d.id && dragFolderId!==d.id ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']" @click="emit('select', d.id)" @mousedown="startFolderDrag($event, d.id)" :style="{ paddingLeft: `${2 + (d._depth||0) * 12}px` }">
           <div v-if="dragInsert?.targetId===d.id && dragInsert?.side==='inside'" class="absolute inset-0 border-2 border-brand-400 rounded-lg pointer-events-none"></div>
           <div v-if="selectedId===d.id" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
-          <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
+          <span v-if="d._hasChildren" @click.stop="toggleFolder(d.id)" class="w-3 h-3 flex items-center justify-center rounded text-surface-400 flex-shrink-0 relative left-[5px]"><svg class="w-2.5 h-2.5 transition-transform duration-150" :class="!collapsedFolders.has(d.id)?'rotate-90':''" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M9 5l7 7-7 7"/></svg></span>
           <span v-else class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
           <span class="truncate flex-1">{{ d.name }}</span>
@@ -176,7 +184,7 @@ defineExpose({ startAddFolder })
           <span @mousedown.stop @click.stop="startRename(d.id, d.name)" class="w-4 h-4 flex items-center justify-center rounded hover:text-brand-600 opacity-0 group-hover:opacity-100"><AppIcon name="edit" size="10"/></span>
           <span @mousedown.stop @click.stop="handleDeleteFolder(d.id)" class="w-4 h-4 flex items-center justify-center rounded hover:text-red-500 opacity-0 group-hover:opacity-100"><AppIcon name="trash" size="10"/></span>
         </div>
-        <div v-if="addingNew && addingParentId === d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${12 + ((d._depth||0) + 1) * 16}px` }">
+        <div v-if="addingNew && addingParentId === d.id" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" :style="{ paddingLeft: `${2 + ((d._depth||0) + 1) * 12}px` }">
           <span class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
           <input data-folder-add v-model="newFolderName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="confirmAddFolder" @keyup.escape="cancelAddFolder" @blur="confirmAddFolder"/>
@@ -185,7 +193,7 @@ defineExpose({ startAddFolder })
       </template>
 
       <!-- 根级新增 -->
-      <div v-if="addingNew && !addingParentId" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" style="padding-left:16px">
+      <div v-if="addingNew && !addingParentId" class="flex items-center gap-1.5 py-1 min-w-0 pr-2" style="padding-left:2px">
         <span class="w-3 h-3 flex-shrink-0"></span>
         <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>
         <input data-folder-add v-model="newFolderName" class="min-w-0 flex-1 border border-brand-300 rounded px-2 py-0.5 text-[11px] outline-none select-text" @keyup.enter="confirmAddFolder" @keyup.escape="cancelAddFolder" @blur="confirmAddFolder"/>
