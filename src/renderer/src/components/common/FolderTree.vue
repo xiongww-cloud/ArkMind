@@ -9,6 +9,7 @@ const props = defineProps<{
   selectedId?: string|null
   projectId?: string|null
   externalDragTargetId?: string|null
+  filterQuery?: string
 }>()
 
 const emit = defineEmits<{
@@ -46,7 +47,8 @@ function buildTree(dirs: Folder[], collapsed: Set<string>, q: string): Folder[] 
   }
   function hasChildren(pid: string) { return children.some(c => c.parent_id === pid && (!q || matchSet.has(c.id))) }
   function buildChildren(pid: string, depth: number): Folder[] {
-    if (collapsed.has(pid)) return []
+    // 筛选期间忽略折叠态（命中路径自动展开，否则默认全折叠下命中节点被吞掉——与资料库树同规）
+    if (!q && collapsed.has(pid)) return []
     const direct = children.filter(c => c.parent_id === pid && (!q || matchSet.has(c.id)))
     return [...direct].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || (a.name || '').localeCompare(b.name || '')).flatMap(c => {
       const subs = buildChildren(c.id, depth + 1)
@@ -60,7 +62,7 @@ function buildTree(dirs: Folder[], collapsed: Set<string>, q: string): Folder[] 
   })
 }
 
-const folderTree = computed(() => buildTree(props.folders, collapsedFolders.value, ''))
+const folderTree = computed(() => buildTree(props.folders, collapsedFolders.value, (props.filterQuery || '').toLowerCase().trim()))
 
 const effectiveDragTargetId = computed(() => props.externalDragTargetId || dragTargetId.value)
 
@@ -158,8 +160,9 @@ defineExpose({ startAddFolder })
     <div class="px-2 py-1">
       <!-- 全部文件 -->
       <div>
-        <button @click="emit('select', null)" :data-drop-target="'__root__'" class="flex items-center gap-1.5 w-full py-1.5 px-2 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :class="[selectedId===null?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', dropHighlightOn && effectiveDragTargetId==='__root__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
+        <button @click="emit('select', null)" :data-drop-target="'__root__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" style="padding-left:2px" :class="[selectedId===null?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', dropHighlightOn && effectiveDragTargetId==='__root__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
           <div v-if="selectedId===null" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
+          <span class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="grid" size="13" class="flex-shrink-0"/>全部文件
         </button>
       </div>

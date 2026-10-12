@@ -105,6 +105,7 @@ function cancelEditRemark() { editingRemarkFileId.value = null }
 
 // ─── Sidebar width ────────────────────────────────────────────────────────────
 const sidebarWidth = ref(220)
+const folderFilter = ref('')
 const isResizing = ref(false)
 const resizeStartX = ref(0)
 const resizeStartW = ref(0)
@@ -439,7 +440,13 @@ function getFileColor(fileName) {
       <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider">目录</span>
       <button v-if="!isArchived" @click="$refs.folderTree?.startAddFolder()" class="w-5 h-5 flex items-center justify-center rounded text-surface-400 hover:text-brand-600" v-tooltip="'新建目录'"><AppIcon name="plus" size="12" stroke="2.5"/></button>
     </div>
-    <FolderTree ref="folderTree" :folders="allFolders" :selected-id="selectedFolderId" :project-id="projectId" :external-drag-target-id="isDraggingFile ? dragTargetId : null"
+    <div class="px-2 py-1.5 border-b border-surface-100 shrink-0">
+      <div class="flex items-center gap-1.5 bg-white border border-surface-200 rounded-lg px-2.5 py-1">
+        <AppIcon name="search" size="12" class="text-surface-400 flex-shrink-0"/>
+        <input v-model="folderFilter" type="text" class="flex-1 min-w-0 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="筛选目录..."/>
+      </div>
+    </div>
+    <FolderTree ref="folderTree" :folders="allFolders" :selected-id="selectedFolderId" :project-id="projectId" :external-drag-target-id="isDraggingFile ? dragTargetId : null" :filter-query="folderFilter"
       @select="selectFolder"
       @create="onFolderCreate"
       @rename="onFolderRename"
