@@ -60,3 +60,6 @@ coverage
 
 # ── pnpm lockfile (use npm package-lock.json) ──
 pnpm-lock.yaml
+
+# license signing private key - never commit
+tools/license-gen/private.key
