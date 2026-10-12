@@ -950,6 +950,14 @@ const showEmailForm = ref(false)
 const emailSaving = ref(false)
 const editingEmailId = ref<string | null>(null)
 const emailForm = ref({ name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '', retentionMonths: 0 })
+const retentionOptions = [
+  { value: 0, label: '永久保留' },
+  { value: 1, label: '最近 1 个月' },
+  { value: 3, label: '最近 3 个月' },
+  { value: 6, label: '最近 6 个月' },
+  { value: 12, label: '最近 12 个月' },
+]
+const retentionOpen = ref(false)
 
 async function loadEmailAccounts() {
   try {
@@ -966,6 +974,7 @@ async function loadEmailConfig() {
 function openAddEmail() {
   editingEmailId.value = null
   emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '', retentionMonths: 0 }
+  retentionOpen.value = false
   showEmailForm.value = true
 }
 function editEmailAccount(acc: EmailAccount) {
@@ -979,6 +988,7 @@ function editEmailAccount(acc: EmailAccount) {
     password: '',
     retentionMonths: acc.retention_months ?? 0,
   }
+  retentionOpen.value = false
   showEmailForm.value = true
 }
 async function addEmailAccount() {
@@ -2760,13 +2770,17 @@ async function saveProfileEditor() {
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">邮件保留期</label>
-              <select v-model.number="emailForm.retentionMonths" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white">
-                <option :value="0">永久保留</option>
-                <option :value="1">最近 1 个月</option>
-                <option :value="3">最近 3 个月</option>
-                <option :value="6">最近 6 个月</option>
-                <option :value="12">最近 12 个月</option>
-              </select>
+              <div class="relative" @focusout="(e: FocusEvent) => { if (!(e.currentTarget as HTMLElement)?.contains(e.relatedTarget as HTMLElement)) retentionOpen = false }">
+                <button type="button" @click="retentionOpen = !retentionOpen" class="flex items-center justify-between w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none transition-colors text-surface-700 bg-white hover:border-surface-300">
+                  <span>{{ retentionOptions.find(o => o.value === emailForm.retentionMonths)?.label }}</span>
+                  <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 transition-transform" :class="retentionOpen ? 'rotate-180' : ''" />
+                </button>
+                <div v-if="retentionOpen" class="absolute top-full left-0 mt-1 z-50 w-full bg-white rounded-lg shadow-lg border border-surface-100 py-1">
+                  <button v-for="opt in retentionOptions" :key="opt.value" type="button" @click="emailForm.retentionMonths = opt.value; retentionOpen = false" class="w-full px-3 py-1.5 text-[11px] text-left transition-colors" :class="emailForm.retentionMonths === opt.value ? 'text-brand-600 bg-brand-50/50 font-medium' : 'text-surface-600 hover:bg-surface-50'">
+                    {{ opt.label }}
+                  </button>
+                </div>
+              </div>
               <p class="text-[10px] text-surface-400 mt-1">超期邮件（含已发送）自动物理清除，同步游标不受影响、不会重新拉取</p>
             </div>
           </div>
