@@ -628,11 +628,13 @@ onUnmounted(() => {
             <span class="text-[10px] text-[#94a3b8]">加载中...</span>
           </div>
           <div v-for="(m, mi) in visibleMessages" :key="m.id || mi" class="msg-block">
-            <div v-if="m.role === 'user'" class="msg-q">
-              <span class="msg-q__who">我</span><span class="msg-q__text">{{ displayContent(m.content) }}</span>
-              <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1" />
-              <div v-else-if="m.content?.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1">
-                <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="px-1.5 py-0.5 rounded text-[10px] bg-[#f1f5f9] text-[#64748b]">{{ name }}</span>
+            <div v-if="m.role === 'user'" class="flex justify-end">
+              <div class="min-w-0 max-w-[72%] bg-[#2563eb] text-white rounded-2xl rounded-tr-[4px] px-3 py-2">
+                <pre class="text-[12px] leading-relaxed whitespace-pre-wrap break-words font-sans">{{ displayContent(m.content) }}</pre>
+                <AttachmentChips v-if="m.attachments?.length" :files="m.attachments" class="mt-1.5" />
+                <div v-else-if="m.content?.includes('<<<ATTACHMENTS>>>')" class="flex flex-wrap gap-1 mt-1.5">
+                  <span v-for="name in extractAttachmentNames(m.content)" :key="name" class="px-1.5 py-0.5 rounded text-[10px] bg-white/15 text-white/85">{{ name }}</span>
+                </div>
               </div>
             </div>
             <div v-else class="msg-a">
@@ -826,10 +828,6 @@ onUnmounted(() => {
 /* ═══ 紧凑问答排版（无头像无气泡） ═══ */
 .msg-block { margin-bottom: 14px; animation: fadeIn 0.25s ease-out; }
 .msg-block:last-child { margin-bottom: 2px; }
-
-.msg-q { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 0; font-size: 12px; color: #64748b; line-height: 1.55; word-break: break-word; }
-.msg-q__who { font-size: 10px; color: #a5adb8; background: #f1f5f9; border-radius: 4px; padding: 0 5px; margin-right: 7px; flex-shrink: 0; }
-.msg-q__text { white-space: pre-wrap; font-family: inherit; }
 
 .msg-a { color: #1f2937; }
 .msg-a__body { font-size: 12.5px; line-height: 1.55; }
