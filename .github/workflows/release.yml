@@ -32,6 +32,11 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install protoc (lance-encoding build.rs)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install frontend deps
         run: npm ci
 
