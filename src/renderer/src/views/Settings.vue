@@ -958,6 +958,18 @@ const retentionOptions = [
   { value: 12, label: '最近 12 个月' },
 ]
 const retentionOpen = ref(false)
+// ─── 自定义下拉的点击外部关闭兜底：focusout 感知不到点击非聚焦元素（菜单粘开），document mousedown 捕获才是项目通用范式（SelectWithSearch/Header 同款）；键盘 Tab-away 仍由 focusout 兼顾
+const notifyWrapRef = ref<HTMLElement | null>(null)
+const retentionWrapRef = ref<HTMLElement | null>(null)
+function closeOpenDropdownsOnOutside(e: MouseEvent) {
+  const t = e.target as Node
+  if (notifyIntervalOpen.value && notifyWrapRef.value && !notifyWrapRef.value.contains(t)) notifyIntervalOpen.value = false
+  if (retentionOpen.value && retentionWrapRef.value && !retentionWrapRef.value.contains(t)) retentionOpen.value = false
+}
+onMounted(() => document.addEventListener('mousedown', closeOpenDropdownsOnOutside, true))
+onActivated(() => document.addEventListener('mousedown', closeOpenDropdownsOnOutside, true))
+onDeactivated(() => document.removeEventListener('mousedown', closeOpenDropdownsOnOutside, true))
+onBeforeUnmount(() => document.removeEventListener('mousedown', closeOpenDropdownsOnOutside, true))
 
 async function loadEmailAccounts() {
   try {
@@ -1950,7 +1962,7 @@ async function saveProfileEditor() {
               </div>
               <div class="flex items-center justify-between">
                 <p class="text-[12px] font-medium text-surface-700">分析频率</p>
-                <div class="relative" @focusout="(e: FocusEvent) => { if (!(e.currentTarget as HTMLElement)?.contains(e.relatedTarget as HTMLElement)) notifyIntervalOpen = false }">
+                <div ref="notifyWrapRef" class="relative" @focusout="(e: FocusEvent) => { if (!(e.currentTarget as HTMLElement)?.contains(e.relatedTarget as HTMLElement)) notifyIntervalOpen = false }">
                   <button @click="notifyIntervalOpen = !notifyIntervalOpen" class="flex items-center justify-between h-7 w-[110px] bg-white border border-surface-200 rounded-lg px-2.5 text-[11px] outline-none transition-colors text-surface-700 hover:border-surface-300">
                     <span>{{ notifyIntervalLabel }}</span>
                     <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 transition-transform" :class="notifyIntervalOpen ? 'rotate-180' : ''" />
@@ -2770,7 +2782,7 @@ async function saveProfileEditor() {
             </div>
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">邮件保留期</label>
-              <div class="relative" @focusout="(e: FocusEvent) => { if (!(e.currentTarget as HTMLElement)?.contains(e.relatedTarget as HTMLElement)) retentionOpen = false }">
+              <div ref="retentionWrapRef" class="relative" @focusout="(e: FocusEvent) => { if (!(e.currentTarget as HTMLElement)?.contains(e.relatedTarget as HTMLElement)) retentionOpen = false }">
                 <button type="button" @click="retentionOpen = !retentionOpen" class="flex items-center justify-between w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none transition-colors text-surface-700 bg-white hover:border-surface-300">
                   <span>{{ retentionOptions.find(o => o.value === emailForm.retentionMonths)?.label }}</span>
                   <AppIcon name="chevron-down" class="w-3 h-3 text-surface-400 transition-transform" :class="retentionOpen ? 'rotate-180' : ''" />
