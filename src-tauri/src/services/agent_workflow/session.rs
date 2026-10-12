@@ -445,6 +445,36 @@ pub(crate) fn compute_scope_from_session(session: &SessionMemory) -> Option<std:
 mod tests {
     use super::SessionMemory;
 
+    /// Dock 恢复路径（plan_get）的数据源闭环：plan 随 session_state 序列化落库，
+    /// "进程重启"（重新 load）后完整还原——回归钉：曾因唯一恢复 emit 挂在 run 启动，重启后 Dock 失明
+    #[test]
+    fn plan_survives_session_state_round_trip() {
+        use super::{load_session_state, save_session_state};
+        use crate::services::agent_workflow::plan::{PlanSnapshot, PlanStep, StepState};
+        let (_dir, _guard) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|conn| crate::database::db_schema::create_schema(conn)).unwrap();
+        // session_state 列由 run_migrations 补齐（fresh schema 无此列）——测试态同步生产迁移结果
+        crate::database::with_db(|conn| crate::database::db_migrations::run_migrations(conn)).unwrap();
+        crate::database::run("INSERT INTO chat_sessions(id,title) VALUES('s-1','t')", &[]).unwrap();
+
+        let mut sess = SessionMemory::new();
+        sess.plan = Some(PlanSnapshot {
+            title: "三步计划".into(),
+            steps: vec![
+                PlanStep { title: "查A".into(), agent: Some("业务助手".into()) },
+                PlanStep { title: "写B".into(), agent: None },
+            ],
+            states: vec![StepState::Done, StepState::Active],
+        });
+        save_session_state("s-1", &sess);
+
+        let re = load_session_state("s-1").expect("session_state must reload");
+        let pl = re.plan.expect("plan survives process restart (serialized in session_state)");
+        assert_eq!(pl.title, "三步计划");
+        assert_eq!(pl.states, vec![StepState::Done, StepState::Active]);
+        assert_eq!(pl.steps[0].agent.as_deref(), Some("业务助手"));
+    }
+
     /// 注意力：类型白名单过滤、空名回查兜底、前缀 id 规范防双前缀、无名条目引用串兜底渲染
     #[test]
     fn attention_whitelist_names_and_rendering() {

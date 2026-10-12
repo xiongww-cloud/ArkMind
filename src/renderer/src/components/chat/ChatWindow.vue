@@ -315,6 +315,10 @@ async function loadHistory() {
     console.error('[Chat] 加载历史失败:', e)
   }
   restorePlanDock()
+  // 切换/召唤载入后归队到底：stick 位重置+即时贴底，再在 renderMd 异步撑高后补一刀（focusComposer 150ms 兜底先例）
+  stickToBottom.value = true
+  scrollChat(true)
+  setTimeout(() => scrollChat(true), 350)
 }
 
 // Dock 恢复路径：重启/切会话/新建会话后即时投影持久化计划（后端 session.plan 是唯一事实源，
@@ -327,7 +331,7 @@ async function restorePlanDock() {
   try {
     const r = await invoke<{ success: boolean; plan: { title: string; steps: any[] } | null }>('plan_get', { sid })
     agentRun.applyPlan({ sid, plan: r?.plan ?? null })
-  } catch { /* 查询失败保持现状：下一次 run 的全量快照会纠正 */ }
+  } catch (e) { console.warn('[Chat] plan_get 恢复失败（保持现状，下一次 run 快照纠正）:', e) }
 }
 
 // 滚动到顶部时加载更早的消息
