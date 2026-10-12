@@ -385,6 +385,7 @@ CREATE TABLE IF NOT EXISTS notifications (
             username TEXT NOT NULL,
             password_encrypted TEXT NOT NULL,
             sync_enabled INTEGER DEFAULT 1,
+            retention_months INTEGER DEFAULT 0,
             last_sync_inbox_uid INTEGER DEFAULT 0,
             last_sync_sent_uid INTEGER DEFAULT 0,
             last_sync_at TEXT DEFAULT '',

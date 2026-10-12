@@ -25,11 +25,13 @@ pub async fn email_add_account(data: Value) -> Result<Value, String> {
     let machine = crate::license::get_machine_hash();
     let password_encrypted = crate::crypto::encrypt_api_key(&password, &machine);
 
+    let retention_months = data["retentionMonths"].as_i64().unwrap_or(0).max(0);
     database::run(
-        "INSERT INTO email_accounts(id, name, email_address, imap_host, imap_port, username, password_encrypted) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        "INSERT INTO email_accounts(id, name, email_address, imap_host, imap_port, username, password_encrypted, retention_months) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
         &[
             json!(id), json!(name), json!(email_address), json!(imap_host),
             json!(imap_port), json!(username), json!(password_encrypted),
+            json!(retention_months),
         ],
     ).map_err(|e| e.to_string())?;
 
@@ -40,7 +42,7 @@ pub async fn email_add_account(data: Value) -> Result<Value, String> {
 #[tauri::command]
 pub async fn email_list_accounts() -> Result<Value, String> {
     let rows = database::all(
-        "SELECT id, name, email_address, imap_host, imap_port, username, sync_enabled, last_sync_at FROM email_accounts ORDER BY created_at DESC",
+        "SELECT id, name, email_address, imap_host, imap_port, username, sync_enabled, retention_months, last_sync_at FROM email_accounts ORDER BY created_at DESC",
         &[],
     ).map_err(|e| e.to_string())?;
 
@@ -85,6 +87,10 @@ pub async fn email_update_account(id: String, data: Value) -> Result<Value, Stri
         fields.push("sync_enabled=?".to_string());
         values.push(json!(if v { 1 } else { 0 }));
     }
+    if let Some(v) = data["retentionMonths"].as_i64() {
+        fields.push("retention_months=?".to_string());
+        values.push(json!(v.max(0)));
+    }
 
     if fields.is_empty() {
         return Ok(json!({"success": true}));
@@ -117,6 +123,44 @@ pub async fn email_delete_account(id: String) -> Result<Value, String> {
     for aid in &assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
     database::save().ok();
     Ok(json!({"success": true}))
+}
+
+/// 按账户保留期物理清理过期邮件（retention_months=0 永久保留直接跳过）。
+/// 全 folder 含发件；is_deleted=1 存量软删行一并回收；email_accounts 同步游标绝不动
+/// （IMAP UID 是服务器侧事实，本地缓存删除不会导致历史重拉）。
+/// 时间基准：received_at（拉取时已归一为本地 "%Y-%m-%d %H:%M:%S"），空值旧行退化 created_at。
+/// 单封邮件删除动作完全复用 email_delete_account 模板：资产收集→图谱/FTS 除名→引用行→本体→孤儿回收。
+pub(crate) fn cleanup_expired_emails() -> usize {
+    let accounts = match database::all("SELECT id, retention_months FROM email_accounts", &[]) {
+        Ok(rows) => rows,
+        Err(_) => return 0,
+    };
+    let mut removed = 0usize;
+    for acc in &accounts {
+        let months = acc["retention_months"].as_i64().unwrap_or(0);
+        if months <= 0 { continue; }
+        let Some(account_id) = acc["id"].as_str() else { continue };
+        let cutoff = json!(format!("-{} months", months));
+        let ids: Vec<String> = database::all(
+            "SELECT id FROM emails WHERE account_id=?1
+               AND ((received_at != '' AND received_at <= datetime('now','localtime',?2))
+                 OR (received_at = '' AND created_at <= datetime('now','localtime',?2)))",
+            &[json!(account_id), cutoff.clone()],
+        ).unwrap_or_default().iter().filter_map(|r| r["id"].as_str().map(String::from)).collect();
+        if ids.is_empty() { continue; }
+        let assets = crate::commands::file_commands::collect_entity_asset_ids("email", &ids);
+        for eid in &ids { crate::services::knowledge_lifecycle::notify_deleted("EMAIL", eid); }
+        let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let vals: Vec<Value> = ids.iter().map(|s| json!(s)).collect();
+        database::run(&format!("DELETE FROM file_relations WHERE entity_type='email' AND entity_id IN ({ph})"), &vals).ok();
+        database::run(&format!("DELETE FROM email_attachments WHERE email_id IN ({ph})"), &vals).ok();
+        database::run(&format!("DELETE FROM emails WHERE id IN ({ph})"), &vals).ok();
+        for aid in &assets { crate::commands::file_commands::release_asset_if_orphan(aid); }
+        removed += ids.len();
+        log::info!("[邮件保留期] 账户 {}（{}）超期 {} 个月：物理删除 {} 封", account_id, acc["name"].as_str().unwrap_or(""), months, ids.len());
+    }
+    if removed > 0 { database::save().ok(); }
+    removed
 }
 
 /// 软删除单封邮件（保留行防同 UID 重新拉取；同步游标不受影响）
@@ -1022,6 +1066,53 @@ mod email_img_tests {
         let html = r#"<img src="cid:ghost.png">"#;
         let out = rewrite_email_imgs(html, &idx(), true);
         assert_eq!(out, html);
+    }
+}
+
+#[cfg(test)]
+mod email_retention_tests {
+    use super::cleanup_expired_emails;
+    use crate::database;
+
+    fn seed() {
+        database::with_db(|c| c.execute_batch(
+            "CREATE TABLE email_accounts(id TEXT PRIMARY KEY, name TEXT DEFAULT '', retention_months INTEGER DEFAULT 0, last_sync_inbox_uid INTEGER DEFAULT 0, last_sync_sent_uid INTEGER DEFAULT 0);
+             CREATE TABLE emails(id TEXT PRIMARY KEY, account_id TEXT, folder TEXT DEFAULT 'INBOX', received_at TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now','localtime')), is_deleted INTEGER DEFAULT 0);
+             CREATE TABLE file_relations(entity_type TEXT, entity_id TEXT, file_id TEXT DEFAULT '');
+             CREATE TABLE email_attachments(email_id TEXT, file_asset_id TEXT DEFAULT '');
+             CREATE TABLE knowledge_push_queue(id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT, source_id TEXT, operation TEXT, status TEXT, debounce_until TEXT);
+             INSERT INTO email_accounts(id,name,retention_months,last_sync_inbox_uid,last_sync_sent_uid) VALUES
+               ('acc-1m','月限',1,900,950), ('acc-forever','永久',0,700,710);
+             INSERT INTO emails(id,account_id,folder,received_at) VALUES('e-old-sent','acc-1m','SENT','2024-01-01 08:00:00');
+             INSERT INTO emails(id,account_id,folder,received_at,is_deleted) VALUES('e-old-soft','acc-1m','INBOX','2024-02-01 08:00:00',1);
+             INSERT INTO emails(id,account_id,folder,received_at) VALUES('e-new','acc-1m','INBOX', datetime('now','localtime','-3 days'));
+             INSERT INTO emails(id,account_id,folder,received_at,created_at) VALUES('e-blank','acc-1m','INBOX','', datetime('now','localtime','-400 days'));
+             INSERT INTO emails(id,account_id,folder,received_at) VALUES('e-forever','acc-forever','INBOX','2020-01-01 00:00:00');
+             INSERT INTO file_relations(entity_type,entity_id,file_id) VALUES('email','e-old-sent','fa-1');
+             INSERT INTO email_attachments(email_id,file_asset_id) VALUES('e-old-sent','fa-2');"
+        )).unwrap();
+    }
+
+    fn scalar(sql: &str) -> i64 {
+        database::get(sql, &[]).ok().flatten().and_then(|r| match r {
+            serde_json::Value::Object(m) => m.values().next().and_then(|v| v.as_i64()),
+            other => other.as_i64(),
+        }).unwrap_or(-1)
+    }
+
+    #[test]
+    fn expired_removed_forever_and_recent_kept() {
+        let (_dir, _g) = database::db_core::test_util::setup_test_db();
+        seed();
+        assert_eq!(cleanup_expired_emails(), 3, "过期3封（含发件+软删存量+空时间退化created_at）");
+        assert_eq!(scalar("SELECT COUNT(*) c FROM emails WHERE is_deleted=0"), 2, "e-new + e-forever 存活");
+        assert_eq!(scalar("SELECT COUNT(*) c FROM file_relations"), 0, "引用行随本体清");
+        assert_eq!(scalar("SELECT COUNT(*) c FROM email_attachments"), 0);
+        assert_eq!(scalar("SELECT COUNT(*) c FROM knowledge_push_queue WHERE source_type='EMAIL'"), 3, "每封均发删除事件（含软删行）");
+        let (i, s): (i64, i64) = database::with_db(|c|
+            c.query_row("SELECT last_sync_inbox_uid,last_sync_sent_uid FROM email_accounts WHERE id='acc-1m'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        ).unwrap();
+        assert_eq!((i, s), (900, 950), "游标绝不动（防历史重拉）");
     }
 }
 

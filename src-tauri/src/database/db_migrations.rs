@@ -289,6 +289,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "UPDATE agent_profiles SET description='项目、待办、合作伙伴、联系人、产品、笔记的创建、编辑、删除操作' WHERE id='business' AND description IN ('项目、待办、合作伙伴、联系人、产品的增删改查操作','项目、待办、合作伙伴、联系人、产品、笔记的增删改查操作')",
         // ★ 会话列表时间以最后一条消息为准：把被重命名/浏览等操作污染过的 updated_at 摆正（幂等；无消息会话不动）
         "UPDATE chat_sessions SET updated_at = (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.session_id = chat_sessions.id) WHERE EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = chat_sessions.id)",
+        // 邮箱保留期（月，0=永久）：过期邮件由 cleanup_expired_emails 周期物理删除；同步游标不受影响（防重拉）
+        "ALTER TABLE email_accounts ADD COLUMN retention_months INTEGER DEFAULT 0",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);

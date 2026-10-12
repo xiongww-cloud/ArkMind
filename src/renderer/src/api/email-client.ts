@@ -8,6 +8,7 @@ export interface EmailAccount {
   imap_port: number
   username: string
   sync_enabled: number
+  retention_months: number
   last_sync_at: string
 }
 
@@ -50,6 +51,7 @@ export async function emailAddAccount(data: {
   imapPort: number
   username: string
   password: string
+  retentionMonths: number
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   return invoke('email_add_account', { data })
 }

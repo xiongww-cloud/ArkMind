@@ -137,6 +137,9 @@ pub fn run() {
             // 清理过期 compressed 消息：每 session 最多保留 50 条，清理空 session
             commands::kb::cleanup_chat_messages(50);
 
+            // ★ 启动清扫：按邮箱保留期物理删除超期邮件（retention_months=0 的账户跳过；游标不动）
+            commands::email_commands::cleanup_expired_emails();
+
             // ★ 启动时清理过期许可证
             license::cleanup_expired_licenses();
 

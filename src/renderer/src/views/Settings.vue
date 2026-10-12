@@ -951,7 +951,7 @@ const emailLoopRunning = ref(false)
 const showEmailForm = ref(false)
 const emailSaving = ref(false)
 const editingEmailId = ref<string | null>(null)
-const emailForm = ref({ name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '' })
+const emailForm = ref({ name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '', retentionMonths: 0 })
 
 async function loadEmailAccounts() {
   try {
@@ -967,7 +967,7 @@ async function loadEmailConfig() {
 }
 function openAddEmail() {
   editingEmailId.value = null
-  emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '' }
+  emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '', retentionMonths: 0 }
   showEmailForm.value = true
 }
 function editEmailAccount(acc: EmailAccount) {
@@ -979,6 +979,7 @@ function editEmailAccount(acc: EmailAccount) {
     imapPort: acc.imap_port,
     username: acc.username,
     password: '',
+    retentionMonths: acc.retention_months ?? 0,
   }
   showEmailForm.value = true
 }
@@ -997,10 +998,11 @@ async function addEmailAccount() {
       // 编辑模式：更新账户
       const data: any = {
         name: f.name,
-        email_address: f.emailAddress,
-        imap_host: f.imapHost,
-        imap_port: f.imapPort,
+        emailAddress: f.emailAddress,
+        imapHost: f.imapHost,
+        imapPort: f.imapPort,
         username: f.username,
+        retentionMonths: f.retentionMonths,
       }
       if (f.password) data.password = f.password
       const res = await emailUpdateAccount(editingEmailId.value, data)
@@ -1008,7 +1010,7 @@ async function addEmailAccount() {
         toast({ message: '账户已更新', type: 'success' })
         showEmailForm.value = false
         editingEmailId.value = null
-        emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '' }
+        emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '', retentionMonths: 0 }
         await loadEmailAccounts()
       } else {
         toast({ message: '更新失败', type: 'error' })
@@ -1019,7 +1021,7 @@ async function addEmailAccount() {
       if (res.success) {
         toast({ message: '账户已添加', type: 'success' })
         showEmailForm.value = false
-        emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '' }
+        emailForm.value = { name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '', retentionMonths: 0 }
         await loadEmailAccounts()
       } else {
         toast({ message: res.error || '添加失败', type: 'error' })
@@ -2741,6 +2743,17 @@ async function saveProfileEditor() {
             <div>
               <label class="block text-[10px] font-medium text-surface-400 mb-1">密码 / 授权码</label>
               <input v-model="emailForm.password" type="password" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] font-mono outline-none focus:border-brand-400" :placeholder="editingEmailId ? '留空则不修改' : 'IMAP 授权码'" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-medium text-surface-400 mb-1">邮件保留期</label>
+              <select v-model.number="emailForm.retentionMonths" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 bg-white">
+                <option :value="0">永久保留</option>
+                <option :value="1">最近 1 个月</option>
+                <option :value="3">最近 3 个月</option>
+                <option :value="6">最近 6 个月</option>
+                <option :value="12">最近 12 个月</option>
+              </select>
+              <p class="text-[10px] text-surface-400 mt-1">超期邮件（含已发送）自动物理清除，同步游标不受影响、不会重新拉取</p>
             </div>
           </div>
           <div class="flex items-center justify-end gap-2 mt-5">

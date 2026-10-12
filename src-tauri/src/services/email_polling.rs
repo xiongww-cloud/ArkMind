@@ -59,7 +59,15 @@ pub fn start_email_loop() {
             // 启动后等待 20 秒，让应用初始化完成
             tokio::time::sleep(Duration::from_secs(20)).await;
 
+            // 保留期清理 24h 节流：首轮由 lib.rs 启动清扫负责，这里对齐启动时刻避免双跑
+            let mut last_retention_sweep = std::time::Instant::now();
+
             loop {
+                if last_retention_sweep.elapsed() >= Duration::from_secs(24 * 3600) {
+                    last_retention_sweep = std::time::Instant::now();
+                    let n = crate::commands::email_commands::cleanup_expired_emails();
+                    if n > 0 { log::info!("[邮件轮询] 周期保留期清理：物理删除 {} 封", n); }
+                }
                 match tick().await {
                     Ok(wait_secs) => {
                         tokio::time::sleep(Duration::from_secs(wait_secs)).await;
