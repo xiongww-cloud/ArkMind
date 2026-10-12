@@ -407,11 +407,7 @@ async function selectSession(id: string) {
       return Promise.resolve()
     }))
   }
-  // 切会话必须归队底部（用户预期：新上下文从最新一条开始）；scrollToBottomIfNear 的 stick 判定
-  // 会被切换瞬间的内容置空滚动静默置 false，导致"if near"分支直接吞掉归位——force 走 backToBottom，
-  // 350ms 补刀对付图片/表格等迟到撑高（ChatWindow loadHistory 同款兜底）
-  backToBottom()
-  setTimeout(() => backToBottom(), 350)
+  scrollToBottomIfNear()
   // Dock 恢复路径：会话切换/启动落位后投影该会话持久化计划（后端 session.plan 唯一事实源；
   // run 中跳过——事件流自带快照）。setRunSid('') 须在 applyPlan 前，防 matchSid 归属过滤拦下新会话快照
   restorePlanDock(id)

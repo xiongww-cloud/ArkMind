@@ -311,10 +311,6 @@ async function loadHistory() {
     console.error('[Chat] 加载历史失败:', e)
   }
   restorePlanDock()
-  // 切换/召唤载入后归队到底：stick 位重置+即时贴底，再在 renderMd 异步撑高后补一刀（focusComposer 150ms 兜底先例）
-  stickToBottom.value = true
-  scrollChat(true)
-  setTimeout(() => scrollChat(true), 350)
 }
 
 // Dock 恢复路径：重启/切会话/新建会话后即时投影持久化计划（后端 session.plan 是唯一事实源，
