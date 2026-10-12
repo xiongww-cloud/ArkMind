@@ -2373,7 +2373,7 @@ async function saveProfileEditor() {
                     <div>
                       <label class="block text-[10px] font-medium text-surface-400 mb-2">工具分配</label>
                       <div class="border border-surface-200 rounded-lg p-3">
-                        <div class="grid grid-cols-3 gap-1.5">
+                        <div class="grid grid-cols-3 gap-1.5 auto-rows-fr">
                           <div v-for="tool in availableTools" :key="tool.name"
                             class="flex flex-col p-2 rounded-lg border transition-colors relative select-none"
                             :class="[
@@ -2382,11 +2382,11 @@ async function saveProfileEditor() {
                             ]"
                             @click="!(agentForm.presetTools || []).includes(tool.name) && toggleAgentTool(tool.name)">
                             <div class="flex items-start justify-between">
-                              <span class="text-[11px] font-medium leading-tight" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-700' : 'text-surface-700'">{{ tool.display || tool.name }}</span>
+                              <span class="text-[11px] font-medium leading-tight line-clamp-1" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-700' : 'text-surface-700'">{{ tool.display || tool.name }}</span>
                               <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] cursor-help text-surface-400 hover:text-surface-600 hover:bg-surface-100 flex-shrink-0 ml-1" v-tooltip="tool.description">?</span>
                             </div>
-                            <span v-if="(agentForm.presetTools || []).includes(tool.name)" class="text-[8px] px-1 py-0.5 rounded bg-surface-100 text-surface-400 w-fit mt-0.5">预设</span>
-                            <p class="text-[9px] mt-0.5 leading-relaxed line-clamp-2" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-500' : 'text-surface-400'">{{ tool.brief || '' }}</p>
+                            <span v-if="(agentForm.presetTools || []).includes(tool.name)" class="absolute bottom-1 left-1 text-[8px] px-1 py-0.5 rounded bg-surface-100 text-surface-400">预设</span>
+                            <p class="text-[9px] mt-0.5 leading-relaxed line-clamp-2 h-[3.25em]" :class="(agentForm.tools || []).includes(tool.name) ? 'text-brand-500' : 'text-surface-400'">{{ tool.brief || '' }}</p>
                             <span v-if="(agentForm.tools || []).includes(tool.name)" class="absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-brand-600 flex items-center justify-center">
                               <AppIcon name="check" size="10" class="text-white" />
                             </span>
