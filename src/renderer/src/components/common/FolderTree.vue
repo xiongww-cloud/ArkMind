@@ -203,8 +203,8 @@ defineExpose({ startAddFolder })
       </div>
 
       <!-- 未分类 -->
-      <div>
-        <button @click="emit('select', '__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 px-2 text-xs text-left transition-colors rounded-lg relative overflow-hidden" :style="{ paddingLeft: `${12}px` }" :class="[selectedId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', dropHighlightOn && effectiveDragTargetId==='__uncategorized__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
+      <div class="mt-2 pt-1.5 border-t border-surface-100">
+        <button @click="emit('select', '__uncategorized__')" :data-drop-target="'__uncategorized__'" class="flex items-center gap-1.5 w-full py-1.5 text-xs text-left transition-colors rounded-lg relative overflow-hidden" style="padding-left:2px" :class="[selectedId==='__uncategorized__'?'bg-blue-50/70 text-brand-700 font-medium':'text-surface-600 hover:bg-surface-100', dropHighlightOn && effectiveDragTargetId==='__uncategorized__' ? 'bg-blue-50 ring-2 ring-blue-300 text-brand-700' : '']">
           <div v-if="selectedId==='__uncategorized__'" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
           <span class="w-3 h-3 flex-shrink-0"></span>
           <AppIcon name="folder" size="13" class="flex-shrink-0 text-surface-400"/>未分类
