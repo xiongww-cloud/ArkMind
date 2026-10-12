@@ -624,6 +624,72 @@ pub async fn assets_cleanup_orphans() -> Result<Value, String> {
     Ok(json!({"success":true}))
 }
 
+// ─── 目录批量上传枚举 ──────────────────────────────────────────────────────
+pub(crate) const DIR_MAX_FILES: usize = 500;
+pub(crate) const DIR_MAX_DEPTH: u32 = 8;
+pub(crate) const DIR_MAX_BYTES: u64 = 200 * 1024 * 1024;
+
+/// 枚举可上传目录（只读：仅遍历与 stat，零写入；入库仍走 file_upload 既有链路）。
+/// 过滤语义与单文件选择一致——不做扩展名白名单（pickFiles 本就接受任意文件），
+/// 仅跳隐藏/系统文件、符号链接、>200MB 单文件；>8 层子树与 >500 文件计入 skipped/truncated，
+/// 统计如实回报（前端确认闸展示），不静默丢弃。relPath 恒 '/' 分隔，供前端镜像目录树。
+#[tauri::command]
+pub async fn dir_list_uploadable(dir: String) -> Result<Value, String> {
+    let raw = dir.trim().to_string();
+    if raw.is_empty() { return Ok(json!({"success": false, "error": "请先选择目录"})); }
+    let result = tauri::async_runtime::spawn_blocking(move || walk_uploadable(std::path::PathBuf::from(raw)))
+        .await
+        .map_err(|e| format!("目录遍历任务失败: {e}"))?;
+    Ok(result)
+}
+
+fn walk_uploadable(root: std::path::PathBuf) -> Value {
+    use std::fs;
+    // canonicalize 兼存在性校验（也顺带拒绝相对路径/穿越形态）；根若是符号链接指向目录，接受
+    let Ok(root_canon) = root.canonicalize() else {
+        return json!({"success": false, "error": "目录不存在或不可访问"});
+    };
+    if !root_canon.is_dir() { return json!({"success": false, "error": "所选路径不是目录"}); }
+    let mut files: Vec<Value> = Vec::new();
+    let (mut skipped_hidden, mut skipped_big, mut skipped_deep, mut skipped_link) = (0usize, 0usize, 0usize, 0usize);
+    let mut truncated = false;
+    // 迭代栈防深递归爆栈；(dir, rel_prefix, depth)
+    let mut stack: Vec<(std::path::PathBuf, String, u32)> = vec![(root_canon.clone(), String::new(), 0)];
+    while let Some((path, prefix, depth)) = stack.pop() {
+        let Ok(read) = fs::read_dir(&path) else { continue };
+        let mut entries: Vec<_> = read.filter_map(|e| e.ok()).collect();
+        // 排序保证跨平台稳定顺序（文件系统返回序不可靠）
+        entries.sort_by_key(|e| e.file_name().to_string_lossy().to_string());
+        for e in entries {
+            let name = e.file_name().to_string_lossy().to_string();
+            let child = e.path();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_symlink() { skipped_link += 1; continue; }
+            if name.starts_with('.') || matches!(name.as_str(), "Thumbs.db" | "desktop.ini") { skipped_hidden += 1; continue; }
+            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            if ft.is_dir() {
+                if depth + 1 > DIR_MAX_DEPTH { skipped_deep += 1; continue; }
+                stack.push((child, rel, depth + 1));
+                continue;
+            }
+            if !ft.is_file() { continue; }
+            let size = child.metadata().map(|m| m.len()).unwrap_or(0);
+            if size > DIR_MAX_BYTES { skipped_big += 1; continue; }
+            if files.len() >= DIR_MAX_FILES { truncated = true; break; }
+            files.push(json!({"path": child.to_string_lossy().to_string(), "relPath": rel, "name": name, "size": size}));
+        }
+        if truncated { break; }
+    }
+    files.sort_by(|a, b| a["relPath"].as_str().unwrap_or("").cmp(b["relPath"].as_str().unwrap_or("")));
+    json!({
+        "success": true,
+        "root": root_canon.to_string_lossy(),
+        "files": files,
+        "skipped": { "hidden": skipped_hidden, "big": skipped_big, "deep": skipped_deep, "link": skipped_link },
+        "truncated": truncated
+    })
+}
+
 #[tauri::command] pub async fn file_list_by_product(product_id: String) -> Result<Vec<Value>, String> {
     database::all(
         "SELECT fr.id, fa.file_ext, fa.file_size, fa.content_hash, fr.created_at, fa.updated_at, fr.custom_name AS global_name, fr.description AS mapping_type \
@@ -1096,6 +1162,47 @@ fn filename_for_clipboard(name: &str, ext: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 目录遍历：relPath 归一、隐藏/系统/链接/超大/超深各自计数如实回报、排序稳定
+    #[test]
+    fn dir_walk_reports_mirror_paths_and_skip_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/one.txt"), "x").unwrap();
+        std::fs::write(root.join("a/b/two.md"), "yy").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/cfg"), "z").unwrap();
+        std::fs::write(root.join("Thumbs.db"), "z").unwrap();
+        std::fs::File::create(root.join("big.bin")).unwrap().set_len(DIR_MAX_BYTES + 1).unwrap();
+        // 9 层目录（depth 8 处子树应计入 deep）
+        let mut deep = root.to_path_buf();
+        for i in 1..=9 { deep = deep.join(format!("d{i}")); }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("f.txt"), "z").unwrap();
+        #[cfg(unix)] std::os::unix::fs::symlink(root.join("a/one.txt"), root.join("link.txt")).unwrap();
+
+        let v = walk_uploadable(root.to_path_buf());
+        assert_eq!(v["success"], serde_json::json!(true), "{}", v);
+        let rels: Vec<&str> = v["files"].as_array().unwrap().iter()
+            .map(|f| f["relPath"].as_str().unwrap()).collect();
+        assert_eq!(rels, vec!["a/b/two.md", "a/one.txt"], "斜杠归一+排序（f.txt 在 d9=第9层子树内，整体按 deep 跳过）");
+        assert_eq!(v["skipped"]["hidden"], 2, ".git 目录与 Thumbs.db");
+        assert_eq!(v["skipped"]["big"], 1);
+        assert_eq!(v["skipped"]["deep"], 1, "d9 子树");
+        #[cfg(unix)] assert_eq!(v["skipped"]["link"], 1);
+    }
+
+    /// 500 上限：截断标志如实回报
+    #[test]
+    fn dir_walk_truncates_at_max_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for i in 0..501 { std::fs::write(root.join(format!("f{i:03}.txt")), "x").unwrap(); }
+        let v = walk_uploadable(root.to_path_buf());
+        assert_eq!(v["files"].as_array().unwrap().len(), DIR_MAX_FILES);
+        assert_eq!(v["truncated"], serde_json::json!(true));
+    }
 
     #[test]
     fn test_filename_for_clipboard_keeps_extension_when_missing() {

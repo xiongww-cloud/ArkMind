@@ -509,6 +509,7 @@ function getFileColor(fileName) {
     ref="uploadModalRef"
     entity-type="project"
     title="上传项目文件"
+    folder-tree
     :resolve-entity-id="resolveProjectBackendId"
     :folder-id="selectedFolderId && selectedFolderId !== '__uncategorized__' ? selectedFolderId : null"
     :creator="authStore.currentUser.name"

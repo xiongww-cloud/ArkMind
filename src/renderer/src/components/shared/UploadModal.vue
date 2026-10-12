@@ -17,7 +17,7 @@
  */
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
-import { uploadFile, removeTempFile } from '@/api/db-client'
+import { uploadFile, removeTempFile, fetchFileTree, createFolder } from '@/api/db-client'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from '@/composables/useToast'
@@ -32,6 +32,8 @@ const props = defineProps<{
   creator?: string
   note?: string
   title?: string
+  /** 域内启用「上传目录」：仅 library/project 等有目录树的域传入 */
+  folderTree?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -45,6 +47,7 @@ interface PendingUpload {
   ext: string
   isPath: boolean
   tempPath?: string
+  relPath?: string        // 目录上传携带相对路径（'/' 分隔），提交时据此镜像目录树
   uploading?: boolean
   progress?: number       // 0-100（粘贴分片上传进度）
   _cancelled?: boolean
@@ -89,6 +92,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPasteKeydown))
 
 function open() {
   pendingUploads.value = []
+  dirSummary.value = null
   show.value = true
   // macOS：paste 事件只在可编辑元素上触发，弹窗打开后聚焦隐藏的 textarea
   requestAnimationFrame(() => {
@@ -111,6 +115,82 @@ async function pickFiles() {
     if (pendingUploads.value.some(u => u.isPath && (u.file as string) === p)) continue
     pendingUploads.value.push({ file: p, name: name.replace(/\.[^.]+$/, ''), ext, isPath: true })
   }
+}
+
+// ─── 目录上传（镜像目录树；仅 folderTree 域启用） ───────────────────────────
+interface DirSummary {
+  files: { path: string; relPath: string; name: string; size: number }[]
+  skipped: { hidden: number; big: number; deep: number; link: number }
+  truncated: boolean
+  rootName: string
+}
+const dirSummary = ref<DirSummary | null>(null)
+
+async function pickDirectory() {
+  const dir = await openDialog({ directory: true, canCreateDirectories: false })
+  if (!dir) return
+  let r: any
+  try { r = await invoke('dir_list_uploadable', { dir: dir as string }) } catch (e: any) {
+    toast({ message: `目录读取失败: ${e?.message || e}`, type: 'error' }); return
+  }
+  if (!r?.success) { toast({ message: r?.error || '目录读取失败', type: 'error' }); return }
+  if (!(r.files || []).length) { toast({ message: '目录内没有可上传的文件', type: 'info' }); return }
+  const rootName = String(r.root || dir).replace(/[\\/]+$/, '').split(/[\\/]/).pop() || String(dir)
+  dirSummary.value = { files: r.files, skipped: r.skipped ?? { hidden: 0, big: 0, deep: 0, link: 0 }, truncated: !!r.truncated, rootName }
+}
+
+/** 确认闸通过后才入现有队列（条目带 relPath，提交时镜像目录） */
+function confirmDir() {
+  if (!dirSummary.value) return
+  for (const f of dirSummary.value.files) {
+    if (pendingUploads.value.some(u => u.isPath && (u.file as string) === f.path)) continue
+    const dot = f.name.lastIndexOf('.')
+    pendingUploads.value.push({
+      file: f.path,
+      name: dot > 0 ? f.name.slice(0, dot) : f.name,
+      ext: dot > 0 ? f.name.slice(dot + 1).toLowerCase() : '',
+      isPath: true,
+      relPath: f.relPath,
+    })
+  }
+  dirSummary.value = null
+}
+
+function dirOf(relPath?: string): string {
+  if (!relPath) return ''
+  const i = relPath.lastIndexOf('/')
+  return i > 0 ? relPath.slice(0, i) : ''
+}
+
+// 镜像缓存：(parentFolderId|name) → folderId；每批上传重置（库内树可能已被外部变更）
+let mirrorIndex: Map<string, string> | null = null
+function baseFolderId(): string | null {
+  return props.folderId && props.folderId !== '__uncategorized__' ? props.folderId : null
+}
+
+/** relPath 的目录段逐级懒创建（createFolder 复用同级同名）；某级创建失败则落上一级继续，不阻断文件上传 */
+async function ensureMirrorDirs(relPath: string, projectId: string | null): Promise<string | null> {
+  const parts = relPath.split('/').slice(0, -1)
+  if (!parts.length) return baseFolderId()
+  if (!mirrorIndex) {
+    mirrorIndex = new Map()
+    try {
+      const tree: any = await fetchFileTree(projectId ?? undefined)
+      for (const fd of tree?.folders ?? []) mirrorIndex.set(`${fd.parent_id ?? ''}|${fd.name}`, fd.id)
+    } catch { /* 索引拉取失败退化为全新建：同名复用失效但可用 */ }
+  }
+  let parentId = baseFolderId()
+  for (const seg of parts) {
+    const key = `${parentId ?? ''}|${seg}`
+    let id: string | null | undefined = mirrorIndex.get(key)
+    if (!id) {
+      try { id = ((await createFolder(seg, parentId, projectId)) as any)?.id || null } catch { id = null }
+      if (!id) return parentId
+      mirrorIndex.set(key, id)
+    }
+    parentId = id
+  }
+  return parentId
 }
 
 /** 分片上传一个粘贴文件：先占位（进度即时可见），完成后回填 tempPath */
@@ -229,6 +309,7 @@ async function confirmUpload() {
     return
   }
   uploading.value = true
+  mirrorIndex = null
   let ok = 0
   let fail = 0
   let entityId: string | undefined
@@ -242,6 +323,10 @@ async function confirmUpload() {
     const rawName = item.isPath ? (item.file as string).replace(/^.*[\\\/]/, '') : (item.name || 'pasted')
     try {
       const filePath = item.isPath ? (item.file as string) : (item.tempPath as string)
+      // 目录上传条目：按 relPath 镜像落位；普通条目维持原 folderId 语义
+      const folderIdForItem = item.relPath && props.folderTree
+        ? await ensureMirrorDirs(item.relPath, props.entityType === 'project' ? (entityId ?? null) : null)
+        : baseFolderId()
       const r: any = await uploadFile({
         filePath,
         fileName: fullName || rawName,
@@ -251,7 +336,7 @@ async function confirmUpload() {
         customName: props.customName ?? fullName ?? rawName,
         creator: props.creator || '',
         note: props.note || '',
-        folderId: props.folderId && props.folderId !== '__uncategorized__' ? props.folderId : null,
+        folderId: folderIdForItem,
       })
       ok++
       const fileId = r?.fileId || r?.id || r?.objectId
@@ -322,6 +407,25 @@ defineExpose({ open, close })
               </div>
             </div>
 
+            <!-- 目录上传入口（仅树域）：选择目录后自动镜像子目录结构 -->
+            <div v-if="folderTree" class="flex justify-end -mt-2.5 mb-4">
+              <button @click="pickDirectory" class="btn-secondary text-xs"><AppIcon name="folder" size="12" />上传目录（含子目录）</button>
+            </div>
+
+            <!-- 目录确认闸：遍历统计如实呈现，确认才入队（防误选大目录） -->
+            <div v-if="dirSummary" class="mb-4 border border-amber-200 bg-amber-50/60 rounded-xl px-4 py-3">
+              <p class="text-[12px] font-medium text-surface-700">
+                目录「{{ dirSummary.rootName }}」：将上传 {{ dirSummary.files.length }} 个文件{{ dirSummary.truncated ? '（已达 500 上限，多余未计入）' : '' }}
+              </p>
+              <p class="text-[10px] text-surface-500 mt-1">
+                子目录结构自动镜像到当前目录内；已跳过：隐藏 {{ dirSummary.skipped.hidden }} · 超大(&gt;200MB) {{ dirSummary.skipped.big }} · 超深(>8层) {{ dirSummary.skipped.deep }} · 符号链接 {{ dirSummary.skipped.link }}
+              </p>
+              <div class="flex justify-end gap-2 mt-2">
+                <button @click="dirSummary = null" class="btn-secondary text-xs">取消</button>
+                <button @click="confirmDir" class="btn-primary text-xs">加入列表</button>
+              </div>
+            </div>
+
             <!-- 待上传文件列表 -->
             <div v-if="pendingUploads.length" class="space-y-1.5">
               <div class="flex items-center justify-between mb-1.5">
@@ -337,6 +441,7 @@ defineExpose({ open, close })
                   <AppIcon name="file-doc" size="13" class="text-surface-500" />
                 </div>
                 <div class="flex-1 min-w-0 flex items-center gap-1">
+                  <span v-if="dirOf(item.relPath)" class="text-[9px] text-surface-400 flex-shrink-0 max-w-[120px] truncate" v-tooltip="`目录：${dirOf(item.relPath)}`">{{ dirOf(item.relPath) }}</span>
                   <input
                     v-model="item.name"
                     @focus="$event.target.select()"

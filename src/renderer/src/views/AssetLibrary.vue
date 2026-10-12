@@ -702,11 +702,12 @@ async function handleDelete(id: string) {
   </div>
 </div>
 
-<!-- 上传弹窗：选择文件 或 Ctrl+V 粘贴 -->
+<!-- 上传弹窗：选择文件/目录 或 Ctrl+V 粘贴 -->
 <UploadModal
   ref="uploadModalRef"
   entity-type="library"
   title="上传文件"
+  folder-tree
   :folder-id="selectedFolderId && selectedFolderId !== '__uncategorized__' ? selectedFolderId : null"
   @uploaded="handleLibraryUploaded"
 />
