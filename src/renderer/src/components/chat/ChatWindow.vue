@@ -159,10 +159,6 @@ function displayContent(content: string): string { const i = content.indexOf('<<
 function extractAttachmentNames(content: string): string[] { const names: string[] = []; const re = /[\u3010]\u9644\u4ef6\uff1a(.+?)[\u3011]/g; let m; while ((m = re.exec(content)) !== null) names.push(m[1]); return names }
 
 // ─── State ──────────────────────────────────────────────────
-const isMac = typeof navigator !== 'undefined' && (
-  navigator.platform.toUpperCase().indexOf('MAC') >= 0 ||
-  navigator.userAgent.toUpperCase().indexOf('MAC') >= 0
-)
 const inputText = ref('')
 const chatListRef = ref<HTMLElement | null>(null)
 const composerRef = ref<HTMLTextAreaElement | null>(null)
@@ -721,7 +717,7 @@ onUnmounted(() => {
           <button @click.stop="newSession" class="icon-btn" v-tooltip="'开始新会话'">
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
           </button>
-          <button v-if="!isMac" @click.stop="openAttachmentDialog" class="icon-btn" v-tooltip="'附加文件'">
+          <button @click.stop="openAttachmentDialog" class="icon-btn" v-tooltip="'附加文件'">
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
           </button>
         </div>
