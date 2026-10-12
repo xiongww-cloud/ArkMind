@@ -13,11 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: macos-latest
-            args: ""
-          - platform: windows-latest
-            args: ""
+        platform: [macos-latest, windows-latest]
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -49,5 +45,4 @@ jobs:
           releaseBody: "macOS .dmg (unsigned, Apple Silicon) / Windows .msi + .exe (unsigned)"
           releaseDraft: true
           prerelease: false
-          buildCommand: npm run tauri:build
-          args: ${{ matrix.args }}
+          tauriScript: node scripts/tauri-build.mjs
