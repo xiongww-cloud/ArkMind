@@ -60,7 +60,7 @@ pub async fn product_create(data: Value) -> Result<Value, String> {
     let product_assets = crate::commands::file_commands::collect_entity_asset_ids("product", std::slice::from_ref(&id));
     database::run("DELETE FROM file_relations WHERE entity_type='product' AND entity_id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     crate::services::business_relations::delete_by_source("PRODUCT", &id);
-    // M2: 清理目标边（SOLUTION_ITEM-instance_of、PROJECT-belongs_to 等以 PRODUCT 为目标的关联）
+    // M2: 清理目标边（EQUIPMENT_ITEM-instance_of、PROJECT-belongs_to 等以 PRODUCT 为目标的关联）
     crate::services::business_relations::delete_by_target("PRODUCT", &id);
     database::run("DELETE FROM products WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
     for aid in &product_assets { crate::commands::file_commands::release_asset_if_orphan(aid); }

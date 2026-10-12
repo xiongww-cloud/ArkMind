@@ -1357,7 +1357,7 @@ pub async fn agent_chat_workflow_internal(
                                     if ids.is_empty() {
                                         "错误：detail模式需要传入id参数".to_string()
                                     } else {
-                                        let business_types = ["PROJECT", "PRODUCT", "CHANNEL", "VENDOR", "CUSTOMER", "CONTACT", "TODO", "SOLUTION"];
+                                        let business_types = ["PROJECT", "PRODUCT", "CHANNEL", "VENDOR", "CUSTOMER", "CONTACT", "TODO", "EQUIPMENT_LIST"];
                                         let mut biz_ids = Vec::new();
                                         let mut doc_ids = Vec::new();
                                         for id in &ids {
@@ -1378,7 +1378,7 @@ pub async fn agent_chat_workflow_internal(
                                                 "CHANNEL" | "VENDOR" | "CUSTOMER" => database::get("SELECT id, type, name, phone, address, remark, contact_person, contact_phone, created_at FROM partners WHERE id=?1 AND type=?2", &[json!(raw_id), json!(tp)]),
                                                 "CONTACT" => database::get("SELECT id, name, phone, email, position, remark, created_at FROM partner_contacts WHERE id=?1", &[json!(raw_id)]),
                                                 "TODO" => database::get("SELECT id, title, content, done, priority, due_date, repeat, created_at, updated_at FROM todos WHERE id=?1", &[json!(raw_id)]),
-                                                "SOLUTION" => database::get("SELECT id, project_id, name, created_at FROM solutions WHERE id=?1", &[json!(raw_id)]),
+                                                "EQUIPMENT_LIST" => database::get("SELECT id, project_id, name, created_at FROM solutions WHERE id=?1", &[json!(raw_id)]),
                                                 _ => Ok(None),
                                             };
                                              match row {

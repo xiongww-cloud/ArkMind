@@ -118,14 +118,14 @@ pub fn init() -> bool {
 /// 场景：方案/版本删除时业务行已先删，按 project_id 反查不到被删节点，导致边残留
 pub fn cleanup_solution_graph_orphans() {
     let _ = database::run(
-        "DELETE FROM business_relations WHERE relation_type IN ('has_solution','has_version','uses','instance_of') AND (\
+        "DELETE FROM business_relations WHERE relation_type IN ('has_equipment_list','has_version','uses','instance_of') AND (\
          (source_type='PROJECT' AND source_id NOT IN (SELECT id FROM projects)) OR \
-         (source_type='SOLUTION' AND source_id NOT IN (SELECT id FROM solutions)) OR \
-         (source_type='SOLUTION_VERSION' AND source_id NOT IN (SELECT id FROM solution_versions)) OR \
-         (source_type='SOLUTION_ITEM' AND source_id NOT IN (SELECT id FROM solution_items)) OR \
-         (target_type='SOLUTION' AND target_id NOT IN (SELECT id FROM solutions)) OR \
-         (target_type='SOLUTION_VERSION' AND target_id NOT IN (SELECT id FROM solution_versions)) OR \
-         (target_type='SOLUTION_ITEM' AND target_id NOT IN (SELECT id FROM solution_items)) OR \
+         (source_type='EQUIPMENT_LIST' AND source_id NOT IN (SELECT id FROM solutions)) OR \
+         (source_type='EQUIPMENT_VERSION' AND source_id NOT IN (SELECT id FROM solution_versions)) OR \
+         (source_type='EQUIPMENT_ITEM' AND source_id NOT IN (SELECT id FROM solution_items)) OR \
+         (target_type='EQUIPMENT_LIST' AND target_id NOT IN (SELECT id FROM solutions)) OR \
+         (target_type='EQUIPMENT_VERSION' AND target_id NOT IN (SELECT id FROM solution_versions)) OR \
+         (target_type='EQUIPMENT_ITEM' AND target_id NOT IN (SELECT id FROM solution_items)) OR \
          (target_type='PRODUCT' AND target_id NOT IN (SELECT id FROM products)))",
         &[]
     );

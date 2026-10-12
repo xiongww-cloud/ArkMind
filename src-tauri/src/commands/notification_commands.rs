@@ -300,10 +300,11 @@ pub async fn notification_create_project_log(project_id: String, content: String
 
 /// link_file 目标类型白名单→(表, ID 列)（按钮创建侧 sanitize 与点击落库校验共用）
 pub(crate) fn link_target_table(et_upper: &str) -> Option<(&'static str, &'static str)> {
-    match et_upper {
+    let et_norm = crate::services::agent_workflow::tools::entity_ref::normalize_type(et_upper);
+    match et_norm.as_str() {
         "PROJECT" => Some(("projects", "id")),
         "PRODUCT" => Some(("products", "id")),
-        "SOLUTION" => Some(("solutions", "id")),
+        "EQUIPMENT_LIST" => Some(("solutions", "id")),
         "CHANNEL" | "VENDOR" | "CUSTOMER" => Some(("partners", "id")),
         "CONTACT" => Some(("partner_contacts", "id")),
         "NOTE" => Some(("notes", "note_id")),

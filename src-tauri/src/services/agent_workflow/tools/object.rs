@@ -5,27 +5,28 @@ use serde_json::{json, Value};
 use crate::services::agent_workflow::*;
 
 pub(crate) fn execute_object_catalog(entity: &str, field_filters: &[Value], sort: Option<&Value>, args: &Value) -> String {
-    let (table, allowed_fields): (&str, &[&str]) = match entity.to_uppercase().as_str() {
+    let entity_norm = crate::services::agent_workflow::tools::entity_ref::normalize_type(entity);
+    let (table, allowed_fields): (&str, &[&str]) = match entity_norm.as_str() {
         "PROJECT" => ("projects", &["id","name","description","status","owner","budget","bid_time","created_at","updated_at"]),
         "PRODUCT" => ("(SELECT p.id, p.name, COALESCE(ps.name, '') AS series_name, p.description, p.price, p.full_specs AS params, p.sort_order, p.created_at, p.updated_at FROM products p LEFT JOIN product_series ps ON p.series_id = ps.id)", &["id","name","series_name","description","price","params","sort_order","created_at","updated_at"]),
         "CHANNEL" | "VENDOR" | "CUSTOMER" => ("partners", &["id","type","name","phone","address","remark","contact_person","contact_phone","created_at","updated_at"]),
         "CONTACT" => ("(SELECT pc.id, pc.name, pc.phone, pc.email, pc.position, pc.remark, pc.created_at, COALESCE(GROUP_CONCAT(DISTINCT p.name),'') AS partner_names FROM partner_contacts pc LEFT JOIN partner_contact_mapping pcm ON pcm.contact_id=pc.id LEFT JOIN partners p ON p.id=pcm.partner_id GROUP BY pc.id)", &["id","name","phone","email","position","remark","partner_names","created_at"]),
         "TODO" => ("todos", &["id","title","content","done","priority","due_date","repeat","created_at","updated_at"]),
         "NOTE" => ("(SELECT n.note_id, n.title, n.content, n.is_daily, n.notebook_id, nb.name AS notebook_name, n.deleted_at, n.created_at, n.updated_at FROM notes n LEFT JOIN notebooks nb ON n.notebook_id = nb.id)", &["note_id","title","content","is_daily","notebook_id","notebook_name","deleted_at","created_at","updated_at"]),
-        "SOLUTION" => ("solutions", &["id","project_id","name","created_at","updated_at"]),
-        "SOLUTION_VERSION" => ("solution_versions", &["id","solution_id","version","tags","content","creator","status","created_at","updated_at"]),
-        "SOLUTION_ITEM" => ("(SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit_price, si.description AS params, si.row_type, si.sort_order, si.created_at, si.updated_at, sv.version, sv.status AS version_status, s.name AS solution_name, s.project_id, p.name AS project_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN projects p ON p.id=s.project_id)", &["id","solution_version_id","product_id","product_name","device_name","quantity","unit_price","params","row_type","sort_order","created_at","updated_at","version","version_status","solution_name","project_id","project_name"]),
+        "EQUIPMENT_LIST" => ("solutions", &["id","project_id","name","created_at","updated_at"]),
+        "EQUIPMENT_VERSION" => ("solution_versions", &["id","solution_id","version","tags","content","creator","status","created_at","updated_at"]),
+        "EQUIPMENT_ITEM" => ("(SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit_price, si.description AS params, si.row_type, si.sort_order, si.created_at, si.updated_at, sv.version, sv.status AS version_status, s.name AS solution_name, s.project_id, p.name AS project_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN projects p ON p.id=s.project_id)", &["id","solution_version_id","product_id","product_name","device_name","quantity","unit_price","params","row_type","sort_order","created_at","updated_at","version","version_status","solution_name","project_id","project_name"]),
         "PROJECT_DYNAMIC" => ("project_dynamics", &["id","project_id","type","content","operator","created_at"]),
         "EMAIL" => ("emails", &["id","account_id","folder","from_addr","from_name","to_addr","cc_addr","subject","received_at","has_attachments","ai_category","created_at"]),
         "CHAT" => return format!("{} 不支持结构化筛选，请使用 query 关键词搜索。", entity),
         "FILE" => ("(SELECT fa.id, fa.original_name AS name, COALESCE(sd.title,'') AS title, fa.file_ext, fa.file_size, fa.status, lfl.folder_id, COALESCE(lf.name,'') AS folder_name, COALESCE(pf.name,'') AS parent_folder_name, COALESCE(p.name,'') AS project_name, fa.created_at, fa.updated_at FROM file_assets fa LEFT JOIN library_file_locations lfl ON lfl.file_id=fa.id LEFT JOIN library_folders lf ON lf.id=lfl.folder_id LEFT JOIN library_folders pf ON pf.id=lf.parent_id LEFT JOIN projects p ON p.id=lf.project_id LEFT JOIN source_data sd ON sd.source_type='FILE' AND sd.source_id=fa.id)", &["id","name","title","file_ext","file_size","status","folder_id","folder_name","parent_folder_name","project_name","created_at","updated_at"]),
         "NOTEBOOK" => ("(SELECT nb.id, nb.name, nb.color, nb.sort_order, (SELECT COUNT(*) FROM notes n WHERE n.notebook_id=nb.id AND n.deleted_at IS NULL) AS note_count, nb.created_at, nb.updated_at FROM notebooks nb)", &["id","name","color","sort_order","note_count","created_at","updated_at"]),
         "FOLDER" => ("(SELECT lf.id, lf.name, lf.parent_id, COALESCE(pf.name,'') AS parent_name, lf.project_id, COALESCE(p.name,'') AS project_name, lf.sort_order, (SELECT COUNT(*) FROM library_file_locations lfl WHERE lfl.folder_id=lf.id) AS file_count, lf.created_at, lf.updated_at FROM library_folders lf LEFT JOIN library_folders pf ON pf.id=lf.parent_id LEFT JOIN projects p ON p.id=lf.project_id)", &["id","name","parent_id","parent_name","project_id","project_name","sort_order","file_count","created_at","updated_at"]),
-        _ => return format!("不支持的实体类型: {}。可用: PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/FILE/NOTEBOOK/FOLDER/SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM/PROJECT_DYNAMIC/EMAIL", entity),
+        _ => return format!("不支持的实体类型: {}。可用: PROJECT/PRODUCT/CHANNEL/VENDOR/CUSTOMER/CONTACT/TODO/NOTE/FILE/NOTEBOOK/FOLDER/EQUIPMENT_LIST/EQUIPMENT_VERSION/EQUIPMENT_ITEM/PROJECT_DYNAMIC/EMAIL", entity),
     };
     let mut conditions: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
-    let upper = entity.to_uppercase();
+    let upper = entity_norm.clone();
     if upper == "CHANNEL" || upper == "VENDOR" || upper == "CUSTOMER" {
         conditions.push("type = ?".to_string());
         values.push(json!(upper));

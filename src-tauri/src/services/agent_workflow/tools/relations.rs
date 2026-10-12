@@ -14,7 +14,7 @@ pub(crate) fn execute_relations(entity_type: &str, entity_id: &str, target_type:
         };
         return envelope.to_json();
     }
-    let upper = entity_type.to_uppercase();
+    let upper = crate::services::agent_workflow::tools::entity_ref::normalize_type(entity_type);
     // 去掉 TYPE- 前缀，business_relations 存储裸 UUID
     let bare_id = entity_id.strip_prefix(&format!("{}-", upper)).unwrap_or(entity_id);
 
@@ -62,7 +62,7 @@ pub(crate) fn execute_relations(entity_type: &str, entity_id: &str, target_type:
     all_rels.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
     all_rels.retain(|(t, id, _, _)| !(t == &upper && id == entity_id));
     if let Some(tt) = target_type {
-        let tt_upper = tt.to_uppercase();
+        let tt_upper = crate::services::agent_workflow::tools::entity_ref::normalize_type(tt);
         all_rels.retain(|(t, _, _, _)| t == &tt_upper);
     }
 
@@ -145,12 +145,12 @@ pub(crate) fn execute_relations(entity_type: &str, entity_id: &str, target_type:
     envelope.to_json()
 }
 
-/// 解析图谱节点名称（SOLUTION/SOLUTION_VERSION/SOLUTION_ITEM 不进 source_data，直接查业务表）
+/// 解析图谱节点名称（EQUIPMENT_LIST/VERSION/ITEM 不进 source_data，直接查业务表）
 pub(crate) fn resolve_graph_node_name(node_type: &str, id: &str) -> String {
     let sql = match node_type {
-        "SOLUTION" => "SELECT name FROM solutions WHERE id=?1",
-        "SOLUTION_VERSION" => "SELECT s.name || ' · ' || sv.version AS name FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE sv.id=?1",
-        "SOLUTION_ITEM" => "SELECT CASE WHEN si.device_name IS NOT NULL AND si.device_name != '' THEN si.device_name || ' · ' || si.product_name ELSE si.product_name END AS name FROM solution_items si WHERE si.id=?1",
+        "EQUIPMENT_LIST" => "SELECT name FROM solutions WHERE id=?1",
+        "EQUIPMENT_VERSION" => "SELECT s.name || ' · ' || sv.version AS name FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE sv.id=?1",
+        "EQUIPMENT_ITEM" => "SELECT CASE WHEN si.device_name IS NOT NULL AND si.device_name != '' THEN si.device_name || ' · ' || si.product_name ELSE si.product_name END AS name FROM solution_items si WHERE si.id=?1",
         _ => return String::new(),
     };
     database::get(sql, &[json!(id)]).ok().flatten()

@@ -1229,6 +1229,31 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         log::info!("[数据库] emails.received_at 时间戳归一化: {} 条 (RFC2822 → 本地时间)", fixed);
     }
 
+    // ★ SOLUTION 族更名 EQUIPMENT_LIST（"项目方案"与"方案文稿"语义相撞，AI 图谱导航频繁混淆）：
+    //   存储层类型值/关系名一次性改写；引用层由 entity_ref::LEGACY_TYPE_ALIASES 永久兼容旧串。
+    //   幂等：改写完成后旧串不再命中。物理表名 solutions/solution_versions/solution_items 不动。
+    let renamed: i64 = conn
+        .execute(
+            "UPDATE business_relations SET \
+               source_type = CASE source_type WHEN 'SOLUTION' THEN 'EQUIPMENT_LIST' WHEN 'SOLUTION_VERSION' THEN 'EQUIPMENT_VERSION' WHEN 'SOLUTION_ITEM' THEN 'EQUIPMENT_ITEM' ELSE source_type END, \
+               target_type = CASE target_type WHEN 'SOLUTION' THEN 'EQUIPMENT_LIST' WHEN 'SOLUTION_VERSION' THEN 'EQUIPMENT_VERSION' WHEN 'SOLUTION_ITEM' THEN 'EQUIPMENT_ITEM' ELSE target_type END, \
+               relation_type = CASE relation_type WHEN 'has_solution' THEN 'has_equipment_list' ELSE relation_type END \
+             WHERE source_type LIKE 'SOLUTION%' OR target_type LIKE 'SOLUTION%' OR relation_type = 'has_solution'",
+            [],
+        )
+        .unwrap_or(0) as i64;
+    let _ = conn.execute(
+        "UPDATE notifications SET actions = replace(replace(replace(actions, '\"SOLUTION_VERSION\"', '\"EQUIPMENT_VERSION\"'), '\"SOLUTION_ITEM\"', '\"EQUIPMENT_ITEM\"'), '\"SOLUTION\"', '\"EQUIPMENT_LIST\"') WHERE actions LIKE '%SOLUTION%'",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE chat_sessions SET session_state = replace(replace(replace(session_state, '\"SOLUTION_VERSION\"', '\"EQUIPMENT_VERSION\"'), '\"SOLUTION_ITEM\"', '\"EQUIPMENT_ITEM\"'), '\"SOLUTION\"', '\"EQUIPMENT_LIST\"') WHERE session_state LIKE '%SOLUTION%'",
+        [],
+    );
+    if renamed > 0 {
+        log::info!("[数据库] SOLUTION→EQUIPMENT_LIST 族更名: business_relations {} 条边改写", renamed);
+    }
+
     Ok(())
 }
 
