@@ -1,7 +1,7 @@
 //! ext_tool_report：子 Agent 结构化上行报告（无副作用 ack）
-//! - gaps：数据/信息缺口 → 主 Agent 自查补齐后续派，或随交付稿回贴「待补」
-//! - confirmations：必须用户拍板/确认的问题 → 主 Agent 转 ext_tool_ask_user 卡片
-//! 本 handler 只做校验归一与回执；消费与聚合在 delegate_agent::collect_reports + OutputClass::finalize。
+//! - gaps：数据/信息缺口 → status 落 partial 交回主 Agent 自查补齐续派，或转问用户
+//! - confirmations：必须用户拍板/确认的问题 → 框架自动转交互卡片
+//! 本 handler 只做校验归一与回执；消费与聚合在 delegate_agent::collect_reports + output_class::finalize_delegate_output。
 
 use crate::services::agent_workflow::ToolResultEnvelope;
 use serde_json::{json, Value};

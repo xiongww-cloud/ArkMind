@@ -148,7 +148,7 @@ struct SseState {
 }
 
 /// flush 积压未发的 token（失败路径也要 flush：保证前端已有内容与 partial 一致，续写无缝衔接）
-/// to_ui=DELIVERY 通道授权（OutputClass 裁决）；thought_to_ui=思考流通道（!silent：主链+全部子链直出，后台运行体安静）
+/// to_ui=正文通道授权（单委托子链直出/多委托静默，主链恒出）；thought_to_ui=思考流通道（!silent：主链+全部子链直出，后台运行体安静）
 /// owner=token 归属（"main" 或子 Agent id）
 fn flush_pending_tokens(st: &mut SseState, to_ui: bool, thought_to_ui: bool, owner: &str, sid: &str, app: &Option<tauri::AppHandle>) {
     if !st.thought_buf.is_empty() {
@@ -179,8 +179,11 @@ pub struct LlmOverrides {
     pub agent_id: Option<String>,
     /// 取消归属会话（per-session 停止信号；workflow 注入，委托子链共享父会话）
     pub cancel_sid: Option<String>,
-    /// 委托路径注入：产出类别 key（natural/deliverable），心跳据此让前端选择字数/步数展示口径
+    /// 委托路径注入：心跳展示口径 key（类型合并后恒为 deliverable=字数口径，无行为语义）
     pub agent_class: Option<String>,
+    /// 委托路径注入：多委托轮置 true——子链正文静默（只走 TRACE），由主 Agent 综合成稿，
+    /// 防交付流被综合稿顶掉的闪回；单委托轮 false → 正文直连用户通道（false=默认，主链恒流）
+    pub suppress_body_stream: bool,
 }
 
 /// 公开接口：流式调用（silent=false）
@@ -317,13 +320,10 @@ async fn stream_once(
     };
     let mut stream = resp.bytes_stream();
 
-    // ★ 通道框架：DELIVERY 直出授权由 OutputClass 单点裁决——执行型子 Agent 的正文/思考是
-    //   交主 Agent 的 HANDOFF 内部汇报，不直连用户 UI（防内部问句泄漏、与主 Agent 转述/卡片双重呈现）；
-    //   主 Agent（class=None）与交付型（deliverable）保持流式直出。owner 显式声明每段 token 归属。
-    let streams_user = match overrides.agent_class.as_deref() {
-        None => true, // 主 Agent 自身恒直出
-        Some(c) => crate::services::agent_workflow::output_class::OutputClass::from_format(c).streams_to_user(),
-    };
+    // ★ 通道框架（类型合并版）：子链正文直连用户通道 iff 本轮仅一次委托（suppress_body_stream=false）——
+    //   合格单委托正文即终稿，流式直出；多委托轮正文静默交主 Agent 综合，防闪回。
+    //   主 Agent 自身（default overrides）恒流式直出。owner 显式声明每段 token 归属。
+    let streams_user = !overrides.suppress_body_stream;
     let to_ui = !silent && streams_user;
     let owner = overrides.agent_id.clone().unwrap_or_else(|| "main".to_string());
     let sid_str = overrides.cancel_sid.clone().unwrap_or_default();

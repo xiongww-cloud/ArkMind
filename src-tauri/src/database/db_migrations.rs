@@ -479,9 +479,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         let is_default_row = match row {
             None => {
                 conn.execute(
-                    "INSERT INTO agent_profiles(id, name, description, system_prompt, max_iterations, can_delegate, output_format, status, is_builtin, preset_tools, routing_hint, seed_hash, created_at, updated_at) \
-                     VALUES(?1,?2,?3,?4,20,0,?5,'active',1,?6,?7,?8,datetime('now','localtime'),datetime('now','localtime'))",
-                    rusqlite::params![sp.id, sp.name, sp.description, sp.system_prompt, sp.output_format, tools_json, sp.routing_hint, new_hash],
+                    "INSERT INTO agent_profiles(id, name, description, system_prompt, max_iterations, can_delegate, status, is_builtin, preset_tools, routing_hint, seed_hash, created_at, updated_at) \
+                     VALUES(?1,?2,?3,?4,20,0,'active',1,?5,?6,?7,datetime('now','localtime'),datetime('now','localtime'))",
+                    rusqlite::params![sp.id, sp.name, sp.description, sp.system_prompt, tools_json, sp.routing_hint, new_hash],
                 ).ok();
                 log::info!("[builtin-sync] {} 首次植入默认配置", sp.id);
                 true
@@ -490,16 +490,16 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
                 match crate::builtin_agents::sync_action(sp, &cur_prompt, &cur_seed) {
                     crate::builtin_agents::SyncAction::Refresh => {
                         conn.execute(
-                            "UPDATE agent_profiles SET name=?1, description=?2, system_prompt=?3, output_format=?4, seed_hash=?5, updated_at=datetime('now','localtime') WHERE id=?6",
-                            rusqlite::params![sp.name, sp.description, sp.system_prompt, sp.output_format, new_hash, sp.id],
+                            "UPDATE agent_profiles SET name=?1, description=?2, system_prompt=?3, seed_hash=?4, updated_at=datetime('now','localtime') WHERE id=?5",
+                            rusqlite::params![sp.name, sp.description, sp.system_prompt, new_hash, sp.id],
                         ).ok();
                         log::info!("[builtin-sync] {} 默认提示词已升级到当前版本", sp.id);
                         true
                     }
                     crate::builtin_agents::SyncAction::Seed(h) => {
                         conn.execute(
-                            "UPDATE agent_profiles SET name=?1, description=?2, output_format=?3, seed_hash=?4 WHERE id=?5",
-                            rusqlite::params![sp.name, sp.description, sp.output_format, h, sp.id],
+                            "UPDATE agent_profiles SET name=?1, description=?2, seed_hash=?3 WHERE id=?4",
+                            rusqlite::params![sp.name, sp.description, h, sp.id],
                         ).ok();
                         true
                     }

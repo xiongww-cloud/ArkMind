@@ -69,7 +69,7 @@ async fn summarize_large_attachment(
 /// 仅当其中恰好 1 个委托信封（delegate_agent_result）且回答合格时返回 Some：
 /// - ≥2 个委托：多份回答必须交回主 LLM 综合，否则第二个及之后的回答文本被丢弃
 /// - partial 且 missing 非空：数据缺口（gaps）需主 LLM 自答续派或转问，直出会把缺口藏起来——
-///   交回主 LLM 处理（confirmations 不产生 missing，交付型直出不受影响）
+///   交回主 LLM 处理（confirmations 不产生 missing，不碍直出；类型合并后本判定对所有子 Agent 一致）
 /// - 0 个委托 / failed / 空回答：None，走常规主 LLM 路径
 pub(crate) fn pick_direct_out(results: &[(String, String, String, bool)]) -> Option<String> {
     let delegates: Vec<&(String, String, String, bool)> = results.iter()
@@ -449,7 +449,7 @@ pub async fn agent_chat_workflow_internal(
     let has_delegate = allowed_tools.as_ref().map_or(true, |t| t.iter().any(|x| x == "ext_tool_delegate_agent"));
     let agent_section = if has_delegate {
         let agents: Vec<Value> = database::all(
-            "SELECT id, name, description, COALESCE(routing_hint,'') AS routing_hint, COALESCE(output_format,'natural') AS output_format FROM agent_profiles WHERE status='active'",
+            "SELECT id, name, description, COALESCE(routing_hint,'') AS routing_hint FROM agent_profiles WHERE status='active'",
             &[],
         ).unwrap_or_default();
         if agents.is_empty() {
@@ -468,15 +468,12 @@ pub async fn agent_chat_workflow_internal(
                     .filter_map(|r| r["tool_name"].as_str().map(|s| tool_display_label(s).to_string()))
                     .collect();
                 let tools_str = if tools.is_empty() { String::new() } else { format!("\n  工具：{}", tools.join("、")) };
-                // ★ 交付型标记：其回答即终稿、原样交付用户（协议见 prompt.rs §6 交付型保真规则）
-                // ★ 产出类别标记：文案由 OutputClass 单点维护
-                let deliver_tag = crate::services::agent_workflow::output_class::OutputClass::from_format(
-                    a["output_format"].as_str().unwrap_or("natural"),
-                ).injection_tag();
+                // ★ 2026-10 类型合并：不再按 Agent 注入交付标记——"正文即终稿、不得改写"升级为
+                //   §6 全局规则（所有合格委托一致），见 prompt.rs 委托段
                 if hint.is_empty() {
-                    Some(format!("- {}: {} (agent_id: \"{}\"){}{}", name, desc, id, tools_str, deliver_tag))
+                    Some(format!("- {}: {} (agent_id: \"{}\"){}", name, desc, id, tools_str))
                 } else {
-                    Some(format!("- {}: {} (agent_id: \"{}\")\n  → {}{}{}", name, desc, id, hint, tools_str, deliver_tag))
+                    Some(format!("- {}: {} (agent_id: \"{}\")\n  → {}{}", name, desc, id, hint, tools_str))
                 }
             }).collect();
             // ★ 路由决策日志：记录本次注入主 Agent 的可用清单（路由未命中时的第一排查点）
@@ -1179,6 +1176,10 @@ pub async fn agent_chat_workflow_internal(
                 let visited_sources_snapshot = session.visited_sources.clone();
                 let visited_chunks_snapshot = session.visited_chunks.clone();
 
+                // ★ 本轮委托数（类型合并后的流通道裁决）：单委托子链正文直出交付；
+                //   多委托轮子链静默（TRACE 可见），由主 Agent 综合——防两段流先后闪回
+                let delegate_calls_in_round = atc.iter().filter(|tc| tc.function.name == "ext_tool_delegate_agent").count();
+
                 // 预去重 + 分组：async 工具 vs sync 工具
                 let mut async_tasks: Vec<(usize, String, String)> = Vec::new(); // (index, name, args)
                 let mut sync_tasks: Vec<(usize, String, String)> = Vec::new();
@@ -1626,12 +1627,14 @@ pub async fn agent_chat_workflow_internal(
                             let snapshot = build_delegate_snapshot(&messages, &completed_round);
                             let res = crate::services::delegate_agent::execute_delegate_agent(
                                 agent_id, task, Some(&ctx), expected_output, app_handle.clone(), delegate_depth,
-                                snapshot, session, cancel_key.clone(),
+                                snapshot, session, cancel_key.clone(), delegate_calls_in_round > 1,
                             ).await;
                             // ★ 取消透传 + 委托扣费（合并解析；解析失败也扣基础额度，防绕过）
                             match serde_json::from_str::<Value>(&res) {
                                 Ok(v) => {
-                                    if is_root && v["data"]["success"].as_bool() == Some(true) {
+                                    // ★ 委托成功落定保险丝（P0 修复：make_success 信封 data 无 success 字段，
+                                    //   原 v["data"]["success"] 判定永不可达——改查 finalize 产出的 status）
+                                    if is_root && v["data"]["status"].as_str() == Some("completed") {
                                     if let Some(pl) = session.plan.as_mut() { if pl.complete_active() { step_calls = 0; } }
                                     if let Some(ref sid) = session_id { save_session_state(sid, &session); }
                                     emit_plan_snapshot(session.plan.as_ref(), &app_handle, &sid_out, silent);

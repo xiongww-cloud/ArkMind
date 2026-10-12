@@ -92,15 +92,13 @@ pub async fn agent_profile_create(data: Value) -> Result<Value, String> {
     let system_prompt = data["system_prompt"].as_str().unwrap_or("").to_string();
     let max_iterations = data["max_iterations"].as_i64().unwrap_or(20) as i32;
     let can_delegate = data["can_delegate"].as_i64().unwrap_or(0) as i32;
-    // 产出方式白名单：deliverable=交付型（回答即终稿直出交付），其余一律归 natural=执行型
-    let output_format = if data["output_format"].as_str() == Some("deliverable") { "deliverable".to_string() } else { "natural".to_string() };
     let model = data["model"].as_str().unwrap_or("").trim().to_string();
     let temperature = data.get("temperature")
         .filter(|v| !v.is_null())
         .and_then(|v| v.as_f64());
 
     database::run(
-        "INSERT INTO agent_profiles(id, name, description, system_prompt, max_iterations, can_delegate, output_format, routing_hint, model, temperature) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO agent_profiles(id, name, description, system_prompt, max_iterations, can_delegate, routing_hint, model, temperature) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         &[
             json!(id),
             json!(name),
@@ -108,7 +106,6 @@ pub async fn agent_profile_create(data: Value) -> Result<Value, String> {
             json!(system_prompt),
             json!(max_iterations),
             json!(can_delegate),
-            json!(output_format),
             json!(routing_hint),
             json!(model),
             temperature.map(|t| json!(t)).unwrap_or(Value::Null),
@@ -179,15 +176,12 @@ pub async fn agent_profile_update(id: String, data: Value) -> Result<(), String>
             values.push(json!(v));
         }
     }
-    // 结构性字段：仅自定义 Agent 可改（内置的委托能力/输出格式锁定，工具由 preset 锁定）
+    // 结构性字段：仅自定义 Agent 可改（内置的委托能力锁定，工具由 preset 锁定）
+    // ★ 产出方式（output_format）随类型合并退役：列留存休眠，不再接受写入
     if !is_builtin {
         if let Some(v) = data["can_delegate"].as_i64() {
             fields.push("can_delegate=?".into());
             values.push(json!(v));
-        }
-        if let Some(v) = data["output_format"].as_str() {
-            fields.push("output_format=?".into());
-            values.push(json!(if v == "deliverable" { "deliverable" } else { "natural" }));
         }
     }
 
@@ -283,15 +277,6 @@ pub async fn agent_tool_assign(agent_id: String, tool_names: Vec<String>) -> Res
     Ok(())
 }
 
-/// 产出方式注册表（设置页"产出方式"下拉数据源；新类别在 OutputClass 枚举处扩展）
-#[tauri::command]
-pub async fn agent_output_formats() -> Result<Vec<Value>, String> {
-    Ok(crate::services::agent_workflow::output_class::ALL_OUTPUT_CLASSES
-        .iter()
-        .map(|c| json!({"key": c.key(), "label": c.label(), "desc": c.desc()}))
-        .collect())
-}
-
 /// 重置内置 Agent 到默认配置
 #[tauri::command]
 pub async fn agent_profile_reset(id: String) -> Result<(), String> {
@@ -306,10 +291,10 @@ pub async fn agent_profile_reset(id: String) -> Result<(), String> {
         return Err(format!("Agent 不存在: {}", id));
     }
 
-    // 重置 Agent Profile（含路由提示、产出方式与 LLM 覆盖——用户编辑过的字段一并还原为内置默认）
+    // 重置 Agent Profile（含路由提示与 LLM 覆盖——用户编辑过的字段一并还原为内置默认；产出方式列已退役不动）
     database::run(
-        "UPDATE agent_profiles SET name=?1, description=?2, system_prompt=?3, routing_hint=?4, output_format=?5, max_iterations=20, can_delegate=0, status='active', model='', temperature=NULL, seed_hash=?6, updated_at=datetime('now','localtime') WHERE id=?7",
-        &[json!(sp.name), json!(sp.description), json!(sp.system_prompt), json!(sp.routing_hint), json!(sp.output_format), json!(crate::builtin_agents::seed_hash(sp.system_prompt)), json!(id)],
+        "UPDATE agent_profiles SET name=?1, description=?2, system_prompt=?3, routing_hint=?4, max_iterations=20, can_delegate=0, status='active', model='', temperature=NULL, seed_hash=?5, updated_at=datetime('now','localtime') WHERE id=?6",
+        &[json!(sp.name), json!(sp.description), json!(sp.system_prompt), json!(sp.routing_hint), json!(crate::builtin_agents::seed_hash(sp.system_prompt)), json!(id)],
     ).map_err(|e| e.to_string())?;
 
     // 重置工具分配

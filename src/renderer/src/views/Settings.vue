@@ -1041,14 +1041,14 @@ async function removeEmailAccount(id: string) {
 }
 
 // ─── Agent Profile Management ──────────────────────────────────
-import { fetchAgentProfiles, fetchAgentAvailableTools, createAgentProfile, updateAgentProfile, deleteAgentProfile, resetAgentProfile, fetchAgentOutputFormats, type AgentProfile, type AgentToolInfo, type OutputFormatOption } from '@/api/db-client'
+import { fetchAgentProfiles, fetchAgentAvailableTools, createAgentProfile, updateAgentProfile, deleteAgentProfile, resetAgentProfile, type AgentProfile, type AgentToolInfo } from '@/api/db-client'
 
 const agentProfiles = ref<AgentProfile[]>([])
 const availableTools = ref<AgentToolInfo[]>([])
 const showAgentModal = ref(false)
 const agentSaving = ref(false)
 const editingAgentId = ref<string | null>(null)
-/// 当前编辑的是否为系统预设 Agent（内置：可改提示词/描述/路由、可启停；产出方式与工具分配锁定）
+/// 当前编辑的是否为系统预设 Agent（内置：可改提示词/描述/路由、可启停；工具分配锁定）
 const editingAgentIsBuiltin = computed(() => {
   const a = agentProfiles.value.find((x) => x.id === editingAgentId.value)
   return !!a?.is_builtin
@@ -1063,16 +1063,8 @@ const agentForm = ref({
   temperature: null as number | null,
   tools: [] as string[],
   presetTools: [] as string[],
-  output_format: 'natural' as 'natural' | 'deliverable',
 })
-/// 产出方式注册表：Rust OutputClass 枚举驱动；拉取失败时用内置两项兜底
-const outputFormats = ref<OutputFormatOption[]>([
-  { key: 'natural', label: '执行型（默认）', desc: '结果交回主 Agent 综合后答复' },
-  { key: 'deliverable', label: '交付型', desc: '回答即终稿，直接完整呈现给用户（方案/报告类长文适用）' },
-])
-async function loadOutputFormats() {
-  try { const l = await fetchAgentOutputFormats(); if (l.length) outputFormats.value = l } catch {}
-}
+
 /// 专属模型候选：来自「AI 模型配置」已配置的各家模型名（去重去空）
 const agentModelOptions = computed(() =>
   [...new Set((aiProviders.value as Array<{ modelName?: string }>).map(p => (p.modelName || '').trim()).filter(Boolean))])
@@ -1097,7 +1089,6 @@ async function loadAvailableTools() {
 }
 
 function openAddAgent() {
-  loadOutputFormats()
   editingAgentId.value = null
   agentForm.value = {
     name: '',
@@ -1109,14 +1100,12 @@ function openAddAgent() {
     temperature: null,
     tools: [],
     presetTools: [],
-    output_format: 'natural',
   }
   agentFormError.value = ''
   showAgentModal.value = true
 }
 
 function editAgent(agent: AgentProfile) {
-  loadOutputFormats()
   editingAgentId.value = agent.id
   const presetTools = Array.isArray(agent.preset_tools) ? agent.preset_tools : (typeof agent.preset_tools === 'string' && agent.preset_tools ? JSON.parse(agent.preset_tools) : [])
   agentForm.value = {
@@ -1129,7 +1118,6 @@ function editAgent(agent: AgentProfile) {
     temperature: (agent.temperature as number | null) ?? null,
     tools: agent.tools || [],
     presetTools: presetTools,
-    output_format: agent.output_format || 'natural',
   }
   agentFormError.value = ''
   showAgentModal.value = true
@@ -1201,7 +1189,6 @@ async function saveAgent() {
         routing_hint: f.routing_hint,
         system_prompt: f.system_prompt,
         max_iterations: f.max_iterations,
-        output_format: f.output_format,
         ...llmOverrides,
         tools: allTools,
       })
@@ -1213,7 +1200,6 @@ async function saveAgent() {
         routing_hint: f.routing_hint,
         system_prompt: f.system_prompt,
         max_iterations: f.max_iterations,
-        output_format: f.output_format,
         ...llmOverrides,
         tools: allTools,
       })
@@ -2340,20 +2326,11 @@ async function saveProfileEditor() {
                       <p class="text-[9px] text-surface-400 mb-1 leading-relaxed">写「何时必须委托」的关键词触发条件，会以「→」行追加在委托说明后注入主 Agent；内置 Agent 的强路由就靠它</p>
                       <input v-model="agentForm.routing_hint" class="w-full border border-surface-200 rounded-lg px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400" placeholder="如：当用户提到「会议纪要」「周报整理」时，必须委托此 Agent" />
                     </div>
-                    <!-- 产出方式（自定义可选；内置只读展示，由预设与迁移管理） -->
-                    <div>
-                      <label class="block text-[10px] font-medium text-surface-400 mb-1">产出方式<span v-if="editingAgentIsBuiltin" class="ml-1.5 text-[9px] text-surface-300 font-normal">系统预设 · 锁定</span></label>
-                      <div class="grid grid-cols-2 gap-2" :class="editingAgentIsBuiltin ? 'opacity-60' : ''">
-                        <label v-for="opt in outputFormats" :key="opt.key" class="flex items-start gap-1.5 p-2 rounded-lg border transition-colors" :class="[agentForm.output_format === opt.key ? 'border-brand-400 bg-brand-50' : 'border-surface-200', editingAgentIsBuiltin ? 'cursor-default' : 'cursor-pointer']">
-                          <input type="radio" :value="opt.key" v-model="agentForm.output_format" :disabled="editingAgentIsBuiltin" class="accent-brand-600 mt-0.5" />
-                          <div><p class="text-[11px] font-medium text-surface-700">{{ opt.label }}</p><p class="text-[9px] text-surface-400 leading-relaxed">{{ opt.desc }}</p></div>
-                        </label>
-                      </div>
-                    </div>
+                    <!-- 产出方式已随类型合并退役：所有子 Agent 统一「正文即终稿」协议（框架注入） -->
                     <!-- 系统预设 Agent 编辑说明 -->
                     <div v-if="editingAgentIsBuiltin" class="flex items-start gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200">
                       <AppIcon name="info" size="11" class="text-amber-500 flex-shrink-0 mt-px" />
-                      <p class="text-[9px] leading-relaxed text-amber-700">系统预设 Agent：可编辑名称、委托说明、路由提示与系统提示词，可在列表中启用/停用（停用后主 Agent 不再委托它）；产出方式与工具分配为系统锁定。改坏了可在列表中点「还原默认配置」一键恢复（含恢复启用）。</p>
+                      <p class="text-[9px] leading-relaxed text-amber-700">系统预设 Agent：可编辑名称、委托说明、路由提示与系统提示词，可在列表中启用/停用（停用后主 Agent 不再委托它）；工具分配为系统锁定。改坏了可在列表中点「还原默认配置」一键恢复（含恢复启用）。</p>
                     </div>
                     <!-- 系统提示词 -->
                     <div>

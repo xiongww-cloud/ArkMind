@@ -57,6 +57,7 @@ pub async fn execute_delegate_agent(
     history: Vec<ChatMessage>,
     main_session: &mut SessionMemory,
     parent_sid: Option<String>,
+    stream_suppressed: bool,
 ) -> String {
     // 参数校验
     if agent_id.is_empty() {
@@ -72,7 +73,7 @@ pub async fn execute_delegate_agent(
 
     // ★ 一次 JOIN 查询加载 Agent Profile + 工具分配（含 name 用于状态展示；model/temperature 用于 per-agent LLM 覆盖）
     let rows = match database::all(
-        "SELECT p.name, p.system_prompt, p.max_iterations, p.model, p.temperature, COALESCE(p.output_format,'natural') AS output_format, a.tool_name FROM agent_profiles p LEFT JOIN agent_tool_assignments a ON a.agent_id=p.id WHERE p.id=?1 AND p.status='active'",
+        "SELECT p.name, p.system_prompt, p.max_iterations, p.model, p.temperature, a.tool_name FROM agent_profiles p LEFT JOIN agent_tool_assignments a ON a.agent_id=p.id WHERE p.id=?1 AND p.status='active'",
         &[json!(agent_id)],
     ) {
         Ok(r) => r,
@@ -109,17 +110,16 @@ pub async fn execute_delegate_agent(
     let system_prompt = first["system_prompt"].as_str().unwrap_or("").to_string();
     let max_iterations = first["max_iterations"].as_i64().unwrap_or(20) as i32;
     let agent_name = first["name"].as_str().unwrap_or(agent_id).to_string();
-    // ★ 产出类别（单一落点 OutputClass）：协议注入/终裁语义/直出口径全部跟随
-    let out_class = crate::services::agent_workflow::output_class::OutputClass::from_format(
-        first["output_format"].as_str().unwrap_or("natural"),
-    );
+    // ★ 2026-10 类型合并：产出类别二分退役。正文流通道由「本轮委托数」裁决（stream_suppressed
+    //   = 多委托轮静默，防交付流被综合稿顶掉的闪回）；agent_class 仅作心跳展示口径（统一字数），无行为语义
     // ★ per-agent 模型/温度：空串/NULL = 跟随全局配置
     let llm = crate::services::agent_workflow::LlmOverrides {
         model: first["model"].as_str().filter(|m| !m.is_empty()).map(String::from),
         temperature: first["temperature"].as_f64(),
         agent_id: Some(agent_id.to_string()),
-        agent_class: Some(out_class.key().to_string()),
+        agent_class: Some("deliverable".to_string()),
         cancel_sid: parent_sid.clone(),
+        suppress_body_stream: stream_suppressed,
     };
 
     // ★ 无任何业务工具（仅自动注入的 report）：框架直接短路——不烧一轮 LLM、不靠模型复述状态行，
@@ -148,7 +148,7 @@ pub async fn execute_delegate_agent(
     // 构建共享上下文快照：截尾防御（剥未闭合 tool_calls）+ 尾部注入执行体指令
     let mut sub_messages = truncate_dangling_tool_calls(history);
     let history_len = sub_messages.len();
-    let directive = build_directive(agent_id, &agent_name, &system_prompt, task, context, expected_output, &allowed_tools, out_class);
+    let directive = build_directive(agent_id, &agent_name, &system_prompt, task, context, expected_output, &allowed_tools);
     sub_messages.push(ChatMessage {
         role: MessageRole::User,
         content: Some(directive),
@@ -204,6 +204,7 @@ pub async fn execute_delegate_agent(
     //   精确的 completed/partial/failed 语义在 make_success 信封里，此处仅取粗状态供 UI）
     let rough_status = match &result {
         Ok(v) if v["cancelled"].as_bool() == Some(true) => "cancelled",
+        Ok(v) if crate::services::agent_workflow::output_class::classify_delegate_output(v) == "failed" => "failed",
         Ok(v) if !v["answer"].as_str().unwrap_or("").is_empty() => "completed",
         Ok(_) => "failed",
         Err(_) => "failed",
@@ -217,22 +218,28 @@ pub async fn execute_delegate_agent(
             let answer = v["answer"].as_str().unwrap_or("");
             let iterations = v["iterations"].as_i64().unwrap_or(0);
             let tool_log = v["tool_log"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
-            let cancelled = v["cancelled"].as_bool().unwrap_or(false);
-
-            log::info!(
-                "[DelegateAgent] Agent「{}」完成，迭代{}次，结果长度: {}，cancelled: {}",
-                agent_name,
-                iterations,
-                answer.len(),
-                cancelled
-            );
-
-            // ★ 取消透传：子Agent被取消时，向主Agent传播取消状态
-            if cancelled {
-                return make_cancelled(&agent_name, answer, iterations);
+            match crate::services::agent_workflow::output_class::classify_delegate_output(&v) {
+                // ★ 取消透传：子Agent被取消时，向主Agent传播取消状态
+                "cancelled" => {
+                    log::info!("[DelegateAgent] Agent「{}」被取消，迭代{}次", agent_name, iterations);
+                    make_cancelled(&agent_name, answer, iterations)
+                }
+                // ★ 子链硬失败（LLM 调用失败信封）：必须走错误通道——
+                //   曾被当正常产出包装成 completed，错误文本以成品身份直出给用户
+                "failed" => {
+                    log::error!("[DelegateAgent] Agent「{}」子链失败: {:.100}", agent_name, answer);
+                    make_error(&format!("Agent「{}」执行失败：{}", agent_name, if answer.is_empty() { "无产出" } else { answer }))
+                }
+                _ => {
+                    log::info!(
+                        "[DelegateAgent] Agent「{}」完成，迭代{}次，结果长度: {}",
+                        agent_name,
+                        iterations,
+                        answer.len()
+                    );
+                    make_success(&agent_name, answer, iterations, tool_log)
+                }
             }
-
-            make_success(&agent_name, answer, iterations, tool_log, out_class)
         }
         Err(e) => {
             log::error!("[DelegateAgent] Agent「{}」执行失败: {}", agent_name, e);
@@ -251,7 +258,6 @@ fn build_directive(
     context: Option<&Value>,
     expected_output: &str,
     allowed_tools: &[String],
-    out_class: crate::services::agent_workflow::output_class::OutputClass,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -295,8 +301,8 @@ fn build_directive(
         parts.push(format!("【期望输出格式】{}", expected_output));
     }
 
-    // 6. 执行协议（运行时统一注入；文本按 OutputClass 取用）
-    parts.push(out_class.directive_protocol().to_string());
+    // 6. 执行协议（运行时统一注入；类型合并后单一无分支协议）
+    parts.push(crate::services::agent_workflow::output_class::DELEGATE_PROTOCOL.to_string());
 
     parts.join("\n\n")
 }
@@ -463,7 +469,7 @@ pub(crate) fn collect_reports(tool_log: &[Value]) -> (Vec<String>, Vec<Value>) {
     (gaps, confs)
 }
 
-fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value], out_class: crate::services::agent_workflow::output_class::OutputClass) -> String {
+fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value]) -> String {
     let artifacts = extract_artifacts(tool_log);
 
     // ★ warnings：收集失败的工具结果（上报 ack 无业务副作用，不参与失败判定）
@@ -492,7 +498,7 @@ fn make_success(agent_id: &str, answer: &str, iterations: i64, tool_log: &[Value
     // ★ 唯一通道：ext_tool_report 结构化上报（文字标记解析层已删除——协议禁止且系统不再消费）
     let (rep_gaps, rep_confs) = collect_reports(tool_log);
     let (result_text, status, effective_missing, confirmations) =
-        out_class.finalize(answer.to_string(), &rep_gaps, &rep_confs, any_failed, !artifacts.is_empty());
+        crate::services::agent_workflow::output_class::finalize_delegate_output(answer.to_string(), &rep_gaps, &rep_confs, any_failed, !artifacts.is_empty());
 
     let preview: String = result_text.chars().take(200).collect();
     let status_label = match status { "partial" => "部分完成", "failed" => "执行失败", _ => "已完成任务" };
@@ -598,7 +604,7 @@ mod tests {
     fn directive_contains_required_sections() {
         let ctx = json!({"product_ids": ["P-1"]});
         let allowed = vec!["ext_tool_write_document".to_string()];
-        let d = build_directive("document_writer", "文档助手", "你是转换器", "把定稿转为 Word", Some(&ctx), "review", &allowed, crate::services::agent_workflow::output_class::OutputClass::Natural);
+        let d = build_directive("document_writer", "文档助手", "你是转换器", "把定稿转为 Word", Some(&ctx), "review", &allowed);
         assert!(d.contains("专精执行体"));
         assert!(d.contains("【职责与边界】你是转换器"));
         assert!(d.contains("【执行任务】把定稿转为 Word"));
@@ -608,26 +614,27 @@ mod tests {
         assert!(d.contains("没有委托能力"));
         // 结构化上报协议：缺口/确认走 ext_tool_report，禁止文字标记暗号与"先向用户确认"死路
         assert!(d.contains("「缺口与确认上报」登记确认事项（附候选）"));
-        assert!(d.contains("不要在正文里写 MISSING:/NEED_USER: 等文字标记"));
+        assert!(d.contains("不要在正文写 MISSING:/NEED_USER: 等状态文字标记"));
         assert!(d.contains("完全同名由工具层自动复用"));
         assert!(!d.contains("先向用户确认"), "子 Agent 无提问用户通道，不应再出现该指令");
         // 无业务工具不再由 directive 教学（执行入口框架短路），此处仅验清单结构恒在
-        let d2 = build_directive("x", "y", "p", "t", None, "", &[], crate::services::agent_workflow::output_class::OutputClass::Natural);
+        let d2 = build_directive("x", "y", "p", "t", None, "", &[]);
         assert!(d2.contains("【可用工具清单】"));
         assert!(!d2.contains("MISSING: 当前 Agent 未配置任何工具"), "文字标记教学已物理删除");
     }
 
-    /// 交付型指令：回答即交付文档、上报走 ext_tool_report、协议优先于角色提示词
+    /// 统一执行协议：交付成文 + 上报通道 + 查重条款（类型合并后所有子 Agent 同一份）
     #[test]
-    fn directive_deliverable_protocol() {
+    fn directive_unified_protocol() {
         let allowed = vec!["ext_tool_object".to_string()];
-        let d = build_directive("solution", "解决方案助手", "p", "t", None, "", &allowed, crate::services::agent_workflow::output_class::OutputClass::Deliverable);
-        assert!(d.contains("执行协议（交付型产出）"));
-        assert!(d.contains("你的回答就是最终交付文档"));
+        let d = build_directive("solution", "解决方案助手", "p", "t", None, "", &allowed);
+        assert!(d.contains("执行协议（委托产出）"));
+        assert!(d.contains("合格的单委托正文将由系统原样直出交付"));
         assert!(d.contains("不要在正文写 MISSING:/NEED_USER: 等状态文字标记"));
-        assert!(d.contains("缺口与确认上报"), "交付型确认/缺口须有结构上报通道");
+        assert!(d.contains("缺口与确认上报"), "确认/缺口须有结构上报通道");
         assert!(d.contains("系统会自动转为交互卡片"), "确认事项框架自动发卡");
         assert!(d.contains("本协议优先于角色提示词"));
+        assert!(d.contains("完全同名由工具层自动复用"), "查重条款须在统一协议内");
         assert!(!d.contains("单起一行输出"), "不得再教学文字标记格式");
     }
 
@@ -685,7 +692,7 @@ mod tests {
     #[test]
     fn directive_lists_allowed_tools_explicitly() {
         let allowed = vec!["ext_tool_object".to_string(), "ext_tool_manage_todo".to_string()];
-        let d = build_directive("business", "业务助手", "p", "t", None, "", &allowed, crate::services::agent_workflow::output_class::OutputClass::Natural);
+        let d = build_directive("business", "业务助手", "p", "t", None, "", &allowed);
         assert!(d.contains("【可用工具清单】"));
         assert!(d.contains("ext_tool_object、ext_tool_manage_todo"));
         assert!(!d.contains("ext_tool_delegate_agent"));

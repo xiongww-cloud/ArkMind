@@ -1689,7 +1689,6 @@ export interface AgentProfile {
   system_prompt: string
   max_iterations: number
   can_delegate: number
-  output_format: string
   status: string
   is_builtin: number
   preset_tools: string | string[]
@@ -1725,7 +1724,6 @@ export async function createAgentProfile(data: {
   routing_hint?: string
   system_prompt?: string
   max_iterations?: number
-  output_format?: string
   model?: string
   temperature?: number | null
   tools?: string[]
@@ -1742,7 +1740,6 @@ export async function updateAgentProfile(
     routing_hint?: string
     system_prompt?: string
     max_iterations?: number
-    output_format?: string
     status?: string
     model?: string
     temperature?: number | null
@@ -1773,10 +1770,4 @@ export async function assignAgentTools(
 /** 重置内置 Agent 到默认配置 */
 export async function resetAgentProfile(id: string): Promise<void> {
   return invoke('agent_profile_reset', { id })
-}
-
-/** 产出方式注册表（设置页下拉数据源，Rust OutputClass 枚举驱动） */
-export interface OutputFormatOption { key: string; label: string; desc: string }
-export async function fetchAgentOutputFormats(): Promise<OutputFormatOption[]> {
-  return invoke('agent_output_formats')
 }
