@@ -48,8 +48,11 @@ const allDone = () => !!agentRun.plan && agentRun.plan.steps.length > 0 && doneC
         <div v-for="(st, i) in agentRun.plan.steps" :key="i" class="flex items-center gap-2 text-[11px] leading-snug">
           <span v-if="st.state === 'pending'" class="w-3.5 h-3.5 flex items-center justify-center flex-shrink-0"><span class="w-2 h-2 rounded-full border border-surface-300"></span></span>
           <span v-else-if="st.state === 'active'" class="w-3.5 h-3.5 flex items-center justify-center flex-shrink-0"><span class="w-2.5 h-2.5 rounded-full bg-brand-500/25 border-2 border-brand-600 animate-pulse"></span></span>
-          <span v-else class="w-3.5 h-3.5 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center flex-shrink-0">
+          <span v-else-if="st.state === 'done'" class="w-3.5 h-3.5 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center flex-shrink-0">
             <svg class="w-2 h-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+          </span>
+          <span v-else class="w-3.5 h-3.5 rounded-full bg-red-100 text-red-500 flex items-center justify-center flex-shrink-0">
+            <svg class="w-2 h-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M6 6l12 12M6 18L18 6"/></svg>
           </span>
           <span class="min-w-0 truncate" :class="st.state === 'done' ? 'text-surface-400 line-through decoration-surface-300' : st.state === 'active' ? 'text-surface-800 font-medium' : 'text-surface-600'">{{ st.title }}</span>
           <span v-if="st.agent" class="text-[9px] px-1.5 py-[1px] rounded-full bg-surface-100 text-surface-500 flex-shrink-0 ml-auto max-w-[90px] truncate">{{ st.agent }}</span>

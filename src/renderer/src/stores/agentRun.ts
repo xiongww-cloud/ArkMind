@@ -5,7 +5,7 @@ import { listen } from '@tauri-apps/api/event'
  *  主窗 AgentChat 与浮窗 ChatWindow 在各自入口分别注册监听）。
  *  ★ 并发安全：tauri 事件全窗口广播，所有 agent:* payload 带 sid（归属会话）；
  *  本窗口只应用与 runSid（当前运行会话）匹配的事件，并行会话互不串扰。 */
-export interface PlanStepLive { title: string; agent: string; state: 'pending' | 'active' | 'done' }
+export interface PlanStepLive { title: string; agent: string; state: 'pending' | 'active' | 'done' | 'failed' }
 export interface PlanState { title: string; steps: PlanStepLive[] }
 
 export interface AgentRunState {
