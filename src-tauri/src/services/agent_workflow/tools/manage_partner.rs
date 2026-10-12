@@ -54,12 +54,12 @@ pub(crate) fn execute(a: &Value) -> String {
                                                         &[json!(eid), json!(pid), json!(ptype.to_uppercase())],
                                                     ).ok();
                                                     crate::services::business_relations::resync_partner_edges(eid);
-                                                    linked = format!("，并已关联到项目 {}", pid);
+                                                    linked = format!("，并已关联到项目 {}", super::entity_ref::fmt("PROJECT", pid));
                                                 }
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"success": true, "id": eid, "type": ptype.to_uppercase(), "name": name, "duplicate": true}),
-                                                    summary: Some(format!("已存在{}「{}」，ID: {}，已复用，未重复创建。{}", ptype.to_uppercase(), name, eid, linked)),
+                                                    data: json!({"success": true, "id": super::entity_ref::fmt(&ptype.to_uppercase(), eid), "type": ptype.to_uppercase(), "name": name, "duplicate": true}),
+                                                    summary: Some(format!("已存在{}「{}」，ID: {}，已复用，未重复创建。{}", ptype.to_uppercase(), name, super::entity_ref::fmt(&ptype.to_uppercase(), eid), linked)),
                                                 };
                                                 return envelope.to_json();
                                             }
@@ -80,8 +80,8 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let id = result["id"].as_str().unwrap_or("");
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"success": true, "id": id, "type": ptype.to_uppercase(), "name": name}),
-                                                    summary: Some(format!("已创建{}「{}」，ID: {}", ptype.to_uppercase(), name, id)),
+                                                    data: json!({"success": true, "id": super::entity_ref::fmt(&ptype.to_uppercase(), id), "type": ptype.to_uppercase(), "name": name}),
+                                                    summary: Some(format!("已创建{}「{}」，ID: {}", ptype.to_uppercase(), name, super::entity_ref::fmt(&ptype.to_uppercase(), id))),
                                                 };
                                                 envelope.to_json()
                                             },
@@ -118,6 +118,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                         envelope.to_json()
                                     }
                                     else {
+                                        let ptype = database::get("SELECT type FROM partners WHERE id=?1", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(|s| s.to_uppercase())).unwrap_or_else(|| "CHANNEL".into());
                                         let mut data = json!({"id": &partner_id});
                                         if let Some(v) = a["name"].as_str().filter(|s| !s.is_empty()) { data["name"] = json!(v); }
                                         if let Some(v) = a["phone"].as_str().filter(|s| !s.is_empty()) { data["phone"] = json!(v); }
@@ -126,7 +127,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                         if data.as_object().map_or(true, |m| m.len() <= 1) {
                                             let envelope = ToolResultEnvelope {
                                                 result_type: "object_update_result".to_string(),
-                                                data: json!({"success": false, "id": &partner_id, "error": "未提供任何更新字段"}),
+                                                data: json!({"success": false, "id": super::entity_ref::fmt(&ptype, &partner_id), "error": "未提供任何更新字段"}),
                                                 summary: Some("未提供任何更新字段。".to_string()),
                                             };
                                             envelope.to_json()
@@ -141,7 +142,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let display_name = if partner_name.is_empty() { partner_id.clone() } else { partner_name };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_update_result".to_string(),
-                                                    data: json!({"success": true, "id": &partner_id}),
+                                                    data: json!({"success": true, "id": super::entity_ref::fmt(&ptype, &partner_id)}),
                                                     summary: Some(format!("已更新合作伙伴「{}」", display_name)),
                                                 };
                                                 envelope.to_json()
@@ -149,7 +150,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Err(e) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_update_result".to_string(),
-                                                    data: json!({"success": false, "id": &partner_id, "error": e.to_string()}),
+                                                    data: json!({"success": false, "id": super::entity_ref::fmt(&ptype, &partner_id), "error": e.to_string()}),
                                                     summary: Some(format!("更新失败: {}", e)),
                                                 };
                                                 envelope.to_json()
@@ -181,16 +182,17 @@ pub(crate) fn execute(a: &Value) -> String {
                                     }
                                     else {
                                         // 使用 block_on 调用异步函数
+                                        let ptype = database::get("SELECT type FROM partners WHERE id=?1", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(|s| s.to_uppercase())).unwrap_or_else(|| "CHANNEL".into());
+                                        let partner_name = database::get(
+                                            "SELECT name FROM partners WHERE id=?1",
+                                            &[json!(&partner_id)],
+                                        ).ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default();
+                                        let display_name = if partner_name.is_empty() { partner_id.clone() } else { partner_name };
                                         match block_on_async(crate::commands::partner_commands::partner_delete(partner_id.clone())) {
                                             Ok(_) => {
-                                                let partner_name = database::get(
-                                                    "SELECT name FROM partners WHERE id=?1",
-                                                    &[json!(&partner_id)],
-                                                ).ok().flatten().and_then(|r| r["name"].as_str().map(String::from)).unwrap_or_default();
-                                                let display_name = if partner_name.is_empty() { partner_id.clone() } else { partner_name };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_delete_result".to_string(),
-                                                    data: json!({"success": true, "id": &partner_id}),
+                                                    data: json!({"success": true, "id": super::entity_ref::fmt(&ptype, &partner_id)}),
                                                     summary: Some(format!("已删除合作伙伴「{}」", display_name)),
                                                 };
                                                 envelope.to_json()
@@ -198,7 +200,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Err(e) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_delete_result".to_string(),
-                                                    data: json!({"success": false, "id": &partner_id, "error": e.to_string()}),
+                                                    data: json!({"success": false, "id": super::entity_ref::fmt(&ptype, &partner_id), "error": e.to_string()}),
                                                     summary: Some(format!("删除失败: {}", e)),
                                                 };
                                                 envelope.to_json()
@@ -257,6 +259,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             None => None,
                                         };
                                         let remark = a["remark"].as_str().map(|s| s.to_string());
+                                        let ptype = database::get("SELECT type FROM partners WHERE id=?1", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(|s| s.to_uppercase())).unwrap_or_else(|| "CHANNEL".into());
                                         // 使用 block_on 调用异步函数
                                         match block_on_async(crate::commands::partner_commands::partner_link_project(
                                             partner_id.clone(),
@@ -267,7 +270,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Ok(_) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "partner_link_result".to_string(),
-                                                    data: json!({"partner_id": partner_id, "project_id": project_id, "success": true}),
+                                                    data: json!({"partner_id": super::entity_ref::fmt(&ptype, &partner_id), "project_id": super::entity_ref::fmt("PROJECT", &project_id), "success": true}),
                                                     summary: Some("已将合作伙伴关联到项目".to_string()),
                                                 };
                                                 envelope.to_json()
@@ -318,6 +321,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 return envelope.to_json();
                                             }
                                         };
+                                        let ptype = database::get("SELECT type FROM partners WHERE id=?1", &[json!(&partner_id)]).ok().flatten().and_then(|r| r["type"].as_str().map(|s| s.to_uppercase())).unwrap_or_else(|| "CHANNEL".into());
                                         let existed = database::get(
                                             "SELECT 1 FROM partner_project_mapping WHERE partner_id=?1 AND project_id=?2",
                                             &[json!(&partner_id), json!(&project_id)],
@@ -330,7 +334,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Ok(_) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "partner_unlink_result".to_string(),
-                                                    data: json!({"partner_id": partner_id, "project_id": project_id, "success": true}),
+                                                    data: json!({"partner_id": super::entity_ref::fmt(&ptype, &partner_id), "project_id": super::entity_ref::fmt("PROJECT", &project_id), "success": true}),
                                                     summary: Some(if existed { "已取消合作伙伴与项目的关联".to_string() } else { "未找到对应关联记录（可能已不存在，或与建立时的项目标识不一致）。".to_string() }),
                                                 };
                                                 envelope.to_json()

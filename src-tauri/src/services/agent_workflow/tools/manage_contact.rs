@@ -83,13 +83,13 @@ pub(crate) fn execute(a: &Value) -> String {
                                                     }
                                                 }
                                                 let summary = if is_dup {
-                                                    format!("已存在同名联系人「{}」，ID: {}，已复用，未重复创建。", name, id)
+                                                    format!("已存在同名联系人「{}」，ID: {}，已复用，未重复创建。", name, super::entity_ref::fmt("CONTACT", id))
                                                 } else {
-                                                    format!("已创建联系人「{}」，ID: {}", name, id)
+                                                    format!("已创建联系人「{}」，ID: {}", name, super::entity_ref::fmt("CONTACT", id))
                                                 };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"success": true, "id": id, "type": "CONTACT", "name": name, "duplicate": is_dup}),
+                                                    data: json!({"success": true, "id": super::entity_ref::fmt("CONTACT", id), "type": "CONTACT", "name": name, "duplicate": is_dup}),
                                                     summary: Some(summary),
                                                 };
                                                 envelope.to_json()
@@ -238,7 +238,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Ok(_) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "contact_link_result".to_string(),
-                                                    data: json!({"contact_id": contact_id, "project_id": project_id, "success": true}),
+                                                    data: json!({"contact_id": super::entity_ref::fmt("CONTACT", &contact_id), "project_id": super::entity_ref::fmt("PROJECT", &project_id), "success": true}),
                                                     summary: Some("已将联系人关联到项目".to_string()),
                                                 };
                                                 envelope.to_json()
@@ -301,7 +301,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Ok(_) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "contact_unlink_result".to_string(),
-                                                    data: json!({"contact_id": contact_id, "project_id": project_id, "success": true}),
+                                                    data: json!({"contact_id": super::entity_ref::fmt("CONTACT", &contact_id), "project_id": super::entity_ref::fmt("PROJECT", &project_id), "success": true}),
                                                     summary: Some(if existed { "已取消联系人与项目的关联".to_string() } else { "未找到对应关联记录（可能已不存在，或与建立时的项目标识不一致）。".to_string() }),
                                                 };
                                                 envelope.to_json()

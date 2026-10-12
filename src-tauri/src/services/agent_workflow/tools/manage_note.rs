@@ -3,7 +3,8 @@
 use crate::database;
 use serde_json::json;
 use crate::services::agent_workflow::*;
-use super::common::resolve_project_id;
+use super::common::{resolve_project_id, normalize_ref};
+use super::entity_ref::fmt;
 
 /// 笔记本匹配：空=未归类；按 ID 精确 → 名称精确 → 名称唯一模糊；查无/多匹配返回 Err（不自动建笔记本）
 fn match_notebook(input: &str) -> Result<Option<(String, String)>, String> {
@@ -67,6 +68,7 @@ pub(crate) fn normalize_note_content(title: &str, content: &str) -> (String, Str
 pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, note_id: &str, notebook: &str, project_id: &str) -> String {
     // 通过 note_id 或标题模糊匹配查找笔记（仅限未删除）
     let find_note = |nid: &str, t: &str| -> Option<(String, String)> {
+        let nid = normalize_ref(nid, &["NOTE"]).unwrap_or_else(|_| nid.trim().to_string());
         if !nid.trim().is_empty() {
             let clean = nid.trim().strip_prefix("NOTE-").unwrap_or(nid.trim());
             database::get("SELECT note_id, title FROM notes WHERE note_id=?1 AND deleted_at IS NULL", &[json!(clean)])
@@ -106,15 +108,15 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
                         if econtent == content.trim() || content.trim().is_empty() {
                             let envelope = ToolResultEnvelope {
                                 result_type: "object_create_result".to_string(),
-                                data: json!({"success": true, "id": eid, "type": "NOTE", "name": title.trim(), "duplicate": true}),
-                                summary: Some(format!("已存在同名笔记「{}」，ID: {}，内容一致已复用，未重复创建。", title.trim(), eid)),
+                                data: json!({"success": true, "id": fmt("NOTE", &eid), "type": "NOTE", "name": title.trim(), "duplicate": true}),
+                                summary: Some(format!("已存在同名笔记「{}」，ID: {}，内容一致已复用，未重复创建。", title.trim(), fmt("NOTE", &eid))),
                             };
                             return envelope.to_json();
                         } else {
                             let envelope = ToolResultEnvelope {
                                 result_type: "object_create_result".to_string(),
-                                data: json!({"success": false, "id": eid, "type": "NOTE", "duplicate_conflict": true, "error": "同名笔记已存在且内容不同"}),
-                                summary: Some(format!("已存在同名笔记「{}」（ID: {}）但内容不同，未创建。如需修改已有笔记请用 update（传 note_id），如需新建请换一个标题。", title.trim(), eid)),
+                                data: json!({"success": false, "id": fmt("NOTE", &eid), "type": "NOTE", "duplicate_conflict": true, "error": "同名笔记已存在且内容不同"}),
+                                summary: Some(format!("已存在同名笔记「{}」（ID: {}）但内容不同，未创建。如需修改已有笔记请用 update（传 note_id），如需新建请换一个标题。", title.trim(), fmt("NOTE", &eid))),
                             };
                             return envelope.to_json();
                         }
@@ -136,12 +138,12 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
             match block_on_async(crate::commands::notes_commands::notes_create(data)) {
                 Ok(created) => {
                     let nid = created["noteId"].as_str().unwrap_or("");
-                    let mut summary = format!("已创建笔记「{}」，ID: {}", title.trim(), nid);
+                    let mut summary = format!("已创建笔记「{}」，ID: {}", title.trim(), fmt("NOTE", nid));
                     if let Some((_, ref nbname)) = nb { summary.push_str(&format!("（笔记本：{}）", nbname)); }
                     else { summary.push_str("（未归类，可在全部笔记视图查看）"); }
                     ToolResultEnvelope {
                         result_type: "object_create_result".to_string(),
-                        data: json!({"success": true, "id": nid, "type": "NOTE", "name": title.trim()}),
+                        data: json!({"success": true, "id": fmt("NOTE", nid), "type": "NOTE", "name": title.trim()}),
                         summary: Some(summary),
                     }.to_json()
                 }
@@ -179,7 +181,7 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
                             if !nbname.is_empty() { summary.push_str(&format!("，已移动到笔记本「{}」", nbname)); }
                             ToolResultEnvelope {
                                 result_type: "object_update_result".to_string(),
-                                data: json!({"success": true, "id": fid, "type": "NOTE", "name": ftitle}),
+                                data: json!({"success": true, "id": fmt("NOTE", &fid), "type": "NOTE", "name": ftitle}),
                                 summary: Some(summary),
                             }.to_json()
                         }
@@ -210,7 +212,7 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
                     let notebooks = result["notebooks"].as_array().cloned().unwrap_or_default();
                     let items: Vec<Value> = notebooks.iter().map(|nb| {
                         json!({
-                            "id": nb["id"].as_str().unwrap_or(""),
+                            "id": fmt("NOTEBOOK", nb["id"].as_str().unwrap_or("")),
                             "name": nb["name"].as_str().unwrap_or("未命名"),
                             "color": nb["color"].as_str().unwrap_or("")
                         })
@@ -238,8 +240,8 @@ pub(crate) fn ext_tool_manage_note(action: &str, title: &str, content: &str, not
                     let nname = nb["name"].as_str().unwrap_or(title.trim());
                     ToolResultEnvelope {
                         result_type: "object_create_result".to_string(),
-                        data: json!({"success": true, "id": nid, "name": nname}),
-                        summary: Some(format!("已创建笔记本「{}」，ID: {}", nname, nid)),
+                        data: json!({"success": true, "id": fmt("NOTEBOOK", nid), "name": nname}),
+                        summary: Some(format!("已创建笔记本「{}」，ID: {}", nname, fmt("NOTEBOOK", nid))),
                     }.to_json()
                 }
                 Err(e) => fail(format!("创建笔记本失败: {}", e)),

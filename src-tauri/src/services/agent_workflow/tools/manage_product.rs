@@ -9,6 +9,7 @@ pub(crate) fn ext_tool_manage_product(a: &Value) -> String {
 
     // 辅助：按 UUID 或名称查找产品
     let find_product = |pid: &str, pname: &str| -> Option<(String, String)> {
+        let pid = super::common::normalize_ref(pid, &["PRODUCT"]).unwrap_or_else(|_| pid.trim().to_string());
         if !pid.trim().is_empty() {
             let clean_id = pid.trim().strip_prefix("PRODUCT-").unwrap_or(pid.trim());
             database::get("SELECT id,name FROM products WHERE id=?1", &[json!(clean_id)])
@@ -60,8 +61,8 @@ pub(crate) fn ext_tool_manage_product(a: &Value) -> String {
                     let pname = created["name"].as_str().unwrap_or("");
                     let envelope = ToolResultEnvelope {
                         result_type: "object_create_result".to_string(),
-                        data: json!({"success": true, "id": pid, "name": pname}),
-                        summary: Some(format!("已创建产品「{}」，ID: {}", pname, pid)),
+                        data: json!({"success": true, "id": super::entity_ref::fmt("PRODUCT", pid), "name": pname}),
+                        summary: Some(format!("已创建产品「{}」，ID: {}", pname, super::entity_ref::fmt("PRODUCT", pid))),
                     };
                     envelope.to_json()
                 }
@@ -101,7 +102,7 @@ pub(crate) fn ext_tool_manage_product(a: &Value) -> String {
                         Ok(_) => {
                             let envelope = ToolResultEnvelope {
                                 result_type: "object_update_result".to_string(),
-                                data: json!({"success": true, "id": fid}),
+                                data: json!({"success": true, "id": super::entity_ref::fmt("PRODUCT", &fid)}),
                                 summary: Some("产品已更新。".to_string()),
                             };
                             envelope.to_json()

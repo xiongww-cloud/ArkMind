@@ -53,7 +53,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             if !eid.is_empty() {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"success": true, "id": eid, "type": "PROJECT", "name": name, "duplicate": true}),
+                                                    data: json!({"success": true, "id": super::entity_ref::fmt("PROJECT", eid), "type": "PROJECT", "name": name, "duplicate": true}),
                                                     summary: Some(format!("已存在同名项目「{}」，ID: {}，已复用，未重复创建。", name, eid)),
                                                 };
                                                 return envelope.to_json();
@@ -79,7 +79,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let pid = project["id"].as_str().unwrap_or("");
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_create_result".to_string(),
-                                                    data: json!({"success": true, "id": pid, "type": "PROJECT", "name": name}),
+                                                    data: json!({"success": true, "id": super::entity_ref::fmt("PROJECT", pid), "type": "PROJECT", "name": name}),
                                                     summary: Some(if bid_dropped {
                                                         format!("已创建项目「{}」，ID: {}。注意：bid_time 已忽略——投标时间仅在 status=Bidding（投标）时生效", name, pid)
                                                     } else {
@@ -120,7 +120,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                         if data.as_object().map_or(true, |m| m.is_empty()) {
                                             let envelope = ToolResultEnvelope {
                                                 result_type: "object_update_result".to_string(),
-                                                data: json!({"success": false, "id": project_id, "error": "未提供任何更新字段"}),
+                                                data: json!({"success": false, "id": super::entity_ref::fmt("PROJECT", &project_id), "error": "未提供任何更新字段"}),
                                                 summary: Some("未提供任何更新字段。".to_string()),
                                             };
                                             envelope.to_json()
@@ -135,7 +135,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                     let display_name = if project_name.is_empty() { project_id.to_string() } else { project_name };
                                                     let envelope = ToolResultEnvelope {
                                                         result_type: "object_update_result".to_string(),
-                                                        data: json!({"success": true, "id": project_id}),
+                                                        data: json!({"success": true, "id": super::entity_ref::fmt("PROJECT", &project_id)}),
                                                         summary: Some(format!("已更新项目「{}」", display_name)),
                                                     };
                                                     envelope.to_json()
@@ -143,7 +143,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 Err(e) => {
                                                     let envelope = ToolResultEnvelope {
                                                         result_type: "object_update_result".to_string(),
-                                                        data: json!({"success": false, "id": project_id, "error": e.to_string()}),
+                                                        data: json!({"success": false, "id": super::entity_ref::fmt("PROJECT", &project_id), "error": e.to_string()}),
                                                         summary: Some(format!("更新项目失败: {}", e)),
                                                     };
                                                     envelope.to_json()
@@ -174,7 +174,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let display_name = if project_name.is_empty() { project_id.to_string() } else { project_name };
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_delete_result".to_string(),
-                                                    data: json!({"success": true, "id": project_id}),
+                                                    data: json!({"success": true, "id": super::entity_ref::fmt("PROJECT", &project_id)}),
                                                     summary: Some(format!("已删除项目「{}」", display_name)),
                                                 };
                                                 envelope.to_json()
@@ -182,7 +182,7 @@ pub(crate) fn execute(a: &Value) -> String {
                                             Err(e) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "object_delete_result".to_string(),
-                                                    data: json!({"success": false, "id": project_id, "error": e.to_string()}),
+                                                    data: json!({"success": false, "id": super::entity_ref::fmt("PROJECT", &project_id), "error": e.to_string()}),
                                                     summary: Some(format!("删除项目失败: {}", e)),
                                                 };
                                                 envelope.to_json()

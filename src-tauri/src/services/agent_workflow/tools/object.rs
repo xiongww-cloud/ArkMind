@@ -385,7 +385,7 @@ pub(crate) fn format_catalog_row(entity: &str, row: &Value) -> String {
             s
         }
         "CHANNEL" | "VENDOR" | "CUSTOMER" => {
-            let mut s = format!("[{}] {} | {}", upper, row["name"].as_str().unwrap_or(""), row["id"].as_str().unwrap_or(""));
+            let mut s = format!("[{}] {} | {}", upper, row["name"].as_str().unwrap_or(""), super::entity_ref::fmt(&upper, row["id"].as_str().unwrap_or("")));
             if let Some(phone) = row["phone"].as_str().filter(|s| !s.is_empty()) { s.push_str(&format!(" | 电话: {}", phone)); }
             if let Some(cp) = row["contact_person"].as_str().filter(|s| !s.is_empty()) { s.push_str(&format!(" | 联系人: {}", cp)); }
             s
@@ -396,7 +396,7 @@ pub(crate) fn format_catalog_row(entity: &str, row: &Value) -> String {
             if let Some(nb) = row["notebook_name"].as_str().filter(|s| !s.is_empty()) { s.push_str(&format!(" | 笔记本: {}", nb)); }
             s
         }
-        _ => format!("[{}] {}", upper, row["id"].as_str().unwrap_or("")),
+        _ => format!("[{}] {}", upper, super::entity_ref::fmt(&upper, row["id"].as_str().unwrap_or(""))),
     }
 }
 

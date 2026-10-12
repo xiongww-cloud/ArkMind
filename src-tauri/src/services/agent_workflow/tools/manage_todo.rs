@@ -3,6 +3,7 @@
 use crate::database;
 use serde_json::json;
 use crate::services::agent_workflow::*;
+use super::entity_ref::fmt;
 
 pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, priority: &str, due_date: &str, repeat: &str, project_id: &str, done: Option<bool>, todo_id: &str) -> String {
     let normalize_pri = crate::commands::todo_commands::normalize_todo_priority;
@@ -38,7 +39,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                 if !eid.is_empty() {
                     let envelope = ToolResultEnvelope {
                         result_type: "object_create_result".to_string(),
-                        data: json!({"success": true, "id": eid, "type": "TODO", "name": etitle, "duplicate": true}),
+                        data: json!({"success": true, "id": fmt("TODO", &eid), "type": "TODO", "name": etitle, "duplicate": true}),
                         summary: Some(format!("已存在同名待办「{}」，ID: {}，已复用，未重复创建。", etitle, eid)),
                     };
                     return envelope.to_json();
@@ -67,7 +68,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                     }
                     let envelope = ToolResultEnvelope {
                         result_type: "object_create_result".to_string(),
-                        data: json!({"success": true, "id": todo_id, "type": "TODO", "name": todo_title}),
+                        data: json!({"success": true, "id": fmt("TODO", todo_id), "type": "TODO", "name": todo_title}),
                         summary: Some(format!("已创建待办「{}」，ID: {}", todo_title, todo_id)),
                     };
                     envelope.to_json()
@@ -99,7 +100,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                     if data.as_object().map_or(true, |m| m.is_empty()) {
                         let envelope = ToolResultEnvelope {
                             result_type: "object_update_result".to_string(),
-                            data: json!({"success": false, "id": fid, "error": "更新待办需要提供要修改的字段"}),
+                            data: json!({"success": false, "id": fmt("TODO", &fid), "error": "更新待办需要提供要修改的字段"}),
                             summary: Some("更新待办需要提供要修改的字段。".to_string()),
                         };
                         return envelope.to_json();
@@ -110,7 +111,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                             // 派生边由 todos_update 内部 resync
                             let envelope = ToolResultEnvelope {
                                 result_type: "object_update_result".to_string(),
-                                data: json!({"success": true, "id": fid, "type": "TODO", "name": ftitle}),
+                                data: json!({"success": true, "id": fmt("TODO", &fid), "type": "TODO", "name": ftitle}),
                                 summary: Some(format!("已更新待办「{}」", ftitle)),
                             };
                             envelope.to_json()
@@ -118,7 +119,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                         Err(e) => {
                             let envelope = ToolResultEnvelope {
                                 result_type: "object_update_result".to_string(),
-                                data: json!({"success": false, "id": fid, "error": e.to_string()}),
+                                data: json!({"success": false, "id": fmt("TODO", &fid), "error": e.to_string()}),
                                 summary: Some(format!("更新待办失败: {}", e)),
                             };
                             envelope.to_json()
@@ -144,7 +145,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                         Ok(_) => {
                             let envelope = ToolResultEnvelope {
                                 result_type: "object_delete_result".to_string(),
-                                data: json!({"success": true, "id": fid, "type": "TODO", "name": ftitle}),
+                                data: json!({"success": true, "id": fmt("TODO", &fid), "type": "TODO", "name": ftitle}),
                                 summary: Some(format!("已删除待办「{}」", ftitle)),
                             };
                             envelope.to_json()
@@ -152,7 +153,7 @@ pub(crate) fn ext_tool_manage_todo(action: &str, title: &str, content: &str, pri
                         Err(e) => {
                             let envelope = ToolResultEnvelope {
                                 result_type: "object_delete_result".to_string(),
-                                data: json!({"success": false, "id": fid, "error": e.to_string()}),
+                                data: json!({"success": false, "id": fmt("TODO", &fid), "error": e.to_string()}),
                                 summary: Some(format!("删除待办失败: {}", e)),
                             };
                             envelope.to_json()

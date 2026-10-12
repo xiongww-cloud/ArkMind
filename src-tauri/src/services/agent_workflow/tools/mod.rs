@@ -114,7 +114,7 @@ mod dedup_tests {
         assert_eq!(v["result_type"], "object_create_result");
         assert_eq!(v["data"]["success"], true);
         assert_eq!(v["data"]["duplicate"], true);
-        assert_eq!(v["data"]["id"], "T1");
+        assert_eq!(v["data"]["id"], "TODO-T1");
         let summary = v["summary"].as_str().unwrap();
         assert!(summary.contains("已复用"), "summary={}", summary);
         // 未新增行
@@ -137,7 +137,7 @@ mod dedup_tests {
         let v = envelope(&res);
         assert_eq!(v["data"]["success"], true);
         assert_eq!(v["data"]["duplicate"], true);
-        assert_eq!(v["data"]["id"], "N1");
+        assert_eq!(v["data"]["id"], "NOTE-N1");
         // 同名+不同内容 → 拒绝并给出已有 ID（防新内容静默丢失）
         let res2 = super::manage_note::ext_tool_manage_note(
             "create", "周报", "另一份正文", "", "", "",
@@ -145,7 +145,7 @@ mod dedup_tests {
         let v2 = envelope(&res2);
         assert_eq!(v2["data"]["success"], false);
         assert_eq!(v2["data"]["duplicate_conflict"], true);
-        assert_eq!(v2["data"]["id"], "N1");
+        assert_eq!(v2["data"]["id"], "NOTE-N1");
         let s2 = v2["summary"].as_str().unwrap();
         assert!(s2.contains("update"), "应引导 update: {}", s2);
         // 未新增行
@@ -167,7 +167,7 @@ mod dedup_tests {
         let v = envelope(&res);
         assert_eq!(v["data"]["success"], true);
         assert_eq!(v["data"]["duplicate"], true);
-        assert_eq!(v["data"]["id"], "P1");
+        assert_eq!(v["data"]["id"], "VENDOR-P1");
         let count: i64 = database::get("SELECT COUNT(*) AS c FROM partners", &[])
             .unwrap().unwrap()["c"].as_i64().unwrap();
         assert_eq!(count, 1);
@@ -186,7 +186,7 @@ mod dedup_tests {
         let v = envelope(&res);
         assert_eq!(v["data"]["success"], true);
         assert_eq!(v["data"]["duplicate"], true);
-        assert_eq!(v["data"]["id"], "PJ1");
+        assert_eq!(v["data"]["id"], "PROJECT-PJ1");
         let count: i64 = database::get("SELECT COUNT(*) AS c FROM projects", &[])
             .unwrap().unwrap()["c"].as_i64().unwrap();
         assert_eq!(count, 1);
