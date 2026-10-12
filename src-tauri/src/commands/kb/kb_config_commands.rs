@@ -245,6 +245,17 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
     Ok(json!({"success": true}))
 }
 
+/// Dock 恢复路径：只读查询会话当前计划快照（重启/切会话即时投影，不再等下一次 run 才 emit）。
+/// 无 sid/无状态/无计划一律返回 null，前端据此清残留 Dock。
+#[tauri::command]
+pub async fn plan_get(sid: String) -> Result<Value, String> {
+    let plan = if sid.is_empty() { None } else {
+        crate::services::agent_workflow::session::load_session_state(&sid)
+            .and_then(|s| s.plan.as_ref().map(|p| p.to_payload()))
+    };
+    Ok(json!({"success": true, "plan": plan}))
+}
+
 /// 手动清空执行计划（用户在 Dock 上关闭；前端仅在 run 空闲时提供入口）：
 /// 只清 plan 快照并持久化（session_state 落 null，跨重启/跨 run 不复活），推 null 快照令所有归属窗 Dock 即时消失；
 /// 不触碰 run/取消语义——后端幂等，无计划时静默成功作竞态兜底。

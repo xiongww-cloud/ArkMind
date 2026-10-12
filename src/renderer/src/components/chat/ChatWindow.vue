@@ -314,6 +314,20 @@ async function loadHistory() {
   } catch (e) {
     console.error('[Chat] 加载历史失败:', e)
   }
+  restorePlanDock()
+}
+
+// Dock 恢复路径：重启/切会话/新建会话后即时投影持久化计划（后端 session.plan 是唯一事实源，
+// 此前只有下一次 run 启动才 emit——快照在库中但 Dock 看不见）。空闲才拉：run 中的快照由事件流自带。
+// setRunSid('') 必须在 applyPlan 前：matchSid 归属过滤会拦截"新会话快照 vs 旧 run sid"（空闲清归属亦是切会话语义本身）。
+async function restorePlanDock() {
+  if (agent.isChatting.value) return
+  agentRun.setRunSid('')
+  const sid = sessionId.value || ''
+  try {
+    const r = await invoke<{ success: boolean; plan: { title: string; steps: any[] } | null }>('plan_get', { sid })
+    agentRun.applyPlan({ sid, plan: r?.plan ?? null })
+  } catch { /* 查询失败保持现状：下一次 run 的全量快照会纠正 */ }
 }
 
 // 滚动到顶部时加载更早的消息
@@ -557,7 +571,7 @@ function submitAnnotation() {
 }
 // 开始流式回复即退出批注（编辑态不跨轮残留）；切换/新建会话同理
 watch(() => agent.isChatting.value, (v) => { if (v) exitAnnotate() })
-watch(sessionId, () => exitAnnotate())
+watch(sessionId, () => { exitAnnotate(); restorePlanDock() })
 
 /// 输入框键盘契约：⏎ 发送 / ⇧⏎ 换行（textarea 默认）/ Esc 收起窗口
 function onComposerKey(e: KeyboardEvent) {
