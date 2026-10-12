@@ -689,7 +689,7 @@ onUnmounted(() => {
     </transition>
 
     <!-- 执行计划 Dock（输入卡上方，滚动不离场；后端 agent:plan 事件驱动） -->
-    <PlanDock />
+    <PlanDock :running="agent.isChatting.value" />
     <!-- 输入卡（底部常驻） -->
     <div class="composer">
       <div v-if="pendingAttachments.length" class="composer-attach">

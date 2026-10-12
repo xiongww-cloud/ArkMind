@@ -15,6 +15,8 @@ export interface AgentRunState {
   participants: string[]
   /** 执行计划（后端状态机为唯一事实源，agent:plan 事件全量快照；瞬态不落库） */
   plan: PlanState | null
+  /** 最近一次 plan 快照的归属会话（run 结束后 Dock 手动清空仍需正确 sid） */
+  planSid: string
   /** 本窗口当前运行归属会话（空 = 无过滤） */
   runSid: string
   /** 生成心跳：按子 Agent id 分桶的产出进度。展示口径：写参数期显示"生成内容 · N 字"、
@@ -29,6 +31,7 @@ export const useAgentRunStore = defineStore('agentRun', {
     currentAgent: null,
     participants: [],
     plan: null,
+    planSid: '',
     runSid: '',
     writingByAgent: {},
   }),
@@ -50,6 +53,7 @@ export const useAgentRunStore = defineStore('agentRun', {
     },
     applyPlan(payload: { sid?: string; plan?: { title: string; steps: PlanStepLive[] } | null } | null) {
       if (!this.matchSid(payload)) return
+      if (payload?.sid) this.planSid = payload.sid
       this.plan = payload?.plan ? { title: payload.plan.title, steps: payload.plan.steps } : null
     },
     clearPlan() { this.plan = null },

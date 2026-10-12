@@ -245,6 +245,23 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
     Ok(json!({"success": true}))
 }
 
+/// 手动清空执行计划（用户在 Dock 上关闭；前端仅在 run 空闲时提供入口）：
+/// 只清 plan 快照并持久化（session_state 落 null，跨重启/跨 run 不复活），推 null 快照令所有归属窗 Dock 即时消失；
+/// 不触碰 run/取消语义——后端幂等，无计划时静默成功作竞态兜底。
+#[tauri::command]
+pub async fn plan_clear(app: tauri::AppHandle, sid: String) -> Result<Value, String> {
+    if sid.is_empty() { return Err("缺少会话 id".into()); }
+    let Some(mut sess) = crate::services::agent_workflow::session::load_session_state(&sid) else {
+        return Ok(json!({"success": true, "cleared": false}));
+    };
+    if sess.plan.is_none() { return Ok(json!({"success": true, "cleared": false})); }
+    sess.plan = None;
+    crate::services::agent_workflow::session::save_session_state(&sid, &sess);
+    let _ = app.emit("agent:plan", json!({"sid": sid, "plan": null}));
+    log::info!("[Plan] 用户手动清空计划 sid={}", sid);
+    Ok(json!({"success": true, "cleared": true}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::extract_assistants;
