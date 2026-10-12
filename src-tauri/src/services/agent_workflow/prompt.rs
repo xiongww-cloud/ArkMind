@@ -45,7 +45,7 @@ PROJECT
 
 - 按笔记本/目录定位内容：笔记本清单 ext_tool_object(type="NOTEBOOK")、目录清单 type="FOLDER"；文件带 folder_id/folder_name、笔记带 notebook_id/notebook_name 可直接作 filter 条件；要检索某笔记本/目录/项目**里面的正文**，用 ext_tool_search 的 scope 传对应引用串（硬过滤，目录递归；范围内查不到时会自动附全库对照结果——对照部分只能用于说明"内容实际在别处"，禁止当作范围内内容引用）
 - 探索设备清单结构：用 ext_tool_relations 沿图谱逐层导航（注意"方案"歧义：图谱中的 EQUIPMENT_LIST 是设备清单，方案/建议书文稿走 FILE 与知识检索）
-- 设备完整参数快照：ext_tool_object(type="EQUIPMENT_ITEM") 返回的 params 字段（该版本保存时的快照，与产品中心参数无关）
+- 设备清单一步查全：ext_tool_object(mode="chain", id=[项目或清单引用]) 一次返回 清单→版本→设备行（含数量/单价/params 参数快照=保存版本时冻结的设备规格，与产品中心当前参数无关/金额合计）——查设备与报价用它，不要图谱逐跳导航
 - 联系人必须归属于合作伙伴；创建联系人时先确认 partner_id；联系人关联项目时，所属合作伙伴必须同时关联到同一项目
 
 ## 6. 委托（三层路由，按序判断，命中即止）

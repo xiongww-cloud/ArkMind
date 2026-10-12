@@ -253,6 +253,100 @@ pub(crate) fn execute_object_catalog(entity: &str, field_filters: &[Value], sort
     }
 }
 
+/// ★ mode="chain"：设备清单链一次性聚合——输入 PROJECT 或 EQUIPMENT_LIST 引用，
+/// 一次返回 清单→版本(状态/金额)→设备行(型号/数量/单价/参数快照) 全层级，
+/// 免图谱逐跳导航（原需 has_equipment_list→has_version→uses 三跳+逐表 filter）。
+pub(crate) fn execute_equipment_chain(ids: &[String]) -> String {
+    use crate::services::agent_workflow::tools::entity_ref;
+    let mut lists: Vec<Value> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for raw in ids {
+        let parsed = entity_ref::parse(raw.trim())
+            .or_else(|| {
+                // 裸 uuid 按 PROJECT 兜底（图谱主查询对象）
+                let bare = entity_ref::bare_id(raw);
+                if bare == raw.trim() && raw.contains('-') { None } else { Some(("PROJECT", bare)) }
+            });
+        let Some((tp, bare)) = parsed else {
+            errors.push(format!("无法解析引用: {}", raw));
+            continue
+        };
+        let tp = entity_ref::normalize_type(&tp);
+        let list_ids: Vec<String> = match tp.as_str() {
+            "PROJECT" => database::all(
+                "SELECT target_id FROM business_relations WHERE source_type='PROJECT' AND source_id=?1 AND relation_type='has_equipment_list'",
+                &[json!(&bare)],
+            ).unwrap_or_default().iter().filter_map(|r| r["target_id"].as_str().map(String::from)).collect(),
+            "EQUIPMENT_LIST" => vec![bare.clone()],
+            _ => { errors.push(format!("chain 模式仅接受 PROJECT/EQUIPMENT_LIST 引用，收到: {}", tp)); continue }
+        };
+        if list_ids.is_empty() { errors.push(format!("{}: 该项目没有设备清单（未配置或引用错误）", raw)); continue }
+        for lid in list_ids {
+            let Ok(Some(sol)) = database::get("SELECT id, name FROM solutions WHERE id=?1", &[json!(&lid)]) else {
+                errors.push(format!("清单 {} 不存在", crate::preview(&lid, 8)));
+                continue
+            };
+            let versions: Vec<Value> = database::all(
+                "SELECT id, version, status, creator, created_at FROM solution_versions WHERE solution_id=?1 ORDER BY created_at DESC",
+                &[json!(&lid)],
+            ).unwrap_or_default().iter().filter_map(|v| v["id"].as_str().map(String::from)).map(|vid| {
+                let vrow = database::get("SELECT version, status, creator, created_at FROM solution_versions WHERE id=?1", &[json!(&vid)]).ok().flatten().unwrap_or(json!({}));
+                let items: Vec<Value> = database::all(
+                    "SELECT product_name, device_name, quantity, unit_price, description AS params, row_type FROM solution_items WHERE solution_version_id=?1 ORDER BY sort_order LIMIT 120",
+                    &[json!(&vid)],
+                ).unwrap_or_default().iter().map(|r| json!({
+                    "product_name": r["product_name"].as_str().unwrap_or(""),
+                    "device_name": r["device_name"].as_str().unwrap_or(""),
+                    "quantity": r["quantity"].as_i64().unwrap_or(1),
+                    "unit_price": r["unit_price"].as_f64().unwrap_or(0.0),
+                    "params": r["params"].as_str().unwrap_or(""),
+                    "row_type": r["row_type"].as_str().unwrap_or("device"),
+                })).collect();
+                let total: f64 = items.iter().map(|it| it["quantity"].as_i64().unwrap_or(0) as f64 * it["unit_price"].as_f64().unwrap_or(0.0)).sum();
+                json!({
+                    "id": entity_ref::fmt("EQUIPMENT_VERSION", &vid),
+                    "version": vrow["version"].as_str().unwrap_or(""),
+                    "status": vrow["status"].as_str().unwrap_or(""),
+                    "creator": vrow["creator"].as_str().unwrap_or(""),
+                    "created_at": vrow["created_at"].as_str().unwrap_or(""),
+                    "total_amount": (total * 100.0).round() / 100.0,
+                    "item_count": items.len(),
+                    "items": items,
+                })
+            }).collect();
+            lists.push(json!({
+                "id": entity_ref::fmt("EQUIPMENT_LIST", &lid),
+                "name": sol["name"].as_str().unwrap_or(""),
+                "versions": versions,
+            }));
+        }
+    }
+    let summary = if lists.is_empty() {
+        format!("设备清单链查询无结果。{}", errors.join("；"))
+    } else {
+        let mut parts: Vec<String> = Vec::new();
+        for lst in &lists {
+            let vs = lst["versions"].as_array().cloned().unwrap_or_default();
+            match vs.first() {
+                Some(v) => parts.push(format!("「{}」{} 个版本，最新 {}（{}，{} 台，合计 ¥{:.2}）",
+                    lst["name"].as_str().unwrap_or(""), vs.len(),
+                    v["version"].as_str().unwrap_or(""), v["status"].as_str().unwrap_or(""),
+                    v["item_count"].as_i64().unwrap_or(0), v["total_amount"].as_f64().unwrap_or(0.0))),
+                None => parts.push(format!("「{}」暂无版本", lst["name"].as_str().unwrap_or(""))),
+            }
+        }
+        let mut sum = format!("设备清单 {} 份：{}", lists.len(), parts.join("；"));
+        if !errors.is_empty() { sum.push_str(&format!("。异常：{}", errors.join("；"))); }
+        sum
+    };
+    let envelope = ToolResultEnvelope {
+        result_type: "equipment_chain_result".to_string(),
+        data: json!({ "lists": lists, "errors": errors }),
+        summary: Some(summary),
+    };
+    envelope.to_json()
+}
+
 #[allow(dead_code)]
 pub(crate) fn format_catalog_row(entity: &str, row: &Value) -> String {
     let upper = entity.to_uppercase();
@@ -812,5 +906,42 @@ pub(crate) fn execute_object_get(query: &str, obj_type: &str, time_range: Option
         recall_mode(obj_type, &start, &end, limit, offset)
     } else {
         timeline_mode(obj_type, &start, &end, limit, offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute_equipment_chain;
+    use crate::database;
+
+    #[test]
+    fn equipment_chain_aggregates_lists_versions_items() {
+        let (_dir, _g) = crate::database::db_core::test_util::setup_test_db();
+        database::with_db(|c| c.execute_batch(
+            "CREATE TABLE solutions(id TEXT PRIMARY KEY, project_id TEXT, name TEXT);
+             CREATE TABLE solution_versions(id TEXT PRIMARY KEY, solution_id TEXT, version TEXT, status TEXT, creator TEXT, created_at TEXT);
+             CREATE TABLE solution_items(id TEXT PRIMARY KEY, solution_version_id TEXT, product_name TEXT, device_name TEXT, quantity INTEGER, unit_price REAL, description TEXT, row_type TEXT, sort_order INTEGER);
+             CREATE TABLE business_relations(source_type TEXT, source_id TEXT, target_type TEXT, target_id TEXT, relation_type TEXT, metadata TEXT);
+             INSERT INTO solutions VALUES('s1','p1','天门一院清单');
+             INSERT INTO solution_versions VALUES('v1','s1','V2','finalized','张','2026-10-01 10:00:00');
+             INSERT INTO solution_items VALUES('i1','v1','AP','核心交换机',2,50000.5,'48口全千兆','device',1),('i2','v1','SW','接入交换机',10,1000,'24口','device',2);
+             INSERT INTO business_relations VALUES('PROJECT','p1','EQUIPMENT_LIST','s1','has_equipment_list','{}');"
+        )).unwrap();
+
+        let out = execute_equipment_chain(&["PROJECT-p1".to_string()]);
+        assert!(out.contains("equipment_chain_result"), "信封类型: {out}");
+        assert!(out.contains("天门一院清单"));
+        assert!(out.contains("V2"));
+        assert!(out.contains("48口全千兆"), "params 快照");
+        // 合计 = 2*50000.5 + 10*1000 = 110001
+        assert!(out.contains("110001"), "金额合计: {out}");
+
+        // 旧名别名引用（历史 ID）同样可查
+        let alias = execute_equipment_chain(&["SOLUTION-s1".to_string()]);
+        assert!(alias.contains("天门一院清单"), "SOLUTION 旧前缀应归一解析: {alias}");
+
+        // 无清单项目 → 可读错误
+        let empty = execute_equipment_chain(&["PROJECT-nope".to_string()]);
+        assert!(empty.contains("没有设备清单"), "{empty}");
     }
 }

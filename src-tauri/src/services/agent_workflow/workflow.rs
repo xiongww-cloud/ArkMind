@@ -1452,6 +1452,16 @@ pub async fn agent_chat_workflow_internal(
                                     let ff = a["field_filters"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
                                     execute_object_catalog(entity, ff, a.get("sort"), &a)
                                 },
+                                "chain" => {
+                                    // 设备清单链聚合：id 传 PROJECT/EQUIPMENT_LIST 引用，一次返回 清单→版本→设备行
+                                    let ids: Vec<String> = match a.get("id") {
+                                        Some(v) if v.is_array() => v.as_array().unwrap().iter().filter_map(|x| x.as_str().map(String::from)).collect(),
+                                        Some(v) if v.is_string() => vec![v.as_str().unwrap().to_string()],
+                                        _ => vec![],
+                                    };
+                                    if ids.is_empty() { "错误：chain 模式需要 id（PROJECT 或设备清单引用）".to_string() }
+                                    else { execute_equipment_chain(&ids) }
+                                },
                                 _ => {
                                     // 兼容旧格式：没有 mode 时，按参数推断
                                     if let Some(ids_arr) = a["id"].as_array().filter(|arr| !arr.is_empty()) {
