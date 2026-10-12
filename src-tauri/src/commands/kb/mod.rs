@@ -90,7 +90,7 @@ pub use kb_memory_commands::*;
 //   · 轮转仅在浮窗发送时判定：距上次提问在窗口内续（fab_rotate_minutes，默认 10min）；追问卡片冻结 ≤24h；
 //     当前会话已被列表删除 / 首次无状态 → 新建 fab-<uuid>（决定不写状态）
 //   · 打开面板永不轮转：始终淡显当前会话上一轮，提问才切换
-//   · 会话在智能问答列表全量可见（无前缀排除、不 GC），标题=首问 30 字
+//   · 会话在 AI 助手页列表全量可见（无前缀排除、不 GC），标题=首问 30 字
 // ═══════════════════════════════════════════════════════════════════
 const FAB_SESSION_PREFIX: &str = "fab-";
 const FAB_LEGACY_SESSION: &str = "fab-main-session";
@@ -218,7 +218,7 @@ fn fab_evaluate(now: i64) -> (Option<String>, FabAction) {
         cur_id = Some(FAB_LEGACY_SESSION.to_string());
         last = None;
     }
-    // 当前会话已被智能问答页删除 → 视同无状态（防御）
+    // 当前会话已被 AI 助手页删除 → 视同无状态（防御）
     if let Some(id) = cur_id.as_deref() {
         if !session_row_exists(id) {
             cur_id = None;

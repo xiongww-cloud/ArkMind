@@ -15,7 +15,7 @@ const routes = [
   { path: '/knowledge-graph', name: 'KnowledgeGraph', component: () => import('@/views/KnowledgeGraph.vue'), meta: { title: '知识观测台' } },
   { path: '/settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
   { path: '/knowledge', component: () => import('@/views/KnowledgeLayout.vue'), redirect: '/knowledge/brain', children: [
-    { path: 'brain', name: 'AgentChat', component: () => import('@/views/AgentChat.vue'), meta: { title: '智能问答' } }
+    { path: 'brain', name: 'AgentChat', component: () => import('@/views/AgentChat.vue'), meta: { title: 'AI 助手' } }
   ]}
 ]
 

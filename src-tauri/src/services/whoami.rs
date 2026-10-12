@@ -3,7 +3,7 @@
 //   用户撤销 = 负反馈记入 rejected，同值不再覆盖，直到用户手动编辑该字段。
 // 画像层（习惯/承诺/偏好事实）：第三方语料存在注入面，保持用户点击确认（profile_fact_save）。
 // 数据源：users 单例行 + email_accounts（我的邮箱，自动推导）+ memories source='profile'。
-// 仅供智能问答主 Agent 与通知分析师注入使用；子 Agent / 委托运行体不注入。
+// 仅供 AI 助手主 Agent 与通知分析师注入使用；子 Agent / 委托运行体不注入。
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};

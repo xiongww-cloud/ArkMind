@@ -1861,7 +1861,7 @@ async function saveProfileEditor() {
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
               <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
-              <p class="text-[10px] text-surface-400 mt-1">智能问答与AI洞察依据此档案认识你</p>
+              <p class="text-[10px] text-surface-400 mt-1">AI 助手与AI洞察依据此档案认识你</p>
             </div>
             <div class="p-5 pt-3 space-y-2.5">
               <p v-if="profSummary" class="text-[13px] font-medium text-surface-700">{{ profSummary }}</p>

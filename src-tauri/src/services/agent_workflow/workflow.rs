@@ -875,7 +875,7 @@ pub async fn agent_chat_workflow_internal(
     let mut max_iters_dyn = max_iters;
     let mut traverse_source_counter: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     
-    // System Prompt 注入可用 Agent 列表；【关于我】仅智能问答主Agent注入（分析师/子Agent不注入）
+    // System Prompt 注入可用 Agent 列表；【关于我】仅 AI 助手主Agent注入（分析师/子Agent不注入）
     let whoami_section = if is_root && system_prompt.is_none() {
         let block = crate::services::whoami::Whoami::load().prompt_block(true);
         if block.is_empty() { String::new() } else { format!("\n\n{}", block) }

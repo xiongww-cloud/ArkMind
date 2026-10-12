@@ -22,7 +22,7 @@ const navItems = [
   { path: '/products', label: '产品', icon: 'cube' },
   { path: '/assets', label: '资料', icon: 'archive' },
   { path: '/knowledge-graph', label: '知识观测台', icon: 'network' },
-  { path: '/knowledge/brain', label: '智能问答', icon: 'chat' },
+  { path: '/knowledge/brain', label: 'AI 助手', icon: 'chat' },
   { path: '/ai-insights', label: 'AI洞察', icon: 'bell' },
   // { path: '/agent-debug', label: 'Agent调试', icon: 'bar-chart' },
   // { path: '/inspector', label: '索引检查', icon: 'search' },
