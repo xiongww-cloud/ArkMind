@@ -414,6 +414,8 @@ async function selectSession(id: string) {
 }
 
 async function restorePlanDock(sid: string) {
+  // 归属先行更新：run 中切会话（restore 跳过拉取）也必须认领新会话，否则本窗 run 的 plan 事件会被旧 homeSid 屏蔽
+  agentRun.setHomeSid(sid)
   if (agent.isChatting.value) return
   agentRun.setRunSid('')
   try {

@@ -19,6 +19,9 @@ export interface AgentRunState {
   planSid: string
   /** 本窗口当前运行归属会话（空 = 无过滤） */
   runSid: string
+  /** 本窗归属会话（浮窗=全局指针会话，主窗=当前选中会话）：plan 快照严格按此过滤，
+   *  防其他窗口/会话的 run 事件经全窗广播污染本窗 Dock（runSid 空=放行的兼容口子对 plan 不适用） */
+  homeSid: string
   /** 生成心跳：按子 Agent id 分桶的产出进度。展示口径：写参数期显示"生成内容 · N 字"、
    *  工具执行期显示"正在：动作"、交付型正文期显示"生成 · N 字"（不再有虚指的"步数"） */
   writingByAgent: Record<string, { chars: number; tools: number; deliverable: boolean; stool?: string; cur?: string; pending?: number; confirmed?: number }>
@@ -33,10 +36,12 @@ export const useAgentRunStore = defineStore('agentRun', {
     plan: null,
     planSid: '',
     runSid: '',
+    homeSid: '',
     writingByAgent: {},
   }),
   actions: {
     setRunSid(sid: string) { this.runSid = sid || '' },
+    setHomeSid(sid: string) { this.homeSid = sid || '' },
     /** 事件归属过滤：本窗无运行 sid 或事件无 sid 时放行（兼容后台/旧事件） */
     matchSid(p: { sid?: string } | undefined | null): boolean {
       if (!this.runSid || !p?.sid) return true
@@ -53,6 +58,9 @@ export const useAgentRunStore = defineStore('agentRun', {
     },
     applyPlan(payload: { sid?: string; plan?: { title: string; steps: PlanStepLive[] } | null } | null) {
       if (!this.matchSid(payload)) return
+      // plan 是会话常驻态（不同于流式 run 展示），必须严格归属：他窗他会话的 run 快照/迟到的旧会话
+      // plan_get 响应一律拒收——本窗 Dock 与历史消息永远同源；无 sid 的旧事件保持放行
+      if (payload?.sid && this.homeSid && payload.sid !== this.homeSid) return
       if (payload?.sid) this.planSid = payload.sid
       this.plan = payload?.plan ? { title: payload.plan.title, steps: payload.plan.steps } : null
     },
