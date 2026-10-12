@@ -199,6 +199,12 @@ pub async fn web_search_test() -> Result<Value, String> {
     }
 }
 
+/// 前端启动时上报 WebView 真实 UA，网页抓取逐请求使用（未上报时后端回退诚实标识）
+#[tauri::command]
+pub async fn web_fetch_set_ua(ua: String) -> Result<(), String> {
+    crate::services::web_search::set_fetch_ua(&ua)
+}
+
 // Storage
 #[tauri::command] pub async fn storage_get_config() -> Result<Value, String> {
     let row = database::get("SELECT * FROM system_config WHERE tenant_id='local-user'",&[]).map_err(|e| e.to_string())?;

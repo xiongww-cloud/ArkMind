@@ -928,6 +928,10 @@ fn project_import_inner(file_path: &str) -> Result<Value, String> {
                 ]).ok();
             }
         }
+        // ★ 导入直插的 solutions/versions/items 不走 CRUD 命令——立即重建项目-产品映射与设备清单图谱边，
+        //    AI 导入完成后即可查询，不等下次启动对账兜底
+        let _ = sync_project_products(&pid);
+        sync_solution_graph(&pid);
     }
     std::fs::remove_dir_all(&tmp).ok();
     eprintln!("[导入] 完成: {}", file_path);

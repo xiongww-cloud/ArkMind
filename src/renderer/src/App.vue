@@ -9,6 +9,7 @@ import ActivationModal from '@/components/common/ActivationModal.vue'
 import GuideModal from '@/components/common/GuideModal.vue'
 import WhatsNewModal from '@/components/common/WhatsNewModal.vue'
 import { useAuthStore } from '@/stores/auth'
+import { invoke } from '@tauri-apps/api/core'
 
 const sidebarCollapsed = ref(false)
 const authStore = useAuthStore()
@@ -142,6 +143,8 @@ onMounted(() => {
   checkActivation()
   checkGuide()
   checkWhatsNew()
+  // 上报 WebView 真实 UA 给网页抓取工具（失败静默——抓取回退默认诚实 UA）
+  invoke('web_fetch_set_ua', { ua: navigator.userAgent }).catch(() => {})
   licensePollTimer = setInterval(pollLicenseStatus, LICENSE_POLL_INTERVAL_MS)
 })
 

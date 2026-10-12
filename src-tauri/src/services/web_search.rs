@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 pub const WEB_TOOL_NAMES: [&str; 2] = ["ext_tool_web_search", "ext_tool_web_fetch"];
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
-const MAX_MARKDOWN_CHARS: usize = 8000;
+const MAX_MARKDOWN_CHARS: usize = 20000;
 const MAX_REDIRECTS: u32 = 3;
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -26,6 +26,27 @@ fn client() -> &'static reqwest::Client {
             .build()
             .expect("reqwest client")
     })
+}
+
+/// 前端 WebView 真实 UA（App 启动时上报），网页抓取逐请求使用；未上报时回退诚实标识。
+/// 拒绝控制字符（防请求头注入）与超长串。
+static FETCH_UA: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+pub fn set_fetch_ua(ua: &str) -> Result<(), String> {
+    let ua = ua.trim();
+    if ua.is_empty() || ua.chars().count() > 512 {
+        return Err("UA 内容非法".into());
+    }
+    if ua.chars().any(|c| c.is_control()) {
+        return Err("UA 含控制字符".into());
+    }
+    *FETCH_UA.write().map_err(|e| e.to_string())? = Some(ua.to_string());
+    Ok(())
+}
+
+fn fetch_ua() -> String {
+    FETCH_UA.read().ok().and_then(|g| g.clone())
+        .unwrap_or_else(|| "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ArkMindBot/1.0".to_string())
 }
 
 /// 读取 ai_config.webSearch.apiKey（透明解密）
@@ -147,10 +168,12 @@ pub fn parse_bocha_hits(resp: &Value) -> Vec<WebHit> {
             let url = h["url"].as_str()?.to_string();
             Some(WebHit {
                 title: h["name"].as_str().unwrap_or("").to_string(),
-                snippet: truncate_chars(
-                    h["summary"].as_str().filter(|s| !s.is_empty()).unwrap_or(h["snippet"].as_str().unwrap_or("")),
-                    300,
-                ),
+                // 摘要不设阈值：长度由博查响应自然约束，本地截断会让模型误报"内容被截断"
+                snippet: h["summary"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(h["snippet"].as_str().unwrap_or(""))
+                    .to_string(),
                 url,
             })
         })
@@ -260,6 +283,18 @@ fn looks_json(text: &str) -> bool {
     t.starts_with('{') || t.starts_with('[')
 }
 
+/// 识别反爬拦截页（Cloudflare/JS challenge）：只查前 4K 字符的常见标记，
+/// 命中即提前返回可读错误，避免把"Just a moment..."当正文灌给模型
+fn looks_like_challenge(text: &str) -> bool {
+    let head: String = text.chars().take(4096).collect::<String>().to_lowercase();
+    head.contains("just a moment")
+        || head.contains("checking your browser")
+        || head.contains("challenge-platform")
+        || head.contains("enable javascript and cookies")
+        || head.contains("cf-chl")
+        || head.contains("captcha")
+}
+
 pub async fn web_fetch_text(raw_url: &str) -> String {
     let mut url = match validate_public_url(raw_url) {
         Ok(u) => u,
@@ -267,7 +302,13 @@ pub async fn web_fetch_text(raw_url: &str) -> String {
     };
     let mut hops = 0u32;
     let resp = loop {
-        let r = match client().get(url.clone()).send().await {
+        let r = match client()
+            .get(url.clone())
+            .header(reqwest::header::USER_AGENT, fetch_ua())
+            .header(reqwest::header::REFERER, "https://www.bing.com/")
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(e) => return format!("网页抓取失败: {}", e),
         };
@@ -314,6 +355,9 @@ pub async fn web_fetch_text(raw_url: &str) -> String {
     };
     if resp.len() > MAX_BODY_BYTES {
         return "网页过大（超过2MB），不予抓取。".into();
+    }
+    if looks_like_challenge(&resp) {
+        return "该网页疑似反爬拦截页（需浏览器验证），无法直接抓取。建议改用其他来源链接，或基于已有搜索摘要回答并向用户说明。".into();
     }
     let md = if raw_url.to_lowercase().ends_with(".json") || looks_json(&resp) {
         truncate_chars(resp.trim(), MAX_MARKDOWN_CHARS)
@@ -380,6 +424,33 @@ mod tests {
         let t = truncate_chars(&long, 100);
         assert!(t.starts_with(&"字".repeat(100)));
         assert!(t.ends_with("…(内容已截断)"));
+    }
+
+    #[test]
+    fn bocha_long_summary_not_truncated() {
+        // 摘要不设阈值：博查 AI 摘要常超 300 字，原实现本地硬切导致模型向用户误报"内容被截断"
+        let long: String = "摘".repeat(500);
+        let resp = json!({"webPages":{"value":[{"name":"t","url":"https://a.com","summary":long.clone()}]}});
+        let hits = parse_bocha_hits(&resp);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].snippet, long);
+        assert!(!hits[0].snippet.contains("内容已截断"));
+    }
+
+    #[test]
+    fn fetch_ua_validation_and_override() {
+        assert!(set_fetch_ua("   ").is_err(), "空白 UA 拒绝");
+        assert!(set_fetch_ua(&"u".repeat(600)).is_err(), "超长 UA 拒绝");
+        assert!(set_fetch_ua("Bad\r\nInject: x").is_err(), "控制字符拒绝（防头注入）");
+        set_fetch_ua("  Mozilla/5.0 WebView2-TestUA  ").unwrap();
+        assert!(fetch_ua().contains("WebView2-TestUA"), "trim 后生效");
+    }
+
+    #[test]
+    fn challenge_page_detected_and_clean_page_not() {
+        assert!(looks_like_challenge("<html><head><title>Just a moment...</title></head></html>"));
+        assert!(looks_like_challenge("enable JavaScript and cookies to continue"));
+        assert!(!looks_like_challenge("<html><body>一篇正常的长新闻正文，讲述行业动态与市场分析。</body></html>"));
     }
 
     /// 真实连通性诊断（需本机已配置博查 key）：cargo test real_bocha -- --ignored --nocapture

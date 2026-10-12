@@ -266,6 +266,28 @@ pub fn rebuild_all_derived_edges() {
              ON CONFLICT(source_type,source_id,target_type,target_id,relation_type) DO UPDATE SET metadata=excluded.metadata, updated_at=datetime('now','localtime')", [])
     });
 
+    // 8. 设备清单图谱（源：solutions/solution_versions/solution_items 业务表；写入方是
+    //    project_commands::sync_solution_graph）。导入路径（project_import_inner/import_projects）
+    //    直插业务表不走 CRUD 命令，曾长期漏边——检测"有清单但缺 has_equipment_list 边"的项目
+    //    并逐个全量重建，任何漏写最迟下次启动收敛。
+    {
+        let missing: Vec<String> = database::all(
+            "SELECT DISTINCT s.project_id FROM solutions s \
+             WHERE COALESCE(s.project_id,'')!='' AND NOT EXISTS (\
+               SELECT 1 FROM business_relations br WHERE br.source_type='PROJECT' \
+                 AND br.source_id=s.project_id AND br.target_type='EQUIPMENT_LIST' \
+                 AND br.target_id=s.id AND br.relation_type='has_equipment_list')",
+            &[],
+        ).unwrap_or_default().iter().filter_map(|r| r["project_id"].as_str().map(String::from)).collect();
+        if !missing.is_empty() {
+            log::info!("[业务关联] 检测到 {} 个项目缺设备清单图谱边，全量重建中...", missing.len());
+            for pid in &missing {
+                let _ = crate::commands::project_commands::sync_project_products(pid);
+                crate::commands::project_commands::sync_solution_graph(pid);
+            }
+        }
+    }
+
     let edges: i64 = database::get("SELECT COUNT(*) c FROM business_relations", &[])
         .ok().flatten().and_then(|r| r["c"].as_i64()).unwrap_or(0);
     log::info!("[业务关联] 派生边对账完成，当前 {} 条", edges);
@@ -492,5 +514,37 @@ mod tests {
         delete_by_source_on(&conn, "TODO", "t1").unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM business_relations"), 1);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM business_relations WHERE source_id='t2'"), 1);
+    }
+
+    /// 导入漏边自愈：solutions 存在但缺 has_equipment_list 边 → rebuild_all_derived_edges 检测并重建四族边（幂等）
+    #[test]
+    fn rebuild_backfills_missing_equipment_graph_edges() {
+        let (_dir, _g) = crate::database::db_core::test_util::setup_test_db();
+        database::with_db(|c| c.execute_batch(
+            "CREATE TABLE business_relations(id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_id TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, relation_type TEXT NOT NULL, metadata TEXT DEFAULT '{}', created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '', UNIQUE(source_type, source_id, target_type, target_id, relation_type));
+             CREATE TABLE solutions(id TEXT PRIMARY KEY, project_id TEXT, name TEXT, created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             CREATE TABLE solution_versions(id TEXT PRIMARY KEY, solution_id TEXT, version TEXT, status TEXT, creator TEXT, created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '');
+             CREATE TABLE solution_items(id TEXT PRIMARY KEY, solution_version_id TEXT, product_id TEXT, product_name TEXT, device_name TEXT, quantity INTEGER, unit_price REAL, description TEXT, row_type TEXT, sort_order INTEGER);
+             CREATE TABLE products(id TEXT PRIMARY KEY);
+             INSERT INTO solutions(id, project_id, name) VALUES('s1','p1','清单A');
+             INSERT INTO solution_versions(id, solution_id, version, status, creator, created_at) VALUES('v1','s1','V1','finalized','张','2026-10-01');
+             INSERT INTO solution_items(id, solution_version_id, product_id, product_name, device_name, quantity, unit_price, description, row_type, sort_order) VALUES('i1','v1','prd1','AP','核心交换机',2,100.0,'48口','device',1);"
+        )).unwrap();
+
+        let cnt = |sql: &str| -> i64 {
+            database::get(sql, &[]).ok().flatten().and_then(|r| r["c"].as_i64()).unwrap_or(-1)
+        };
+        // 重建前：无任何设备清单图谱边（模拟导入直插漏写）
+        assert_eq!(cnt("SELECT COUNT(*) c FROM business_relations WHERE relation_type='has_equipment_list'"), 0);
+
+        rebuild_all_derived_edges();
+
+        assert_eq!(cnt("SELECT COUNT(*) c FROM business_relations WHERE relation_type='has_equipment_list'"), 1, "PROJECT→EQUIPMENT_LIST 补建");
+        assert_eq!(cnt("SELECT COUNT(*) c FROM business_relations WHERE relation_type='has_version'"), 1, "EQUIPMENT_LIST→VERSION 补建");
+        assert_eq!(cnt("SELECT COUNT(*) c FROM business_relations WHERE relation_type='uses'"), 1, "VERSION→ITEM 补建");
+
+        // 幂等：重复对账不翻倍
+        rebuild_all_derived_edges();
+        assert_eq!(cnt("SELECT COUNT(*) c FROM business_relations WHERE relation_type='has_equipment_list'"), 1);
     }
 }
