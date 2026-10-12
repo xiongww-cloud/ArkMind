@@ -108,7 +108,10 @@ pub fn validate_public_url(raw: &str) -> Result<reqwest::Url, String> {
     if hl == "localhost" || hl.ends_with(".localhost") || hl.ends_with(".local") || hl.ends_with(".internal") {
         return Err("禁止访问内部地址".into());
     }
-    if let Ok(ip) = hl.parse::<IpAddr>() {
+    // url crate 对 IPv6 主机返回带方括号的 host_str（如 "[::1]"），须先剥壳再按字面量拦截，
+    // 否则 IPv6 字面量落入 DNS 分支，可被 fake-IP 代理/异常解析绕过内网封锁
+    let ipish = hl.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = ipish.parse::<IpAddr>() {
         if ip_is_private(&ip) {
             return Err("禁止访问内网地址".into());
         }
