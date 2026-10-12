@@ -745,11 +745,9 @@ const FOCUS_MAX = 2000
 // 观察池清单（只读展示+删除；新增走对话告诉 AI，本处不提供入口）
 const watchOpen = ref(false)
 const watchEntries = ref<WatchEntryView[]>([])
-async function toggleWatchPool() {
-  watchOpen.value = !watchOpen.value
-  if (watchOpen.value) {
-    try { watchEntries.value = (await watchPoolGet()).entries } catch { watchEntries.value = [] }
-  }
+async function openWatchModal() {
+  try { watchEntries.value = (await watchPoolGet()).entries } catch { watchEntries.value = [] }
+  watchOpen.value = true
 }
 async function removeWatchEntry(id: number) {
   try { await watchEntryDelete(id); watchEntries.value = watchEntries.value.filter(e => e.id !== id) } catch { /* 条目已不存在等竞态：静默 */ }
@@ -1979,21 +1977,37 @@ async function saveProfileEditor() {
                       用户指定 {{ watchEntries.filter(e => e.zone === 'user').length }} 条 · AI 洞察 {{ watchEntries.filter(e => e.zone === 'ai').length }} 条；想新增就在对话里告诉 AI"盯着某件事"
                     </p>
                   </div>
-                  <button @click="toggleWatchPool" class="btn-secondary text-xs">{{ watchOpen ? '收起' : '查看' }}</button>
-                </div>
-                <div v-if="watchOpen" class="mt-2 space-y-1 max-h-[240px] overflow-y-auto">
-                  <div v-if="!watchEntries.length" class="text-[11px] text-surface-400 py-2 text-center">观察池为空</div>
-                  <div v-for="e in watchEntries" :key="e.id" class="flex items-start gap-2 px-2.5 py-1.5 rounded-lg bg-surface-50">
-                    <span class="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 leading-none mt-0.5"
-                      :class="e.zone === 'user' ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'">{{ e.zone === 'user' ? '用户指定' : 'AI 洞察' }}</span>
-                    <div class="flex-1 min-w-0">
-                      <p class="text-[11px] text-surface-700 break-all">{{ e.text }}</p>
-                      <p class="text-[10px] text-surface-400">w{{ e.id }} · {{ e.age }}{{ e.entity ? ' · 已锚定对象' : '' }}</p>
-                    </div>
-                    <button @click="removeWatchEntry(e.id)" class="text-[10px] text-surface-400 hover:text-red-500 flex-shrink-0 mt-0.5">删除</button>
-                  </div>
+                  <button @click="openWatchModal" class="btn-secondary text-xs">查看</button>
                 </div>
               </div>
+              <!-- 观察池清单弹窗（只读+删除；数据链路沿用 watch_pool_get） -->
+              <Teleport to="body">
+                <Transition name="modal-fade">
+                  <div v-if="watchOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="watchOpen = false">
+                    <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] flex flex-col">
+                      <div class="px-5 pt-4 pb-2 border-b border-surface-100">
+                        <h3 class="text-[14px] font-semibold text-surface-800">AI 持续关注清单</h3>
+                        <p class="text-[10px] text-surface-400 mt-0.5">分析师每轮优先跟进的条目；产出通知后自动出队。新增请在对话里告诉 AI</p>
+                      </div>
+                      <div class="px-5 py-3 max-h-[45vh] overflow-y-auto space-y-1.5">
+                        <div v-if="!watchEntries.length" class="text-[11px] text-surface-400 py-4 text-center">观察池为空</div>
+                        <div v-for="e in watchEntries" :key="e.id" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-surface-50">
+                          <span class="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 leading-none"
+                            :class="e.zone === 'user' ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'">{{ e.zone === 'user' ? '用户指定' : 'AI 洞察' }}</span>
+                          <div class="flex-1 min-w-0">
+                            <p class="text-[11px] text-surface-700 break-all">{{ e.text }}</p>
+                            <p class="text-[10px] text-surface-400">w{{ e.id }} · {{ e.age }}{{ e.entity ? ' · 已锚定对象' : '' }}</p>
+                          </div>
+                          <button @click="removeWatchEntry(e.id)" class="text-[10px] text-surface-400 hover:text-red-500 flex-shrink-0">删除</button>
+                        </div>
+                      </div>
+                      <div class="px-5 py-3 border-t border-surface-100 flex justify-end">
+                        <button @click="watchOpen = false" class="btn-secondary text-xs">关闭</button>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+              </Teleport>
               <!-- 附加要求编辑弹窗（整体一段提示词） -->
               <Teleport to="body">
                 <Transition name="modal-fade">
