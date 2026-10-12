@@ -39,7 +39,7 @@ const tabs = [
   { id: 'files', label: '文件', icon: 'document' },
   { id: 'notes', label: '笔记', icon: 'file-doc' },
   { id: 'todos', label: '待办', icon: 'list' },
-  { id: 'configurator', label: '方案', icon: 'cog' },
+  { id: 'configurator', label: '设备清单', icon: 'cog' },
   { id: 'overview', label: '日志', icon: 'clock' }
 ]
 
@@ -99,7 +99,7 @@ async function handleDeleteProject() {
   showMoreMenu.value = false
   const ok = await dangerConfirm({
     title: '删除项目',
-    message: `确定要删除项目「${project.value?.name}」吗？此操作不可撤销，所有关联的方案、版本和文件将被永久删除。`
+    message: `确定要删除项目「${project.value?.name}」吗？此操作不可撤销，所有关联的设备清单、版本和文件将被永久删除。`
   })
   if (!ok) return
   const deleted = await projectStore.deleteProject(projectId.value)

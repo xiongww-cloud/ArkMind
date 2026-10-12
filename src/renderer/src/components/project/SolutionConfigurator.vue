@@ -269,7 +269,7 @@ function iplans() {
     props.project.plans = [
       {
         id: defaultPlanId,
-        name: '默认方案',
+        name: '默认设备清单',
         items: [],
         history: [],
         draft: null,
@@ -899,7 +899,7 @@ async function sdv() {
     try {
       await projectStore.addProjectDynamic(
         props.project.id,
-        `为方案「${cplan.value.name}」保存了版本 ${d.versionNum || 'V1.0'}`
+        `为设备清单「${cplan.value.name}」保存了版本 ${d.versionNum || 'V1.0'}`
       )
     } catch (e) {
       console.warn('[保存] 记录动态失败', e)
@@ -965,7 +965,7 @@ function sed() {
 
 async function evx(ver) {
   if (!ver) return
-  const pn = cplan.value?.name || '方案'
+  const pn = cplan.value?.name || '设备清单'
   const prjn = props.project?.name || '项目'
   const its = Array.isArray(ver.items) ? ver.items : []
 
@@ -1073,18 +1073,18 @@ async function svcv() {
   try {
     await updateSolutionVersionMeta(verId, { content: val })
   } catch (e) {
-    console.warn('更新方案版本备注失败', e)
+    console.warn('更新清单版本备注失败', e)
   }
 }
 function ccvc() {
   editingContentVerId.value = null
 }
 async function anp() {
-  const planId = projectStore.addPlan(props.project.id, '新方案')
+  const planId = projectStore.addPlan(props.project.id, '新设备清单')
   if (planId) {
     plans.value = props.project.plans
     apid.value = planId
-    await projectStore.addProjectDynamic(props.project.id, '创建了新方案「新方案」')
+    await projectStore.addProjectDynamic(props.project.id, '创建了设备清单「新设备清单」')
     gtl()
   }
 }
@@ -1117,10 +1117,10 @@ async function rmp(id) {
   const parts = []
   if (vc > 0) parts.push(`${vc} 个历史版本`)
   if (hasDraft) parts.push('1 份草稿')
-  const detail = parts.length ? `该方案包含 ${parts.join(' 和 ')}，` : ''
+  const detail = parts.length ? `该设备清单包含 ${parts.join(' 和 ')}，` : ''
   const ok = await dangerConfirm({
-    title: '删除方案',
-    message: `${detail}删除后数据将无法恢复。确定删除方案「${plan.name}」？`,
+    title: '删除设备清单',
+    message: `${detail}删除后数据将无法恢复。确定删除设备清单「${plan.name}」？`,
     confirmText: '删除'
   })
   if (!ok) return
@@ -1296,12 +1296,12 @@ onUnmounted(() => {
     <div class="w-[260px] border-r border-surface-100 flex flex-col bg-white flex-shrink-0">
       <div class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0">
         <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider"
-          >方案清单</span
+          >设备清单</span
         >
         <button
           @click="anp"
           class="flex items-center justify-center w-5 h-5 rounded text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors"
-          v-tooltip="'新增方案'"
+          v-tooltip="'新增设备清单'"
         >
           <AppIcon name="plus" class="w-3.5 h-3.5" />
         </button>
@@ -1364,7 +1364,7 @@ onUnmounted(() => {
           class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0"
         >
           <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider"
-            >方案版本</span
+            >清单版本</span
           >
           <button
             @click="ommBlank"
@@ -2150,7 +2150,7 @@ onUnmounted(() => {
   <!-- Excel Import Wizard -->
   <ExcelImportWizard
     v-model="showImportWizard"
-    title="导入方案 Excel"
+    title="导入清单 Excel"
     :fields="solutionImportFields"
     :rowActions="[
       { key: 'device', label: '添加产品', color: 'emerald' },
