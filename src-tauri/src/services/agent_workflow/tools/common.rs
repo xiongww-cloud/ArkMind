@@ -59,6 +59,21 @@ pub fn build_chunk_metadata(source_id_str: &str) -> serde_json::Value {
 
 
 
+/// 引用入参归一（存储层写入前必经）：模型世界以 entity_ref 形态 `TYPE-uuid` 传递 ID，存储层只认裸 uuid。
+/// 已注册前缀且类型符合预期 → 剥壳返回；类型不符 → 报错（防把 VENDOR 引用当项目写入）；
+/// 裸串原样返回（entity_ref 不猜测裸串，交由调用方按 ID/名称另行解析）。
+pub(crate) fn normalize_ref(raw: &str, expected: &[&str]) -> Result<String, String> {
+    let raw = raw.trim();
+    match super::entity_ref::parse(raw) {
+        Some((t, id)) if expected.contains(&t) => Ok(id),
+        Some((t, _)) => Err(format!(
+            "引用类型不符：收到 {} 引用，应为 {} 引用或裸 ID",
+            t, expected.join("/")
+        )),
+        None => Ok(raw.to_string()),
+    }
+}
+
 /// 解析项目 ID：支持按 ID 或名称查找项目
 pub(crate) fn resolve_project_id(project_id: &str) -> Option<String> {
     let raw_pid = project_id.trim();

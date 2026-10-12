@@ -3,6 +3,7 @@
 use crate::database;
 use serde_json::{json, Value};
 use crate::services::agent_workflow::*;
+use super::common::{resolve_project_id, normalize_ref};
 
 pub(crate) fn execute(a: &Value) -> String {
     let a = a.clone();
@@ -23,11 +24,42 @@ pub(crate) fn execute(a: &Value) -> String {
                                         let email = a["email"].as_str().unwrap_or("");
                                         let position = a["position"].as_str().unwrap_or("");
                                         let remark = a["remark"].as_str().unwrap_or("");
-                                        let parent_id = a["partner_id"].as_str()
+                                        // ★ id 归一（entity_ref 引用形态是模型常态）：partner/project 皆剥壳解析，
+                                        //   解析失败报错中止，绝不静默写垃圾映射
+                                        let parent_raw = a["partner_id"].as_str()
                                             .or_else(|| a["parent_id"].as_str())
-                                            .unwrap_or("");
-                                        let raw_proj_id = a["project_id"].as_str().unwrap_or("");
-                                        let project_id = raw_proj_id.strip_prefix("PROJECT-").unwrap_or(raw_proj_id);
+                                            .unwrap_or("").trim();
+                                        let parent_id = if parent_raw.is_empty() {
+                                            String::new()
+                                        } else {
+                                            match normalize_ref(parent_raw, &["CHANNEL", "VENDOR", "CUSTOMER"]) {
+                                                Ok(p) => p,
+                                                Err(e) => {
+                                                    let envelope = ToolResultEnvelope {
+                                                        result_type: "object_create_result".to_string(),
+                                                        data: json!({"success": false, "error": e.clone()}),
+                                                        summary: Some(format!("{}。", e)),
+                                                    };
+                                                    return envelope.to_json();
+                                                }
+                                            }
+                                        };
+                                        let raw_proj_id = a["project_id"].as_str().unwrap_or("").trim();
+                                        let project_id = if raw_proj_id.is_empty() {
+                                            None
+                                        } else {
+                                            match resolve_project_id(raw_proj_id) {
+                                                Some(p) => Some(p),
+                                                None => {
+                                                    let envelope = ToolResultEnvelope {
+                                                        result_type: "object_create_result".to_string(),
+                                                        data: json!({"success": false, "error": format!("未找到项目「{}」", raw_proj_id)}),
+                                                        summary: Some(format!("未找到项目「{}」，创建已中止：请先用「数据查询」确认项目获取 ID 后再关联。", raw_proj_id)),
+                                                    };
+                                                    return envelope.to_json();
+                                                }
+                                            }
+                                        };
                                         let data = json!({
                                             "name": name,
                                             "phone": phone,
@@ -42,11 +74,13 @@ pub(crate) fn execute(a: &Value) -> String {
                                                 let id = result["id"].as_str().unwrap_or("");
                                                 let is_dup = result["duplicate"].as_bool().unwrap_or(false);
                                                 // 如果有项目ID且非重复，手动关联到项目
-                                                if !project_id.is_empty() && !id.is_empty() && !is_dup {
-                                                    let _ = block_on_async(crate::commands::partner_commands::contact_link_project(
-                                                        id.to_string(),
-                                                        project_id.to_string()
-                                                    ));
+                                                if let Some(ref pid) = project_id {
+                                                    if !id.is_empty() && !is_dup {
+                                                        let _ = block_on_async(crate::commands::partner_commands::contact_link_project(
+                                                            id.to_string(),
+                                                            pid.clone()
+                                                        ));
+                                                    }
                                                 }
                                                 let summary = if is_dup {
                                                     format!("已存在同名联系人「{}」，ID: {}，已复用，未重复创建。", name, id)
@@ -162,9 +196,9 @@ pub(crate) fn execute(a: &Value) -> String {
                                     }
                                 }
                                 "link_project" => {
-                                    let contact_id = a["contact_id"].as_str().unwrap_or("");
-                                    let project_id = a["project_id"].as_str().unwrap_or("");
-                                    if contact_id.is_empty() || project_id.is_empty() {
+                                    let raw_contact = a["contact_id"].as_str().unwrap_or("").trim();
+                                    let raw_project = a["project_id"].as_str().unwrap_or("").trim();
+                                    if raw_contact.is_empty() || raw_project.is_empty() {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "contact_link_result".to_string(),
                                             data: json!({"success": false}),
@@ -173,10 +207,33 @@ pub(crate) fn execute(a: &Value) -> String {
                                         envelope.to_json()
                                     }
                                     else {
+                                        // ★ id 归一：引用剥壳（类型不符报错），项目走 resolve（ID/名称/前缀皆可），解析失败报错
+                                        let contact_id = match normalize_ref(raw_contact, &["CONTACT"]) {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                let envelope = ToolResultEnvelope {
+                                                    result_type: "contact_link_result".to_string(),
+                                                    data: json!({"success": false}),
+                                                    summary: Some(format!("{}。", e)),
+                                                };
+                                                return envelope.to_json();
+                                            }
+                                        };
+                                        let project_id = match resolve_project_id(raw_project) {
+                                            Some(p) => p,
+                                            None => {
+                                                let envelope = ToolResultEnvelope {
+                                                    result_type: "contact_link_result".to_string(),
+                                                    data: json!({"success": false}),
+                                                    summary: Some(format!("未找到项目「{}」，请先用「数据查询」确认项目获取 ID 后再关联。", raw_project)),
+                                                };
+                                                return envelope.to_json();
+                                            }
+                                        };
                                         // 使用 block_on 调用异步函数
                                         match block_on_async(crate::commands::partner_commands::contact_link_project(
-                                            contact_id.to_string(),
-                                            project_id.to_string()
+                                            contact_id.clone(),
+                                            project_id.clone()
                                         )) {
                                             Ok(_) => {
                                                 let envelope = ToolResultEnvelope {
@@ -198,9 +255,9 @@ pub(crate) fn execute(a: &Value) -> String {
                                     }
                                 }
                                 "unlink_project" => {
-                                    let contact_id = a["contact_id"].as_str().unwrap_or("");
-                                    let project_id = a["project_id"].as_str().unwrap_or("");
-                                    if contact_id.is_empty() || project_id.is_empty() {
+                                    let raw_contact = a["contact_id"].as_str().unwrap_or("").trim();
+                                    let raw_project = a["project_id"].as_str().unwrap_or("").trim();
+                                    if raw_contact.is_empty() || raw_project.is_empty() {
                                         let envelope = ToolResultEnvelope {
                                             result_type: "contact_unlink_result".to_string(),
                                             data: json!({"success": false}),
@@ -209,16 +266,43 @@ pub(crate) fn execute(a: &Value) -> String {
                                         envelope.to_json()
                                     }
                                     else {
+                                        // ★ 严格归一：仅剥 entity_ref 前缀精确匹配，不走名称模糊回退（防按名误删别家关联）
+                                        let contact_id = match normalize_ref(raw_contact, &["CONTACT"]) {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                let envelope = ToolResultEnvelope {
+                                                    result_type: "contact_unlink_result".to_string(),
+                                                    data: json!({"success": false}),
+                                                    summary: Some(format!("{}。", e)),
+                                                };
+                                                return envelope.to_json();
+                                            }
+                                        };
+                                        let project_id = match normalize_ref(raw_project, &["PROJECT"]) {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                let envelope = ToolResultEnvelope {
+                                                    result_type: "contact_unlink_result".to_string(),
+                                                    data: json!({"success": false}),
+                                                    summary: Some(format!("{}。", e)),
+                                                };
+                                                return envelope.to_json();
+                                            }
+                                        };
+                                        let existed = database::get(
+                                            "SELECT 1 FROM contact_project_mapping WHERE contact_id=?1 AND project_id=?2",
+                                            &[json!(&contact_id), json!(&project_id)],
+                                        ).ok().flatten().is_some();
                                         // 使用 block_on 调用异步函数
                                         match block_on_async(crate::commands::partner_commands::contact_unlink_project(
-                                            contact_id.to_string(),
-                                            project_id.to_string()
+                                            contact_id.clone(),
+                                            project_id.clone()
                                         )) {
                                             Ok(_) => {
                                                 let envelope = ToolResultEnvelope {
                                                     result_type: "contact_unlink_result".to_string(),
                                                     data: json!({"contact_id": contact_id, "project_id": project_id, "success": true}),
-                                                    summary: Some("已取消联系人与项目的关联".to_string()),
+                                                    summary: Some(if existed { "已取消联系人与项目的关联".to_string() } else { "未找到对应关联记录（可能已不存在，或与建立时的项目标识不一致）。".to_string() }),
                                                 };
                                                 envelope.to_json()
                                             }

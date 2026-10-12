@@ -192,3 +192,99 @@ mod dedup_tests {
         assert_eq!(count, 1);
     }
 }
+
+/// ★ 项目关联归一回归：AI 以 entity_ref 引用形态（PROJECT-uuid 等）关联合作伙伴是常态，
+/// 映射表只认裸 uuid——此前无归一导致垃圾行（前端按裸 uuid 查不到 → 关联"单向失明"）。
+#[cfg(test)]
+mod partner_link_tests {
+    use crate::database;
+    use serde_json::json;
+
+    fn setup() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+        let (dir, guard) = database::db_core::test_util::setup_test_db();
+        database::with_db(|conn| crate::database::db_schema::create_schema(conn)).unwrap();
+        database::run("INSERT INTO partners(id, type, name) VALUES('v1', 'VENDOR', '华为')", &[]).unwrap();
+        database::run("INSERT INTO projects(id, name) VALUES('p1', '某医院PACS')", &[]).unwrap();
+        (dir, guard)
+    }
+
+    fn scalar(sql: &str) -> i64 {
+        database::get(sql, &[]).ok().flatten().and_then(|r| match r {
+            serde_json::Value::Object(m) => m.values().next().and_then(|v| v.as_i64()),
+            other => other.as_i64(),
+        }).unwrap_or(-1)
+    }
+
+    /// 核心回归：带前缀引用关联 → 映射行与派生边都必须是裸 uuid
+    #[tokio::test(flavor = "multi_thread")]
+    async fn link_with_entity_refs_writes_bare_mapping_and_edge() {
+        let (_d, _g) = setup();
+        let res = super::manage_partner::execute(&json!({
+            "action": "link_project", "partner_id": "VENDOR-v1", "project_id": "PROJECT-p1"
+        }));
+        assert!(res.contains("\"success\":true"), "{}", res);
+        assert_eq!(scalar("SELECT COUNT(*) c FROM partner_project_mapping WHERE partner_id='v1' AND project_id='p1'"), 1, "映射行必须裸 uuid");
+        assert_eq!(scalar("SELECT COUNT(*) c FROM business_relations WHERE source_id='v1' AND target_id='p1' AND relation_type='belongs_to'"), 1, "派生边必须裸 uuid（双向图谱可查）");
+    }
+
+    /// 裸 uuid 形态同样可用（历史上下文里的旧 ID 不回归）
+    #[tokio::test(flavor = "multi_thread")]
+    async fn link_with_bare_ids_still_works() {
+        let (_d, _g) = setup();
+        let res = super::manage_partner::execute(&json!({
+            "action": "link_project", "partner_id": "v1", "project_id": "p1"
+        }));
+        assert!(res.contains("\"success\":true"), "{}", res);
+        assert_eq!(scalar("SELECT COUNT(*) c FROM partner_project_mapping"), 1);
+    }
+
+    /// 解析失败必须报错且零垃圾行（此前静默写入 → 前端失明的元凶）
+    #[test]
+    fn unresolvable_project_rejected_without_garbage() {
+        let (_d, _g) = setup();
+        let res = super::manage_partner::execute(&json!({
+            "action": "create", "type": "VENDOR", "name": "新厂商", "project_id": "PROJECT-nope"
+        }));
+        assert!(res.contains("\"success\":false"), "{}", res);
+        assert_eq!(scalar("SELECT COUNT(*) c FROM partners"), 1, "不创建任何行");
+        assert_eq!(scalar("SELECT COUNT(*) c FROM partner_project_mapping"), 0, "零垃圾映射行");
+    }
+
+    /// 引用类型不符必须报错（把 PROJECT 引用当合作伙伴 ID 传入）
+    #[test]
+    fn wrong_type_ref_rejected() {
+        let (_d, _g) = setup();
+        let res = super::manage_partner::execute(&json!({
+            "action": "link_project", "partner_id": "PROJECT-p1", "project_id": "p1"
+        }));
+        assert!(res.contains("引用类型不符"), "{}", res);
+        assert_eq!(scalar("SELECT COUNT(*) c FROM partner_project_mapping"), 0);
+    }
+
+    /// 同名复用路径此前静默丢弃 project_id——复用也必须落关联
+    #[test]
+    fn reuse_on_duplicate_still_links_project() {
+        let (_d, _g) = setup();
+        let res = super::manage_partner::execute(&json!({
+            "action": "create", "type": "VENDOR", "name": "华为", "project_id": "PROJECT-p1"
+        }));
+        assert!(res.contains("\"duplicate\":true"), "{}", res);
+        assert_eq!(scalar("SELECT COUNT(*) c FROM partner_project_mapping WHERE partner_id='v1' AND project_id='p1'"), 1, "复用路径也落关联");
+    }
+
+    /// 取消关联：前缀/裸两种形态都能删净；重复取消诚实回报"未找到"
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unlink_removes_in_both_forms_and_reports_honestly() {
+        let (_d, _g) = setup();
+        super::manage_partner::execute(&json!({"action": "link_project", "partner_id": "v1", "project_id": "PROJECT-p1"}));
+        let res = super::manage_partner::execute(&json!({
+            "action": "unlink_project", "partner_id": "VENDOR-v1", "project_id": "p1"
+        }));
+        assert!(res.contains("已取消"), "{}", res);
+        assert_eq!(scalar("SELECT COUNT(*) c FROM partner_project_mapping"), 0);
+        let res2 = super::manage_partner::execute(&json!({
+            "action": "unlink_project", "partner_id": "v1", "project_id": "p1"
+        }));
+        assert!(res2.contains("未找到对应关联记录"), "{}", res2);
+    }
+}

@@ -291,6 +291,15 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "UPDATE chat_sessions SET updated_at = (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.session_id = chat_sessions.id) WHERE EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = chat_sessions.id)",
         // 邮箱保留期（月，0=永久）：过期邮件由 cleanup_expired_emails 周期物理删除；同步游标不受影响（防重拉）
         "ALTER TABLE email_accounts ADD COLUMN retention_months INTEGER DEFAULT 0",
+        // ★ 存量坏数据自愈：AI 曾以 entity_ref 引用形态（PROJECT-uuid 等）写入映射表，前端/图谱按裸 uuid
+        //   查询 → 关联"单向失明"。剥前缀归位；UPDATE OR IGNORE 后仍带前缀的行 = 两形态并存的重复副本 → 删；
+        //   被污染的 belongs_to/employed_by 派生边由启动对账 rebuild_all_derived_edges 按映射表（真相源）重建
+        "UPDATE OR IGNORE partner_project_mapping SET project_id = substr(project_id, 9) WHERE project_id LIKE 'PROJECT-%'",
+        "UPDATE OR IGNORE partner_project_mapping SET partner_id = CASE WHEN partner_id LIKE 'VENDOR-%' THEN substr(partner_id, 8) WHEN partner_id LIKE 'CHANNEL-%' THEN substr(partner_id, 9) WHEN partner_id LIKE 'CUSTOMER-%' THEN substr(partner_id, 10) END WHERE partner_id LIKE 'VENDOR-%' OR partner_id LIKE 'CHANNEL-%' OR partner_id LIKE 'CUSTOMER-%'",
+        "UPDATE OR IGNORE contact_project_mapping SET project_id = substr(project_id, 9) WHERE project_id LIKE 'PROJECT-%'",
+        "UPDATE OR IGNORE contact_project_mapping SET contact_id = substr(contact_id, 9) WHERE contact_id LIKE 'CONTACT-%'",
+        "DELETE FROM partner_project_mapping WHERE project_id LIKE 'PROJECT-%' OR partner_id LIKE 'VENDOR-%' OR partner_id LIKE 'CHANNEL-%' OR partner_id LIKE 'CUSTOMER-%'",
+        "DELETE FROM contact_project_mapping WHERE project_id LIKE 'PROJECT-%' OR contact_id LIKE 'CONTACT-%'",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
