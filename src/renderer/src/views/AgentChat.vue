@@ -1089,7 +1089,7 @@ onUnmounted(() => {
     <!-- Input Bar -->
     <div class="flex-shrink-0 px-4 pb-4 pt-2 bg-surface-50/30">
       <div class="max-w-3xl mx-auto">
-        <PlanDock />
+        <PlanDock :running="agent.isChatting.value" />
         <div class="flex items-start justify-between gap-2 mb-1.5">
           <AttachmentChips v-if="pendingAttachments.length" :files="pendingAttachments" removable @remove="removeAttachment" />
           <p class="text-[10px] text-surface-300 pr-1 flex-shrink-0 mt-0.5 ml-auto">↵ 发送 · Shift+↵ 换行</p>
