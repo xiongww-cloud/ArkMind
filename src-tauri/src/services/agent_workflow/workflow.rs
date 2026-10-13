@@ -877,7 +877,7 @@ pub async fn agent_chat_workflow_internal(
     
     // System Prompt 注入可用 Agent 列表；【关于我】仅 AI 助手主Agent注入（分析师/子Agent不注入）
     let whoami_section = if is_root && system_prompt.is_none() {
-        let block = crate::services::whoami::Whoami::load().prompt_block(true);
+        let block = crate::services::whoami::Whoami::load().prompt_block(true, false);
         if block.is_empty() { String::new() } else { format!("\n\n{}", block) }
     } else {
         String::new()
@@ -895,6 +895,11 @@ pub async fn agent_chat_workflow_internal(
     }
     let mut tool_text_retry_count = 0u32; // 工具调用文本重试计数器
     let mut retry_count = 0u32; // ToolCall 清理后重试计数器
+    // ★ plan 续跑兜底：模型未调工具直接收尾、但计划仍有未 done 步骤时注入核对提示继续。
+    //   每 run ≤2 次；第二次触发要求 done_count 相比上次续跑有增长（无增长=模型已按实际收尾
+    //   或状态记录失真，不再骚扰）。工具轮仍受 iters/budget 熔断硬上限约束，不会失控
+    let mut auto_continue_count = 0u32;
+    let mut auto_continue_last_done: i32 = -1;
     // ★ 轮次核算（通道框架的批末记账）：每轮 LLM 产出的确切字数累计，随 writing 事件下发，
     //   前端"正在生成内容 · N 字"按批叠加显示——不依赖 provider 流式节奏，数字到达即真值
     let mut confirmed_chars: usize = 0;
@@ -1086,6 +1091,30 @@ pub async fn agent_chat_workflow_internal(
                         continue;
                     } else {
                         log::warn!("[Agent] 重试次数耗尽，返回空答案");
+                    }
+                }
+
+                // ★ plan 续跑兜底（详见计数器处注释）：仅持久会话主聊天 run；分析师(带 system_prompt)/子Agent/无会话不触发。
+                //   不点名"第几步"——状态可能滞后，点名会把模型带偏；核对与关 plan 均交还模型
+                if is_root && system_prompt.is_none() && session_id.is_some()
+                    && auto_continue_count < 2 && !answer.trim().is_empty()
+                {
+                    let unsettled = session.plan.as_ref().map_or(false, |p|
+                        p.states.iter().any(|s| *s != crate::services::agent_workflow::plan::StepState::Done));
+                    if unsettled {
+                        let done_now = session.plan.as_ref().map_or(0, |p| p.done_count()) as i32;
+                        if auto_continue_count == 0 || done_now > auto_continue_last_done {
+                            auto_continue_count += 1;
+                            auto_continue_last_done = done_now;
+                            let snapshot = session.plan.as_ref().map(|p| p.render_list()).unwrap_or_default();
+                            log::info!("[Agent] 计划未确认完成，自动续跑第{}次（done={}/{}）", auto_continue_count, done_now, session.plan.as_ref().map_or(0, |p| p.steps.len()));
+                            messages.push(ChatMessage{role:MessageRole::Assistant, content: Some(answer.clone()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+                            messages.push(ChatMessage{role:MessageRole::User, content: Some(format!(
+                                "[系统] 执行计划尚未确认全部完成（当前快照，状态可能滞后）：\n{}\n请先核对实际进展：若各步确已全部完成，用 ext_tool_plan 更新状态或直接删除该计划，然后简短收尾作答即可，不必为跑而跑；若确有未完成事项，请继续推进到落实后再结束。", snapshot
+                            )), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None});
+                            continue;
+                        }
+                        log::info!("[Agent] 续跑后计划完成数无增长（done={}），尊重模型收尾，不再注入", done_now);
                     }
                 }
 
