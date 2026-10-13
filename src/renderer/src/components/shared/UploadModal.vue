@@ -56,6 +56,12 @@ interface PendingUpload {
 const show = ref(false)
 const uploading = ref(false)
 const pendingUploads = ref<PendingUpload[]>([])
+// 单入口小菜单（仅 folderTree 域）：文件/目录两路对话框由系统限制无法混选，点击分流
+const entryMenu = ref(false)
+function onZoneClick() {
+  if (props.folderTree) entryMenu.value = !entryMenu.value
+  else pickFiles()
+}
 
 function extOf(name: string): string {
   const i = name.lastIndexOf('.')
@@ -93,6 +99,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPasteKeydown))
 function open() {
   pendingUploads.value = []
   dirSummary.value = null
+  entryMenu.value = false
   show.value = true
   // macOS：paste 事件只在可编辑元素上触发，弹窗打开后聚焦隐藏的 textarea
   requestAnimationFrame(() => {
@@ -103,6 +110,8 @@ function open() {
 function close() {
   show.value = false
   pendingUploads.value = []
+  entryMenu.value = false
+  dirSummary.value = null
 }
 
 async function pickFiles() {
@@ -385,10 +394,10 @@ defineExpose({ open, close })
 
           <!-- 内容区 -->
           <div class="flex-1 overflow-y-auto px-6 py-4">
-            <!-- 选择/粘贴区域 -->
+            <!-- 选择/粘贴区域：单入口；树域点击出「文件/目录」小菜单 -->
             <div
-              @click="pickFiles"
-              class="w-full border-2 border-dashed rounded-xl py-5 px-4 text-center transition-all duration-200 cursor-pointer flex items-center justify-center gap-2.5 mb-4"
+              @click="onZoneClick"
+              class="w-full border-2 border-dashed rounded-xl py-5 px-4 text-center transition-all duration-200 cursor-pointer flex items-center justify-center gap-2.5 mb-1.5"
               :class="pendingUploads.length
                 ? 'border-emerald-300 bg-emerald-50/40'
                 : 'border-surface-200 hover:border-brand-400 hover:bg-brand-50/30'"
@@ -401,15 +410,20 @@ defineExpose({ open, close })
               </div>
               <div class="text-left">
                 <p class="text-[12px] font-medium text-surface-700">
-                  {{ pendingUploads.length ? `已选择 ${pendingUploads.length} 个文件` : `点击选择或按 ${pasteShortcut} 粘贴` }}
+                  {{ pendingUploads.length ? `已选择 ${pendingUploads.length} 个文件` : (folderTree ? `点击选择文件或目录，或按 ${pasteShortcut} 粘贴` : `点击选择或按 ${pasteShortcut} 粘贴`) }}
                 </p>
                 <p v-if="pendingUploads.length" class="text-[12px] text-surface-600 mt-0.5">点击或粘贴追加文件</p>
               </div>
             </div>
 
-            <!-- 目录上传入口（仅树域）：选择目录后自动镜像子目录结构 -->
-            <div v-if="folderTree" class="flex justify-end -mt-2.5 mb-4">
-              <button @click="pickDirectory" class="btn-secondary text-xs"><AppIcon name="folder" size="12" />上传目录（含子目录）</button>
+            <!-- 入口小菜单（仅树域；平台文件框不能混选文件与目录，由菜单分流两路对话框） -->
+            <div v-if="entryMenu" class="mb-2.5 border border-surface-200 rounded-xl shadow-lg bg-white overflow-hidden">
+              <button @click="entryMenu = false; pickFiles()" class="w-full flex items-center gap-2 px-4 py-2.5 text-[12px] text-surface-700 hover:bg-brand-50/50 transition-colors">
+                <AppIcon name="file-doc" size="13" class="text-surface-400" />选择文件
+              </button>
+              <button @click="entryMenu = false; pickDirectory()" class="w-full flex items-center gap-2 px-4 py-2.5 text-[12px] text-surface-700 hover:bg-brand-50/50 transition-colors border-t border-surface-50">
+                <AppIcon name="folder" size="13" class="text-surface-400" />选择目录（镜像子目录结构）
+              </button>
             </div>
 
             <!-- 目录确认闸：遍历统计如实呈现，确认才入队（防误选大目录） -->
