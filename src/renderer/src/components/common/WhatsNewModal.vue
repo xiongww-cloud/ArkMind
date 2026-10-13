@@ -17,6 +17,18 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '14.4.1',
+    date: '2026-10-13',
+    icon: 'sparkles',
+    iconBg: 'bg-blue-50',
+    iconColor: 'text-blue-600',
+    title: '答复版式与复制体验',
+    items: [
+      '桌面浮窗的 AI 答复新增「复制」按钮，一键带走回答原文',
+      'AI 助手（主窗口）答复去掉气泡卡片、正文平铺展示，与浮窗版式统一，长文更好读；复制/修订/Workspace 等操作不变',
+    ],
+  },
+  {
     version: '14.4.0',
     date: '2026-10-13',
     icon: 'folder',
