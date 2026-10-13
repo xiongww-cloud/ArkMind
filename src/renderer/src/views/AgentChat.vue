@@ -1026,7 +1026,7 @@ onUnmounted(() => {
               <button class="w-5 h-5 flex items-center justify-center rounded text-[#c7c7cc] hover:text-[#2563eb] transition-colors" v-tooltip="'复制'" @click="copyUserMsg(msg)"><AppIcon name="copy" size="11" /></button>
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
-              <div class="bg-white border border-[#e5e5ea] rounded-2xl rounded-tl-[4px] px-3 py-2 shadow-sm w-full" :class="{ 'thinking-bubble': msg.isThinking }">
+              <div class="w-full" :class="{ 'thinking-bubble': msg.isThinking }">
                 <!-- 委托轨迹行：子 Agent 执行中且正文尚未流出时，顶替"思考中"占位（气泡内唯一状态位） -->
                 <div v-if="msg.isThinking && !renderedContent(msg.id || '') && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
                   <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>

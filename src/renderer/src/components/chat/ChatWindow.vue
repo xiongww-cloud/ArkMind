@@ -519,7 +519,7 @@ function askWithdraw(anchor: ChatMessage) {
   const nth = messages.value.slice(0, idx + 1).filter(m => m.role === 'user' && base(m.content || '') === text).length - 1
   withdrawTarget.value = { text, files, idx, nth, attachments: (anchor as any).attachments || [] }
 }
-async function copyUserMsg(m: ChatMessage) {
+async function copyMessage(m: ChatMessage) {
   try { await navigator.clipboard.writeText((m.content || '').trim()); import('@/composables/useToast').then(t => t.toast({ message: '已复制', type: 'success' })) }
   catch { import('@/composables/useToast').then(t => t.toast({ message: '复制失败', type: 'error' })) }
 }
@@ -667,6 +667,9 @@ onUnmounted(() => {
               <div v-if="!m.thinking" class="msg-a__meta">
                 <span>{{ fmtTime(m.timestamp) }}</span>
                 <span v-if="m.assistants?.length" class="via-chip">via {{ m.assistants.join(' · ') }}</span>
+                <button v-if="!m.error && (m.content || '').trim()" class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors" v-tooltip="'复制'" @click="copyMessage(m)">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+                </button>
                 <button v-if="m.id === messages[messages.length - 1]?.id && !agent.isChatting.value && !m.error"
                   :class="['annotate-skip w-5 h-5 -mr-1 flex items-center justify-center rounded transition-colors', annotateId === (m.id || '') ? 'text-brand-600 bg-brand-50' : 'text-surface-300 hover:text-brand-600']"
                   v-tooltip="annotateId === (m.id || '') ? '取消修订' : '修订'"
@@ -693,7 +696,7 @@ onUnmounted(() => {
               <button class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-red-500 transition-colors" v-tooltip="'撤回：移除此后全部对话'" @click="askWithdraw(m)">
                 <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 010 11H11"/></svg>
               </button>
-              <button class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors" v-tooltip="'复制'" @click="copyUserMsg(m)">
+              <button class="w-5 h-5 flex items-center justify-center rounded text-surface-300 hover:text-brand-600 transition-colors" v-tooltip="'复制'" @click="copyMessage(m)">
                 <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
               </button>
             </div>
