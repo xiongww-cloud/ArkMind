@@ -323,7 +323,6 @@ async function confirmUpload() {
   let ok = 0
   let fail = 0
   let skipped = 0
-  const dupBrief: string[] = []
   const renamedBrief: string[] = []
   let entityId: string | undefined
   try {
@@ -352,9 +351,8 @@ async function confirmUpload() {
         folderId: folderIdForItem,
       })
       if (r?.duplicateSkipped) {
-        // 同名同内容：后端守门已跳过入库，计入"已存在"而非失败
+        // 同名同内容：后端守门已跳过入库，计入"已存在"而非失败（数量口径，不列文件名）
         skipped++
-        dupBrief.push(r?.existingFolder ? `${rawName}（已在《${r.existingFolder}》）` : rawName)
       } else {
         ok++
         if (r?.renamedTo) renamedBrief.push(`${rawName} → ${r.renamedTo}`)
@@ -378,7 +376,7 @@ async function confirmUpload() {
   else if (ok > 0 || skipped > 0) {
     const bits: string[] = []
     if (ok > 0) bits.push(`新增 ${ok}`)
-    if (skipped > 0) bits.push(`同名同内容已存在跳过 ${skipped}（${dupBrief.slice(0, 3).join('、')}${dupBrief.length > 3 ? ' 等' : ''}）`)
+    if (skipped > 0) bits.push(`跳过重复文件 ${skipped} 个`)
     if (renamedBrief.length) bits.push(`同名不同内容自动改名 ${renamedBrief.length}（${renamedBrief.slice(0, 2).join('、')}${renamedBrief.length > 2 ? ' 等' : ''}）`)
     if (fail > 0) bits.push(`失败 ${fail}`)
     toast({ message: `上传完成：${bits.join(' · ')}`, type: fail > 0 ? 'warning' : 'success' })
