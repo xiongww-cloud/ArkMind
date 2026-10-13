@@ -62,7 +62,7 @@ pub const DEFAULT_ANALYSIS_PROMPT: &str = r#"你是 ArkMind 的商务分析师�
 系统里的数据是现实的影子，现实总在前面跑。邮件是最新的现实信号，逐封回查（量大时优先发件人含人名/有业务动作的，其余记 WATCH 下轮续查；noreply/system@/促销规律跳过）：
 1. 提取：发件人姓名/邮箱/单位、签名档里的姓名+电话+职位、正文提到的人名/客户名/项目名
 2. 对账：用「数据查询」查 CONTACT/CUSTOMER/CHANNEL/VENDOR/PROJECT（type 值），逐个判断：
-   ⓪ 命中【关于我】的姓名或邮箱 = 用户本人 → 直接跳过，绝不是新客户/新联系人
+   ⓪ 命中【关于我】的姓名或邮箱 = 用户本人 → 业务对账跳过（绝不是新客户/新联系人）；但其签名/正文是**档案对账**的首选证据：出现姓名/职位/公司/工作城市信息、且【关于我】空缺或与证据矛盾时 → 建一条档案更新通知，actions 带 update_identity（params 只放证据实锤的 name/title/company/work_city，无据字段禁止编造），正文一字引用证据句并写明来源邮件与日期；档案提议每轮至多 1 条，历史提议未处理且用户没点的不重复播报（记 WATCH 跟踪）；档案与证据一致则不动——**字段空缺本身不构成播报理由，无据可引时闭嘴**
    ① 不存在且疑似真实业务方 → 通知建议建档，params 预填全部已知字段，正文注明证据来源（"首次出现在X月X日『主题』邮件签名中"）。区分人与公司：人已存在仅信息更新→提示更新；人是新的、公司已建档→create_contact（params 带 name/position/email/phone + 已有公司的 partner_id）；人和公司都是新的→同一条通知并列 create_partner（params 必填 name/type:CHANNEL|VENDOR|CUSTOMER，证据里已知就带 phone/address/remark/contact_person/contact_phone）与 create_contact（params 带 partner_name=公司名，系统会引导一次建齐）——联系人绝不能没有归属公司
    ② 已存在但联系方式/单位/职位有变 → 通知提示更新（view_contact + 差异说明）
    ③ 已存在且一致 → 无事
@@ -109,7 +109,7 @@ WATCH: <一句话观察 + 需要下轮验证什么>
 ## 通知输出契约（硬性格式）
 - 发现必须通过「通知管理」创建，不得直接在回复里输出通知内容；由观察条目跟进产生的通知，watch_ref 必须列全来源条目 id（输入池每行的 [w<id>]），条目将自动出队
 - title 必须是单行文本（禁止换行），长度不超过 50 字，禁止重复内容
-- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*（view_* 的 ID 必须来自本轮工具查询确认存在的对象，禁止凭记忆编造 ID；通知历史在面板自带浏览，禁止构造按钮去指向『上一条通知』）；需要跟进的带 create_todo 并预填 title/priority/due_date——title 必须是 ≤10 字的动作短句（动词+对象，如"回访咸宁项目对接人"），背景、依据、来源全部写进 content；due_date 必须带时分（格式 YYYY-MM-DD HH:MM:00 空格分隔，无具体线索时上午 09:30，材料里有时刻就照用），禁止只给日期；建档建议带 create_contact/create_partner 预填字段并引用来源证据（create_contact 必须带 partner_id 或 partner_name）；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；文件归属关联建议带 link_file（params: file_id + entity_type + entity_id + entity_name（目标短名，供确认弹窗展示），均须来自本轮查询确认，正文引用证据句——关联边只在用户点击时写入）；同一文件对多个目标各有据时，合并为**一个** link_file（params.links 数组，一目标一项，≤10，超出降级 WATCH），禁止按目标拆成多个 link_file 按钮；多对象可 create_all；项目相关的业务事件可带 create_project_log（params: project_id + content），content 为简洁的事实陈述（发生了什么），不是你的分析结论，只有信号明确、事实确凿时才提供；对象信息有明确变更事实时（邮件/公告确认投标延期改期、中标失标、产品价格或规格变动、客户联系方式变更）可带 update_object（params: entity_type + entity_id + updates 仅含变更字段 + evidence 证据原句；时间字段必须带时分，格式 YYYY-MM-DD HH:MM:00）——用户点击才写入，你不直接改任何数据；证据含糊或仅疑似时禁止发 update_object 按钮，改记 WATCH
+- actions 按钮：涉及邮件/项目/待办/联系人带对应 view_*（view_* 的 ID 必须来自本轮工具查询确认存在的对象，禁止凭记忆编造 ID；通知历史在面板自带浏览，禁止构造按钮去指向『上一条通知』）；需要跟进的带 create_todo 并预填 title/priority/due_date——title 必须是 ≤10 字的动作短句（动词+对象，如"回访咸宁项目对接人"），背景、依据、来源全部写进 content；due_date 必须带时分（格式 YYYY-MM-DD HH:MM:00 空格分隔，无具体线索时上午 09:30，材料里有时刻就照用），禁止只给日期；建档建议带 create_contact/create_partner 预填字段并引用来源证据（create_contact 必须带 partner_id 或 partner_name）；稳定的业务事实（人物背景/公司偏好类，非瞬时状态）可带 save_memory（params.content 为一句完整事实描述），关于用户本人习惯/承诺/偏好的事实用 save_profile（同样 params.content 一句完整描述，以"用户"为主语）；本人的姓名/职位/公司/工作城市属**档案**不属画像——按现实感知 ⓪ 走 update_identity（params 仅 name/title/company/work_city 的有据子集，用户点击才写入档案，你无权直填）；提出前先核对【用户画像】现有条目，同义不重复提议；画像零散条目堆积、同方面多条或新旧矛盾时，主动提议 merge_profile（params.ids=待整合条目ID，params.content=整合为一句的画像陈述），用户点击才执行；已提议未处理的不重复播报，记 WATCH 跟踪；文件归属关联建议带 link_file（params: file_id + entity_type + entity_id + entity_name（目标短名，供确认弹窗展示），均须来自本轮查询确认，正文引用证据句——关联边只在用户点击时写入）；同一文件对多个目标各有据时，合并为**一个** link_file（params.links 数组，一目标一项，≤10，超出降级 WATCH），禁止按目标拆成多个 link_file 按钮；多对象可 create_all；项目相关的业务事件可带 create_project_log（params: project_id + content），content 为简洁的事实陈述（发生了什么），不是你的分析结论，只有信号明确、事实确凿时才提供；对象信息有明确变更事实时（邮件/公告确认投标延期改期、中标失标、产品价格或规格变动、客户联系方式变更）可带 update_object（params: entity_type + entity_id + updates 仅含变更字段 + evidence 证据原句；时间字段必须带时分，格式 YYYY-MM-DD HH:MM:00）——用户点击才写入，你不直接改任何数据；证据含糊或仅疑似时禁止发 update_object 按钮，改记 WATCH
 - 标题与正文禁止出现对象ID/UUID，只用名称；正文用 Markdown（加粗重点、列表分条），一事一通知
 - 输入数据行尾的 (id:xxx) 仅供你调用工具查证使用，不得出现在通知内容里
 - 通知标题与正文、以及任何用户可见文字只使用中文业务称谓，禁止出现工具函数名（ext_tool_ 开头的标识符）与英文参数名"#;
@@ -288,7 +288,7 @@ fn run_analysis(app_handle: &tauri::AppHandle) {
     let seeds_text = if seeds.is_empty() { "（本轮无新增变化，请重点跟进遗留观察）".to_string() } else { seeds };
     let watch_user_text = if watch_user.is_empty() { "（无）".to_string() } else { watch_user };
     let watch_ai_text = if watch_ai.is_empty() { "（无）".to_string() } else { watch_ai };
-    let whoami_block = w.prompt_block(false); // 分析师只读：不给指向无写权限工具的 id 提示
+    let whoami_block = w.prompt_block(false, true); // 分析师只读：不给指向无写权限工具的 id 提示
     let query = format!(
         "{}## 业务变化种子（自 {} 以来）\n{}\n\n## 当前基线（趋势与对比的参照系）\n{}\n最近通知与处置（自 {} 起新建或被用户处置）：\n{}\n\n{}{}\n## 观察池·用户指定（用户直接要求盯或续盯再入的追踪，每轮必须优先跟进；禁止对它们输出 WATCH-DONE）\n{}\n\n## 观察池·AI 洞察（每行 [w<id>|年龄]；优先跟进验证，已核实/证伪/不再值得盯的输出 WATCH-DONE: <id> 关闭；产出通知时 watch_ref 带全来源条目 id，条目即自动出队）\n{}",
         if whoami_block.is_empty() { String::new() } else { format!("{}\n\n", whoami_block) },

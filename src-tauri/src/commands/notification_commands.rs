@@ -55,8 +55,10 @@ pub async fn notification_set_state(id: String, state: String) -> Result<(), Str
     Ok(())
 }
 
-/// 继续跟进：用通知标题构造观察条目再入用户区（通知是追踪事项的最新状态），并标记已读。
-/// 池不复活旧条目、新建条目（新 id 新起算）；通知状态不动——续盯语义=追踪在跑，非"回到待处理"
+/// 继续跟进：用通知标题构造观察条目再入用户区（通知是追踪事项的最新状态）。
+/// 池不复活旧条目、新建条目（新 id 新起算）。
+/// ★ 处置联动：续盯=用户对"本轮通知"的终局裁决（追踪意愿已另行入池表达），同置 user_state='done'
+/// 并标已读——一点即办结离开待处理流，免二次点击；已在池中（重复点击）同样落 done。
 #[tauri::command]
 pub async fn notification_watch_keep(id: String) -> Result<Value, String> {
     let row = database::get("SELECT title, entity_type, entity_id, user_state FROM notifications WHERE id=?", &[json!(id)])
@@ -73,7 +75,7 @@ pub async fn notification_watch_keep(id: String) -> Result<Value, String> {
         Err(e) if e.contains("完全相同") => None,
         Err(e) => return Err(e),
     };
-    database::run("UPDATE notifications SET read=1 WHERE id=?", &[json!(id)]).map_err(|e| e.to_string())?;
+    database::run("UPDATE notifications SET read=1, user_state='done', state_changed_at=datetime('now','localtime') WHERE id=?", &[json!(id)]).map_err(|e| e.to_string())?;
     match new_id {
         Some(wid) => Ok(json!({ "success": true, "watch_id": wid })),
         None => Ok(json!({ "success": true, "already": true })),
@@ -486,7 +488,7 @@ pub async fn profile_fact_delete(id: String) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{link_target_table, strip_type_prefix};
+    use super::{link_target_table, notification_watch_keep, strip_type_prefix};
 
     #[test]
     fn strip_type_prefix_only_for_uppercase_head() {
@@ -495,6 +497,24 @@ mod tests {
         assert_eq!(strip_type_prefix("abc-def"), "abc-def");
         assert_eq!(strip_type_prefix("abc"), "abc");
         assert_eq!(strip_type_prefix("-abc"), "-abc");
+    }
+
+    /// 续盯=一点即办结：入池成功同时落 user_state='done'+已读（免得用户再点第二次办结）；重复点击幂等
+    #[tokio::test]
+    async fn watch_keep_also_finalizes_notification_as_done() {
+        let (_d, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| crate::database::db_schema::create_schema(c)).unwrap();
+        crate::database::run(
+            "INSERT INTO notifications(id,type,title,user_state,read) VALUES('n1','insight','盯一下咸宁回款','',0)", &[]
+        ).unwrap();
+        let r = notification_watch_keep("n1".into()).await.unwrap();
+        assert!(r["success"].as_bool().unwrap());
+        let row = crate::database::get("SELECT user_state, read FROM notifications WHERE id='n1'", &[]).unwrap().unwrap();
+        assert_eq!(row["user_state"].as_str(), Some("done"), "续盯应自动办结");
+        assert_eq!(row["read"].as_i64(), Some(1));
+        // 重复点击：池去重走 already 分支，处置仍幂等成功
+        let r2 = notification_watch_keep("n1".into()).await.unwrap();
+        assert!(r2["success"].as_bool().unwrap(), "already 分支同样成功");
     }
 
     #[test]

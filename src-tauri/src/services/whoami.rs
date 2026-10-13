@@ -112,7 +112,9 @@ impl Whoami {
     /// 【关于我】+【用户画像】注入块。无任何信息时返回空串。
     /// with_id_hint：是否附带"id 可用于 ext_tool_memory 修改"提示——仅对有写权限的主 Agent 开启，
     /// 分析师只读（memory_search），提示会指向其不存在的工具权限
-    pub fn prompt_block(&self, with_id_hint: bool) -> String {
+    /// show_gaps：档案分析师视角专用——列出未填写的身份字段（只陈述状态，是否提议 update_identity
+    /// 由分析师凭"证据是否实锤"自行判断，空缺本身永远不构成播报理由）
+    pub fn prompt_block(&self, with_id_hint: bool, show_gaps: bool) -> String {
         let mut lines: Vec<String> = Vec::new();
         if !self.name.is_empty() {
             lines.push(format!("姓名: {}", self.name));
@@ -130,8 +132,21 @@ impl Whoami {
             lines.push(format!("我的邮箱: {}", self.emails.join(", ")));
         }
         let mut s = String::new();
+        let gaps: Vec<&str> = {
+            let mut g = Vec::new();
+            if self.name.is_empty() { g.push("姓名"); }
+            if self.title.is_empty() { g.push("职位"); }
+            if self.company.is_empty() { g.push("公司"); }
+            if self.work_city.is_empty() { g.push("工作城市"); }
+            g
+        };
         if !lines.is_empty() {
             s.push_str(&format!("【关于我】\n{}\n", lines.join("\n")));
+            if show_gaps && !gaps.is_empty() {
+                s.push_str(&format!("（档案未填写：{}。仅当邮件/文件中出现有据的本人身份信息时按档案对账规程提议 update_identity；空缺本身不是播报理由）\n", gaps.join("、")));
+            }
+        } else if show_gaps && !gaps.is_empty() {
+            s.push_str(&format!("【关于我】\n（档案为空：{}均未填写。仅当邮件/文件中出现有据的本人身份信息时按档案对账规程提议 update_identity；空缺本身不是播报理由）\n", gaps.join("、")));
         }
         if !self.facts.is_empty() {
             let facts: Vec<String> = self.facts.iter().map(|(id, f)| format!("- {} (id:{})", f, id)).collect();
@@ -464,12 +479,12 @@ mod tests {
     #[test]
     fn prompt_block_renders_all_sections_and_empty_is_blank() {
         let mut w = Whoami::default();
-        assert_eq!(w.prompt_block(true), "");
+        assert_eq!(w.prompt_block(true, false), "");
         w.name = "熊某某".into();
         w.title = "项目经理".into();
         w.emails = vec!["a@x.com".into()];
         w.facts = vec![("m1".into(), "用户习惯周三前交付方案".into())];
-        let b = w.prompt_block(true);
+        let b = w.prompt_block(true, false);
         assert!(b.contains("【关于我】"));
         assert!(b.contains("姓名: 熊某某"));
         assert!(b.contains("我的邮箱: a@x.com"));
@@ -477,9 +492,16 @@ mod tests {
         assert!(b.contains("- 用户习惯周三前交付方案 (id:m1)"));
         assert!(b.contains("ext_tool_memory"));
         // 分析师视角：id 仍在（供引用），但不得出现写工具提示
-        let r = w.prompt_block(false);
+        let r = w.prompt_block(false, true);
         assert!(r.contains("(id:m1)"));
         assert!(!r.contains("ext_tool_memory"));
+        // 分析师视角带档案空缺标记（只陈述状态）；主 Agent 精简视图不带
+        assert!(r.contains("未填写：公司、工作城市"), "{r}");
+        assert!(!w.prompt_block(true, false).contains("未填写"));
+        // 全空分析师视图仍输出「档案为空」行（分析师需要知道没档案可撞车）；主视图保持空串
+        let empt = Whoami::default();
+        assert!(empt.prompt_block(false, true).contains("档案为空"));
+        assert_eq!(empt.prompt_block(true, false), "");
     }
 
     #[test]

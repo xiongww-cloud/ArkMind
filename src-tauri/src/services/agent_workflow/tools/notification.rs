@@ -42,6 +42,27 @@ pub(crate) fn sanitize_actions_json(actions_raw: &str) -> (String, Vec<String>) 
             }
             continue;
         }
+        // ★ update_identity 创建侧校验：白名单字段(name/title/company/work_city)非空字符串才留，
+        //   统一截 60 字；无一条有据 = 剔按钮（档案空壳按钮不留给用户）
+        if atype == "update_identity" {
+            const IDENTITY_KEYS: [&str; 4] = ["name", "title", "company", "work_city"];
+            let mut clean = serde_json::Map::new();
+            for k in IDENTITY_KEYS {
+                if let Some(v) = item["params"][k].as_str() {
+                    let t = v.trim();
+                    if !t.is_empty() {
+                        clean.insert(k.to_string(), json!(t.chars().take(60).collect::<String>()));
+                    }
+                }
+            }
+            if clean.is_empty() {
+                dropped.push(item["label"].as_str().filter(|s| !s.is_empty()).unwrap_or(&atype).to_string());
+            } else {
+                if let Some(o) = item.as_object_mut() { o.insert("params".into(), Value::Object(clean)); }
+                kept.push(item);
+            }
+            continue;
+        }
         // ★ link_file 创建侧校验：单目标(entity_type/entity_id)或批量(links[])，
         //   逐条验存在性、剔除坏条（全坏才删按钮）——死按钮不留到用户点击（与 view_* 同策略）
         if atype == "link_file" {
@@ -435,4 +456,25 @@ pub(crate) fn execute(a: &Value, app_handle: &Option<tauri::AppHandle>) -> Strin
                                 }
                             };
     res
+}
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_actions_json;
+
+    /// update_identity：白名单四字段留实据值、去空白、剔除越权键；无一条有据=整钮剔除
+    #[test]
+    fn update_identity_keeps_only_evidenced_fields() {
+        let raw = r#"[
+          {"type":"update_identity","label":"写入档案","params":{"title":"渠道经理","company":"某某公司","name":"   ","remark":"越权","id":"hacked"}},
+          {"type":"update_identity","label":"空壳","params":{"remark":"没有身份字段"}}
+        ]"#;
+        let (clean, dropped) = sanitize_actions_json(raw);
+        let v: Vec<serde_json::Value> = serde_json::from_str(&clean).unwrap();
+        assert_eq!(v.len(), 1, "空壳钮应被剔除: {clean}");
+        assert_eq!(v[0]["params"]["title"], "渠道经理");
+        assert_eq!(v[0]["params"]["company"], "某某公司");
+        assert!(v[0]["params"].get("remark").is_none() && v[0]["params"].get("id").is_none(), "越权键不得透传");
+        assert!(v[0]["params"].get("name").is_none(), "trim 后空白的 name 不得保留");
+        assert_eq!(dropped.len(), 1, "{dropped:?}");
+    }
 }

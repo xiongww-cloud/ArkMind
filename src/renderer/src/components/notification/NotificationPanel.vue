@@ -3,7 +3,7 @@ import { ref, watch, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { notificationList, notificationMarkRead, notificationSetState, notificationWatchKeep, notificationDelete, notificationBatchDelete, emailActionConfirm, emailActionIgnore, memoryCreateFromNotification, profileFactSave, profileFactMerge, notificationCreateProjectLog, notificationLinkFile, notificationLinkFiles, notificationUpdateObject, type FileLinkTarget } from '@/api/notification-client'
 import type { Notification, NotificationAction, SuggestionMeta } from '@/api/notification-client'
-import { profileIdentityRevert, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
+import { profileIdentityRevert, updateUserProfile, createTodo, createProject, createProduct, createPartner, createPartnerContact, notesV2Create } from '@/api/db-client'
 import { sanitizeHtml } from '@/utils/sanitize'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
@@ -206,12 +206,21 @@ async function keepWatching(n: Notification) {
   try {
     const r = await notificationWatchKeep(n.id)
     if (r.already) {
-      toast({ message: '此事已在观察池追踪中，无需重复续盯', type: 'info' })
+      toast({ message: '此事已在观察池追踪中，已为你办结', type: 'info' })
     } else if (r.success) {
+      toast({ message: `已加入观察池（w${r.watch_id}），分析师将持续跟进`, type: 'success' })
+    } else { return }
+    // 后端已同置 user_state='done'：前端同步流内表现（与 setNotifState 同款收尾，不再重复写库）
+    if (props.stateFilter === 'all') {
+      n.user_state = 'done'
       n.read = 1
       resortNotifications()
-      toast({ message: `已加入观察池（w${r.watch_id}），分析师将持续跟进`, type: 'success' })
+    } else {
+      notifications.value = notifications.value.filter(x => x.id !== n.id)
     }
+    expandedId.value = expandedId.value === n.id ? null : expandedId.value
+    emit('read')
+    tauriEmit('notification:updated')
   } catch (e: any) {
     toast({ message: `续盯失败：${e?.message || e}`, type: 'error' })
   }
@@ -272,6 +281,7 @@ const ACTION_ICONS: Record<string, string> = {
   create_all: 'check-circle',
   save_memory: 'save',
   save_profile: 'user',
+  update_identity: 'user',
   merge_profile: 'refresh',
   revert_profile: 'undo',
   create_project_log: 'file-text',
@@ -382,6 +392,24 @@ async function handleAction(n: Notification, action: NotificationAction) {
           notifications.value = notifications.value.filter(x => x.id !== n.id)
         } else {
           toast({ message: '保存失败', type: 'error' })
+        }
+        break
+      }
+      case 'update_identity': {
+        // 分析师档案对账提议：仅写证据字段（后端 sanitize 已白名单化）；用户点击=确认写入，进「我的档案」
+        const data: Record<string, string> = {}
+        for (const k of ['name', 'title', 'company', 'work_city']) {
+          const v = (p[k] as string || '').trim()
+          if (v) data[k] = v
+        }
+        if (!Object.keys(data).length) { toast({ message: '该通知未提供可写入的档案字段', type: 'info' }); break }
+        try {
+          await updateUserProfile(data)
+          toast({ message: `档案已更新（${Object.values(data).join(' · ')}），可在 设置→我的档案 查看修改`, type: 'success' })
+          await notificationMarkRead(n.id)
+          notifications.value = notifications.value.filter(x => x.id !== n.id)
+        } catch {
+          toast({ message: '档案更新失败', type: 'error' })
         }
         break
       }
