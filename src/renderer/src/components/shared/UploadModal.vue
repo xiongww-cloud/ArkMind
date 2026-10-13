@@ -38,7 +38,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   uploaded: [fileId: string]
-  done: [{ ok: number; fail: number }]
+  done: [{ ok: number; fail: number; skipped: number }]
 }>()
 
 interface PendingUpload {
@@ -185,12 +185,13 @@ async function ensureMirrorDirs(relPath: string, projectId: string | null): Prom
     mirrorIndex = new Map()
     try {
       const tree: any = await fetchFileTree(projectId ?? undefined)
-      for (const fd of tree?.folders ?? []) mirrorIndex.set(`${fd.parent_id ?? ''}|${fd.name}`, fd.id)
+      // 归一匹配（trim+lower）：大小写/首尾空格变体复用既有目录，不并排重建——与文件判重同口径
+      for (const fd of tree?.folders ?? []) mirrorIndex.set(`${fd.parent_id ?? ''}|${fd.name.trim().toLowerCase()}`, fd.id)
     } catch { /* 索引拉取失败退化为全新建：同名复用失效但可用 */ }
   }
   let parentId = baseFolderId()
   for (const seg of parts) {
-    const key = `${parentId ?? ''}|${seg}`
+    const key = `${parentId ?? ''}|${seg.trim().toLowerCase()}`
     let id: string | null | undefined = mirrorIndex.get(key)
     if (!id) {
       try { id = ((await createFolder(seg, parentId, projectId)) as any)?.id || null } catch { id = null }
@@ -321,6 +322,9 @@ async function confirmUpload() {
   mirrorIndex = null
   let ok = 0
   let fail = 0
+  let skipped = 0
+  const dupBrief: string[] = []
+  const renamedBrief: string[] = []
   let entityId: string | undefined
   try {
     entityId = props.resolveEntityId ? await props.resolveEntityId() : undefined
@@ -347,24 +351,38 @@ async function confirmUpload() {
         note: props.note || '',
         folderId: folderIdForItem,
       })
-      ok++
-      const fileId = r?.fileId || r?.id || r?.objectId
-      if (fileId) emit('uploaded', fileId)
+      if (r?.duplicateSkipped) {
+        // 同名同内容：后端守门已跳过入库，计入"已存在"而非失败
+        skipped++
+        dupBrief.push(r?.existingFolder ? `${rawName}（已在《${r.existingFolder}》）` : rawName)
+      } else {
+        ok++
+        if (r?.renamedTo) renamedBrief.push(`${rawName} → ${r.renamedTo}`)
+        const fileId = r?.fileId || r?.id || r?.objectId
+        if (fileId) emit('uploaded', fileId)
+      }
     } catch (e) {
       fail++
       console.warn('[UploadModal] upload failed:', e)
     } finally {
       if (!item.isPath && item.tempPath) {
-        try { await removeTempFile(item.tempPath) } catch {}
+        try { await removeTempFile(item.tempPath).catch(() => {}) } catch {}
       }
     }
   }
   uploading.value = false
-  const doneResult = { ok, fail }
+  const doneResult = { ok, fail, skipped }
   pendingUploads.value = []
   show.value = false
-  if (ok > 0 && fail === 0) toast({ message: `上传成功 ${ok} 个文件`, type: 'success' })
-  else if (ok > 0) toast({ message: `上传完成：成功 ${ok}，失败 ${fail}`, type: 'warning' })
+  if (ok > 0 && fail === 0 && skipped === 0 && !renamedBrief.length) toast({ message: `上传成功 ${ok} 个文件`, type: 'success' })
+  else if (ok > 0 || skipped > 0) {
+    const bits: string[] = []
+    if (ok > 0) bits.push(`新增 ${ok}`)
+    if (skipped > 0) bits.push(`同名同内容已存在跳过 ${skipped}（${dupBrief.slice(0, 3).join('、')}${dupBrief.length > 3 ? ' 等' : ''}）`)
+    if (renamedBrief.length) bits.push(`同名不同内容自动改名 ${renamedBrief.length}（${renamedBrief.slice(0, 2).join('、')}${renamedBrief.length > 2 ? ' 等' : ''}）`)
+    if (fail > 0) bits.push(`失败 ${fail}`)
+    toast({ message: `上传完成：${bits.join(' · ')}`, type: fail > 0 ? 'warning' : 'success' })
+  }
   else toast({ message: '上传失败', type: 'error' })
   emit('done', doneResult)
 }

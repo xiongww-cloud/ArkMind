@@ -106,13 +106,86 @@ pub(crate) fn add_relation(file_id: &str, entity_type: &str, entity_id: &str, cu
     crate::services::business_relations::upsert("FILE", file_id, &entity_type.to_uppercase(), entity_id, "has_file", &meta.to_string());
 }
 
-fn add_relation_with_desc(file_id: &str, entity_type: &str, entity_id: &str, custom_name: &str, creator: &str, description: &str) {
+/// 同对象内的显示名（custom_name 空回退 original_name）与 asset hash 一致 = 重复上传。
+/// 判重键 lower(trim(...))：大小写/首尾空格变体视为同名。
+fn norm_name(s: &str) -> String { s.trim().to_lowercase() }
+
+fn split_stem_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') { Some(i) if i > 0 => (&name[..i], &name[i..]), _ => (name, "") }
+}
+
+/// 查同对象下显示名与 want 相同的已有 relation：返回 (asset hash, 所在目录名（无则空串）)。
+/// exclude_relation_id：改名守卫排除自身行；上传守门传空串（本行尚未插入）。
+fn same_name_relations(entity_type: &str, entity_id: &str, want: &str, exclude_relation_id: &str) -> Vec<(String, String)> {
+    database::all(
+        "SELECT fa.content_hash AS h, \
+                COALESCE((SELECT name FROM library_folders WHERE id=COALESCE(fr.folder_id, \
+                    (SELECT folder_id FROM library_file_locations WHERE file_id=fr.file_id))), '') AS folder \
+         FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id \
+         WHERE fr.entity_type=?1 AND fr.entity_id=?2 AND (?3='' OR fr.id!=?3) \
+           AND lower(trim(CASE WHEN COALESCE(fr.custom_name,'')!='' THEN fr.custom_name ELSE fa.original_name END)) = lower(trim(?4))",
+        &[json!(entity_type), json!(entity_id), json!(exclude_relation_id), json!(want)],
+    ).unwrap_or_default().iter()
+        .filter_map(|r| Some((r["h"].as_str()?.to_string(), r["folder"].as_str()?.to_string())))
+        .collect()
+}
+
+/// 上传去重结果：skipped=同名同内容未新增关联；final_name 非空=被自动序号消歧（同名异内容）；
+/// existing_folder=命中已有同名同内容文件所在目录名（library 域提示位置用）。
+pub(crate) struct UploadDedup {
+    pub skipped: bool,
+    pub final_name: String,
+    pub existing_folder: String,
+}
+
+fn insert_relation(file_id: &str, entity_type: &str, entity_id: &str, custom_name: &str, creator: &str, description: &str) {
     database::run(
         "INSERT OR IGNORE INTO file_relations(id,file_id,entity_type,entity_id,custom_name,creator,description) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         &[json!(uuid::Uuid::new_v4().to_string()), json!(file_id), json!(entity_type), json!(entity_id), json!(custom_name), json!(creator), json!(description)]
     ).ok();
     let meta = serde_json::json!({"custom_name": custom_name, "creator": creator, "description": description});
     crate::services::business_relations::upsert("FILE", file_id, &entity_type.to_uppercase(), entity_id, "has_file", &meta.to_string());
+}
+
+/// ★ 关系层去重守门（上传链路唯一插入口，聊天/邮件/粘贴旁路同受保护）：
+/// - 同对象 同名+同hash → 跳过（返回 false + 已有位置），既不占盘（CAS）也不挂重复引用；
+/// - 同对象 同名+异hash → 自动 " (N)" 递增后缀放行（不同信息必须可区分，先例：write_document 同名后缀）；
+/// - 异名 → 原样放行（同内容由 file_assets CAS 复用存储）。
+/// 返回 (是否新增, 消歧后最终名(未改名时空), 已存在位置目录名)。
+fn add_relation_with_desc(file_id: &str, entity_type: &str, entity_id: &str, custom_name: &str, creator: &str, description: &str) -> (bool, String, String) {
+    let own_hash = database::get("SELECT content_hash FROM file_assets WHERE id=?", &[json!(file_id)])
+        .ok().flatten().and_then(|r| r["content_hash"].as_str().map(String::from)).unwrap_or_default();
+    let original = database::get("SELECT original_name FROM file_assets WHERE id=?", &[json!(file_id)])
+        .ok().flatten().and_then(|r| r["original_name"].as_str().map(String::from)).unwrap_or_default();
+    let want = if custom_name.trim().is_empty() { original } else { custom_name.trim().to_string() };
+    if want.is_empty() || own_hash.is_empty() {
+        // 无名/查不到 hash（理论不发生）：退回旧行为，判重让位于可用性
+        insert_relation(file_id, entity_type, entity_id, custom_name, creator, description);
+        return (true, String::new(), String::new());
+    }
+    let conflicts = same_name_relations(entity_type, entity_id, &want, "");
+    if let Some((_, folder)) = conflicts.iter().find(|(h, _)| h == &own_hash) {
+        return (false, String::new(), folder.clone());
+    }
+    if conflicts.is_empty() {
+        insert_relation(file_id, entity_type, entity_id, custom_name, creator, description);
+        return (true, String::new(), String::new());
+    }
+    // 同名异 hash：找该对象下未被占用的最小序号后缀
+    let occupied: std::collections::HashSet<String> = database::all(
+        "SELECT lower(trim(CASE WHEN COALESCE(fr.custom_name,'')!='' THEN fr.custom_name ELSE fa.original_name END)) AS n \
+         FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.entity_type=?1 AND fr.entity_id=?2",
+        &[json!(entity_type), json!(entity_id)],
+    ).unwrap_or_default().iter().filter_map(|r| r["n"].as_str().map(norm_name)).collect();
+    let (stem, ext) = split_stem_ext(&want);
+    let mut n = 2usize;
+    let final_name = loop {
+        let cand = format!("{} ({}){}", stem, n, ext);
+        if !occupied.contains(&norm_name(&cand)) || n > 999 { break cand; }
+        n += 1;
+    };
+    insert_relation(file_id, entity_type, entity_id, &final_name, creator, description);
+    (true, final_name, String::new())
 }
 
 pub fn get_physical_path(file_id: &str) -> Option<String> {
@@ -152,7 +225,7 @@ pub(crate) async fn upload_file_core(
     note: &str,
     folder_id: Option<&str>,
     ingest_knowledge: bool,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, UploadDedup), String> {
     // ★ 内容权威：魔数嗅探优先决定 file_ext，文件名（含 Outlook CID 垃圾后缀）仅作回退
     let fp0 = file_path.to_string();
     let name0 = std::path::Path::new(file_path)
@@ -177,17 +250,25 @@ pub(crate) async fn upload_file_core(
             let fp2 = file_path.to_string();
             let _ = tauri::async_runtime::spawn_blocking(move || std::fs::copy(&fp2, &dp)).await;
         }
+        let (mut added_any, mut final_name, mut existing_folder) = (false, String::new(), String::new());
+        let mut collect = |added: bool, fname: String, folder: String| {
+            if added { added_any = true; }
+            if !fname.is_empty() { final_name = fname; }
+            if existing_folder.is_empty() && !folder.is_empty() { existing_folder = folder; }
+        };
         for &eid in entity_ids {
-            add_relation_with_desc(&existing_id, entity_type, eid, custom_name, creator, note);
+            let (added, fname, folder) = add_relation_with_desc(&existing_id, entity_type, eid, custom_name, creator, note);
+            collect(added, fname, folder);
         }
         if entity_ids.is_empty() {
-            add_relation_with_desc(&existing_id, entity_type, "", custom_name, creator, note);
+            let (added, fname, folder) = add_relation_with_desc(&existing_id, entity_type, "", custom_name, creator, note);
+            collect(added, fname, folder);
         }
-        // 复用分支：若本次要求知识摄入（首次由内嵌等旁路入库、此次经 UI 上传同内容文件），同样触发
-        if ingest_knowledge {
+        // 复用分支：全部命中同名同 hash 跳过时不重复触发知识摄入（对象早已在库）
+        if added_any && ingest_knowledge {
             crate::services::knowledge_lifecycle::notify_file_upload(&existing_id);
         }
-        return Ok((existing_id.clone(), existing_id));
+        return Ok((existing_id.clone(), existing_id, UploadDedup { skipped: !added_any, final_name, existing_folder }));
     }
 
     // 新文件
@@ -214,11 +295,14 @@ pub(crate) async fn upload_file_core(
         &[json!(&file_id), json!(&ext), json!(file_size as i64), json!(&hash), json!(&original_name)]
     ).map_err(|e| e.to_string())?;
 
+    let mut renamed_to = String::new();
     for &eid in entity_ids {
-        add_relation_with_desc(&file_id, entity_type, eid, custom_name, creator, note);
+        let (_added, fname, _folder) = add_relation_with_desc(&file_id, entity_type, eid, custom_name, creator, note);
+        if !fname.is_empty() { renamed_to = fname; }
     }
     if entity_ids.is_empty() {
-        add_relation_with_desc(&file_id, entity_type, "", custom_name, creator, note);
+        let (_added, fname, _folder) = add_relation_with_desc(&file_id, entity_type, "", custom_name, creator, note);
+        if !fname.is_empty() { renamed_to = fname; }
     }
 
     // 上传文件到项目 → 刷新项目"最后活跃时间"
@@ -250,7 +334,7 @@ pub(crate) async fn upload_file_core(
         crate::services::knowledge_lifecycle::notify_file_upload(&file_id);
     }
 
-    Ok((file_id.clone(), file_id))
+    Ok((file_id.clone(), file_id, UploadDedup { skipped: false, final_name: renamed_to, existing_folder: String::new() }))
 }
 
 #[tauri::command]
@@ -289,8 +373,13 @@ pub async fn file_upload(data: Value) -> Result<Value, String> {
         note = "其他".to_string();
     }
     let folder_id = data["folderId"].as_str();
-    let (file_id, _) = upload_file_core(file_path, entity_type, &entity_ids, custom_name, creator, &note, folder_id, true).await?;
-    Ok(json!({"success":true,"fileId":file_id,"objectId":file_id,"id":file_id}))
+    let (file_id, _, dedup) = upload_file_core(file_path, entity_type, &entity_ids, custom_name, creator, &note, folder_id, true).await?;
+    Ok(json!({
+        "success": true, "fileId": file_id, "objectId": file_id, "id": file_id,
+        "duplicateSkipped": dedup.skipped,
+        "renamedTo": dedup.final_name,
+        "existingFolder": dedup.existing_folder,
+    }))
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1204,6 +1293,70 @@ mod tests {
         assert_eq!(v["truncated"], serde_json::json!(true));
     }
 
+    /// 上传守门四态：同名同hash跳过（含大小写/空格变体）、同名异hash自动序号后缀、异名放行
+    #[test]
+    fn relation_gate_skips_dup_and_suffixes_same_name() {
+        let (_d, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| crate::database::db_schema::create_schema(c)).unwrap();
+        crate::database::with_db(|c| c.execute_batch(
+            "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name) VALUES
+               ('a1','pdf',1,'hA','甲.pdf'),('a2','pdf',2,'hB','乙.pdf'),('a3','pdf',3,'hC','丙.pdf');"
+        )).unwrap();
+        assert!(add_relation_with_desc("a1", "project", "p1", "报价.pdf", "", "").0, "首次放行");
+        assert!(!add_relation_with_desc("a1", "project", "p1", "报价.pdf", "", "").0, "同名同hash必须跳过");
+        assert!(!add_relation_with_desc("a1", "project", "p1", " 报价.PDF ", "", "").0, "大小写/空格变体=同名");
+        let (added2, name2, _) = add_relation_with_desc("a2", "project", "p1", "报价.pdf", "", "");
+        assert!(added2 && name2 == "报价 (2).pdf", "同名异hash应消歧: {:?} {:?}", added2, name2);
+        let (added3, name3, _) = add_relation_with_desc("a3", "project", "p1", "报价.pdf", "", "");
+        assert!(added3 && name3 == "报价 (3).pdf", "序号递增避开占用: {:?}", name3);
+        assert!(add_relation_with_desc("a1", "project", "p1", "另一名字.pdf", "", "").0, "异名放行（CAS 复用资产不双存）");
+    }
+
+    /// library 域（entity_id=''）全库判重，跳过时回报已有文件所在目录名
+    #[test]
+    fn relation_gate_reports_existing_folder_in_library() {
+        let (_d, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| crate::database::db_schema::create_schema(c)).unwrap();
+        crate::database::with_db(|c| c.execute_batch(
+            "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name) VALUES('a1','pdf',1,'hA','甲.pdf');
+             INSERT INTO library_folders(id,name) VALUES('f1','投标资料');
+             INSERT INTO file_relations(id,file_id,entity_type,entity_id,custom_name) VALUES('r1','a1','library','','y.pdf');
+             INSERT INTO library_file_locations(file_id,folder_id) VALUES('a1','f1');"
+        )).unwrap();
+        let (added, _, folder) = add_relation_with_desc("a1", "library", "", "y.pdf", "", "");
+        assert!(!added, "库内已有同名同内容 → 跳过");
+        assert_eq!(folder, "投标资料", "位置提示");
+    }
+
+    /// 改名旁路补检：改成同对象内已有同名同内容（同一资产的另一关联/同hash资产）→ 拒绝；异名 → 放行
+    #[tokio::test]
+    async fn rename_blocked_when_same_name_same_hash_exists() {
+        let (_d, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| crate::database::db_schema::create_schema(c)).unwrap();
+        crate::database::with_db(|c| c.execute_batch(
+            "INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name) VALUES
+               ('a1','pdf',1,'hA','甲.pdf'),('a2','pdf',2,'hB','乙.pdf');"
+        )).unwrap();
+        add_relation_with_desc("a1", "project", "p1", "x.pdf", "", "");
+        add_relation_with_desc("a1", "project", "p1", "old.pdf", "", "");
+        add_relation_with_desc("a2", "project", "p1", "b.pdf", "", "");
+        let rid = database::get(
+            "SELECT id FROM file_relations WHERE file_id='a1' AND custom_name='old.pdf'", &[]
+        ).unwrap().unwrap()["id"].as_str().unwrap().to_string();
+        // 同名同 hash（同资产另一关联已叫 x.pdf）→ 拒绝
+        let r = file_update_meta(rid.clone(), json!({"customName":"x.pdf"})).await.unwrap();
+        assert_eq!(r["success"], json!(false), "同名同内容改名应拒绝: {}", r);
+        // 同名异 hash（a2 与 a1 内容不同）→ 放行（消歧是上传口的事，改名不拦）
+        let rid2 = database::get(
+            "SELECT id FROM file_relations WHERE file_id='a2' AND custom_name='b.pdf'", &[]
+        ).unwrap().unwrap()["id"].as_str().unwrap().to_string();
+        let r3 = file_update_meta(rid2, json!({"customName":"x.pdf"})).await.unwrap();
+        assert_eq!(r3["success"], json!(true), "同名异内容改名放行: {}", r3);
+        // 异名 → 放行
+        let r2 = file_update_meta(rid, json!({"customName":"x2.pdf"})).await.unwrap();
+        assert_eq!(r2["success"], json!(true), "异名放行: {}", r2);
+    }
+
     #[test]
     fn test_filename_for_clipboard_keeps_extension_when_missing() {
         assert_eq!(filename_for_clipboard("方案", "docx"), "方案.docx");
@@ -1275,6 +1428,24 @@ mod tests {
 #[tauri::command] pub async fn file_migrate_files(_old: String, _new: String) -> Result<Value, String> { Ok(json!({"success":true})) }
 #[tauri::command] pub async fn file_update_meta(file_id: String, data: Value) -> Result<Value, String> {
     if let Some(cn) = data["customName"].as_str().or(data["globalName"].as_str()) {
+        // ★ 改名旁路补检：同对象下已有同名同内容（除本行外）→ 拒绝，堵死绕过上传守门造重复的路
+        let row = database::get(
+            "SELECT fr.file_id, fr.entity_type, fr.entity_id, fa.content_hash FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id WHERE fr.id=?",
+            &[json!(&file_id)],
+        ).ok().flatten();
+        if let Some(r) = row {
+            let cn2 = cn.trim();
+            if !cn2.is_empty() {
+                let (et, eid, hash) = (
+                    r["entity_type"].as_str().unwrap_or("").to_string(),
+                    r["entity_id"].as_str().unwrap_or("").to_string(),
+                    r["content_hash"].as_str().unwrap_or("").to_string(),
+                );
+                if same_name_relations(&et, &eid, cn2, &file_id).iter().any(|(h, _)| !hash.is_empty() && h == &hash) {
+                    return Ok(json!({"success": false, "error": "该对象下已存在同名同内容的文件，未改名"}));
+                }
+            }
+        }
         database::run("UPDATE file_relations SET custom_name=? WHERE id=?", &[json!(cn), json!(&file_id)]).ok();
     }
     if let Some(rm) = data["remark"].as_str() {

@@ -348,7 +348,7 @@ async fn save_attachment_to_library(
     )
     .await
     {
-        Ok((file_id, _)) => {
+        Ok((file_id, _, _)) => {
             let _ = std::fs::remove_file(&tmp_path);
             log::info!("[邮件附件] 已存入资料库: {} → {}", filename, &file_id[..8.min(file_id.len())]);
             Some(file_id)
