@@ -9,7 +9,22 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create draft release (single writer, kills matrix race)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft --title "Arkmind $GITHUB_REF_NAME" \
+            --notes-file release-notes.md --target "$GITHUB_SHA" || \
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md
+
   release:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -98,10 +113,7 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           DMG="Arkmind_${VERSION}_aarch64.dmg"
-          gh release create "$GITHUB_REF_NAME" \
-            --draft --title "Arkmind $GITHUB_REF_NAME" \
-            --notes-file release-notes.md --target "$GITHUB_SHA" || true
           gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
-          # 终态兜底：无论哪个 job 先跑完，body/标题都以仓库内 notes 为准
+          # 终态兜底：body/标题始终以仓库内 notes 为准
           gh release edit "$GITHUB_REF_NAME" \
             --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md
