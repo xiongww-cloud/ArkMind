@@ -1009,15 +1009,11 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
             "application/zip" | "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                 // ZIP 基类：可能是 docx / xlsx / 纯 zip
                 // 优先尝试 DOCX（内部 XML），失败回退 XLSX
-                if let Ok(t) = read_docx(path) {
-                    return mk(t, String::new());
-                }
-                if let Ok(t) = read_xlsx(path) {
-                    return mk(t, String::new());
-                }
-                if let Ok(t) = read_pptx(path) {
-                    return mk(t, String::new());
-                }
+                // ★ 仅接受非空文本命中：纯 zip 会被 read_pptx 开出 Ok("")——空结果不是命中，
+                //   否则走 mk() 保住 zip 魔数，ingestion 把"已知容器无解析器"误判成真解析失败(→failed×3)
+                if let Ok(t) = read_docx(path) { if !t.is_empty() { return mk(t, String::new()); } }
+                if let Ok(t) = read_xlsx(path) { if !t.is_empty() { return mk(t, String::new()); } }
+                if let Ok(t) = read_pptx(path) { if !t.is_empty() { return mk(t, String::new()); } }
             }
             "text/plain" | "text/csv" | "application/json" => {
                 let text = std::fs::read_to_string(path).unwrap_or_default();
@@ -1073,7 +1069,9 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
         }
     }
 
-    ParseResult { text: String::new(), success: false, ..Default::default() }
+    // ★ 失败出口保留魔数结论：改名压缩包（rar→docx 等）靠它走 unsupported 终态，
+    //   而非误入"后缀受支持的真解析失败"×3 重试；成功出口维持原样（自愈仅针对明确命中解析器）
+    ParseResult { text: String::new(), success: false, inferred_ext: magic_ext, ..Default::default() }
 }
 
 /// 兼容旧调用
@@ -1696,6 +1694,42 @@ mod tests {
         assert_eq!(refine_zip_container_ext(&make_zip(&["ppt/presentation.xml"])), Some("pptx"));
         assert_eq!(refine_zip_container_ext(&make_zip(&["readme.txt"])), None, "纯 zip 不归类");
         assert_eq!(refine_zip_container_ext(b"not a zip at all"), None, "非 zip 字节 → None");
+    }
+
+    /// ★ 纯 zip 不得被 read_pptx 的空命中截胡：终态是"失败+保留 zip 魔数"，由 ingestion 判 unsupported
+    /// （旧行为：Ok("") 当命中 → mk 保魔数 → 内容权威规则误判"已知类型真失败"×3 → 状态错误地=失败）
+    #[test]
+    fn plain_zip_fails_with_magic_kept_for_unsupported_classify() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("pack.zip");
+        {
+            let mut w = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
+            w.start_file("readme.txt", zip::write::FileOptions::default()).unwrap();
+            w.write_all(b"hello archive, not a document").unwrap();
+            w.finish().unwrap();
+        }
+        let r = parse_file_smart(p.to_str().unwrap(), "zip");
+        assert!(!r.success, "纯 zip 不应算解析成功");
+        assert!(r.text.is_empty());
+        assert_eq!(r.inferred_ext.as_deref(), Some("zip"), "失败出口必须带出 zip 魔数供 unsupported 裁决");
+    }
+
+    /// 损坏 docx（OOXML 结构在、正文解析失败）：魔数被 refine 为 docx → 真解析失败（failed 可重试），不是 unsupported
+    #[test]
+    fn broken_docx_keeps_real_failure_class() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("broken.docx");
+        {
+            let mut w = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
+            w.start_file("word/document.xml", zip::write::FileOptions::default()).unwrap();
+            w.write_all(b"<not-a-valid-document>").unwrap();
+            w.finish().unwrap();
+        }
+        let r = parse_file_smart(p.to_str().unwrap(), "docx");
+        assert!(!r.success);
+        assert_eq!(r.inferred_ext.as_deref(), Some("docx"), "OOXML 细分保住真实类型 → ingestion 判真失败而非 unsupported");
     }
 
     #[test]

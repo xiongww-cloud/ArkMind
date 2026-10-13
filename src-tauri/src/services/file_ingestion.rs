@@ -38,6 +38,17 @@ fn is_supported_parse_ext(ext: &str) -> bool {
     SUPPORTED_PARSE_EXTS.contains(&e.as_str())
 }
 
+/// 内容权威判定（双向）：魔数命中→按**真实类型**裁决（zip/rar/7z 等已知容器无解析器=unsupported，
+/// 不再因"类型已知"误入真解析失败×3 重试）；魔数未命中→沿用后缀白名单裁决。
+/// 返回 Some(展示后缀) = 判 unsupported 终态；None = 真解析失败可重试
+fn classify_parse_failure_type(inferred_ext: &Option<String>, ext: &str) -> Option<String> {
+    match inferred_ext {
+        Some(m) if !is_supported_parse_ext(m) => Some(m.clone()),
+        None if !is_supported_parse_ext(ext) => Some(ext.to_string()),
+        _ => None,
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 启动与主循环
 // ═══════════════════════════════════════════════════════════════
@@ -800,10 +811,10 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     let parse_elapsed = parse_start.elapsed().as_millis();
 
     if !parse_result.success || parse_result.text.is_empty() {
-        // ★ 内容权威判定：魔数命中 → 类型已知，报错即真实解析错误（含NON_RETRYABLE前缀），不标unsupported；
-        //   魔数未命中且后缀也不在白名单 → 才是真·不支持格式，终态不再重试
-        if parse_result.inferred_ext.is_none() && !is_supported_parse_ext(&ext) {
-            return Err(format!("{}不支持的文件格式: .{}", UNSUPPORTED_PREFIX, ext));
+        // ★ 内容权威判定：魔数命中按真实类型裁决（zip/rar 等容器=unsupported 终态）；
+        //   "已知可解析类型仍报错"才是真解析错误（含NON_RETRYABLE前缀），可重试
+        if let Some(shown) = classify_parse_failure_type(&parse_result.inferred_ext, &ext) {
+            return Err(format!("{}不支持的文件格式: .{}", UNSUPPORTED_PREFIX, shown));
         }
         return Err(if !parse_result.error.is_empty() {
             parse_result.error
@@ -846,9 +857,9 @@ fn process_single_file(row: &serde_json::Value, source_type: &str, source_id: &s
     };
 
     if clean_text.trim().is_empty() {
-        // 魔数未命中且后缀非白名单，清洗后无有效内容 → 视为不支持，终态不再重试
-        if parse_result.inferred_ext.is_none() && !is_supported_parse_ext(&ext) {
-            return Err(format!("{}不支持的文件格式: .{}（清洗后无有效文本）", UNSUPPORTED_PREFIX, ext));
+        // 魔数/后缀判定为无解析器格式（同 parse 出口口径），清洗后无有效文本 → unsupported 终态
+        if let Some(shown) = classify_parse_failure_type(&parse_result.inferred_ext, &ext) {
+            return Err(format!("{}不支持的文件格式: .{}（清洗后无有效文本）", UNSUPPORTED_PREFIX, shown));
         }
         return Err(format!(
             "清洗后无有效文本 (原始 {} 字符)",
@@ -1384,8 +1395,19 @@ pub fn cleanup_orphan_source_data() {
 
 #[cfg(test)]
 mod tests {
-    use super::assemble_pdf_pages;
-    use super::{decide_failure_action, EMAIL_BACKFILL_QUERY, FailureAction};
+    use super::*;
+
+    /// 双向内容权威裁决：魔数命中按真实类型判（zip/rar 容器=unsupported；docx/pdf 已知类型仍失败=真解析错误）；
+    /// 魔数未命中沿用后缀白名单。堵住"改名压缩包→误判 failed×3 重试"与"纯 zip 判失败"两类错位
+    #[test]
+    fn classify_parse_failure_prefers_magic_over_suffix() {
+        assert_eq!(classify_parse_failure_type(&Some("zip".into()), "docx").as_deref(), Some("zip"));
+        assert_eq!(classify_parse_failure_type(&Some("rar".into()), "pdf").as_deref(), Some("rar"), "rar 伪装 pdf 后缀仍按容器判 unsupported");
+        assert_eq!(classify_parse_failure_type(&Some("docx".into()), "zip"), None, "坏 docx=真解析失败可重试");
+        assert_eq!(classify_parse_failure_type(&Some("pdf".into()), "bin"), None);
+        assert_eq!(classify_parse_failure_type(&None, "docx"), None);
+        assert_eq!(classify_parse_failure_type(&None, "exe").as_deref(), Some("exe"));
+    }
 
     #[test]
     fn assemble_keeps_page_order_regardless_of_completion_order() {
