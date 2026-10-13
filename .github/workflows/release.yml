@@ -17,11 +17,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --draft --title "Arkmind $GITHUB_REF_NAME" \
-            --notes-file release-notes.md --target "$GITHUB_SHA" || \
-            gh release edit "$GITHUB_REF_NAME" \
-              --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md
+          # edit-first：残留 draft（旧 tag commit 的）直接复用刷新，不再新建；
+          # gh release create 只在完全没有 release 时执行——曾出现 create 对"已存在但 target 不同"
+          # 的旧 draft 照样新建，资产拆进两个同名 draft
+          if ! gh release edit "$GITHUB_REF_NAME" --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md 2>/dev/null; then
+            gh release create "$GITHUB_REF_NAME" \
+              --draft --title "Arkmind $GITHUB_REF_NAME" \
+              --notes-file release-notes.md --target "$GITHUB_SHA"
+          fi
 
   release:
     needs: prepare
