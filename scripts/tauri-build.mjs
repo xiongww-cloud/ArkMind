@@ -27,11 +27,26 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { readFileSync } from 'node:fs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
 const srcTauri = path.join(repoRoot, 'src-tauri')
 const pdfiumBin = path.join(srcTauri, 'bin')
+
+// ── 0. 版本三源一致性硬校验 ──────────────────────────────────
+// __APP_VERSION__ 由 vite.config.ts 取自 Cargo.toml，而弹窗触发/安装包版本取自
+// package.json / tauri.conf.json——历史上漏改 Cargo.toml 导致"新版本无更新弹窗"
+// 且界面无提示。不一致直接 fail build，根治静默漂移。
+const pkgVer = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version
+const confVer = JSON.parse(readFileSync(path.join(srcTauri, 'tauri.conf.json'), 'utf8')).version
+const cargoVer = readFileSync(path.join(srcTauri, 'Cargo.toml'), 'utf8').match(/^version\s*=\s*"([^"]+)"/m)?.[1]
+if (!pkgVer || pkgVer !== confVer || pkgVer !== cargoVer) {
+  console.error(`[tauri-build] 版本不一致：package.json=${pkgVer} tauri.conf.json=${confVer} Cargo.toml=${cargoVer}`)
+  console.error('[tauri-build] 三处必须同步（__APP_VERSION__ 取 Cargo.toml，漏改会导致更新弹窗静默失效），构建中止')
+  process.exit(1)
+}
+console.log(`[tauri-build] 版本一致性 OK: ${pkgVer}`)
 
 // ── 1. 清除 pdfium-render 的 build.rs 缓存 ──────────────────
 // 防止旧的（缺少链接指令的）缓存导致 "could not find native static library pdfium" 错误
