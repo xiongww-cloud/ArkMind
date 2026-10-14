@@ -26,6 +26,10 @@ const DOC_PRESET_TABLE_HALF_PT: u16 = 24;
 const DOC_PRESET_RUNNING_HALF_PT: u16 = 18;
 /// 正文行距 1.5 倍（rwml line_pct ×240 → w:line=360 lineRule=auto）
 const DOC_PRESET_LINE_PCT: f32 = 1.5;
+/// 表格内行距单倍（紧凑一致；rwml 默认 None→不输出→继承 Word 样式默认，正是"忽宽忽窄"根源）
+const DOC_PRESET_CELL_LINE_PCT: f32 = 1.0;
+/// 段落间距固定 0（段前段后；Word Normal 默认带段后空隙，显式 0 关闭——系统预设，AI 无控制权）
+const DOC_PRESET_SPACING_PT: f32 = 0.0;
 /// 正文段首行缩进 2 字符（小四 12pt × 2 = 24pt → w:firstLine=480 twips）——中文排版惯例；
 /// 居中对齐（题注）与右对齐（落款）段落不缩进，见 body_first_line_pt
 const DOC_PRESET_FIRST_LINE_PT: f32 = 24.0;
@@ -195,7 +199,9 @@ fn body_paragraph(builder: rwml::DocBuilder, text: &str) -> rwml::DocBuilder {
 fn body_paragraph_from(builder: rwml::DocBuilder, text: &str, r: Option<&Value>) -> rwml::DocBuilder {
     let mut pb = rwml::ParagraphBuilder::new()
         .runs(body_runs(strip_leading_ideographic_space(text), r))
-        .line_pct(DOC_PRESET_LINE_PCT);
+        .line_pct(DOC_PRESET_LINE_PCT)
+        .spacing_before_pt(DOC_PRESET_SPACING_PT)
+        .spacing_after_pt(DOC_PRESET_SPACING_PT);
     if let Some(f) = body_first_line_pt(r.map(parse_docx_align).flatten()) {
         pb = pb.first_line_pt(f);
     }
@@ -697,7 +703,8 @@ fn build_docx(content: &Value, metadata: Option<&Value>) -> Result<Vec<u8>, Stri
         }
         if let Some(t) = title {
             builder = builder.rich_paragraph(
-                rwml::ParagraphBuilder::new().runs(vec![heading_run(t.as_str(), 1)]).heading_level(1).line_pct(DOC_PRESET_LINE_PCT).build(),
+                rwml::ParagraphBuilder::new().runs(vec![heading_run(t.as_str(), 1)]).heading_level(1).line_pct(DOC_PRESET_LINE_PCT)
+                    .spacing_before_pt(DOC_PRESET_SPACING_PT).spacing_after_pt(DOC_PRESET_SPACING_PT).build(),
             );
         }
         for line in text.split('\n') {
@@ -717,6 +724,8 @@ fn build_docx(content: &Value, metadata: Option<&Value>) -> Result<Vec<u8>, Stri
             .collect();
         let pb = rwml::ParagraphBuilder::new()
             .runs(runs)
+            .spacing_before_pt(DOC_PRESET_SPACING_PT)
+            .spacing_after_pt(DOC_PRESET_SPACING_PT)
             .align(rwml::Align::Right);
         builder = builder.push_footer_block(rwml::Block::Paragraph(pb.build()));
     }
@@ -765,7 +774,8 @@ fn apply_docx_blocks(
                 let shading = docx_shading_color(child);
                 // 标题预设：宋体 + 级别字号 + 1.5 倍行距（预设表唯一真相源）；heading_level 保留大纲/目录能力
                 let hrun = heading_run(&text, level);
-                let mut pb = rwml::ParagraphBuilder::new().runs(vec![hrun]).heading_level(level).line_pct(DOC_PRESET_LINE_PCT);
+                let mut pb = rwml::ParagraphBuilder::new().runs(vec![hrun]).heading_level(level).line_pct(DOC_PRESET_LINE_PCT)
+                    .spacing_before_pt(DOC_PRESET_SPACING_PT).spacing_after_pt(DOC_PRESET_SPACING_PT);
                 if let Some(a) = align {
                     pb = pb.align(a);
                 }
@@ -788,7 +798,8 @@ fn apply_docx_blocks(
                     }
                     let built: Vec<rwml::Run> = runs_owned.iter().flat_map(build_runs).collect();
                     if !built.is_empty() {
-                        let mut pb = rwml::ParagraphBuilder::new().runs(built).line_pct(DOC_PRESET_LINE_PCT);
+                        let mut pb = rwml::ParagraphBuilder::new().runs(built).line_pct(DOC_PRESET_LINE_PCT)
+                            .spacing_before_pt(DOC_PRESET_SPACING_PT).spacing_after_pt(DOC_PRESET_SPACING_PT);
                         if let Some(f) = body_first_line_pt(align) {
                             pb = pb.first_line_pt(f);
                         }
@@ -809,7 +820,9 @@ fn apply_docx_blocks(
                         if styled {
                             let mut pb = rwml::ParagraphBuilder::new()
                                 .runs(body_runs(strip_leading_ideographic_space(line.trim_end()), Some(child)))
-                                .line_pct(DOC_PRESET_LINE_PCT);
+                                .line_pct(DOC_PRESET_LINE_PCT)
+                                .spacing_before_pt(DOC_PRESET_SPACING_PT)
+                                .spacing_after_pt(DOC_PRESET_SPACING_PT);
                             if let Some(f) = body_first_line_pt(align) {
                                 pb = pb.first_line_pt(f);
                             }
@@ -1075,6 +1088,8 @@ fn render_list_paragraphs(
         let pb = rwml::ParagraphBuilder::new()
             .runs(item_runs)
             .line_pct(DOC_PRESET_LINE_PCT)
+            .spacing_before_pt(DOC_PRESET_SPACING_PT)
+            .spacing_after_pt(DOC_PRESET_SPACING_PT)
             // 整体右移 2 字符（与正文首行缩进对齐惯例）：首行编号起点 = 24pt + 21×lvl，换行文本再进一格
             .indent_left_pt(21.0 * (lvl as f32 + 1.0) + DOC_PRESET_FIRST_LINE_PT)
             .hanging_pt(21.0);
@@ -1204,24 +1219,9 @@ fn build_styled_docx_table(
         tb = tb.header_rows(header_rows);
     }
 
-    // 边框：字符串指定线型；未传/true → 显式单线（Word 无法完全关闭边框，rwml 无 None 样式）
-    match &child["border"] {
-        Value::String(s) => {
-            let st = match s.to_ascii_lowercase().as_str() {
-                "double" => rwml::TableBorderStyle::Double,
-                "dotted" => rwml::TableBorderStyle::Dotted,
-                "dashed" => rwml::TableBorderStyle::Dashed,
-                _ => rwml::TableBorderStyle::Single,
-            };
-            tb = tb.border_style(st);
-        }
-        _ => {
-            tb = tb.border_style(rwml::TableBorderStyle::Single);
-        }
-    }
-    if let Some((r, g, b)) = str_field(child, "border_color").and_then(|s| parse_hex_rgb(&s)) {
-        tb = tb.border_color(rwml::Color::rgb(r, g, b));
-    }
+    // ★ 边框收归代码统一：固定 Word 标准细单线（single/auto/rwml 默认 sz=4），六边全网格。
+    //   AI 传入的 border/border_color 一律无视——线型与颜色曾随模型心情漂移，是"表格框线不稳定"的根源
+    tb = tb.border_style(rwml::TableBorderStyle::Single);
 
     // 列宽（占表格宽度的比例 0.0-1.0）
     if let Some(widths) = child["col_widths_pct"].as_array() {
@@ -1346,7 +1346,10 @@ fn build_docx_cell(v: &Value, is_header: bool) -> rwml::Cell {
                 rb.build()
             })
             .collect();
-        let mut pb = rwml::ParagraphBuilder::new().runs(runs);
+        let mut pb = rwml::ParagraphBuilder::new().runs(runs)
+            .line_pct(DOC_PRESET_CELL_LINE_PCT)
+            .spacing_before_pt(DOC_PRESET_SPACING_PT)
+            .spacing_after_pt(DOC_PRESET_SPACING_PT);
         if let Some(a) = align {
             pb = pb.align(a);
         }
@@ -2819,6 +2822,65 @@ mod tests {
         );
         assert!(xml.contains(r#"<w:tblLayout w:type="fixed"/>"#), "固定布局防内容撑破列宽");
         assert!(!xml.contains("<w:trHeight"), "不得写死行高（Word 按单元格文本自动撑开）");
+    }
+
+    /// ★ 段间距固定 0（全文）+ 表格内行距固定单倍——系统预设，AI 无控制权；
+    ///   此前 rwml 对 None 不输出属性 → Word 按 Normal 样式默认继承（段后常 8pt 空隙），排版忽宽忽窄
+    #[test]
+    fn docx_spacing_is_code_fixed_zero_and_cell_line_single() {
+        let xml = docx_part(
+            &json!({"children": [
+                {"type": "heading", "level": 2, "text": "标题"},
+                {"type": "paragraph", "text": "正文段落"},
+                {"type": "list", "ordered": true, "items": ["第一项"]},
+                {"type": "table", "headers": ["列"], "rows": [["单元格文本"]]}
+            ]}),
+            "document.xml",
+        );
+        // 正文段落/标题/列表：before=0 after=0 + 行距 1.5（line=360）
+        let body_sp = r#"<w:spacing w:before="0" w:after="0" w:line="360" w:lineRule="auto"/>"#;
+        assert!(xml.contains(body_sp), "正文/标题/列表段落应段前后归零+1.5倍行距: {}", &xml[..xml.len().min(600)]);
+        assert_eq!(
+            xml.matches(body_sp).count(), 3,
+            "heading/paragraph/list 三路都应命中（title 兜底路共用 body_paragraph_from）"
+        );
+        // 表格单元格：段前后 0 + 单倍行距（line=240）
+        let cell_sp = r#"<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>"#;
+        assert!(
+            xml.matches(cell_sp).count() >= 1,
+            "单元格段落应单倍行距+段前后归零: {}", &xml[..xml.len().min(600)]
+        );
+        // 不应残留"未设行距"的裸 spacing（只带 before/after、无 w:line）——即正文与表格都必须显式行距
+        let bare_count = xml.matches("<w:spacing w:before=\"0\" w:after=\"0\"/>").count();
+        assert_eq!(bare_count, 0, "不应出现无行距的裸 spacing 元素");
+    }
+
+    /// ★ 边框标准化：AI 传 border/border_color 一律无视，六边恒为标准细单线（single/sz4/auto）
+    #[test]
+    fn docx_table_borders_are_code_fixed_regardless_of_ai_input() {
+        let borders_of = |xml: &str| -> String {
+            let s = xml.find("<w:tblBorders>").unwrap();
+            let e = xml[s..].find("</w:tblBorders>").unwrap() + s;
+            xml[s..e].to_string()
+        };
+        let clean = docx_part(
+            &json!({"children": [{"type": "table", "headers": ["甲"], "rows": [["乙"]]}]}),
+            "document.xml",
+        );
+        let adversarial = docx_part(
+            &json!({"children": [{"type": "table", "headers": ["甲"], "rows": [["乙"]],
+                "border": "dotted", "border_color": "FF0000"}]}),
+            "document.xml",
+        );
+        let b = borders_of(&clean);
+        for side in ["top", "left", "bottom", "right", "insideH", "insideV"] {
+            assert!(
+                b.contains(&format!(r#"<w:{} w:val="single" w:sz="4" w:space="0" w:color="auto"/>"#, side)),
+                "{} 边应为标准细单线: {}", side, b
+            );
+        }
+        assert_eq!(borders_of(&adversarial), b, "AI 传 dotted/红色必须被无视，输出与默认完全一致");
+        assert!(!adversarial.contains("w:val=\"dotted\"") && !b.contains("FF0000"));
     }
 
     /// Word 样式：段落对齐/底纹、run 颜色、表格边框/列宽/单元格样式
