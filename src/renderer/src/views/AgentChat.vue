@@ -212,14 +212,16 @@ interface ChatMessage extends AgentChatMessage { id?: string; role: 'user'|'assi
 interface ChatSession { id: string; name: string; messages: ChatMessage[]; createdAt: string; updatedAt?: string }
 
 /// 历史消息恢复：从 chat_messages.metadata 还原文档卡片、追问卡片与 via 署名（重启后 tool_log 不在，靠 metadata）
-function docFieldsFromMeta(m: any): { documents?: GeneratedDocument[]; clarification?: ClarificationData; assistants?: string[] } {
-  const out: { documents?: GeneratedDocument[]; clarification?: ClarificationData; assistants?: string[] } = {}
+function docFieldsFromMeta(m: any): { documents?: GeneratedDocument[]; clarification?: ClarificationData; assistants?: string[]; clarificationIgnored?: boolean } {
+  const out: { documents?: GeneratedDocument[]; clarification?: ClarificationData; assistants?: string[]; clarificationIgnored?: boolean } = {}
   const docs = parseDocumentsMetadata(m.metadata)
   if (docs) out.documents = docs
   const clar = parseClarificationMetadata(m.metadata)
   if (clar) out.clarification = clar
   try {
-    const arr = JSON.parse(m.metadata)?.assistants
+    const meta = JSON.parse(m.metadata)
+    if (meta?.clarification_ignored) out.clarificationIgnored = true
+    const arr = meta?.assistants
     if (Array.isArray(arr) && arr.length) out.assistants = arr.filter((x: any) => typeof x === 'string' && x)
   } catch { /* 非 JSON 忽略 */ }
   return out
@@ -747,6 +749,13 @@ function clarificationReply(msgId?: string): string {
   return arr.slice(i + 1).find(x => x.role === 'user')?.content || ''
 }
 
+/// 忽略追问卡：不发消息、AI 不续跑；本地即时定格 + metadata 落库（重启/重进会话仍显示已忽略）
+async function ignoreClarification(msg: ChatMessage) {
+  msg.clarificationIgnored = true
+  try { await invoke('clarification_ignore', { sid: currentSession.value?.id || '' }) }
+  catch (e) { console.warn('[Clarify] 忽略状态持久化失败:', e) }
+}
+
 // ─── 批注修订（仅最后一条 AI 答复可批注；表格改动+正文批注统一提交）───
 const annotateId = ref<string | null>(null)
 const thoughtExpanded = ref(false)
@@ -1026,7 +1035,7 @@ onUnmounted(() => {
               <button class="w-5 h-5 flex items-center justify-center rounded text-[#c7c7cc] hover:text-[#2563eb] transition-colors" v-tooltip="'复制'" @click="copyUserMsg(msg)"><AppIcon name="copy" size="11" /></button>
             </div>
             <div v-if="msg.role !== 'user' && (msg.isThinking || msg.content)">
-              <div class="w-full" :class="{ 'thinking-bubble': msg.isThinking }">
+              <div class="w-full ai-answer" :class="{ 'thinking-bubble': msg.isThinking }">
                 <!-- 委托轨迹行：子 Agent 执行中且正文尚未流出时，顶替"思考中"占位（气泡内唯一状态位） -->
                 <div v-if="msg.isThinking && !renderedContent(msg.id || '') && agentRun.currentAgent" class="flex items-center gap-1.5 py-0.5">
                   <span class="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0"></span>
@@ -1058,7 +1067,7 @@ onUnmounted(() => {
                 <button v-if="idx === currentSession.messages.length - 1 && !agent.isChatting.value && !msg.error"
                   class="annotate-skip w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="annotateId === (msg.id || '') ? 'text-brand-600 bg-brand-50' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'"
                   v-tooltip="annotateId === (msg.id || '') ? '取消修订' : '修订'"
-                  @click="annotateId === (msg.id || '') ? exitAnnotate() : enterAnnotate(msg.id || '')"><AppIcon name="edit" size="12" /></button>
+                  @click="annotateId === (msg.id || '') ? exitAnnotate() : enterAnnotate(msg.id || '')"><svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.9 4.4l2.7 2.7-11 11-3.6.9.9-3.6 11-11z"/><path d="M14.5 6.8l2.7 2.7"/></svg></button>
                 <button v-if="msg.workspace" @click="showWorkspaceIdx = showWorkspaceIdx === idx ? null : idx" class="w-6 h-6 flex items-center justify-center rounded-md transition-all" :class="showWorkspaceIdx === idx ? 'text-[#2563eb] bg-[#2563eb]/10' : 'text-[#c7c7cc] hover:text-[#2563eb] hover:bg-[#2563eb]/5'" v-tooltip="'查看 Workspace'">
                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 17V7m0 10a2 2 0 01-2-2V9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2m-6 0h6"/></svg>
                 </button>
@@ -1074,8 +1083,10 @@ onUnmounted(() => {
                 <ClarifyCard
                   :clarification="msg.clarification"
                   :answered="idx < currentSession.messages.length - 1"
+                  :ignored="!!msg.clarificationIgnored"
                   :reply-text="clarificationReply(msg.id)"
                   @submit="submitClarification"
+                  @ignore="ignoreClarification(msg)"
                 />
               </div>
             </div>
@@ -1145,8 +1156,10 @@ onUnmounted(() => {
 .animate-bounce { animation: bounce 1.2s infinite ease-in-out; }
 .animate-fade-in { animation: fadeIn 0.3s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-/* LLM 聊天气泡 markdown 段落去外边距，与用户气泡等高 */
-.markdown-body :deep(p) {
+/* LLM 聊天气泡 markdown 段落去外边距，与用户气泡等高；
+   用宿主标记类+深度选择器，让修订/交互态（markdown-body 在子组件内、拿不到本组件 data-v）同样命中——
+   旧写法 `.markdown-body :deep(p)` 只覆盖普通态，导致进入修订后段落多出 0.4em 间距 */
+.ai-answer :deep(.markdown-body p) {
   margin: 0;
 }
 .thinking-bubble {

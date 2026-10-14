@@ -52,7 +52,7 @@ function planOf(text: string) {
 </script>
 
 <template>
-  <div class="space-y-1">
+  <div :class="annotate ? '' : 'space-y-1'">
     <template v-for="(seg, i) in segs" :key="i">
       <UiBlock v-if="seg.kind === 'block'" :raw="seg.text" :msg-id="msgId" @send="sendFromBlock" />
       <MarkdownTable v-else-if="seg.kind === 'table'" :md="seg.text" :forced="!!annotate" :ref="(el) => setTableRef(i, el)" @revised="emit('revision-change', getRevisions())" />

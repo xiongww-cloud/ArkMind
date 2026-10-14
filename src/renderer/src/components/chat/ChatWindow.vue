@@ -240,8 +240,11 @@ function mapHistoryMessage(m: any) {
   const docs = parseDocumentsMetadata(m.metadata)
   const clar = parseClarificationMetadata(m.metadata)
   let assistants: string[] | undefined
+  let clarificationIgnored = false
   try {
-    const arr = JSON.parse(m.metadata)?.assistants
+    const meta = JSON.parse(m.metadata)
+    clarificationIgnored = !!meta?.clarification_ignored
+    const arr = meta?.assistants
     if (Array.isArray(arr) && arr.length) assistants = arr.filter((x: any) => typeof x === 'string' && x)
   } catch { /* 非 JSON 忽略 */ }
   return {
@@ -252,6 +255,7 @@ function mapHistoryMessage(m: any) {
     timestamp: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
     ...(docs ? { documents: docs } : {}),
     ...(clar ? { clarification: clar } : {}),
+    ...(clarificationIgnored ? { clarificationIgnored: true } : {}),
     ...(assistants ? { assistants } : {}),
   }
 }
@@ -492,6 +496,13 @@ function clarificationReply(msgId?: string): string {
   return messages.value.slice(i + 1).find(x => x.role === 'user')?.content || ''
 }
 
+/// 忽略追问卡：不发消息、AI 不续跑；本地即时定格 + metadata 落库（重开浮窗仍显示已忽略）
+async function ignoreClarification(msg: any) {
+  msg.clarificationIgnored = true
+  try { await invoke('clarification_ignore', { sid: sessionId.value || '' }) }
+  catch (e) { console.warn('[Clarify] 忽略状态持久化失败:', e) }
+}
+
 // ─── 批注修订（仅最后一条 AI 答复可批注；表格改动+正文批注统一提交）───
 const annotateId = ref<string | null>(null)
 const thoughtExpanded = ref(false)
@@ -645,9 +656,13 @@ onUnmounted(() => {
                 <span class="text-[12px] font-medium text-[#3a3a3c]">{{ agentRun.currentAgent.name }}</span>
                 <span class="text-[12px] text-[#8e8e93]">· {{ wProgress || '处理中' }}{{ elapsedSec > 0 ? ` · 已用 ${fmtElapsed()}` : '' }}</span>
               </div>
-              <AnnotationLayer v-else-if="annotateId === (m.id || '')" class="msg-a__body" :active="true" @add="annotations.push($event)">
-                <MessageBody :raw="m.content" :msg-id="m.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[m.id || ''] = el }" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (m.id || '')) tableRevisions = r }" />
-              </AnnotationLayer>
+              <!-- AnnotationLayer 是多根节点（root+Teleport），class 传不进去会丢 msg-a__body 的 12.5px/1.55 锚点
+                   （修订态字体变大的真因）——样式类放到宿主自己的 div 上 -->
+              <div v-else-if="annotateId === (m.id || '')" class="msg-a__body">
+                <AnnotationLayer :active="true" @add="annotations.push($event)">
+                  <MessageBody :raw="m.content" :msg-id="m.id || ''" :annotate="true" :ref="(el: any) => { mbRefs[m.id || ''] = el }" @send="submitClarification" @revision-change="(r: any) => { if (annotateId === (m.id || '')) tableRevisions = r }" />
+                </AnnotationLayer>
+              </div>
               <MessageBody v-else-if="!m.thinking && hasInteractive(m.content)" class="msg-a__body" :raw="m.content" :msg-id="m.id || ''" @send="submitClarification" />
               <div v-else class="msg-a__body markdown-body" :class="{ 'thinking-bubble': m.thinking }"
                 v-html="agent.rendered.value[m.id] || agent.renderedProgress.value || agent.thinkingProgress.value || '思考中'"></div>
@@ -687,8 +702,10 @@ onUnmounted(() => {
                 <ClarifyCard
                   :clarification="m.clarification"
                   :answered="m.id !== messages[messages.length - 1]?.id"
+                  :ignored="!!m.clarificationIgnored"
                   :reply-text="clarificationReply(m.id)"
                   @submit="submitClarification"
+                  @ignore="ignoreClarification(m)"
                 />
               </div>
             </div>
@@ -834,6 +851,9 @@ onUnmounted(() => {
 
 .msg-a { color: #1f2937; }
 .msg-a__body { font-size: 12.5px; line-height: 1.55; }
+/* 修订/交互态的正文块由子组件渲染（无本组件 scoped 标记），全局 .markdown-body 的 1.65
+   会压过外层 1.55，导致与非修订态行距不一致——此深度规则把内层统一回外层度量 */
+.msg-a__body :deep(.markdown-body) { line-height: 1.55; }
 .msg-a__meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 9px; color: #c7c7cc; }
 .via-chip { padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #8e8e93; line-height: 1.4; }
 

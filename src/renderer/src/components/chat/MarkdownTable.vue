@@ -180,9 +180,9 @@ defineExpose({
         <tr>
           <th v-for="cv in colViews" :key="colKey(cv)" class="relative !p-0 group/col">
             <input v-if="cv.k === 'b'" :value="colName(cv.c)" @input="headerEdits[cv.c] = ($event.target as HTMLInputElement).value"
-              class="w-full min-w-[56px] !py-2 px-3 text-[12px] font-semibold text-left bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
+              class="w-full min-w-[56px] !py-2 px-3 font-semibold text-left bg-transparent outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <input v-else v-model="addedCols[cv.i].header" placeholder="新列名"
-              class="w-full min-w-[56px] !py-2 px-3 text-[12px] font-semibold text-left bg-brand-50/50 outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
+              class="w-full min-w-[56px] !py-2 px-3 font-semibold text-left bg-brand-50/50 outline-none rounded-sm focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <div class="absolute top-1 right-1 z-10 flex items-center gap-0.5 rounded-lg border border-surface-200 bg-white px-1 py-0.5 shadow-lg opacity-0 group-hover/col:opacity-100 transition-opacity">
               <button type="button" @click="insertColAt(cv.k === 'b' ? cv.c : addedCols[cv.i].anchor)"
                 class="w-6 h-6 flex items-center justify-center rounded-md text-[13px] text-surface-500 hover:text-brand-600 hover:bg-brand-50 transition-colors" v-tooltip="'在此列右侧插入新列'">＋</button>
@@ -199,13 +199,13 @@ defineExpose({
           <td v-for="(cv, ci) in colViews" :key="colKey(cv)" class="relative !p-0"
             :class="cv.k === 'c' ? 'bg-brand-50/50' : (rv.k === 'a' ? 'bg-emerald-50/40' : '')">
             <textarea v-if="rv.k === 'b' && cv.k === 'b'" rows="1" cols="1" :value="dispCell(curCell(rv.r, cv.c))" @input="setCell(rv.r, cv.c, normCell(($event.target as HTMLTextAreaElement).value)); grow($event)"
-              :ref="attachGrow" class="block w-full min-w-[46px] !py-2 px-3 text-[12px] leading-snug bg-transparent outline-none rounded-sm resize-none overflow-hidden whitespace-pre-wrap break-words focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
+              :ref="attachGrow" class="block w-full min-w-[46px] !py-2 px-3 bg-transparent outline-none rounded-sm resize-none overflow-hidden whitespace-pre-wrap break-words focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <textarea v-else-if="rv.k === 'b' && cv.k === 'c'" rows="1" cols="1" :value="dispCell(addedCols[cv.i].vals[rowKey(rv)] ?? '')" @input="addedCols[cv.i].vals[rowKey(rv)] = normCell(($event.target as HTMLTextAreaElement).value); grow($event)"
-              :ref="attachGrow" class="block w-full min-w-[46px] !py-2 px-3 text-[12px] leading-snug bg-transparent outline-none rounded-sm resize-none overflow-hidden whitespace-pre-wrap break-words focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
+              :ref="attachGrow" class="block w-full min-w-[46px] !py-2 px-3 bg-transparent outline-none rounded-sm resize-none overflow-hidden whitespace-pre-wrap break-words focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <textarea v-else-if="rv.k === 'a' && cv.k === 'b'" rows="1" cols="1" :value="dispCell(addedRows[rv.i].cells[colKey(cv)] ?? '')" @input="addedRows[rv.i].cells[colKey(cv)] = normCell(($event.target as HTMLTextAreaElement).value); grow($event)"
-              :ref="attachGrow" class="block w-full min-w-[46px] !py-2 px-3 text-[12px] leading-snug bg-transparent outline-none rounded-sm resize-none overflow-hidden whitespace-pre-wrap break-words focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
+              :ref="attachGrow" class="block w-full min-w-[46px] !py-2 px-3 bg-transparent outline-none rounded-sm resize-none overflow-hidden whitespace-pre-wrap break-words focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <textarea v-else rows="1" cols="1" :value="dispCell(addedRows[(rv as { k: 'a'; i: number }).i].cells[colKey(cv)] ?? '')" @input="addedRows[(rv as { k: 'a'; i: number }).i].cells[colKey(cv)] = normCell(($event.target as HTMLTextAreaElement).value); grow($event)"
-              :ref="attachGrow" class="block w-full min-w-[46px] !py-2 px-3 text-[12px] leading-snug bg-transparent outline-none rounded-sm resize-none overflow-hidden whitespace-pre-wrap break-words focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
+              :ref="attachGrow" class="block w-full min-w-[46px] !py-2 px-3 bg-transparent outline-none rounded-sm resize-none overflow-hidden whitespace-pre-wrap break-words focus:bg-white focus:ring-1 focus:ring-inset focus:ring-brand-300" />
             <div v-if="ci === 0" class="absolute top-1 right-1 z-10 flex items-center gap-0.5 rounded-lg border border-surface-200 bg-white px-1 py-0.5 shadow-lg opacity-0 group-hover/row:opacity-100 transition-opacity">
               <button v-if="rv.k === 'b'" type="button" @click="insertRowAt(rv.r)"
                 class="w-6 h-6 flex items-center justify-center rounded-md text-[13px] text-surface-500 hover:text-brand-600 hover:bg-brand-50 transition-colors" v-tooltip="'在此行下方插入新行'">＋</button>
