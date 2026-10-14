@@ -93,6 +93,8 @@ export interface ChatMessage {
   timestamp?: number
   documents?: GeneratedDocument[]
   clarification?: ClarificationData
+  /** 用户忽略此追问卡（metadata.clarification_ignored 持久化，重启不丢） */
+  clarificationIgnored?: boolean
   /** 本轮参与过的子 Agent 显示名（via 署名，来自 agentRun.participants / metadata.assistants） */
   assistants?: string[]
 }

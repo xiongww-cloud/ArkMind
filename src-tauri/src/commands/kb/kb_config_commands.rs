@@ -273,10 +273,34 @@ pub async fn plan_clear(app: tauri::AppHandle, sid: String) -> Result<Value, Str
     Ok(json!({"success": true, "cleared": true}))
 }
 
+/// 忽略追问卡片：不产生任何答复消息（AI 不续跑、会话不写入），仅给本会话最近一条
+/// 带 clarification 结构的 assistant 消息打 metadata.clarification_ignored=1；
+/// 历史恢复读取该标志，卡片显示「已忽略」。幂等：重复调用只刷同一目标行。
+#[tauri::command]
+pub async fn clarification_ignore(sid: String) -> Result<Value, String> {
+    if sid.is_empty() { return Ok(json!({"success": false, "error": "缺少会话 id"})); }
+    let target = database::get(
+        "SELECT id FROM chat_messages WHERE session_id=?1 AND role='assistant'
+           AND json_extract(metadata,'$.clarification') IS NOT NULL
+         ORDER BY id DESC LIMIT 1",
+        &[json!(&sid)],
+    ).ok().flatten().and_then(|r| r["id"].as_i64());
+    let Some(id) = target else {
+        return Ok(json!({"success": true, "marked": false}));
+    };
+    database::run(
+        "UPDATE chat_messages SET metadata=json_set(metadata,'$.clarification_ignored',1) WHERE id=?1",
+        &[json!(id)],
+    ).map_err(|e| e.to_string())?;
+    log::info!("[Clarify] 用户忽略追问卡片 msg_id={} sid={}", id, sid);
+    Ok(json!({"success": true, "marked": true, "msg_id": id}))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::extract_assistants;
-    use serde_json::json;
+    use super::{clarification_ignore, extract_assistants};
+    use crate::database;
+    use serde_json::{json, Value};
 
     /// via 署名提取：多轮 delegate 去重保序；非 delegate/失败信封（无 agent_id）忽略
     #[test]
@@ -297,5 +321,44 @@ mod tests {
         assert_eq!(extract_assistants(&log), vec!["业务助手".to_string(), "文档助手".to_string()]);
         assert!(extract_assistants(&json!([])).is_empty());
         assert!(extract_assistants(&json!(null)).is_empty());
+    }
+
+    /// 忽略追问卡片：只标记本会话最近一条带 clarification 的 assistant 消息，早期卡片不动；
+    /// 无卡片会话幂等空操作
+    #[tokio::test]
+    async fn clarification_ignore_marks_only_latest_card() {
+        let (_d, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| crate::database::db_schema::create_schema(c)).unwrap();
+        // metadata 列是迁移 ALTER 补的，fresh create_schema 没有——与生产启动路径一致
+        crate::database::with_db(|c| crate::database::db_migrations::run_migrations(c)).unwrap();
+        database::run("INSERT INTO chat_sessions(id,title) VALUES('s1','t'),('other','t2')", &[]).unwrap();
+        database::run(
+            "INSERT INTO chat_messages(session_id,role,content,metadata) VALUES
+             ('s1','assistant','旧卡','{\"clarification\":{\"questions\":[]}}'),
+             ('s1','user','普通消息',NULL),
+             ('s1','assistant','新卡','{\"clarification\":{\"questions\":[{\"question_id\":\"q1\",\"prompt\":\"选哪个\"}]}}'),
+             ('other','assistant','他会话卡','{\"clarification\":{\"questions\":[]}}')", &[]).unwrap();
+        let r = clarification_ignore("s1".into()).await.unwrap();
+        assert_eq!(r["marked"], json!(true), "{r}");
+        let latest = database::get(
+            "SELECT metadata FROM chat_messages WHERE session_id='s1' AND role='assistant' ORDER BY id DESC LIMIT 1", &[]
+        ).unwrap().unwrap();
+        let md: Value = serde_json::from_str(latest["metadata"].as_str().unwrap_or("{}")).unwrap_or_default();
+        assert_eq!(md["clarification_ignored"].as_i64(), Some(1), "最新卡应被标记: {md}");
+        let old = database::get(
+            "SELECT metadata FROM chat_messages WHERE session_id='s1' AND role='assistant' ORDER BY id ASC LIMIT 1", &[]
+        ).unwrap().unwrap();
+        let old_md: Value = serde_json::from_str(old["metadata"].as_str().unwrap_or("{}")).unwrap_or_default();
+        assert!(old_md["clarification_ignored"].is_null(), "早期卡片不得误标");
+        let other = database::get(
+            "SELECT metadata FROM chat_messages WHERE session_id='other'", &[]
+        ).unwrap().unwrap();
+        let other_md: Value = serde_json::from_str(other["metadata"].as_str().unwrap_or("{}")).unwrap_or_default();
+        assert!(other_md["clarification_ignored"].is_null(), "别会话不受波及");
+        // 幂等再调 + 无卡片会话
+        let r2 = clarification_ignore("s1".into()).await.unwrap();
+        assert_eq!(r2["marked"], json!(true));
+        let r3 = clarification_ignore("empty-sid-never-exists".into()).await.unwrap();
+        assert_eq!(r3["marked"], json!(false), "无卡片时静默成功");
     }
 }

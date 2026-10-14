@@ -9,8 +9,10 @@ const props = defineProps<{
   answered?: boolean
   /** answered 时传入紧随其后的用户答复消息文本 */
   replyText?: string
+  /** 用户选择忽略：不答复不续跑，卡片定格为「已忽略」（metadata 持久化，重启不丢） */
+  ignored?: boolean
 }>()
-const emit = defineEmits<{ submit: [text: string] }>()
+const emit = defineEmits<{ submit: [text: string], ignore: [] }>()
 
 const SKIP_TEXT = '暂不补充这些信息，请按最合理的默认假设继续，并在结果中括注说明采用的假设。'
 
@@ -44,7 +46,7 @@ for (const q of props.clarification.questions) {
   custom[q.question_id] = ''
   customOpen[q.question_id] = false
 }
-const disabled = computed(() => !!props.answered)
+const disabled = computed(() => !!props.answered || !!props.ignored)
 
 function isPicked(q: ClarificationQuestion, opt: string): boolean {
   const a = answers[q.question_id]
@@ -80,25 +82,30 @@ function submit() {
   for (const q of props.clarification.questions) finalAnswers[q.question_id] = merged(q)
   emit('submit', buildClarificationReply(props.clarification, finalAnswers))
 }
-function skipWithDefaults() {
+/// 忽略=这题不答：不发消息不续跑（原「先不补充，按默认假设继续」按钮并入此路径——
+/// 模板话术既污染会话历史又语义冗余；AI prompt 本就允许可默认事项自行采用假设，
+/// 用户之后想推进直接发消息即可）。SKIP_TEXT 解析保留：旧历史里已生成的答复仍能显示已确认态。
+function ignore() {
   if (disabled.value) return
-  emit('submit', buildClarificationReply(props.clarification, {}))
+  emit('ignore')
 }
 </script>
 
 <template>
   <div class="rounded-xl border bg-white overflow-hidden w-full"
-    :class="answered ? 'border-surface-200' : 'border-brand-300 shadow-sm'">
+    :class="answered || ignored ? 'border-surface-200' : 'border-brand-300 shadow-sm'">
     <div class="px-3.5 pt-2.5 pb-1 flex items-center gap-1.5">
-      <span v-if="!answered" class="w-4 h-4 rounded-full bg-brand-100 text-brand-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0">?</span>
+      <span v-if="ignored" class="w-4 h-4 rounded-full bg-surface-100 text-surface-500 text-[10px] font-bold flex items-center justify-center flex-shrink-0">–</span>
+      <span v-else-if="!answered" class="w-4 h-4 rounded-full bg-brand-100 text-brand-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0">?</span>
       <span v-else class="w-4 h-4 rounded-full bg-emerald-50 text-emerald-600 text-[10px] flex items-center justify-center flex-shrink-0">✓</span>
-      <span class="text-[12px] font-semibold text-surface-700">{{ answered ? '已确认' : 'AI 需要你的决定' }}</span>
+      <span class="text-[12px] font-semibold text-surface-700">{{ ignored ? '已忽略' : answered ? '已确认' : 'AI 需要你的决定' }}</span>
     </div>
     <div class="px-3.5 pb-3 space-y-3">
-      <p v-if="clarification.reason && !answered" class="text-[11px] text-surface-500 leading-relaxed -mt-0.5">{{ clarification.reason }}</p>
+      <p v-if="clarification.reason && !answered && !ignored" class="text-[11px] text-surface-500 leading-relaxed -mt-0.5">{{ clarification.reason }}</p>
 
-      <!-- 已答复：每题的最终决定（从答复消息解析，刷新/重开不丢） -->
-      <template v-if="answered">
+      <!-- 已忽略：不答复不续跑，卡片定格；后续对话由用户主动发消息开启 -->
+      <p v-if="ignored" class="text-[11px] text-surface-400 leading-relaxed -mt-0.5">已忽略此确认，未回复任何内容；想继续直接发消息即可（不补充时 AI 会按合理默认假设推进）。</p>
+      <template v-else-if="answered">
         <p v-if="parsedReply?.skipped" class="text-[11px] text-surface-500">用户选择按默认假设继续（结果中已括注采用的假设）</p>
         <template v-else-if="parsedReply">
           <div v-for="(q, i) in clarification.questions" :key="q.question_id">
@@ -131,8 +138,8 @@ function skipWithDefaults() {
             <button v-else type="button" @click="openCustom(q)" class="text-[10px] text-surface-400 hover:text-brand-600 px-1">+ 其他（自行填写）</button>
           </div>
         </div>
-        <div class="flex items-center justify-end gap-2 pt-0.5">
-          <button type="button" @click="skipWithDefaults" class="btn-secondary text-xs">先不补充，按默认假设继续</button>
+        <div class="flex items-center justify-end gap-2.5 pt-0.5">
+          <button type="button" @click="ignore" class="text-[11px] text-surface-400 hover:text-surface-600 transition-colors">忽略</button>
           <button type="button" :disabled="!anyAnswered" @click="submit"
             :class="anyAnswered ? 'btn-primary text-xs' : 'inline-flex items-center h-6 px-2.5 rounded-md text-xs font-medium bg-surface-100 text-surface-400 cursor-not-allowed'"
           >确认并继续</button>
