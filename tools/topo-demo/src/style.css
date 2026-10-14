@@ -1,0 +1,100 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 13px;
+  color: #26282c;
+  background: #f0f2f5;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid #d5dae2;
+  background: #fff;
+  color: #3a3f47;
+  border-radius: 6px;
+  padding: 4px 10px;
+  line-height: 1.4;
+  transition: all 0.12s;
+}
+
+button:hover:not(:disabled) {
+  border-color: #1677ff;
+  color: #1677ff;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: #1677ff;
+  border-color: #1677ff;
+  color: #fff;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #3d8dff;
+  color: #fff;
+}
+
+input[type='text'] {
+  font: inherit;
+  border: 1px solid #d5dae2;
+  border-radius: 6px;
+  padding: 4px 8px;
+  outline: none;
+  width: 100%;
+  background: #fff;
+}
+
+input[type='text']:focus {
+  border-color: #1677ff;
+}
+
+/* ---------- ports ---------- */
+.x6-node .x6-port-body {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.x6-node:hover .x6-port-body,
+.x6-node.x6-node-selected .x6-port-body {
+  opacity: 1;
+}
+
+/* ---------- selection box ---------- */
+.x6-widget-selection-box {
+  border: 1px dashed #1677ff;
+  border-radius: 2px;
+}
+
+.x6-widget-selection-rubberband {
+  border: 1px solid rgba(22, 119, 255, 0.6);
+  background: rgba(22, 119, 255, 0.08);
+}
+
+/* ---------- label editor ---------- */
+.label-editor {
+  position: absolute;
+  z-index: 30;
+  border: 1px solid #1677ff;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  outline: none;
+  min-width: 120px;
+  transform: translate(-50%, -50%);
+}
