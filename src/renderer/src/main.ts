@@ -6,6 +6,7 @@ import router from './router'
 import { vTooltip } from './directives/tooltip'
 import { initAgentRunListeners } from './stores/agentRun'
 import { setupLinkInterceptor } from './utils/linkInterceptor'
+import '@fontsource-variable/inter'
 import './assets/main.css'
 import './assets/markdown.css'
 
