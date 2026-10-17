@@ -129,7 +129,7 @@ async function pickFiles() {
 // ─── 目录上传（镜像目录树；仅 folderTree 域启用） ───────────────────────────
 interface DirSummary {
   files: { path: string; relPath: string; name: string; size: number }[]
-  skipped: { hidden: number; big: number; deep: number; link: number }
+  skipped: { hidden: number; big: number; deep: number; link: number; existing: number }
   truncated: boolean
   rootName: string
 }
@@ -139,13 +139,26 @@ async function pickDirectory() {
   const dir = await openDialog({ directory: true, canCreateDirectories: false })
   if (!dir) return
   let r: any
-  try { r = await invoke('dir_list_uploadable', { dir: dir as string }) } catch (e: any) {
+  // 目标上下文提前解析：清单步按（名,大小）预过滤已存在文件，500 上限只数新文件——
+  // 同一目录反复选择即分批推进（>500 文件多批传完）
+  let pickEntityId: string | undefined
+  try { pickEntityId = props.resolveEntityId ? await props.resolveEntityId() : undefined } catch { pickEntityId = undefined }
+  try {
+    r = await invoke('dir_list_uploadable', {
+      dir: dir as string,
+      entityType: props.entityType,
+      entityId: pickEntityId,
+    })
+  } catch (e: any) {
     toast({ message: `目录读取失败: ${e?.message || e}`, type: 'error' }); return
   }
   if (!r?.success) { toast({ message: r?.error || '目录读取失败', type: 'error' }); return }
-  if (!(r.files || []).length) { toast({ message: '目录内没有可上传的文件', type: 'info' }); return }
+  if (!(r.files || []).length) {
+    const ex = r.skipped?.existing || 0
+    toast({ message: ex > 0 ? '目录内文件均已存在，无需重复上传' : '目录内没有可上传的文件', type: 'info' }); return
+  }
   const rootName = String(r.root || dir).replace(/[\\/]+$/, '').split(/[\\/]/).pop() || String(dir)
-  dirSummary.value = { files: r.files, skipped: r.skipped ?? { hidden: 0, big: 0, deep: 0, link: 0 }, truncated: !!r.truncated, rootName }
+  dirSummary.value = { files: r.files, skipped: r.skipped ?? { hidden: 0, big: 0, deep: 0, link: 0, existing: 0 }, truncated: !!r.truncated, rootName }
 }
 
 /** 确认闸通过后才入现有队列（条目带 relPath，提交时镜像目录） */
@@ -445,10 +458,13 @@ defineExpose({ open, close })
             <!-- 目录确认闸：遍历统计如实呈现，确认才入队（防误选大目录） -->
             <div v-if="dirSummary" class="mb-4 border border-amber-200 bg-amber-50/60 rounded-xl px-4 py-3">
               <p class="text-[12px] font-medium text-surface-700">
-                目录「{{ dirSummary.rootName }}」：将上传 {{ dirSummary.files.length }} 个文件{{ dirSummary.truncated ? '（已达 500 上限，多余未计入）' : '' }}
+                目录「{{ dirSummary.rootName }}」：将上传 {{ dirSummary.files.length }} 个新文件{{ dirSummary.truncated ? '（已达 500 上限，本批先传这些）' : '' }}
               </p>
               <p class="text-[10px] text-surface-500 mt-1">
-                子目录结构自动镜像到当前目录内；已跳过：隐藏 {{ dirSummary.skipped.hidden }} · 超大(&gt;200MB) {{ dirSummary.skipped.big }} · 超深(>8层) {{ dirSummary.skipped.deep }} · 符号链接 {{ dirSummary.skipped.link }}
+                子目录结构自动镜像到当前目录内；已跳过：已存在 {{ dirSummary.skipped.existing || 0 }} · 隐藏 {{ dirSummary.skipped.hidden }} · 超大(&gt;200MB) {{ dirSummary.skipped.big }} · 超深(>8层) {{ dirSummary.skipped.deep }} · 符号链接 {{ dirSummary.skipped.link }}
+              </p>
+              <p v-if="dirSummary.truncated" class="text-[10px] text-amber-600 mt-0.5">
+                文件数超出单批上限：上传完成后可再次选择同一目录，自动跳过已传文件继续下一批。
               </p>
               <div class="flex justify-end gap-2 mt-2">
                 <button @click="dirSummary = null" class="btn-secondary text-xs">取消</button>

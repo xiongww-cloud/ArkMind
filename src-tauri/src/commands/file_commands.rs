@@ -706,11 +706,31 @@ pub async fn assets_cleanup_orphans() -> Result<Value, String> {
 }
 #[tauri::command] pub async fn file_folder_delete(id: String) -> Result<Value, String> {
     if id.is_empty() { return Ok(json!({"success":false,"error":"参数缺失"})); }
-    let subs: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM library_folders WHERE parent_id=?", rusqlite::params![&id], |r| r.get(0))).unwrap_or(0);
-    let files: i64 = database::with_db(|c| c.query_row("SELECT COUNT(*) FROM library_file_locations WHERE folder_id=?", rusqlite::params![&id], |r| r.get(0))).unwrap_or(0);
-    if subs > 0 || files > 0 { return Ok(json!({"success":false,"error":"文件夹不为空，请先清空内容"})); }
-    database::run("DELETE FROM library_folders WHERE id=?",&[json!(&id)]).map_err(|e| e.to_string())?;
-    Ok(json!({"success":true}))
+    // 存量自愈：历史孤儿 locations 行（资产已删但行残留）不算内容——列表查询 INNER JOIN file_assets 本就看不见它们
+    database::run("DELETE FROM library_file_locations WHERE file_id NOT IN (SELECT id FROM file_assets)", &[]).ok();
+    // 收集整棵子树（含自身）：目录镜像常留下纯空目录链，父目录不该被空子目录卡住
+    let mut ids: Vec<String> = vec![id.clone()];
+    let mut stack = vec![id.clone()];
+    while let Some(cur) = stack.pop() {
+        if let Ok(rows) = database::all("SELECT id FROM library_folders WHERE parent_id=?1", &[json!(&cur)]) {
+            for r in rows {
+                if let Some(cid) = r["id"].as_str() { ids.push(cid.to_string()); stack.push(cid.to_string()); }
+            }
+        }
+    }
+    // 可见文件（与目录列表查询 :folder_files 同口径：locations JOIN 活资产）
+    let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let vals: Vec<Value> = ids.iter().map(|s| json!(s)).collect();
+    let files: i64 = database::get(
+        &format!("SELECT COUNT(*) AS n FROM library_file_locations lfl INNER JOIN file_assets fa ON fa.id=lfl.file_id WHERE lfl.folder_id IN ({ph})"),
+        &vals,
+    ).ok().flatten().and_then(|r| r["n"].as_i64()).unwrap_or(0);
+    if files > 0 { return Ok(json!({"success":false,"error":"文件夹不为空，请先清空内容"})); }
+    // 全子树无可见文件：连空目录链一并删除（有可见文件才拦——语义从"直接子项"放宽为"整棵子树内容"）
+    database::run(
+        &format!("DELETE FROM library_folders WHERE id IN ({ph})"), &vals
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({"success":true, "deleted": ids.len()}))
 }
 
 // ─── 目录批量上传枚举 ──────────────────────────────────────────────────────
@@ -723,16 +743,42 @@ pub(crate) const DIR_MAX_BYTES: u64 = 200 * 1024 * 1024;
 /// 仅跳隐藏/系统文件、符号链接、>200MB 单文件；>8 层子树与 >500 文件计入 skipped/truncated，
 /// 统计如实回报（前端确认闸展示），不静默丢弃。relPath 恒 '/' 分隔，供前端镜像目录树。
 #[tauri::command]
-pub async fn dir_list_uploadable(dir: String) -> Result<Value, String> {
+pub async fn dir_list_uploadable(
+    dir: String,
+    entity_type: Option<String>,
+    entity_id: Option<String>,
+) -> Result<Value, String> {
     let raw = dir.trim().to_string();
     if raw.is_empty() { return Ok(json!({"success": false, "error": "请先选择目录"})); }
-    let result = tauri::async_runtime::spawn_blocking(move || walk_uploadable(std::path::PathBuf::from(raw)))
+    // ★ 去重前置到清单步：带目标上下文时按 (文件名,大小) 预过滤已存在文件——
+    //   500 上限只计新文件，同一目录反复选择即分批推进（>500 文件可多批传完）；
+    //   name+hash 终裁仍在上传口（同内容改名等边角由它兜底）。无上下文/解析失败 → 旧行为不预过滤
+    let existing: Option<std::collections::HashSet<(String, u64)>> = match (entity_type.as_deref(), entity_id.as_deref()) {
+        (Some(et), Some(eid)) if !et.is_empty() => Some(load_existing_name_size(et, eid)),
+        _ => None,
+    };
+    let result = tauri::async_runtime::spawn_blocking(move || walk_uploadable(std::path::PathBuf::from(raw), existing))
         .await
         .map_err(|e| format!("目录遍历任务失败: {e}"))?;
     Ok(result)
 }
 
-fn walk_uploadable(root: std::path::PathBuf) -> Value {
+/// 目标域现有文件的 (规范化文件名, 大小) 集合——目录上传清单步预过滤用（与上传门同域：library=全库域，其余=单对象）。
+/// 名称口径与上传门一致：显示名 custom_name 缺省回落 original_name，trim+lower。
+fn load_existing_name_size(entity_type: &str, entity_id: &str) -> std::collections::HashSet<(String, u64)> {
+    database::all(
+        "SELECT LOWER(TRIM(COALESCE(NULLIF(fr.custom_name,''), fa.original_name))) AS n, fa.file_size AS s
+         FROM file_relations fr JOIN file_assets fa ON fa.id=fr.file_id
+         WHERE fr.entity_type=?1 AND fr.entity_id=?2",
+        &[json!(entity_type), json!(entity_id)],
+    ).unwrap_or_default().iter().filter_map(|r| {
+        let n = r["n"].as_str()?.to_string();
+        let s = r["s"].as_i64().unwrap_or(0).max(0) as u64;
+        if n.is_empty() { None } else { Some((n, s)) }
+    }).collect()
+}
+
+fn walk_uploadable(root: std::path::PathBuf, existing: Option<std::collections::HashSet<(String, u64)>>) -> Value {
     use std::fs;
     // canonicalize 兼存在性校验（也顺带拒绝相对路径/穿越形态）；根若是符号链接指向目录，接受
     let Ok(root_canon) = root.canonicalize() else {
@@ -740,7 +786,7 @@ fn walk_uploadable(root: std::path::PathBuf) -> Value {
     };
     if !root_canon.is_dir() { return json!({"success": false, "error": "所选路径不是目录"}); }
     let mut files: Vec<Value> = Vec::new();
-    let (mut skipped_hidden, mut skipped_big, mut skipped_deep, mut skipped_link) = (0usize, 0usize, 0usize, 0usize);
+    let (mut skipped_hidden, mut skipped_big, mut skipped_deep, mut skipped_link, mut skipped_existing) = (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut truncated = false;
     // 迭代栈防深递归爆栈；(dir, rel_prefix, depth)
     let mut stack: Vec<(std::path::PathBuf, String, u32)> = vec![(root_canon.clone(), String::new(), 0)];
@@ -764,6 +810,10 @@ fn walk_uploadable(root: std::path::PathBuf) -> Value {
             if !ft.is_file() { continue; }
             let size = child.metadata().map(|m| m.len()).unwrap_or(0);
             if size > DIR_MAX_BYTES { skipped_big += 1; continue; }
+            // ★ 清单步去重：目标域已存在的 (名,大小) 直接跳过，不占 500 名额——多批上传推进的核心
+            if let Some(ex) = &existing {
+                if ex.contains(&(name.trim().to_lowercase(), size)) { skipped_existing += 1; continue; }
+            }
             if files.len() >= DIR_MAX_FILES { truncated = true; break; }
             files.push(json!({"path": child.to_string_lossy().to_string(), "relPath": rel, "name": name, "size": size}));
         }
@@ -774,7 +824,7 @@ fn walk_uploadable(root: std::path::PathBuf) -> Value {
         "success": true,
         "root": root_canon.to_string_lossy(),
         "files": files,
-        "skipped": { "hidden": skipped_hidden, "big": skipped_big, "deep": skipped_deep, "link": skipped_link },
+        "skipped": { "hidden": skipped_hidden, "big": skipped_big, "deep": skipped_deep, "link": skipped_link, "existing": skipped_existing },
         "truncated": truncated
     })
 }
@@ -1145,6 +1195,12 @@ pub async fn chat_read_clipboard_files(app: tauri::AppHandle) -> Result<Value, S
     use base64::Engine;
     match resolve_file_info(&file_id) {
         Some((src, _, _)) => {
+            // ★ 50MB 顶：整文件转 base64（×1.33）进 IPC 会双侧爆内存——该命令前端已无调用方，留作保险丝
+            if let Ok(md) = std::fs::metadata(&src) {
+                if md.len() > 50 * 1024 * 1024 {
+                    return Err("文件超过 50MB，不支持字节读取".into());
+                }
+            }
             let buf = std::fs::read(&src).map_err(|e| format!("读取文件失败: {}", e))?;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
             Ok(json!({"success":true,"data":b64}))
@@ -1252,6 +1308,41 @@ fn filename_for_clipboard(name: &str, ext: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 空目录删除：镜像残留的纯空目录链（父→子→叶）应可从父一键级联删除；
+    /// 孤儿 locations 行（资产已删残留）不算内容并顺手自愈清理
+    #[tokio::test]
+    async fn folder_delete_cascades_empty_subtree_and_purges_orphans() {
+        let (_d, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| crate::database::db_schema::create_schema(c)).unwrap();
+        crate::database::with_db(|c| c.execute_batch(
+            "INSERT INTO library_folders(id,name,parent_id) VALUES('p','top',NULL),('c','mid','p'),('l','leaf','c');
+             INSERT INTO library_file_locations(file_id,folder_id) VALUES('ghost-asset','l');"
+        )).unwrap();
+        let r = file_folder_delete("p".into()).await.unwrap();
+        assert_eq!(r["success"], json!(true), "空子树（仅孤儿行）应可删: {r}");
+        let left = crate::database::get("SELECT COUNT(*) AS n FROM library_folders", &[]).unwrap().unwrap();
+        assert_eq!(left["n"].as_i64(), Some(0), "空子树整链应删净");
+        let rows = crate::database::get("SELECT COUNT(*) AS n FROM library_file_locations", &[]).unwrap().unwrap();
+        assert_eq!(rows["n"].as_i64(), Some(0), "孤儿行应被自愈清理");
+    }
+
+    /// 子树深处有可见文件（活资产）时，父目录仍拒绝删除（防误删整树）
+    #[tokio::test]
+    async fn folder_delete_blocked_when_subtree_has_visible_file() {
+        let (_d, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| crate::database::db_schema::create_schema(c)).unwrap();
+        crate::database::with_db(|c| c.execute_batch(
+            "INSERT INTO library_folders(id,name,parent_id) VALUES('p','top',NULL),('l','leaf','p');
+             INSERT INTO file_assets(id,file_ext,file_size,content_hash,original_name) VALUES('a1','txt',1,'h','x.txt');
+             INSERT INTO library_file_locations(file_id,folder_id) VALUES('a1','l');"
+        )).unwrap();
+        let r = file_folder_delete("p".into()).await.unwrap();
+        assert_eq!(r["success"], json!(false), "孙层有可见文件必须拦: {r}");
+        assert!(r["error"].as_str().unwrap_or("").contains("不为空"), "{r}");
+        let n = crate::database::get("SELECT COUNT(*) AS n FROM library_folders", &[]).unwrap().unwrap();
+        assert_eq!(n["n"].as_i64(), Some(2), "目录应原样保留");
+    }
+
     /// 目录遍历：relPath 归一、隐藏/系统/链接/超大/超深各自计数如实回报、排序稳定
     #[test]
     fn dir_walk_reports_mirror_paths_and_skip_stats() {
@@ -1271,7 +1362,7 @@ mod tests {
         std::fs::write(deep.join("f.txt"), "z").unwrap();
         #[cfg(unix)] std::os::unix::fs::symlink(root.join("a/one.txt"), root.join("link.txt")).unwrap();
 
-        let v = walk_uploadable(root.to_path_buf());
+        let v = walk_uploadable(root.to_path_buf(), None);
         assert_eq!(v["success"], serde_json::json!(true), "{}", v);
         let rels: Vec<&str> = v["files"].as_array().unwrap().iter()
             .map(|f| f["relPath"].as_str().unwrap()).collect();
@@ -1288,9 +1379,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         for i in 0..501 { std::fs::write(root.join(format!("f{i:03}.txt")), "x").unwrap(); }
-        let v = walk_uploadable(root.to_path_buf());
+        let v = walk_uploadable(root.to_path_buf(), None);
         assert_eq!(v["files"].as_array().unwrap().len(), DIR_MAX_FILES);
         assert_eq!(v["truncated"], serde_json::json!(true));
+    }
+
+    /// ★ 清单步去重 + 500 上限只计新文件：首批已入库的 500 个在再选目录时被预过滤，
+    /// 余下新文件正常入清单且不截断——>500 文件靠反复选择分批传完的机制核心
+    #[test]
+    fn dir_walk_skips_existing_and_cap_counts_only_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for i in 0..502 { std::fs::write(root.join(format!("f{i:03}.txt")), "x").unwrap(); }
+        let existing: std::collections::HashSet<(String, u64)> = (0..500)
+            .map(|i| (format!("f{i:03}.txt"), 1u64))
+            .collect();
+        let v = walk_uploadable(root.to_path_buf(), Some(existing));
+        let rels: Vec<&str> = v["files"].as_array().unwrap().iter()
+            .map(|f| f["relPath"].as_str().unwrap()).collect();
+        assert_eq!(rels, vec!["f500.txt", "f501.txt"], "已存在的首批 500 应被清单步跳过，余下新文件入清单");
+        assert_eq!(v["skipped"]["existing"], 500);
+        assert_eq!(v["truncated"], serde_json::json!(false), "上限只数新文件，不该截断");
     }
 
     /// 上传守门四态：同名同hash跳过（含大小写/空格变体）、同名异hash自动序号后缀、异名放行
