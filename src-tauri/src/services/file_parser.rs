@@ -928,6 +928,80 @@ pub fn refine_zip_container_ext(bytes: &[u8]) -> Option<&'static str> {
     if has_word { Some("docx") } else if has_xl { Some("xlsx") } else if has_ppt { Some("pptx") } else { None }
 }
 
+// ═══ 有界读取与尺寸闸（Windows 闪退/整机死机根因修复）════════════════════
+// 历史：嗅探/zip 细分把整文件读进内存，叠加摄入 MAX_CONCURRENT=5 并发——
+// 大文件阶段数 GB 分配打满 Windows 换页 → 整机假死，随后 OOM 杀进程（闪退）。
+// 现约定：任何解析入口的单次文件读取必须有界；超尺寸直接 unsupported 终态。
+
+/// 单文件解析尺寸上限（与目录遍历同口径 200MB）：超限不解析、不入知识索引（文件本体保留可用）
+pub const MAX_PARSE_BYTES: u64 = 200 * 1024 * 1024;
+
+/// 尺寸闸判定：返回 Some(拒绝理由) 则不得继续解析
+fn parse_size_gate(file_len: u64) -> Option<String> {
+    if file_len > MAX_PARSE_BYTES {
+        Some(format!(
+            "{}文件过大（{}MB > 200MB 上限），暂不解析、不入知识索引",
+            crate::services::file_ingestion::UNSUPPORTED_PREFIX,
+            file_len / 1_048_576
+        ))
+    } else {
+        None
+    }
+}
+
+/// 有界窗口读取（绝不整文件入内存）。off=None 从头读 cap 字节；否则从指定偏移读
+fn read_window(path: &str, off: Option<u64>, cap: usize) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return Vec::new(); };
+    if let Some(o) = off {
+        if f.seek(SeekFrom::Start(o)).is_err() {
+            return Vec::new();
+        }
+    }
+    let mut buf = vec![0u8; cap];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf.truncate(n);
+    buf
+}
+
+const ZIP_REFINE_FULL_CAP: u64 = 64 * 1024 * 1024;
+const ZIP_TAIL_WINDOW: u64 = 1024 * 1024;
+const ZIP_HEAD_WINDOW: usize = 256 * 1024;
+
+/// OOXML 必备条目名（central directory 含全部条目名，作为窗口扫描特征）
+fn scan_ooxml_markers(bytes: &[u8]) -> Option<&'static str> {
+    let has = |s: &str| bytes.windows(s.len()).any(|w| w == s.as_bytes());
+    if has("word/document.xml") { Some("docx") }
+    else if has("xl/workbook.xml") { Some("xlsx") }
+    else if has("ppt/presentation.xml") { Some("pptx") }
+    else { None }
+}
+
+/// zip 容器细分（有界版，替代调用方的全文件读取）：
+/// ≤64MB 全读走 zip crate 精确解析（内存封顶 64MB）；>64MB 不整读——
+/// central directory 在文件尾且携带全部条目名，尾 1MB + 头 256KB 双窗扫描特征条目即可判型
+pub fn refine_zip_bounded(path: &str) -> Option<&'static str> {
+    let size = std::fs::metadata(path).ok()?.len();
+    if size == 0 { return None; }
+    if size <= ZIP_REFINE_FULL_CAP {
+        let all = std::fs::read(path).ok()?;
+        return refine_zip_container_ext(&all);
+    }
+    let tail_off = size.saturating_sub(ZIP_TAIL_WINDOW);
+    if let Some(r) = scan_ooxml_markers(&read_window(path, Some(tail_off), ZIP_TAIL_WINDOW as usize)) {
+        return Some(r);
+    }
+    scan_ooxml_markers(&read_window(path, None, ZIP_HEAD_WINDOW))
+}
+
+/// pdfium(C++) / OCR 光栅化串行锁：进程内最重内存消耗者，5 并发叠峰会打满交换。
+/// 持锁点仅在 parse_file_smart 的各解析 arm（这些重型函数之间无互调，无重入死锁）；
+/// 峰值从「并发数 × 单 PDF」压到「单 PDF」
+static HEAVY_PARSE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn heavy_parse_guard() -> std::sync::MutexGuard<'static, ()> {
+    HEAVY_PARSE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// ★ 内容权威嗅探：读文件头 4KB 用 infer 识别真实类型。
 /// 命中返回真实扩展名；未命中回退文件名扩展（自动剥离 Outlook CID 尾巴如 `image.jpg@hex.hash`）；再无则空。
 pub fn sniff_file_ext(path: &str, file_name: &str) -> String {
@@ -942,10 +1016,8 @@ pub fn sniff_file_ext(path: &str, file_name: &str) -> String {
             let ext = kind.extension().to_string();
             // ★ zip 容器细分：OOXML 不得降级为 zip（central directory 在文件尾部，需读全文件）
             if ext == "zip" {
-                if let Ok(all) = std::fs::read(path) {
-                    if let Some(r) = refine_zip_container_ext(&all) {
-                        return r.to_string();
-                    }
+                if let Some(r) = refine_zip_bounded(path) {
+                    return r.to_string();
                 }
             }
             return ext;
@@ -968,15 +1040,22 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
         return ParseResult { text: String::new(), success: false, ..Default::default() };
     }
 
-    // ── 读前 4KB 做嗅探 ──
-    let head = std::fs::read(path).unwrap_or_default();
+    // ── 尺寸闸（200MB，与目录遍历同口径）：超限直接 unsupported 终态，杜绝大文件入解析管线 ──
+    if let Ok(md) = std::fs::metadata(path) {
+        if let Some(reason) = parse_size_gate(md.len()) {
+            return ParseResult { text: String::new(), success: false, error: reason, inferred_ext: None };
+        }
+    }
+
+    // ── 读文件头做嗅探（有界 8KB：此前是全量 std::fs::read，大文件闪退/死机根因）──
+    let head = read_window(path, None, 8 * 1024);
     let probe = &head[..head.len().min(4096)];
     let inferred = infer::get(probe);
     // ★ 内容权威：魔数命中即记录真实类型扩展名（文件名后缀不可信）
     let mut magic_ext: Option<String> = inferred.map(|k| k.extension().to_string());
     // ★ zip 容器细分：OOXML 的 PK 魔数被 infer 判为 zip——不细分会让 file_ext 自愈降级 docx → zip
     if magic_ext.as_deref() == Some("zip") {
-        if let Some(r) = refine_zip_container_ext(&head) {
+        if let Some(r) = refine_zip_bounded(path) {
             magic_ext = Some(r.to_string());
         }
     }
@@ -986,7 +1065,8 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     if let Some(kind) = inferred {
         match kind.mime_type() {
             "application/pdf" => {
-                // PDF: OCR（pdfium + 视觉模型）优先 → pdfium 纯文本 → pdf-extract
+                // PDF: OCR（pdfium + 视觉模型）优先 → pdfium 纯文本 → pdf-extract（重型解析串行）
+                let _heavy = heavy_parse_guard();
                 let ocr_result = try_ocr_pdf(path);
                 if !ocr_result.is_empty() {
                     return mk(ocr_result, String::new());
@@ -1001,6 +1081,7 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
                 return mk(text, String::new());
             }
             "image/png" | "image/jpeg" | "image/webp" | "image/bmp" => {
+                let _heavy = heavy_parse_guard();
                 return match try_ocr_image_result(path, kind.mime_type()) {
                     Ok(text) => mk(text, String::new()),
                     Err(e) => mk(String::new(), format!("{}视觉模型解析失败: {}", crate::services::file_ingestion::NON_RETRYABLE_PREFIX, e)),
@@ -1038,7 +1119,8 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
         "xlsx" | "xls" => read_xlsx(path).unwrap_or_default(),
         "pptx" | "ppt" => read_pptx(path).unwrap_or_default(),
         "pdf" => {
-            // 后缀 PDF：OCR（pdfium + 视觉模型）优先 → pdfium 纯文本 → pdf-extract
+            // 后缀 PDF：OCR（pdfium + 视觉模型）优先 → pdfium 纯文本 → pdf-extract（重型解析串行）
+            let _heavy = heavy_parse_guard();
             let ocr = try_ocr_pdf(path);
             if !ocr.is_empty() { ocr } else { try_pdfium_extract(path) }
         }
@@ -1048,6 +1130,7 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
                 "webp" => "image/webp", "bmp" => "image/bmp",
                 _ => "image/png",
             };
+            let _heavy = heavy_parse_guard();
             return match try_ocr_image_result(path, mime) {
                 Ok(t) if !t.is_empty() => ParseResult { success: true, text: t, ..Default::default() },
                 Ok(_) => ParseResult { success: false, text: String::new(), error: format!("{}视觉模型解析失败: OCR 未返回内容", crate::services::file_ingestion::NON_RETRYABLE_PREFIX), inferred_ext: None },
@@ -1060,7 +1143,8 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
         return ParseResult { success: true, text, ..Default::default() };
     }
 
-    // ── 轮询兜底：依次硬啃 PDF → DOCX → XLSX → TXT ──
+    // ── 轮询兜底：依次硬啃 PDF → DOCX → XLSX → TXT（含 read_pdf，重型解析串行）──
+    let _heavy = heavy_parse_guard();
     let fallbacks: &[fn(&str) -> String] = &[read_pdf, |p| read_docx(p).unwrap_or_default(), |p| read_xlsx(p).unwrap_or_default(), |p| read_pptx(p).unwrap_or_default(), |p| std::fs::read_to_string(p).unwrap_or_default()];
     for try_parse in fallbacks {
         let t = try_parse(path);
@@ -1694,6 +1778,101 @@ mod tests {
         assert_eq!(refine_zip_container_ext(&make_zip(&["ppt/presentation.xml"])), Some("pptx"));
         assert_eq!(refine_zip_container_ext(&make_zip(&["readme.txt"])), None, "纯 zip 不归类");
         assert_eq!(refine_zip_container_ext(b"not a zip at all"), None, "非 zip 字节 → None");
+    }
+
+    /// ★ 尺寸闸：200MB 内放行、超限 unsupported 终态且入口即拒不读文件——
+    /// 大文件全量入内存 + 5 并发曾把 Windows 整机换页打挂（死机）后被 OOM 杀进程（闪退）
+    #[test]
+    fn parse_size_gate_boundary_and_oversize_sparse_file() {
+        use std::io::Write as _;
+        assert!(parse_size_gate(MAX_PARSE_BYTES).is_none(), "恰达上限放行");
+        let err = parse_size_gate(MAX_PARSE_BYTES + 1).unwrap();
+        assert!(err.starts_with(crate::services::file_ingestion::UNSUPPORTED_PREFIX), "{err}");
+        assert!(err.contains("文件过大"), "{err}");
+
+        // 真实调用路径：201MB 稀疏文件（set_len 不实际落数据）带 PDF 魔数头 → 拒因必须是尺寸
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.pdf");
+        {
+            let mut f = std::fs::File::create(&p).unwrap();
+            f.write_all(b"%PDF-1.7 fake header for sniff").unwrap();
+            f.set_len(MAX_PARSE_BYTES + 1).unwrap();
+        }
+        let r = parse_file_smart(p.to_str().unwrap(), "pdf");
+        assert!(!r.success);
+        assert!(r.error.contains("文件过大"), "{}", r.error);
+        assert!(r.error.starts_with(crate::services::file_ingestion::UNSUPPORTED_PREFIX), "{}", r.error);
+    }
+
+    /// 有界读：头窗（含 cap 截断）/尾窗（含 EOF 收口），绝不整文件入内存
+    #[test]
+    fn read_window_reads_head_and_tail_windows() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("w.bin");
+        let mut data = b"HEAD".to_vec();
+        data.extend(std::iter::repeat(b'x').take(100));
+        data.extend_from_slice(b"TAIL");
+        std::fs::write(&p, &data).unwrap();
+
+        assert_eq!(read_window(p.to_str().unwrap(), None, 4), b"HEAD".to_vec(), "头窗");
+        assert_eq!(read_window(p.to_str().unwrap(), None, 3), b"HEA".to_vec(), "cap 截断");
+        let len = data.len() as u64;
+        let tail = read_window(p.to_str().unwrap(), Some(len - 4), 4);
+        assert_eq!(tail, b"TAIL".to_vec(), "尾窗（offset 后取 cap）");
+        let clamped = read_window(p.to_str().unwrap(), Some(len - 4), 999);
+        assert_eq!(clamped.len(), 4, "越过 EOF 由实际字节数收口");
+        assert!(read_window("/nonexistent/nope", None, 4).is_empty());
+    }
+
+    /// zip 细分有界版：小文件精确全读；>64MB 稀疏大文件走尾窗 central-directory 扫描（不整读）
+    #[test]
+    fn refine_zip_bounded_full_and_tail_window() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+
+        // 小 OOXML：≤64MB 全读路径（zip crate 精确解析）
+        let p1 = dir.path().join("small.docx");
+        {
+            let mut w = zip::ZipWriter::new(std::fs::File::create(&p1).unwrap());
+            w.start_file("word/document.xml", zip::write::FileOptions::default()).unwrap();
+            w.write_all(b"<w:document/>").unwrap();
+            w.finish().unwrap();
+        }
+        assert_eq!(refine_zip_bounded(p1.to_str().unwrap()), Some("docx"));
+
+        // 小纯 zip：全读路径判 None
+        let p2 = dir.path().join("plain.zip");
+        {
+            let mut w = zip::ZipWriter::new(std::fs::File::create(&p2).unwrap());
+            w.start_file("readme.txt", zip::write::FileOptions::default()).unwrap();
+            w.write_all(b"x").unwrap();
+            w.finish().unwrap();
+        }
+        assert_eq!(refine_zip_bounded(p2.to_str().unwrap()), None);
+
+        // >64MB 稀疏文件 + 尾部真实 xlsx zip：>cap 分支必须走尾窗扫描（CD 在尾，条目名可扫）
+        let p3 = dir.path().join("huge.zip");
+        let mut zip_bytes = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            w.start_file("xl/workbook.xml", zip::write::FileOptions::default()).unwrap();
+            w.write_all(b"<x/>").unwrap();
+            w.finish().unwrap();
+        }
+        {
+            let f = std::fs::File::create(&p3).unwrap();
+            f.set_len(ZIP_REFINE_FULL_CAP + 1).unwrap();
+        }
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p3).unwrap();
+            f.write_all(&zip_bytes).unwrap();
+        }
+        assert_eq!(
+            refine_zip_bounded(p3.to_str().unwrap()),
+            Some("xlsx"),
+            "尾窗应扫到 central directory 里的 xl/workbook.xml"
+        );
     }
 
     /// ★ 纯 zip 不得被 read_pptx 的空命中截胡：终态是"失败+保留 zip 魔数"，由 ingestion 判 unsupported

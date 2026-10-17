@@ -64,6 +64,41 @@ fn migrate_fix_is_daily_corruption() {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// panic 落盘 panic.log（>1MB 自清续写）：release 包 `windows_subsystem = "windows"` 会吞掉
+/// stderr，Rust panic 此前完全无痕——闪退后只有 Windows 事件查看器有原生栈、应用侧零尸检材料。
+/// 进程级安装，覆盖所有线程；路径取数据根（与 logs/app.log 同源）
+fn install_panic_hook(data_dir: &std::path::Path) {
+    let path = data_dir.join("panic.log");
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_string());
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let line = format!(
+            "[{}] PANIC @ {} :: {}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            loc,
+            msg
+        );
+        use std::io::Write;
+        if let Ok(md) = std::fs::metadata(&path) {
+            if md.len() > 1024 * 1024 {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = f.write_all(line.as_bytes());
+        }
+        eprintln!("[PANIC] {} @ {}", msg, loc);
+    }));
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -103,6 +138,7 @@ pub fn run() {
             }
             // ★ 初始化日志系统（磁盘落盘 logs/app.log：10MB 轮转，重启不丢——中断类问题取证靠它）
             let data_dir = app_data_dir(&app.handle());
+            install_panic_hook(&data_dir);
             let log_state = services::log_collector::init_logger(1000, &data_dir.join("logs"))
                 .unwrap_or_else(|e| {
                     eprintln!("Logger init failed: {}", e);
@@ -391,7 +427,7 @@ pub fn run() {
             commands::email_update_account, commands::email_delete_account, commands::email_delete,
             commands::email_list, commands::email_get_detail,
             commands::email_render_html, commands::email_inline_asset,
-            commands::email_sync, commands::email_loop_status,
+            commands::email_sync, commands::email_test_connection, commands::email_loop_status,
             commands::email_config_update, commands::email_config_get,
             commands::email_stats, commands::email_action_confirm, commands::email_action_ignore,
             commands::email_reprocess_knowledge, commands::email_reprocess_attachments,
