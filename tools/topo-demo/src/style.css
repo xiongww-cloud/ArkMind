@@ -98,3 +98,52 @@ input[type='text']:focus {
   min-width: 120px;
   transform: translate(-50%, -50%);
 }
+
+/* ---------- 边顶点手柄（命令式覆盖层） ---------- */
+.vh-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.vh {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+
+.vh.move {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #1677ff;
+  cursor: grab;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.vh.insert {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: #ffffff;
+  border: 1.5px solid #1677ff;
+  opacity: 0.55;
+  cursor: crosshair;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.vh.insert:hover {
+  opacity: 1;
+}
+
+/* ---------- 连线拖拽反馈 ---------- */
+.canvas.is-connecting,
+.canvas.is-connecting .x6-node {
+  cursor: crosshair;
+}
+
+.canvas.is-connecting .x6-node:hover .x6-port-body {
+  opacity: 1;
+}

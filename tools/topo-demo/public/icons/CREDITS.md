@@ -1,10 +1,26 @@
 # 图标来源与许可证
 
-本目录图标提取自开源项目 [draw.io](https://github.com/jgraph/drawio)（Apache-2.0，仓库 `src/main/webapp/img/`），仅作 demo 用途：
+本目录三套图标体系并存（设计依据 `SYSTEM.md`）：
 
-- `net/` — `img/networking/`（通用网络拓扑图标，源自 openclipart 公有领域素材 gwf 系列，draw.io 分发）
-- `pc/` — `img/computers/`（同上仓库的终端/办公类图标）
-- `allied/` — `img/lib/allied_telesis/`（Allied Telesis 风格网络设备的矢量 SVG 近似图标）
-- `ad/` — `img/lib/active_directory/`（Active Directory 风格矢量 SVG 图标）
+## 1. 自绘双色调体系（主体）
 
-注意：draw.io 仓库 `img/LICENSE` 包含「不得作为 Atlassian 产品资产分发」的限制条款，与本项目无关，但**若未来用于 ArkMind 商业发布，需逐一复核各子集素材的原始许可**（尤其厂商品牌图形涉及商标，建议届时替换为自绘 SVG 或正式授权图标）。
+`src/graph/iconArt*.ts` 内联 SVG（data URI，无独立文件），**项目自有、许可随本仓库**。
+设计系统：32px 网格 / 2px 圆角描边 / 固定双色调令牌（详见 `SYSTEM.md`）。
+新增图标走 contact sheet 流程（`/contact.html`）审阅后登记 `icons.ts`。
+
+## 2. Tabler Icons 补缺（`tabler/`，20 个）
+
+- 来源：[tabler-icons](https://github.com/tabler/tabler-icons)，**MIT**
+- 仅取角色与通用符号类（user/users/star/folder/clock/search…），已将 `currentColor` 替换为设计系统描边色 `#3F4C63`
+
+## 3. 经典（draw.io 写实集，`net/` `pc/` `allied/` `ad/`）
+
+提取自开源项目 [draw.io](https://github.com/jgraph/drawio)（Apache-2.0，仓库 `src/main/webapp/img/`），仅作 demo 用途：
+
+- `net/` — `img/networking/`（源自 openclipart 公有领域素材 gwf 系列）
+- `pc/` — `img/computers/`
+- `allied/` — `img/lib/allied_telesis/`
+- `ad/` — `img/lib/active_directory/`
+
+**商用提示**：draw.io `img/LICENSE` 含「不得作为 Atlassian 产品资产分发」限制；厂商品牌图形涉商标。
+自绘体系与 Tabler（MIT）可安全商用；经典集若随 ArkMind 商业发布需复核或下架。

@@ -1,0 +1,202 @@
+{
+ "net/Bridge.png": {
+  "w": 111,
+  "h": 120
+ },
+ "net/Certificate.png": {
+  "w": 104,
+  "h": 128
+ },
+ "net/Certificate_Off.png": {
+  "w": 104,
+  "h": 128
+ },
+ "net/Cloud.png": {
+  "w": 122,
+  "h": 89
+ },
+ "net/Cloud_Computer.png": {
+  "w": 122,
+  "h": 81
+ },
+ "net/Cloud_Computer_Private.png": {
+  "w": 123,
+  "h": 84
+ },
+ "net/Cloud_Rack.png": {
+  "w": 122,
+  "h": 81
+ },
+ "net/Cloud_Rack_Private.png": {
+  "w": 123,
+  "h": 84
+ },
+ "net/Cloud_Server.png": {
+  "w": 122,
+  "h": 81
+ },
+ "net/Cloud_Server_Private.png": {
+  "w": 123,
+  "h": 84
+ },
+ "net/Cloud_Storage.png": {
+  "w": 122,
+  "h": 81
+ },
+ "net/Concentrator.png": {
+  "w": 125,
+  "h": 62
+ },
+ "net/Data_Filtering.png": {
+  "w": 112,
+  "h": 113
+ },
+ "net/Database.png": {
+  "w": 97,
+  "h": 113
+ },
+ "net/Database_Add.png": {
+  "w": 111,
+  "h": 113
+ },
+ "net/Database_Minus.png": {
+  "w": 111,
+  "h": 113
+ },
+ "net/Database_Move_Stack.png": {
+  "w": 112,
+  "h": 113
+ },
+ "net/Database_Remove.png": {
+  "w": 111,
+  "h": 113
+ },
+ "net/Email.png": {
+  "w": 124,
+  "h": 108
+ },
+ "net/Firewall-page1.png": {
+  "w": 100,
+  "h": 127
+ },
+ "net/Firewall.png": {
+  "w": 98,
+  "h": 127
+ },
+ "net/Firewall_02.png": {
+  "w": 99,
+  "h": 119
+ },
+ "net/Ip_Camera.png": {
+  "w": 118,
+  "h": 128
+ },
+ "net/Mainframe.png": {
+  "w": 53,
+  "h": 116
+ },
+ "net/Modem.png": {
+  "w": 89,
+  "h": 127
+ },
+ "net/Print_Server.png": {
+  "w": 127,
+  "h": 71
+ },
+ "net/Print_Server_Wireless.png": {
+  "w": 117,
+  "h": 115
+ },
+ "net/Repeater.png": {
+  "w": 103,
+  "h": 119
+ },
+ "net/Router.png": {
+  "w": 123,
+  "h": 73
+ },
+ "net/Router_Icon.png": {
+  "w": 111,
+  "h": 70
+ },
+ "net/Server.png": {
+  "w": 124,
+  "h": 83
+ },
+ "net/Server_Rack.png": {
+  "w": 78,
+  "h": 123
+ },
+ "net/Server_Rack_Empty.png": {
+  "w": 78,
+  "h": 123
+ },
+ "net/Server_Rack_Partial.png": {
+  "w": 78,
+  "h": 123
+ },
+ "net/Switch.png": {
+  "w": 126,
+  "h": 67
+ },
+ "net/UPS.png": {
+  "w": 128,
+  "h": 126
+ },
+ "net/Wireless_Router.png": {
+  "w": 123,
+  "h": 120
+ },
+ "net/Wireless_Router_N.png": {
+  "w": 118,
+  "h": 113
+ },
+ "net/power_distribution_unit.png": {
+  "w": 126,
+  "h": 61
+ },
+ "pc/Harddrive.png": {
+  "w": 126,
+  "h": 69
+ },
+ "pc/Laptop.png": {
+  "w": 124,
+  "h": 101
+ },
+ "pc/MacBook.png": {
+  "w": 122,
+  "h": 105
+ },
+ "pc/Monitor_Tower.png": {
+  "w": 122,
+  "h": 81
+ },
+ "pc/Netbook.png": {
+  "w": 126,
+  "h": 91
+ },
+ "pc/Printer.png": {
+  "w": 112,
+  "h": 100
+ },
+ "pc/USB_Hub.png": {
+  "w": 120,
+  "h": 99
+ },
+ "pc/Virtual_Machine.png": {
+  "w": 125,
+  "h": 93
+ },
+ "pc/Workstation.png": {
+  "w": 119,
+  "h": 123
+ },
+ "pc/iMac.png": {
+  "w": 105,
+  "h": 121
+ },
+ "pc/iPad.png": {
+  "w": 98,
+  "h": 123
+ }
+}

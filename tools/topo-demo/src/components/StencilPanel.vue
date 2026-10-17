@@ -2,12 +2,13 @@
 import { ref, watch } from 'vue'
 import type { Graph } from '@antv/x6'
 import { Dnd } from '@antv/x6-plugin-dnd'
-import { CATEGORIES, type IconItem } from '../graph/icons'
+import { buildCategories, type IconCategory, type IconItem } from '../graph/icons'
 import { createTopoNodeMeta } from '../graph/node'
 
 const props = defineProps<{ graph: Graph | null }>()
 
 const keyword = ref('')
+const categories = ref<IconCategory[]>(buildCategories())
 const collapsed = ref(new Set<string>())
 let dnd: Dnd | null = null
 
@@ -35,7 +36,8 @@ function filtered(items: IconItem[]): IconItem[] {
 function startDrag(item: IconItem, e: MouseEvent) {
   if (!dnd || !props.graph) return
   e.preventDefault()
-  const node = props.graph.createNode(createTopoNodeMeta(item.src, item.label))
+  // 默认不带名称：落图仅图标，双击/属性面板可随时命名
+  const node = props.graph.createNode(createTopoNodeMeta(item.src, '', item.w, item.h))
   dnd.start(node, e)
 }
 </script>
@@ -46,7 +48,7 @@ function startDrag(item: IconItem, e: MouseEvent) {
       <input v-model="keyword" type="text" placeholder="搜索图标…" />
     </div>
     <div class="stencil-body">
-      <div v-for="cat in CATEGORIES" :key="cat.name" class="cat">
+      <div v-for="cat in categories" :key="cat.name" class="cat">
         <h4 class="cat-title" @click="toggle(cat.name)">
           <span class="arrow" :class="{ open: !collapsed.has(cat.name) }">▸</span>
           {{ cat.title }}
