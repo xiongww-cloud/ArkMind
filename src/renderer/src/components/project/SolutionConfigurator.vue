@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { exportToPMSExcel, buildItemsFromMapping } from '@/utils/solutionExcel'
+import { findModelSuggestion } from '@/utils/modelSuggestion'
 import { detectSCTSheet, buildSCTMapping, classifySCTRow, shouldSkipSCTRow } from '@/utils/sctExcel'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
@@ -32,8 +33,10 @@ const op = computed(() => authStore.currentUser.name)
 const gp = ref([]) // 产品列表 — 从后端 Product 表加载
 const gparams = ref([]) // 参数列表 — 从后端加载
 
-// ─── 设备型号内联补全 (Inline Autocomplete) ─────────────────────────────────
-const isDeleting = ref(false)
+// ─── 设备型号内联补全 (Inline Autocomplete·幽灵预览) ────────────────────────
+// 敲键只保留用户输入；命中名以灰色尾缀悬示，Tab / 光标行尾 → 才采纳——
+// 不再把建议当真实文本写回输入框（旧写法会把敲键"抢屏"，且 IME 组合期改写 value 导致拼音强制上屏）
+const modelGhosts = ref<Record<string, { tail: string; name: string; id: string; price?: number }>>({})
 const showImportWizard = ref(false)
 // ─── 价格上浮 ───────────────────────────────────────────────────────────────
 const markupPercent = ref(0)
@@ -190,42 +193,87 @@ function handleServiceFeeCancel() {
   sctSheet.value = null
 }
 
-function onDeviceKeydown(e) {
-  isDeleting.value = e.key === 'Backspace'
+function setModelGhost(item: any, suggestion: ReturnType<typeof findModelSuggestion>) {
+  const cur = { ...modelGhosts.value }
+  const typed = String(item.model ?? '')
+  if (
+    suggestion &&
+    typed &&
+    suggestion.name.length > typed.length &&
+    suggestion.name.toLowerCase().startsWith(typed.toLowerCase())
+  ) {
+    cur[item.uid] = {
+      tail: suggestion.name.slice(typed.length),
+      name: suggestion.name,
+      id: suggestion.id,
+      price: suggestion.price,
+    }
+  } else {
+    delete cur[item.uid]
+  }
+  modelGhosts.value = cur
 }
 
-function handleDeviceInput(e, item) {
-  if (isDeleting.value) {
-    isDeleting.value = false
-    return
-  }
-
+function syncModelFromInput(e: any, item: any) {
+  // IME 组合期不动输入框（防拼音强制上屏）；compositionend 再补算
+  if (e.isComposing || e.inputType === 'insertCompositionText') return
   const typedValue = e.target.value
   item.model = typedValue
-
+  item.productId = null // 文本已变，旧关联失效；确认/采纳时重建
   if (!typedValue) {
-    item.productId = null
+    setModelGhost(item, null)
     return
   }
+  setModelGhost(item, findModelSuggestion(typedValue, gp.value))
+}
 
-  const searchPrefix = typedValue.trim().toLowerCase()
-  const match = gp.value?.find((p) => (p.name || '').toLowerCase().startsWith(searchPrefix))
+function handleDeviceInput(e: any, item: any) {
+  syncModelFromInput(e, item)
+}
 
-  if (match) {
-    item.model = match.name
-    item.productId = match.id
-    if (match.price && !item.unitPrice) {
-      item.unitPrice = match.price
-    }
-    nextTick(() => {
-      e.target.setSelectionRange(typedValue.length, match.name.length)
-    })
-  } else {
+function onDeviceCompositionEnd(e: any, item: any) {
+  const typedValue = e.target.value
+  item.model = typedValue
+  if (!typedValue) {
     item.productId = null
+    setModelGhost(item, null)
+    return
+  }
+  setModelGhost(item, findModelSuggestion(typedValue, gp.value))
+}
+
+/** 采纳幽灵补全：整名上屏 + 回填产品关联/单价 */
+function acceptModelGhost(item: any) {
+  const g = modelGhosts.value[item.uid]
+  if (!g) return
+  item.model = g.name
+  item.productId = g.id || null
+  if (g.price && !item.unitPrice) item.unitPrice = g.price
+  setModelGhost(item, null)
+}
+
+function onDeviceKeydown(e: KeyboardEvent, item: any) {
+  if (e.isComposing) return
+  if (e.key === 'Tab') {
+    if (modelGhosts.value[item.uid]) {
+      e.preventDefault()
+      acceptModelGhost(item)
+    }
+    return
+  }
+  if (e.key === 'ArrowRight') {
+    const el = e.target as HTMLInputElement
+    const atEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
+    if (atEnd && modelGhosts.value[item.uid]) {
+      e.preventDefault()
+      acceptModelGhost(item)
+    }
   }
 }
 
 function handleDeviceConfirm(item, e) {
+  if (e?.isComposing) return
+  setModelGhost(item, null)
   const text = (e?.target?.value || item.model || '').trim()
   if (!text) {
     item.productId = null
@@ -1685,22 +1733,32 @@ onUnmounted(() => {
                   </button>
                 </div>
                 <div class="flex items-center gap-1">
-                  <input
-                    :value="item.model"
-                    @input="handleDeviceInput($event, item)"
-                    @keydown="onDeviceKeydown($event)"
-                    @keyup.enter="handleDeviceConfirm(item, $event)"
-                    @blur="handleDeviceConfirm(item, $event)"
-                    @click.stop
-                    type="text"
-                    placeholder="输入设备型号..."
-                    class="flex-1 min-w-0 bg-gray-50/80 border border-gray-200 rounded text-[12px] h-5 py-0 pl-1.5 pr-2 text-gray-700 outline-none focus:border-[#007aff] focus:ring-1 focus:ring-blue-500 focus:bg-white"
-                    :class="
-                      invalidItems.includes(item.uid) && !item.productId && !item.model
-                        ? 'border-red-300 bg-red-50/50'
-                        : ''
-                    "
-                  />
+                  <div class="relative flex-1 min-w-0">
+                    <input
+                      :value="item.model"
+                      @input="handleDeviceInput($event, item)"
+                      @compositionend="onDeviceCompositionEnd($event, item)"
+                      @keydown="onDeviceKeydown($event, item)"
+                      @keyup.enter="handleDeviceConfirm(item, $event)"
+                      @blur="handleDeviceConfirm(item, $event)"
+                      @click.stop
+                      type="text"
+                      placeholder="输入设备型号..."
+                      class="w-full bg-gray-50/80 border border-gray-200 rounded text-[12px] h-5 py-0 pl-1.5 pr-2 text-gray-700 outline-none focus:border-[#007aff] focus:ring-1 focus:ring-blue-500 focus:bg-white"
+                      :class="
+                        invalidItems.includes(item.uid) && !item.productId && !item.model
+                          ? 'border-red-300 bg-red-50/50'
+                          : ''
+                      "
+                    />
+                    <!-- 幽灵补全：已输文本透明复刻 + 灰色建议尾缀（Tab / 行尾 → 采纳） -->
+                    <span
+                      v-if="modelGhosts[item.uid]"
+                      class="absolute inset-0 flex items-center pl-1.5 pr-2 text-[12px] text-gray-300 pointer-events-none select-none overflow-hidden whitespace-nowrap"
+                    >
+                      <span class="invisible">{{ item.model }}</span>{{ modelGhosts[item.uid].tail }}
+                    </span>
+                  </div>
                   <AppIcon
                     v-if="invalidItems.includes(item.uid) && !item.productId && !item.model"
                     name="alert-circle"
