@@ -942,12 +942,13 @@ const pipelineData = ref<any>(null)
 const pipelineRunning = ref(false)
 
 // ─── Email Account Config ────────────────────────────────────
-import { emailListAccounts, emailAddAccount, emailUpdateAccount, emailDeleteAccount, emailLoopStatus, emailConfigGet, emailConfigUpdate, type EmailAccount } from '@/api/email-client'
+import { emailListAccounts, emailAddAccount, emailUpdateAccount, emailDeleteAccount, emailTestConnection, emailLoopStatus, emailConfigGet, emailConfigUpdate, type EmailAccount } from '@/api/email-client'
 
 const emailAccounts = ref<EmailAccount[]>([])
 const emailLoopRunning = ref(false)
 const showEmailForm = ref(false)
 const emailSaving = ref(false)
+const emailTesting = ref(false)
 const editingEmailId = ref<string | null>(null)
 const emailForm = ref({ name: '', emailAddress: '', imapHost: '', imapPort: 993, username: '', password: '', retentionMonths: 0 })
 const retentionOptions = [
@@ -970,6 +971,24 @@ onMounted(() => document.addEventListener('mousedown', closeOpenDropdownsOnOutsi
 onActivated(() => document.addEventListener('mousedown', closeOpenDropdownsOnOutside, true))
 onDeactivated(() => document.removeEventListener('mousedown', closeOpenDropdownsOnOutside, true))
 onBeforeUnmount(() => document.removeEventListener('mousedown', closeOpenDropdownsOnOutside, true))
+
+/** 测试连接（仅编辑态）：单次 IMAP 登录 + 已发送文件夹可达性探测，分级反馈 */
+async function testEmailConnection() {
+  if (!editingEmailId.value) return
+  emailTesting.value = true
+  try {
+    const r: any = await emailTestConnection(editingEmailId.value)
+    if (r?.sent_visible === false) {
+      toast({ message: `连接正常，但已发送文件夹「${r.sent_folder}」对第三方客户端不可见——请到邮箱后台勾选文件夹权限`, type: 'warning' })
+    } else {
+      toast({ message: `连接正常（已发送：${r?.sent_folder || 'Sent'}，共 ${r?.folder_count ?? '-'} 个文件夹）`, type: 'success' })
+    }
+  } catch (e: any) {
+    toast({ message: `连接失败：${e?.message || e}`, type: 'error' })
+  } finally {
+    emailTesting.value = false
+  }
+}
 
 async function loadEmailAccounts() {
   try {
@@ -2795,9 +2814,20 @@ async function saveProfileEditor() {
               </div>
               <p class="text-[10px] text-surface-400 mt-1">超期邮件（含已发送）自动物理清除，同步游标不受影响、不会重新拉取</p>
             </div>
+            <!-- 收信须知：第三方客户端（含本软件）取信的服务端前提，缺一则收不到邮件 -->
+            <div class="rounded-lg bg-surface-50 border border-surface-100 px-2.5 py-2">
+              <p class="text-[10px] font-medium text-surface-500 mb-1">收信须知（第三方客户端取信前提）</p>
+              <ul class="text-[10px] text-surface-400 leading-relaxed list-disc pl-3.5 space-y-0.5">
+                <li>需在邮箱后台开启 POP3/IMAP 服务：腾讯企业邮（网页版 → 设置 → 客户端收信）、163/QQ（设置 → POP3/SMTP/IMAP）——未开启则任何第三方客户端都无法收信</li>
+                <li>「密码」栏请填邮箱后台生成的<strong class="text-surface-500">授权码</strong>，不是登录密码</li>
+                <li>文件夹权限：第三方客户端需被允许收取「已发送」等文件夹（腾讯企业邮：设置 → 客户端收信/文件夹权限勾选），否则只收得到收件箱、已发送同步失败</li>
+                <li>若日志出现「login frequency limited」＝登录频率受限：软件已内置自动退避，稍等片刻自愈；持续出现请检查是否多台设备/客户端同时收信</li>
+              </ul>
+            </div>
           </div>
           <div class="flex items-center justify-end gap-2 mt-5">
             <button @click="showEmailForm = false; editingEmailId = null" class="btn-secondary text-xs">取消</button>
+            <button @click="testEmailConnection" :disabled="emailTesting || !editingEmailId" class="btn-secondary text-xs" :title="editingEmailId ? '测试 IMAP 登录与已发送文件夹可达性' : '保存后才能测试'">{{ emailTesting ? '测试中...' : '测试连接' }}</button>
             <button @click="addEmailAccount" :disabled="emailSaving" class="btn-primary text-xs">{{ emailSaving ? '保存中...' : (editingEmailId ? '保存' : '添加') }}</button>
           </div>
         </div>

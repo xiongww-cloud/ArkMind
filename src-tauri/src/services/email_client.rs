@@ -77,21 +77,40 @@ fn imap_connect(host: &str, port: u16) -> Result<imap::Client<native_tls::TlsStr
     client.read_greeting().map_err(|e| format!("IMAP 握手失败: {}", e))?;
     Ok(client)}
 
+/// IMAP 会话类型（TLS）
+pub type ImapSession = imap::Session<native_tls::TlsStream<std::net::TcpStream>>;
+
+/// 打开一次会话（连接+登录）——轮询每账户每轮复用同一会话完成全部文件夹操作，
+/// 把登录频率从每轮 2-3 次压到 1 次（腾讯企业邮等对 IMAP 登录限频，曾致"Login fail … login frequency limited"）
+pub fn open_session(account: &EmailAccount) -> Result<ImapSession, String> {
+    let client = imap_connect(&account.imap_host, account.imap_port)?;
+    let machine = crate::license::get_machine_hash();
+    let password = crate::crypto::decrypt_api_key(&account.password_encrypted, &machine);
+    client.login(&account.username, &password).map_err(|e| format!("IMAP 登录失败: {}", e.0))
+}
+
 /// 连接 IMAP 服务器并获取新邮件
 pub fn fetch_new_emails(
     account: &EmailAccount,
     folder: &str,
     last_uid: u32,
 ) -> Result<Vec<ParsedEmail>, String> {
-    let client = imap_connect(&account.imap_host, account.imap_port)?;
+    let mut session = open_session(account)?;
+    let out = fetch_new_emails_with(&mut session, account, folder, last_uid);
+    let _ = session.logout();
+    out
+}
 
-    // 解密密码
+/// 会话内获取新邮件（调用方持有会话，函数不 logout）
+pub fn fetch_new_emails_with(
+    session: &mut ImapSession,
+    account: &EmailAccount,
+    folder: &str,
+    last_uid: u32,
+) -> Result<Vec<ParsedEmail>, String> {
+    // 解密密码（重连路径需要）
     let machine = crate::license::get_machine_hash();
     let password = crate::crypto::decrypt_api_key(&account.password_encrypted, &machine);
-
-    let mut session = client
-        .login(&account.username, &password)
-        .map_err(|e| format!("IMAP 登录失败: {}", e.0))?;
 
     // 选择文件夹
     session
@@ -110,7 +129,6 @@ pub fn fetch_new_emails(
     new_uids.sort();
 
     if new_uids.is_empty() {
-        let _ = session.logout();
         return Ok(vec![]);
     }
 
@@ -152,7 +170,7 @@ pub fn fetch_new_emails(
                                 log::warn!("[邮件] 重连后选择文件夹失败: {}", sel_err);
                                 break;
                             }
-                            session = new_session;
+                            *session = new_session;
                             continue; // 重试当前 UID
                         }
                         Err(re) => {
@@ -168,7 +186,6 @@ pub fn fetch_new_emails(
         idx += 1;
     }
 
-    let _ = session.logout();
     Ok(all_emails)
 }
 
@@ -177,15 +194,14 @@ pub fn fetch_new_emails(
 
 /// 获取指定文件夹当前最大 UID（用于新账户跳过历史邮件）
 pub fn get_current_max_uid(account: &EmailAccount, folder: &str) -> Result<u32, String> {
-    let client = imap_connect(&account.imap_host, account.imap_port)?;
+    let mut session = open_session(account)?;
+    let out = get_current_max_uid_with(&mut session, folder);
+    let _ = session.logout();
+    out
+}
 
-    let machine = crate::license::get_machine_hash();
-    let password = crate::crypto::decrypt_api_key(&account.password_encrypted, &machine);
-
-    let mut session = client
-        .login(&account.username, &password)
-        .map_err(|e| format!("IMAP 登录失败: {}", e.0))?;
-
+/// 会话内获取指定文件夹当前最大 UID
+pub fn get_current_max_uid_with(session: &mut ImapSession, folder: &str) -> Result<u32, String> {
     session
         .select(folder)
         .map_err(|e| format!("选择文件夹 {} 失败: {}", folder, e))?;
@@ -194,35 +210,27 @@ pub fn get_current_max_uid(account: &EmailAccount, folder: &str) -> Result<u32, 
         .uid_search("ALL")
         .map_err(|e| format!("搜索邮件失败: {}", e))?;
 
-    let max_uid = uids.iter().max().copied().unwrap_or(0);
-
-    let _ = session.logout();
-    Ok(max_uid)
+    Ok(uids.iter().max().copied().unwrap_or(0))
 }
 
 /// 探测 Sent 文件夹名称
 pub fn detect_sent_folder(account: &EmailAccount) -> String {
-    let client = match imap_connect(&account.imap_host, account.imap_port) {
-        Ok(c) => c,
-        Err(_) => return "Sent".to_string(),
-    };
+    match open_session(account) {
+        Ok(mut s) => {
+            let name = detect_sent_folder_in(&mut s);
+            let _ = s.logout();
+            name
+        }
+        Err(_) => "Sent".to_string(),
+    }
+}
 
-    let machine = crate::license::get_machine_hash();
-    let password = crate::crypto::decrypt_api_key(&account.password_encrypted, &machine);
-
-    let mut session = match client.login(&account.username, &password) {
-        Ok(s) => s,
-        Err(_) => return "Sent".to_string(),
-    };
-
+/// 会话内探测 Sent 文件夹名称
+pub fn detect_sent_folder_in(session: &mut ImapSession) -> String {
     let folders = match session.list(None, Some("*")) {
         Ok(f) => f,
-        Err(_) => {
-            let _ = session.logout();
-            return "Sent".to_string();
-        }
+        Err(_) => return "Sent".to_string(),
     };
-    let _ = session.logout();
 
     // 常见 Sent 文件夹名称
     let sent_names = [
@@ -248,6 +256,27 @@ pub fn detect_sent_folder(account: &EmailAccount) -> String {
     }
 
     "Sent".to_string()
+}
+
+/// 设置页「测试连接」：单次登录探测，分级回报——网络/TLS、登录（授权码/服务未开/限频）、
+/// 文件夹可达性（已发送是否可见）。凭据不出参。
+pub fn probe_account(account: &EmailAccount) -> Result<serde_json::Value, String> {
+    let mut session = open_session(account)?; // 失败信息已分级（解析/超时/TLS/登录）
+    let folders = session
+        .list(None, Some("*"))
+        .map_err(|e| format!("文件夹列表获取失败: {}", e))?;
+    let names: Vec<String> = folders.iter().map(|f| f.name().to_string()).collect();
+    let sent = detect_sent_folder_in(&mut session);
+    let sent_visible = names.iter().any(|n| n.eq_ignore_ascii_case(&sent));
+    session
+        .select("INBOX")
+        .map_err(|e| format!("收件箱不可访问: {}", e))?;
+    let _ = session.logout();
+    Ok(serde_json::json!({
+        "sent_folder": sent,
+        "sent_visible": sent_visible,
+        "folder_count": names.len(),
+    }))
 }
 
 /// 将邮件 Date 头解析为标准格式 YYYY-MM-DD HH:MM:SS

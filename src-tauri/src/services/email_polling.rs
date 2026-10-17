@@ -116,7 +116,9 @@ async fn tick() -> Result<u64, String> {
     Ok(60)
 }
 
-/// 执行邮件同步 + AI 分类
+/// 执行邮件同步 + AI 分类（每账户每轮一次登录：同会话顺序完成收件箱/已发送，
+/// 登录频率从 2-3 次/分钟降到 1 次/分钟，直击企业邮箱 IMAP 登录限频；
+/// 登录失败按账户指数退避，避免被限频后每分钟继续踩踏）
 async fn run_sync() -> Result<(), String> {
     let accounts = load_accounts()?;
     if accounts.is_empty() {
@@ -127,11 +129,23 @@ async fn run_sync() -> Result<(), String> {
         if !account.sync_enabled {
             continue;
         }
+        let now_ts = chrono::Local::now().timestamp();
+        if backoff_should_skip(&account.id, now_ts) {
+            continue;
+        }
+        let mut session = match email_client::open_session(account) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("[邮件轮询] 登录失败 ({}): {}（指数退避后重试）", account.name, e);
+                backoff_fail(&account.id, now_ts);
+                continue;
+            }
+        };
 
         // ── 收件箱同步 ──
         if account.last_sync_inbox_uid == 0 {
             // 新账户：只记录当前最大 UID，不获取历史邮件
-            match email_client::get_current_max_uid(account, "INBOX") {
+            match email_client::get_current_max_uid_with(&mut session, "INBOX") {
                 Ok(max_uid) => {
                     update_last_uid(&account.id, "inbox", max_uid);
                     log::info!("[邮件轮询] 新账户首次同步，收件箱当前最大 UID={}, 跳过历史邮件", max_uid);
@@ -141,7 +155,7 @@ async fn run_sync() -> Result<(), String> {
                 }
             }
         } else {
-            match email_client::fetch_new_emails(account, "INBOX", account.last_sync_inbox_uid) {
+            match email_client::fetch_new_emails_with(&mut session, account, "INBOX", account.last_sync_inbox_uid) {
                 Ok(mut emails) => {
                     if !emails.is_empty() {
                         let max_uid = emails.iter().map(|e| e.uid).max().unwrap_or(0);
@@ -159,10 +173,10 @@ async fn run_sync() -> Result<(), String> {
         }
 
         // ── 已发送同步 ──
-        let sent_folder = get_or_detect_sent_folder(account);
+        let sent_folder = get_or_detect_sent_folder(account, &mut session);
         if account.last_sync_sent_uid == 0 {
             // 新账户：只记录当前最大 UID，不获取历史邮件
-            match email_client::get_current_max_uid(account, &sent_folder) {
+            match email_client::get_current_max_uid_with(&mut session, &sent_folder) {
                 Ok(max_uid) => {
                     update_last_uid(&account.id, "sent", max_uid);
                     log::info!("[邮件轮询] 新账户首次同步，已发送当前最大 UID={}, 跳过历史邮件", max_uid);
@@ -172,7 +186,7 @@ async fn run_sync() -> Result<(), String> {
                 }
             }
         } else {
-            match email_client::fetch_new_emails(account, &sent_folder, account.last_sync_sent_uid) {
+            match email_client::fetch_new_emails_with(&mut session, account, &sent_folder, account.last_sync_sent_uid) {
                 Ok(mut emails) => {
                     if !emails.is_empty() {
                         let max_uid = emails.iter().map(|e| e.uid).max().unwrap_or(0);
@@ -188,9 +202,49 @@ async fn run_sync() -> Result<(), String> {
                 }
             }
         }
+
+        let _ = session.logout();
+        backoff_ok(&account.id);
     }
 
     Ok(())
+}
+
+// ── 登录失败退避（仅登录级失败；文件夹级错误不退避——会话已建，无踩踏风险）──
+static SYNC_BACKOFF: std::sync::Mutex<Option<std::collections::HashMap<String, (u32, i64)>>> =
+    std::sync::Mutex::new(None);
+
+/// 失败 1→2→4→8→16 分钟，30 分钟封顶（纯函数，可单测）
+fn next_backoff_secs(fail_count: u32) -> i64 {
+    let exp = fail_count.saturating_sub(1).min(5);
+    (60i64 << exp).min(30 * 60)
+}
+
+fn backoff_should_skip(id: &str, now: i64) -> bool {
+    if let Ok(g) = SYNC_BACKOFF.lock() {
+        return g.as_ref().and_then(|m| m.get(id)).map(|(_, next)| now < *next).unwrap_or(false);
+    }
+    false
+}
+
+fn backoff_fail(id: &str, now: i64) {
+    let mut g = SYNC_BACKOFF.lock().unwrap();
+    let m = g.get_or_insert_with(std::collections::HashMap::new);
+    let e = m.entry(id.to_string()).or_insert((0, 0));
+    e.0 += 1;
+    let secs = next_backoff_secs(e.0);
+    e.1 = now + secs;
+    log::warn!("[邮件轮询] {} 连续登录失败第 {} 次，{} 秒后重试", id, e.0, secs);
+}
+
+fn backoff_ok(id: &str) {
+    if let Ok(mut g) = SYNC_BACKOFF.lock() {
+        if let Some(m) = g.as_mut() {
+            if m.remove(id).is_some() {
+                log::info!("[邮件轮询] {} 登录恢复正常", id);
+            }
+        }
+    }
 }
 
 /// 知识化收尾：黑名单外的收件/任何发件 → knowledge 并入队；自动化发件人 → ignore 终态不入队。
@@ -391,12 +445,12 @@ fn load_accounts() -> Result<Vec<EmailAccount>, String> {
 }
 
 /// 获取或探测 Sent 文件夹名称
-fn get_or_detect_sent_folder(account: &EmailAccount) -> String {
+fn get_or_detect_sent_folder(account: &EmailAccount, session: &mut email_client::ImapSession) -> String {
     let key = format!("sent_folder_{}", account.id);
     if let Some(folder) = get_config(&key) {
         return folder;
     }
-    let folder = email_client::detect_sent_folder(account);
+    let folder = email_client::detect_sent_folder_in(session);
     set_config(&key, &folder);
     folder
 }
@@ -484,5 +538,16 @@ mod tests {
         assert!(!is_automated_sender("notify@acme.com"));
         assert!(is_automated_sender("noreply-not-usual@x")); // 前缀语义：noreply 开头视为自动化（保守可接受）
         assert!(!is_automated_sender(""));
+    }
+
+    /// 登录失败指数退避：1→2→4→8→16 分钟，30 分钟封顶（防限频踩踏）
+    #[test]
+    fn backoff_grows_exponentially_and_caps() {
+        assert_eq!(super::next_backoff_secs(1), 60);
+        assert_eq!(super::next_backoff_secs(2), 120);
+        assert_eq!(super::next_backoff_secs(3), 240);
+        assert_eq!(super::next_backoff_secs(5), 960, "16 分钟");
+        assert_eq!(super::next_backoff_secs(6), 1800, "封顶 30 分钟");
+        assert_eq!(super::next_backoff_secs(20), 1800, "再大也封顶");
     }
 }

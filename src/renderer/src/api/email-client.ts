@@ -70,6 +70,17 @@ export async function emailUpdateAccount(
   return invoke('email_update_account', { id, data })
 }
 
+/** 测试连接：单次登录探测，分级回报（网络/登录/已发送文件夹可达性）。凭据不出参 */
+export async function emailTestConnection(id: string): Promise<{
+  success?: boolean
+  sent_folder?: string
+  sent_visible?: boolean
+  folder_count?: number
+  error?: string
+}> {
+  return invoke('email_test_connection', { id })
+}
+
 export async function emailDeleteAccount(
   id: string
 ): Promise<{ success: boolean }> {

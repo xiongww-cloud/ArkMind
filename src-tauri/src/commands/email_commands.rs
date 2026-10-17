@@ -1031,6 +1031,31 @@ pub async fn email_inline_asset(email_id: String, token: String) -> Result<Value
     }
 }
 
+/// 测试连接（设置页）：单次登录探测并分级回报——网络/TLS/登录（授权码错或过期/IMAP 服务未开/登录频率受限）、
+/// 文件夹可达性（已发送是否对第三方客户端可见）。凭据不出参。
+#[tauri::command]
+pub async fn email_test_connection(id: String) -> Result<Value, String> {
+    let row = database::get(
+        "SELECT id,name,email_address,imap_host,imap_port,username,password_encrypted,sync_enabled,last_sync_inbox_uid,last_sync_sent_uid FROM email_accounts WHERE id=?1",
+        &[json!(&id)],
+    ).ok().flatten().ok_or("账户不存在")?;
+    let account = crate::services::email_client::EmailAccount {
+        id: row["id"].as_str().unwrap_or("").to_string(),
+        name: row["name"].as_str().unwrap_or("").to_string(),
+        email_address: row["email_address"].as_str().unwrap_or("").to_string(),
+        imap_host: row["imap_host"].as_str().unwrap_or("").to_string(),
+        imap_port: row["imap_port"].as_u64().unwrap_or(993) as u16,
+        username: row["username"].as_str().unwrap_or("").to_string(),
+        password_encrypted: row["password_encrypted"].as_str().unwrap_or("").to_string(),
+        sync_enabled: true,
+        last_sync_inbox_uid: 0,
+        last_sync_sent_uid: 0,
+    };
+    tokio::task::spawn_blocking(move || crate::services::email_client::probe_account(&account))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod email_img_tests {
     use super::{email_src_token, rewrite_email_imgs, EmailImgIndex};
