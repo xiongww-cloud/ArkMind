@@ -286,6 +286,52 @@ fn task_target_exists(source_type: &str, source_id: &str) -> bool {
     crate::database::get(sql, &[json!(source_id)]).ok().flatten().is_some()
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 任务心跳续租
+// stale 自愈（processing 超 5 分钟 → pending）是崩溃恢复的必要机制，但"慢但在动"的任务
+// （PDF 渲染阶段/单页重试风暴/非 PDF 长解析）同样可能超过阈值 → 被误重置后另一 worker
+// 重复领取重跑，CPU/网络被放大。worker 级心跳每 60s 刷新 updated_at 区分二者：
+// 进程死亡时心跳自然消失，5 分钟自愈照旧生效。
+// ═══════════════════════════════════════════════════════════════
+
+/// 心跳拍距：远小于 5 分钟 stale 阈值，偶发一拍 SQL 失败也不致误判
+const HEARTBEAT_INTERVAL_SECS: u64 = 60;
+
+/// 心跳单击：只触碰 processing 行——成功路径行已被 DELETE、失败退回 pending 的行被 WHERE 挡住，
+/// 均无害；幽灵 id 同样落空即返回
+fn heartbeat_tick(task_id: i64) {
+    let _ = crate::database::run(
+        "UPDATE knowledge_push_queue SET updated_at=datetime('now','localtime') WHERE id=?1 AND status='processing'",
+        &[json!(task_id)],
+    );
+}
+
+/// RAII 停表守卫：process_task_with_retry 的所有退出路径（含 panic unwind）都置位 stop，
+/// 心跳线程在下一拍退出（即便残留一拍，WHERE status='processing' 也保证不干扰终态）
+struct HeartbeatStop(std::sync::Arc<AtomicBool>);
+
+impl Drop for HeartbeatStop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 启动任务级心跳线程（脱离型，60s 一拍）；返回 RAII 守卫，drop 即停表
+fn spawn_task_heartbeat(task_id: i64) -> HeartbeatStop {
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let stop_in_thread = stop.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+            if stop_in_thread.load(Ordering::Relaxed) {
+                break;
+            }
+            heartbeat_tick(task_id);
+        }
+    });
+    HeartbeatStop(stop)
+}
+
 /// 处理单个任务（带重试逻辑）
 fn process_task_with_retry(task: serde_json::Value) {
     let id = task["id"].as_i64().unwrap_or(0);
@@ -299,6 +345,9 @@ fn process_task_with_retry(task: serde_json::Value) {
         "UPDATE knowledge_push_queue SET status='processing', updated_at=datetime('now','localtime') WHERE id=?1",
         &[json!(id)],
     );
+
+    // 心跳续租：全程刷新 updated_at，防"慢但在动"被 5 分钟 stale 自愈误重置造成重复做功
+    let _heartbeat = spawn_task_heartbeat(id);
 
     // 执行对应操作
     let result = match operation.as_str() {
@@ -468,10 +517,25 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
     }
 
     // 获取PDF总页数
-    let total_pages = get_pdf_page_count(&path)
+    let raw_total_pages = get_pdf_page_count(&path)
         .ok_or("无法获取PDF页数")?;
 
-    log::info!("[数据中台] {} PDF 流式解析 ({} 页)", log_tag, total_pages);
+    // 检查视觉模型配置（文本提取路径全量；OCR 路径受页数上限约束——渲染内存与视觉调用数双重封顶）
+    let has_vision = crate::services::file_parser::get_vision_config().is_some();
+    let total_pages = if has_vision {
+        raw_total_pages.min(crate::services::file_parser::MAX_OCR_PAGES)
+    } else {
+        raw_total_pages
+    };
+    if has_vision && raw_total_pages > total_pages {
+        log::warn!(
+            "[数据中台] {} PDF共 {} 页，超过 OCR 上限 {}，仅识别前 {} 页（其余页不渲染、不调用视觉模型）",
+            log_tag, raw_total_pages, crate::services::file_parser::MAX_OCR_PAGES, total_pages
+        );
+    }
+
+    log::info!("[数据中台] {} PDF 流式解析 ({} 页{})", log_tag, total_pages,
+        if raw_total_pages > total_pages { format!("，截断自 {} 页", raw_total_pages) } else { String::new() });
 
     // 更新任务进度总数
     let _ = crate::database::run(
@@ -479,11 +543,9 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
         &[json!(total_pages), json!(source_id), json!(source_type)],
     );
 
-    // 检查视觉模型配置
-    let has_vision = crate::services::file_parser::get_vision_config().is_some();
     if !has_vision {
         log::info!("[数据中台] {} 未配置视觉模型，使用 pdfium 文本提取", log_tag);
-        return process_pdf_text_only(&file_id, &path, total_pages, source_type, source_id);
+        return process_pdf_text_only(&file_id, &path, raw_total_pages, source_type, source_id);
     }
 
     // ── 阶段 1：缓存命中页直接进结果（跳过渲染与 API，断点续传）──
@@ -635,10 +697,16 @@ fn process_pdf_streaming(row: &serde_json::Value, source_type: &str, source_id: 
     }
 
     // 按页号组装 full_text（并发乱序完成 → 此处恢复页序）
-    let full_text = assemble_pdf_pages(&mut full_text_parts);
+    let mut full_text = assemble_pdf_pages(&mut full_text_parts);
 
     if full_text.is_empty() {
         return Err("PDF 解析结果为空".to_string());
+    }
+    // OCR 截断尾注（空白整卷仍走上方"解析结果为空"终态，不产只含尾注的假成功）
+    if let Some(note) = crate::services::file_parser::ocr_truncation_note(raw_total_pages, crate::services::file_parser::MAX_OCR_PAGES) {
+        log::info!("[数据中台] {} 追加 OCR 截断尾注: {}", log_tag, note);
+        full_text.push('\n');
+        full_text.push_str(&note);
     }
 
     // 文本清洗
@@ -1433,6 +1501,50 @@ mod tests {
         assert!(matches!(decide_failure_action("__NO_RETRY__视觉失败", 0), FailureAction::NoRetry));
         assert!(matches!(decide_failure_action("网络抖动", 1), FailureAction::Retry));
         assert!(matches!(decide_failure_action("网络抖动", 2), FailureAction::GiveUp));
+    }
+
+    /// 心跳单击只续租 processing 行：pending/failed 不得触碰（重试/终态语义由各分支自管）；幽灵 id 静默无害
+    #[test]
+    fn heartbeat_refreshes_only_processing_rows() {
+        let (_dir, _g) = crate::database::db_core::test_util::setup_test_db();
+        crate::database::with_db(|c| c.execute_batch(
+            "CREATE TABLE knowledge_push_queue(id INTEGER PRIMARY KEY, status TEXT, updated_at TEXT);
+             INSERT INTO knowledge_push_queue VALUES(1,'processing','2000-01-01 00:00:00');
+             INSERT INTO knowledge_push_queue VALUES(2,'pending','2000-01-01 00:00:00');
+             INSERT INTO knowledge_push_queue VALUES(3,'failed','2000-01-01 00:00:00');"
+        )).unwrap();
+        heartbeat_tick(1);
+        heartbeat_tick(2);
+        heartbeat_tick(999); // 不存在的 id：WHERE 落空即无害
+        let rows = crate::database::all("SELECT id, updated_at FROM knowledge_push_queue ORDER BY id", &[]).unwrap();
+        assert_ne!(rows[0]["updated_at"].as_str().unwrap(), "2000-01-01 00:00:00", "processing 行 updated_at 应被刷新");
+        assert_eq!(rows[1]["updated_at"].as_str().unwrap(), "2000-01-01 00:00:00", "pending 行不得触碰");
+        assert_eq!(rows[2]["updated_at"].as_str().unwrap(), "2000-01-01 00:00:00", "failed 行不得触碰");
+    }
+
+    /// 停表守卫 drop 必须置位 stop（守卫存活期间不得停表）；心跳同构循环据此退出
+    #[test]
+    fn heartbeat_stop_guard_sets_flag_and_thread_exits() {
+        use std::sync::mpsc;
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop_in_thread = stop.clone();
+        let (tx, rx) = mpsc::channel();
+        let t = std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(10));
+                if stop_in_thread.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+            let _ = tx.send(());
+        });
+        {
+            let _guard = HeartbeatStop(stop.clone());
+            assert!(!stop.load(Ordering::Relaxed), "守卫存活期间不得停表");
+        }
+        assert!(stop.load(Ordering::Relaxed), "drop 守卫必须置位 stop");
+        rx.recv_timeout(Duration::from_secs(1)).expect("线程应在 stop 后退出");
+        t.join().unwrap();
     }
 
     #[test]

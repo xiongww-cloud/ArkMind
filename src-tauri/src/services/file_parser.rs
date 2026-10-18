@@ -606,9 +606,11 @@ fn try_pdfium_render(path: &str) -> Option<Vec<String>> {
     if count == 0 { return None; }
 
     let scale = 150.0 / 72.0;
-    let mut results = Vec::with_capacity(count as usize);
+    // OCR 页数上限：从渲染源头截断（150DPI 全量内存渲染的峰值封顶在 ~90MB/300 页）
+    let render_count = count.min(MAX_OCR_PAGES);
+    let mut results = Vec::with_capacity(render_count as usize);
 
-    for i in 0..count {
+    for i in 0..render_count {
         let page = match pages.get(i) {
             Ok(p) => p,
             Err(_) => continue,
@@ -645,7 +647,8 @@ fn try_pdftoppm(path: &str) -> Option<Vec<String>> {
 
     let output_prefix = tmp_dir.join("page").to_string_lossy().to_string();
     let mut cmd_obj = std::process::Command::new(cmd);
-    cmd_obj.args(["-jpeg", "-r", "150", path, &output_prefix])
+    // -l 为闭区间：仅渲染前 MAX_OCR_PAGES 页（与 pdfium 路径同上限）
+    cmd_obj.args(["-jpeg", "-r", "150", "-f", "1", "-l", &MAX_OCR_PAGES.to_string(), path, &output_prefix])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(target_os = "windows")]
@@ -690,7 +693,7 @@ fn try_macos_sips(path: &str) -> Option<Vec<String>> {
     if num_pages == 0 { return None; }
 
     let mut results = Vec::new();
-    for page in 0..num_pages {
+    for page in 0..num_pages.min(MAX_OCR_PAGES as usize) {
         let tmp_file = std::env::temp_dir().join(format!("arkmind_page_{}.png", page));
         let status = Command::new("sips")
             .args(["-s", "format", "png", "--pdfPage", &page.to_string(),
@@ -874,6 +877,8 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
                 };
             }
         };
+        // 截断尾注：渲染端已按 MAX_OCR_PAGES 封顶（pdfium break / pdftoppm -l / sips min），此处补文案
+        let note = ocr_truncation_note(get_pdf_page_count(path).unwrap_or(0), MAX_OCR_PAGES).unwrap_or_default();
         log::info!("[文件解析] 全量 OCR: {} 页", uris.len());
         let mut full_text = String::new();
         for (i, uri) in uris.iter().enumerate() {
@@ -888,9 +893,13 @@ fn try_pdfium_with_ocr(path: &str, enable_ocr: bool) -> String {
                         full_text.push_str(&text);
                     }
                 }
-                OcrOutcome::Blank => {} // 空白页跳过
-                OcrOutcome::Failed(e) => log::info!("[文件解析] 第 {} 页 OCR 失败: {}", i + 1, e),
-            }
+            OcrOutcome::Blank => {} // 空白页跳过
+            OcrOutcome::Failed(e) => log::info!("[文件解析] 第 {} 页 OCR 失败: {}", i + 1, e),
+        }
+        }
+        if !note.is_empty() {
+            if !full_text.is_empty() { full_text.push('\n'); }
+            full_text.push_str(&note);
         }
         return full_text;
     }
@@ -944,6 +953,18 @@ fn parse_size_gate(file_len: u64) -> Option<String> {
             crate::services::file_ingestion::UNSUPPORTED_PREFIX,
             file_len / 1_048_576
         ))
+    } else {
+        None
+    }
+}
+
+/// OCR 页数上限：超限仅识别前 N 页并追加尾注——渲染内存与视觉模型调用数双重封顶
+pub const MAX_OCR_PAGES: u16 = 300;
+
+/// OCR 截断尾注（纯函数）：未达上限返回 None
+pub(crate) fn ocr_truncation_note(raw_total: u16, cap: u16) -> Option<String> {
+    if raw_total > cap {
+        Some(format!("（OCR 已截断：仅识别前 {} 页，全文共 {} 页）", cap, raw_total))
     } else {
         None
     }
@@ -1802,6 +1823,17 @@ mod tests {
         assert!(!r.success);
         assert!(r.error.contains("文件过大"), "{}", r.error);
         assert!(r.error.starts_with(crate::services::file_ingestion::UNSUPPORTED_PREFIX), "{}", r.error);
+    }
+
+    /// OCR 截断尾注：仅超上限时产出，文案含上限与真实总页数
+    #[test]
+    fn ocr_truncation_note_only_when_over_cap() {
+        assert!(ocr_truncation_note(300, 300).is_none(), "恰达上限不截断");
+        assert!(ocr_truncation_note(50, 300).is_none(), "未达上限不加注");
+        assert!(ocr_truncation_note(0, 300).is_none(), "0 页不加注");
+        let note = ocr_truncation_note(1234, 300).unwrap();
+        assert!(note.contains("仅识别前 300 页"), "{note}");
+        assert!(note.contains("全文共 1234 页"), "{note}");
     }
 
     /// 有界读：头窗（含 cap 截断）/尾窗（含 EOF 收口），绝不整文件入内存
