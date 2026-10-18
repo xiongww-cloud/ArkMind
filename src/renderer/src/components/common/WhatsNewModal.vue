@@ -22,10 +22,12 @@ const changelog: ChangelogEntry[] = [
     icon: 'bolt',
     iconBg: 'bg-blue-50',
     iconColor: 'text-blue-600',
-    title: 'Windows 稳定性根治',
+    title: 'Windows 与 OCR 稳定性根治',
     items: [
       'Windows 闪退与整机卡死根治：大文件解析改按需读取，超 200MB 文件直接标「不支持」不再入解析队列；PDF/图片解析逐个进行，内存峰值大幅下降',
       '新增 panic 尸检日志：万一再闪退，数据目录 panic.log 记录异常时间与代码位置，可直接定位问题',
+      '长任务心跳续租：慢而有进展的解析任务不再被误判卡死而重复重跑，CPU/网络空转根治',
+      'OCR 页数上限 300 页：超长 PDF 仅识别前 300 页并在文末注明，内存与视觉调用成本封顶（纯文本提取不受影响）',
     ],
   },
   {
