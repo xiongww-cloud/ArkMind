@@ -17,6 +17,17 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '14.4.4',
+    date: '2026-10-18',
+    icon: 'download',
+    iconBg: 'bg-sky-50',
+    iconColor: 'text-sky-600',
+    title: '官方下载渠道',
+    items: [
+      '设置页版本号旁新增「百度网盘 / 夸克网盘」下载入口：点击直达最新安装包，提取码自动填充（悬停可见备用码）；网盘按版本目录存放，始终提供最新版',
+    ],
+  },
+  {
     version: '14.4.3',
     date: '2026-10-17',
     icon: 'bolt',
