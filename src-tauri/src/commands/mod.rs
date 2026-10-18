@@ -17,7 +17,6 @@ pub mod notification_commands;
 pub mod migration_commands;
 pub mod email_commands;
 pub mod agent_commands;
-pub mod update_commands;
 #[cfg(debug_assertions)]
 pub mod debug_commands;
 
@@ -40,6 +39,5 @@ pub use notification_commands::*;
 pub use migration_commands::*;
 pub use email_commands::*;
 pub use agent_commands::*;
-pub use update_commands::*;
 #[cfg(debug_assertions)]
 pub use debug_commands::*;
