@@ -5,6 +5,7 @@ on:
     tags:
       - "v*"
 
+# CI 只产 Windows（2x 计费倍率；macOS 为 10x，改由维护者本地 scripts/mac-dmg.sh 打包）
 permissions:
   contents: write
 
@@ -28,11 +29,7 @@ jobs:
 
   release:
     needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -58,65 +55,19 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # release notes body 同源注入（多行输出），两个 job 写同一内容，互相当幂等修复
-      - name: Load release notes
-        id: notes
+      # ── Windows: NSIS 构建 + 上传 draft ──────────────────────────
+      - name: Build NSIS installer (Windows)
+        run: node scripts/tauri-build.mjs build --bundles nsis
+
+      - name: Upload setup.exe to draft release (Windows)
         shell: bash
-        run: |
-          {
-            echo 'body<<ARKMIND_EOF'
-            cat release-notes.md
-            echo 'ARKMIND_EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      # ── Windows: 保持 tauri-action（NSIS 无 Gatekeeper 问题）──────────────
-      - name: Build and publish release (Windows)
-        if: runner.os == 'Windows'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Arkmind ${{ github.ref_name }}"
-          releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: true
-          prerelease: false
-          tauriScript: node scripts/tauri-build.mjs
-
-      # ── macOS: 直接构建 .app → ad-hoc 签名 → 自验 → hdiutil 造 dmg ─────────
-      # tauri-action 无证书时会跳过签名，arm64 下载侧 Gatekeeper 整包校验
-      # 封条未闭合 → 用户看到「应用已损坏」。这里补上 codesign --sign - 并硬性验证。
-      - name: Build .app bundle only (macOS)
-        if: runner.os == 'macOS'
-        run: node scripts/tauri-build.mjs build --bundles app
-
-      - name: Ad-hoc sign & verify (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          APP="src-tauri/target/release/bundle/macos/Arkmind.app"
-          codesign --force --deep --sign - "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-
-      - name: Create dmg (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          DMG="Arkmind_${VERSION}_aarch64.dmg"
-          STAGE="$(mktemp -d)"
-          cp -R src-tauri/target/release/bundle/macos/Arkmind.app "$STAGE/"
-          ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname Arkmind -srcfolder "$STAGE" -ov -format UDZO "$DMG"
-
-      - name: Upload dmg to draft release (macOS)
-        if: runner.os == 'macOS'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          DMG="Arkmind_${VERSION}_aarch64.dmg"
-          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
+          EXE=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe | head -1)
+          test -n "$EXE"
+          gh release upload "$GITHUB_REF_NAME" "$EXE" --clobber
           # 终态兜底：body/标题始终以仓库内 notes 为准
           gh release edit "$GITHUB_REF_NAME" \
             --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md
