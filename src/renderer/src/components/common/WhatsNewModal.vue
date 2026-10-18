@@ -17,6 +17,18 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '14.4.4',
+    date: '2026-10-18',
+    icon: 'refresh',
+    iconBg: 'bg-emerald-50',
+    iconColor: 'text-emerald-600',
+    title: '自动检查更新',
+    items: [
+      '自动检查更新：启动后自动探测新版本，有新版弹窗提示〔去下载〕/〔跳过此版本〕（跳过的版本不再打扰）；设置页版本行也可手动检查',
+      '国内网络友好：GitHub 不可达时自动切换 CDN 备用源读取版本信息；双源均失败则静默跳过，不打扰使用',
+    ],
+  },
+  {
     version: '14.4.3',
     date: '2026-10-17',
     icon: 'bolt',
