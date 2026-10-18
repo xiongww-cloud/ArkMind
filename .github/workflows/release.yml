@@ -5,23 +5,26 @@ on:
     tags:
       - "v*"
 
+# 资产只进公开分发仓库 Arkmind-Dist（单份，不再往私有仓库传 draft）；
+# Dist draft 由维护者验包后手动 Publish → 触发 Dist 仓库 sync-latest 写 latest.json → App 提示更新
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Create draft release (single writer, kills matrix race)
+      - name: Create draft release on Dist (single writer, kills matrix race)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.ARKMIND_DIST }}
         run: |
           # edit-first：残留 draft（旧 tag commit 的）直接复用刷新，不再新建；
           # gh release create 只在完全没有 release 时执行——曾出现 create 对"已存在但 target 不同"
           # 的旧 draft 照样新建，资产拆进两个同名 draft
-          if ! gh release edit "$GITHUB_REF_NAME" --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md 2>/dev/null; then
-            gh release create "$GITHUB_REF_NAME" \
+          if ! gh release edit "$GITHUB_REF_NAME" --repo xiongww-cloud/Arkmind-Dist \
+              --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md 2>/dev/null; then
+            gh release create "$GITHUB_REF_NAME" --repo xiongww-cloud/Arkmind-Dist \
               --draft --title "Arkmind $GITHUB_REF_NAME" \
               --notes-file release-notes.md --target "$GITHUB_SHA"
           fi
@@ -58,30 +61,24 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # release notes body 同源注入（多行输出），两个 job 写同一内容，互相当幂等修复
-      - name: Load release notes
-        id: notes
-        shell: bash
-        run: |
-          {
-            echo 'body<<ARKMIND_EOF'
-            cat release-notes.md
-            echo 'ARKMIND_EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      # ── Windows: 保持 tauri-action（NSIS 无 Gatekeeper 问题）──────────────
-      - name: Build and publish release (Windows)
+      # ── Windows: NSIS 直构 + 上传 Dist draft（tauri-action 只认当前仓库，跨仓库须走 gh + PAT）──
+      - name: Build NSIS installer (Windows)
         if: runner.os == 'Windows'
-        uses: tauri-apps/tauri-action@v0
+        run: node scripts/tauri-build.mjs build --bundles nsis
+
+      - name: Upload setup.exe to Dist draft (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Arkmind ${{ github.ref_name }}"
-          releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: true
-          prerelease: false
-          tauriScript: node scripts/tauri-build.mjs
+          GH_TOKEN: ${{ secrets.ARKMIND_DIST }}
+        run: |
+          set -euo pipefail
+          EXE=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe | head -1)
+          test -n "$EXE"
+          gh release upload "$GITHUB_REF_NAME" "$EXE" --repo xiongww-cloud/Arkmind-Dist --clobber
+          # 终态兜底：body/标题始终以仓库内 notes 为准
+          gh release edit "$GITHUB_REF_NAME" --repo xiongww-cloud/Arkmind-Dist \
+            --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md
 
       # ── macOS: 直接构建 .app → ad-hoc 签名 → 自验 → hdiutil 造 dmg ─────────
       # tauri-action 无证书时会跳过签名，arm64 下载侧 Gatekeeper 整包校验
@@ -108,15 +105,15 @@ jobs:
           ln -s /Applications "$STAGE/Applications"
           hdiutil create -volname Arkmind -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 
-      - name: Upload dmg to draft release (macOS)
+      - name: Upload dmg to Dist draft (macOS)
         if: runner.os == 'macOS'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.ARKMIND_DIST }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           DMG="Arkmind_${VERSION}_aarch64.dmg"
-          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
+          gh release upload "$GITHUB_REF_NAME" "$DMG" --repo xiongww-cloud/Arkmind-Dist --clobber
           # 终态兜底：body/标题始终以仓库内 notes 为准
-          gh release edit "$GITHUB_REF_NAME" \
+          gh release edit "$GITHUB_REF_NAME" --repo xiongww-cloud/Arkmind-Dist \
             --title "Arkmind $GITHUB_REF_NAME" --notes-file release-notes.md
