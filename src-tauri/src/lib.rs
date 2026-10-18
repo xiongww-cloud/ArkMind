@@ -444,6 +444,8 @@ pub fn run() {
             commands::get_agent_context,
             #[cfg(debug_assertions)]
             commands::debug_rehearse_id_migration,
+            // 更新检查（公开分发仓库 Arkmind-Dist，双端点 failover）
+            commands::update_check,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Arkmind")

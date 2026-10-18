@@ -8,6 +8,7 @@ import UploadProgress from '@/components/common/UploadProgress.vue'
 import ActivationModal from '@/components/common/ActivationModal.vue'
 import GuideModal from '@/components/common/GuideModal.vue'
 import WhatsNewModal from '@/components/common/WhatsNewModal.vue'
+import UpdateAvailableModal from '@/components/common/UpdateAvailableModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -18,6 +19,7 @@ const showTrialReminder = ref(false)
 const trialRemainingDays = ref(0)
 const guideModalRef = ref<InstanceType<typeof GuideModal> | null>(null)
 const whatsNewModalRef = ref<InstanceType<typeof WhatsNewModal> | null>(null)
+const updateModalRef = ref<InstanceType<typeof UpdateAvailableModal> | null>(null)
 let licensePollTimer = null
 
 function toggleSidebar() {
@@ -138,11 +140,27 @@ async function checkWhatsNew() {
   }
 }
 
+/** 启动自动检查更新（延时避开启动高峰；网络失败静默——宁漏报不打扰） */
+async function checkForAppUpdate() {
+  try {
+    const { checkUpdate } = await import('@/api/update-client')
+    const { getSystemSetting } = await import('@/api/db-client')
+    const r = await checkUpdate()
+    if (!r.has_update) return
+    const skipped = await getSystemSetting('skipped_update_version')
+    if (skipped?.value === r.latest) return
+    updateModalRef.value?.open(r.latest, r.url)
+  } catch {
+    /* 双源均不可达等网络问题：静默跳过本次检查 */
+  }
+}
+
 onMounted(() => {
   authStore.loadUser()
   checkActivation()
   checkGuide()
   checkWhatsNew()
+  setTimeout(() => { checkForAppUpdate() }, 8000)
   // 上报 WebView 真实 UA 给网页抓取工具（失败静默——抓取回退默认诚实 UA）
   invoke('web_fetch_set_ua', { ua: navigator.userAgent }).catch(() => {})
   licensePollTimer = setInterval(pollLicenseStatus, LICENSE_POLL_INTERVAL_MS)
@@ -186,5 +204,6 @@ onUnmounted(() => {
     />
     <GuideModal ref="guideModalRef" />
     <WhatsNewModal ref="whatsNewModalRef" />
+    <UpdateAvailableModal ref="updateModalRef" />
   </div>
 </template>

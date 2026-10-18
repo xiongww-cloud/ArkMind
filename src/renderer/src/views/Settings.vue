@@ -19,6 +19,32 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 
 // ─── Vite define: 替换为 Cargo.toml 中的版本号
 const appVersion = __APP_VERSION__
+
+/** 手动检查更新：有新版直接开下载页（显式动作，不理会「跳过此版本」记录） */
+const checkingUpdate = ref(false)
+async function handleCheckUpdate() {
+  if (checkingUpdate.value) return
+  checkingUpdate.value = true
+  try {
+    const { checkUpdate } = await import('@/api/update-client')
+    const r = await checkUpdate()
+    if (r.has_update) {
+      try {
+        await openUrl(r.url)
+        toast.success(`发现新版本 v${r.latest}，已打开下载页`)
+      } catch {
+        toast({ message: `发现新版本 v${r.latest}，但打开下载页失败`, type: 'error' })
+      }
+    } else {
+      toast.success(`已是最新版本（v${appVersion}）`)
+    }
+  } catch (e) {
+    toast({ message: '检查更新失败：网络不可达，请稍后再试', type: 'error' })
+  } finally {
+    checkingUpdate.value = false
+  }
+}
+
 const aiTab = ref('llm')
 const guideModalRef = ref<InstanceType<typeof GuideModal> | null>(null)
 const uploadProgress = useUploadProgress()
@@ -1716,7 +1742,12 @@ async function saveProfileEditor() {
           <h1 class="text-2xl font-bold tracking-tight text-surface-900">设置</h1>
           <p class="text-surface-400 text-[13px] mt-1">ArkMind v{{ appVersion }}</p>
         </div>
-        <button @click="guideModalRef?.open()" class="btn-secondary text-xs"><AppIcon name="lightbulb" size="12"/>使用指南</button>
+        <div class="flex items-center gap-2">
+          <button @click="handleCheckUpdate" :disabled="checkingUpdate" class="btn-secondary text-xs disabled:opacity-60">
+            <AppIcon name="refresh" size="12"/>{{ checkingUpdate ? '检查中…' : '检查更新' }}
+          </button>
+          <button @click="guideModalRef?.open()" class="btn-secondary text-xs"><AppIcon name="lightbulb" size="12"/>使用指南</button>
+        </div>
       </header>
 
       <!-- ══════════ Row 1: 状态概览卡片 ══════════ -->
