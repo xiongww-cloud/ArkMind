@@ -17,4 +17,4 @@
 ## 改动纪律
 - 未经用户明确要求，不 commit、不 push、不开 PR。
 - 每个功能批次跑门禁后再 commit：`cargo test`（全量）+ `npm run typecheck` + `npm run build`。
-- `tools/topo-demo` 只作为本地 demo：其工作区改动**永不提交**（分类收编时勿 stage 该目录；历史已入库部分保留不动）。
+- `tools/topo-demo/` **永不提交** —— 已 `git rm -r --cached` 取消跟踪 + 写入 `.gitignore`（git 层面排除，非仅靠纪律）。它是独立本地 demo，文件保留在磁盘、git 历史保留，但不再入库；勿再 `git add` 该目录。

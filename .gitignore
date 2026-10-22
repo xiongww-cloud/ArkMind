@@ -63,3 +63,6 @@ pnpm-lock.yaml
 
 # license signing private key - never commit
 tools/license-gen/private.key
+
+# local-only topology demo - never commit (standalone tool, not part of the app)
+tools/topo-demo/
