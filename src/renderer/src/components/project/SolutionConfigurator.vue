@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { exportToPMSExcel, buildItemsFromMapping } from '@/utils/solutionExcel'
-import { findModelSuggestion } from '@/utils/modelSuggestion'
 import { detectSCTSheet, buildSCTMapping, classifySCTRow, shouldSkipSCTRow } from '@/utils/sctExcel'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
@@ -9,9 +8,9 @@ import { useProductStore } from '@/stores/product'
 import { toast } from '@/composables/useToast'
 import { confirm, dangerConfirm, alert } from '@/composables/useConfirm'
 import AppIcon from '@/components/common/AppIcon.vue'
-import AppRemark from '@/components/common/AppRemark.vue'
 import ExcelImportWizard from '@/components/shared/ExcelImportWizard.vue'
 import ServiceFeeAllocator from '@/components/project/ServiceFeeAllocator.vue'
+import DeviceTable from '@/components/project/DeviceTable.vue'
 import type {
   ExcelImportPreset,
   PresetLaunchPayload
@@ -31,12 +30,7 @@ const gvid = () => 'ver-' + Date.now()
 const op = computed(() => authStore.currentUser.name)
 
 const gp = ref([]) // 产品列表 — 从后端 Product 表加载
-const gparams = ref([]) // 参数列表 — 从后端加载
 
-// ─── 设备型号内联补全 (Inline Autocomplete·幽灵预览) ────────────────────────
-// 敲键只保留用户输入；命中名以灰色尾缀悬示，Tab / 光标行尾 → 才采纳——
-// 不再把建议当真实文本写回输入框（旧写法会把敲键"抢屏"，且 IME 组合期改写 value 导致拼音强制上屏）
-const modelGhosts = ref<Record<string, { tail: string; name: string; id: string; price?: number }>>({})
 const showImportWizard = ref(false)
 // ─── 价格上浮 ───────────────────────────────────────────────────────────────
 const markupPercent = ref(0)
@@ -129,15 +123,12 @@ function onImportConfirm(payload: any) {
         (p: any) => (p.name || '').toLowerCase() === item.model.toLowerCase()
       )
       if (match) {
-        const allGparams = Array.isArray(gparams.value) ? gparams.value : []
-        const productParams = allGparams.filter((p: any) => p.productId === match.id)
         return {
           ...item,
           productId: match.id,
           // 产品库无参数时默认勾选"更新产品参数"，让本次导入的参数回写产品库
           syncParams: !match.full_specs,
-          mergedText: item.mergedText || match.full_specs || '',
-          params: productParams.map((p: any) => ({ ...p, mark: '' }))
+          mergedText: item.mergedText || match.full_specs || ''
         }
       }
       return { ...item, syncParams: item.syncParams !== false }
@@ -166,8 +157,6 @@ function handleServiceFeeConfirm(result: any) {
     const match = productList.find(
       (p: any) => (p.name || '').toLowerCase() === (model || '').toLowerCase()
     )
-    const allGparams = Array.isArray(gparams.value) ? gparams.value : []
-    const productParams = match ? allGparams.filter((p: any) => p.productId === match.id) : []
     return {
       uid: guid(),
       productId: match?.id || '',
@@ -176,7 +165,7 @@ function handleServiceFeeConfirm(result: any) {
       unitPrice: hw.compositePrice || hw.unitPrice || 0,
       quantity: hw.quantity || 1,
       unit: hw.unit || '台',
-      params: productParams.map((p: any) => ({ ...p, mark: '' })),
+      params: [],
       mergedText: match?.full_specs || '',
       syncParams: match ? false : true,
       _originalUnitPrice: hw.unitPrice || 0,
@@ -191,121 +180,6 @@ function handleServiceFeeConfirm(result: any) {
 function handleServiceFeeCancel() {
   showSCTAllocator.value = false
   sctSheet.value = null
-}
-
-function setModelGhost(item: any, suggestion: ReturnType<typeof findModelSuggestion>) {
-  const cur = { ...modelGhosts.value }
-  const typed = String(item.model ?? '')
-  if (
-    suggestion &&
-    typed &&
-    suggestion.name.length > typed.length &&
-    suggestion.name.toLowerCase().startsWith(typed.toLowerCase())
-  ) {
-    cur[item.uid] = {
-      tail: suggestion.name.slice(typed.length),
-      name: suggestion.name,
-      id: suggestion.id,
-      price: suggestion.price,
-    }
-  } else {
-    delete cur[item.uid]
-  }
-  modelGhosts.value = cur
-}
-
-function syncModelFromInput(e: any, item: any) {
-  // IME 组合期不动输入框（防拼音强制上屏）；compositionend 再补算
-  if (e.isComposing || e.inputType === 'insertCompositionText') return
-  const typedValue = e.target.value
-  item.model = typedValue
-  item.productId = null // 文本已变，旧关联失效；确认/采纳时重建
-  if (!typedValue) {
-    setModelGhost(item, null)
-    return
-  }
-  setModelGhost(item, findModelSuggestion(typedValue, gp.value))
-}
-
-function handleDeviceInput(e: any, item: any) {
-  syncModelFromInput(e, item)
-}
-
-function onDeviceCompositionEnd(e: any, item: any) {
-  const typedValue = e.target.value
-  item.model = typedValue
-  if (!typedValue) {
-    item.productId = null
-    setModelGhost(item, null)
-    return
-  }
-  setModelGhost(item, findModelSuggestion(typedValue, gp.value))
-}
-
-/** 采纳幽灵补全：整名上屏 + 回填产品关联/单价 */
-function acceptModelGhost(item: any) {
-  const g = modelGhosts.value[item.uid]
-  if (!g) return
-  item.model = g.name
-  item.productId = g.id || null
-  if (g.price && !item.unitPrice) item.unitPrice = g.price
-  setModelGhost(item, null)
-}
-
-function onDeviceKeydown(e: KeyboardEvent, item: any) {
-  if (e.isComposing) return
-  if (e.key === 'Tab') {
-    if (modelGhosts.value[item.uid]) {
-      e.preventDefault()
-      acceptModelGhost(item)
-    }
-    return
-  }
-  if (e.key === 'ArrowRight') {
-    const el = e.target as HTMLInputElement
-    const atEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
-    if (atEnd && modelGhosts.value[item.uid]) {
-      e.preventDefault()
-      acceptModelGhost(item)
-    }
-  }
-}
-
-function handleDeviceConfirm(item, e) {
-  if (e?.isComposing) return
-  setModelGhost(item, null)
-  const text = (e?.target?.value || item.model || '').trim()
-  if (!text) {
-    item.productId = null
-    item.model = ''
-    return
-  }
-  item.model = text
-
-  const match = (Array.isArray(gp.value) ? gp.value : []).find(
-    (p) => (p.name || '').toLowerCase() === text.toLowerCase()
-  )
-  if (match) {
-    item.productId = match.id
-    item.model = match.name || match.model
-    item.syncParams = false // matched device: don't sync back by default
-    // Populate price from product library
-    if (match.price && !item.unitPrice) {
-      item.unitPrice = match.price
-    }
-    // Load default parameters from product
-    item.mergedText = item.mergedText || match.full_specs || ''
-    // Pre-populate params from gparams if available, otherwise leave as-is
-    const allGparams = Array.isArray(gparams.value) ? gparams.value : []
-    const productParams = allGparams.filter((p) => p.productId === match.id)
-    if (productParams.length > 0) {
-      item.params = productParams.map((p) => ({ ...p, mark: '' }))
-    }
-  } else {
-    // No product match: treat as new device, enable sync by default
-    item.productId = null
-    item.syncParams = true
-  }
 }
 
 const plans = ref([])
@@ -405,10 +279,95 @@ const ste = computed(() => {
   return e
 })
 
-const aii = ref(null)
+// ─── 时间线选中态（点卡片仅选中，查看/编辑需点按钮）────────────────────────
+const selEntryKey = ref(null)
+const selEntry = computed(() => {
+  const entries = ste.value
+  if (!entries.length) return null
+  if (selEntryKey.value) {
+    const hit = entries.find((en: any) =>
+      en.type === 'draft' ? selEntryKey.value === 'draft' : (en.data.versionId || en.data.id) === selEntryKey.value
+    )
+    if (hit) return hit
+  }
+  const draft = entries.find((en: any) => en.type === 'draft')
+  return draft || entries[0]
+})
+function selectEntry(en: any) {
+  selEntryKey.value = en.type === 'draft' ? 'draft' : en.data.versionId || en.data.id
+}
+
+/** 选中版本的报价概览 */
+const selOverview = computed(() => {
+  const en = selEntry.value
+  if (!en) return null
+  const items = Array.isArray(en.data.items) ? en.data.items : []
+  const devices = items.filter((i: any) => i.rowType !== 'subnet')
+  const subnets = items.length - devices.length
+  const amount = en.type === 'draft' ? draftAmount.value : (en.data.amount || 0)
+  const totalUnits = devices.reduce((s: number, d: any) => s + (Number(d.quantity) || 0), 0)
+  return {
+    status: en.type === 'draft' ? '编辑中（草稿）' : '已归档',
+    devices: devices.length,
+    totalUnits,
+    subnets,
+    amount
+  }
+})
+
+/** 概览：按型号聚合的设备清单（默认收起） */
+const overviewExpanded = ref(false)
+watch(selEntryKey, () => {
+  overviewExpanded.value = false
+})
+const selModelSummary = computed(() => {
+  const en = selEntry.value
+  if (!en) return []
+  const items = Array.isArray(en.data.items) ? en.data.items : []
+  const map = new Map()
+  for (const it of items) {
+    if (it.rowType === 'subnet') continue
+    const key = String(it.model || it.customName || '未指定型号').trim() || '未指定型号'
+    map.set(key, (map.get(key) || 0) + (Number(it.quantity) || 0))
+  }
+  return [...map.entries()].map(([model, qty]) => ({ model, qty }))
+})
+
+/** 概览：变更说明（多行文本，失焦保存） */
+const remarkVal = ref('')
+watch(
+  selEntry,
+  (en) => {
+    remarkVal.value = en?.data?.content || ''
+  },
+  { immediate: true }
+)
+async function saveSelRemark() {
+  const en = selEntry.value
+  if (!en) return
+  const val = remarkVal.value.trim()
+  if (en.type === 'draft') {
+    en.data.content = val
+    return
+  }
+  if (val === (en.data.content || '')) return
+  en.data.content = val
+  const vid = en.data.versionId || en.data.id
+  if (vid) {
+    try {
+      await updateSolutionVersionMeta(vid, { content: val })
+    } catch (e) {
+      console.warn('更新版本备注失败', e)
+    }
+  }
+}
+
+/** 工具栏添加设备：插入根级区域末尾（第一个子网行之前），保证不落入任何子网 */
 function apl() {
   if (ir.value) return
-  li.value.push({
+  const firstSubnet = li.value.findIndex((i) => i.rowType === 'subnet')
+  const at = firstSubnet === -1 ? li.value.length : firstSubnet
+  li.value.splice(at, 0, {
     uid: guid(),
     rowType: 'device',
     productId: '',
@@ -421,204 +380,18 @@ function apl() {
     mergedText: '',
     syncParams: true
   })
-  aii.value = li.value.length - 1
+  if (firstSubnet !== -1) {
+    toast({ message: '已添加到根级清单（顶部区域）', type: 'success' })
+  }
 }
+/** 工具栏添加子网：追加为新的空子网（清单末尾） */
 function asub() {
   if (ir.value) return
-  const idx = aii.value !== null ? aii.value + 1 : li.value.length
-  li.value.splice(idx, 0, { uid: guid(), rowType: 'subnet', name: '新子网' })
-  aii.value = idx
-}
-function rpl(i) {
-  if (ir.value) return
-  li.value.splice(i, 1)
-  if (aii.value === i) aii.value = null
-  else if (aii.value > i) aii.value--
-}
-function hpc(item) {
-  if (ir.value) return
-  item.params = []
-  item.mergedText = ''
-  item.model = gpn(item.productId)
+  li.value.splice(li.value.length, 0, { uid: guid(), rowType: 'subnet', name: '新子网' })
 }
 
-const dragX = ref(0)
-const dragY = ref(0)
-const dsi = ref(null)
-const dti = ref(null)
-const idr = ref(false)
-const dragInsert = ref<{ targetIdx: number; side: 'above' | 'below' } | null>(null)
-let dragTimer = null
-
-function ogd(e, idx) {
-  if (ir.value) return
-  dsi.value = idx
-  dragX.value = e.clientX
-  dragY.value = e.clientY
-  // 立即阻止文本选中
-  document.body.style.userSelect = 'none'
-  document.addEventListener('selectstart', preventSelect)
-  document.addEventListener('mousemove', odm)
-  dragTimer = setTimeout(() => {
-    idr.value = true
-  }, 200)
-  document.addEventListener('mouseup', oup)
-}
-
-function preventSelect(e) {
-  e.preventDefault()
-}
-
-function odm(e) {
-  e.preventDefault()
-  dragX.value = e.clientX
-  dragY.value = e.clientY
-  if (!idr.value) return
-  const el = document.elementFromPoint(e.clientX, e.clientY)
-  const card = el?.closest('[data-item-idx]') as HTMLElement | null
-  if (!card) {
-    dti.value = null
-    dragInsert.value = null
-    return
-  }
-  const tidx = parseInt(card.getAttribute('data-item-idx') || '')
-  if (isNaN(tidx) || tidx === dsi.value) {
-    dti.value = null
-    dragInsert.value = null
-    return
-  }
-  dti.value = tidx
-  const rect = card.getBoundingClientRect()
-  const relY = e.clientY - rect.top
-  const half = rect.height / 2
-  dragInsert.value = { targetIdx: tidx, side: relY < half ? 'above' : 'below' }
-}
-
-function oup(e) {
-  document.removeEventListener('mousemove', odm)
-  document.removeEventListener('mouseup', oup)
-  document.removeEventListener('selectstart', preventSelect)
-  document.body.style.userSelect = ''
-  if (dragTimer) {
-    clearTimeout(dragTimer)
-    dragTimer = null
-  }
-  if (!idr.value) return
-  const si = dsi.value
-  const insert = dragInsert.value
-  dsi.value = null
-  dti.value = null
-  idr.value = false
-  dragInsert.value = null
-  if (si === null || !insert) return
-  let ti = insert.targetIdx
-  if (insert.side === 'below') ti = Math.min(ti + 1, li.value.length)
-  if (ti === si || ti === si + 1) return
-  const its = [...li.value]
-  const [m] = its.splice(si, 1)
-  const adjusted = si < ti ? ti - 1 : ti
-  its.splice(adjusted, 0, m)
-  li.value = its
-  if (aii.value === si) aii.value = adjusted
-  else if (aii.value !== null) {
-    if (si < aii.value && adjusted >= aii.value) aii.value--
-    else if (si > aii.value && adjusted <= aii.value) aii.value++
-  }
-}
-
-const uo = ref(null)
-const upos = reactive({ top: 0, left: 0 })
-const units = ['台', '套', '个', '年']
-function tud(uid, e) {
-  if (uo.value === uid) {
-    uo.value = null
-    return
-  }
-  const r = e.currentTarget.getBoundingClientRect()
-  upos.top = r.bottom + 4
-  upos.left = r.left
-  uo.value = uid
-}
-function sud(u) {
-  const item = li.value.find((i) => i.uid === uo.value)
-  if (item) item.unit = u
-  uo.value = null
-}
-function cud(e) {
-  if (uo.value && !e.target.closest('[data-unit-dropdown]')) uo.value = null
-}
-
-const imo = ref(false)
-const ms = reactive({ ti: null, pid: '', ap: [], ts: [], tm: {}, sq: '' })
-const fmp = computed(() => {
-  if (!ms.sq.trim()) return ms.ap
-  const q = ms.sq.toLowerCase()
-  return ms.ap.filter(
-    (p) => p.indicator.toLowerCase().includes(q) || p.requirement.toLowerCase().includes(q)
-  )
-})
 const gpn = (id) =>
   (Array.isArray(gp.value) ? gp.value.find((p) => p.id === id) : undefined)?.name || ''
-function opm(item, idx) {
-  if (!item.productId || ir.value) return
-  ms.sq = ''
-  ms.ti = idx
-  ms.pid = item.productId
-  ms.ap = Array.isArray(gparams.value)
-    ? gparams.value.filter((p) => p.productId === item.productId)
-    : []
-  const params = Array.isArray(item.params) ? item.params : []
-  ms.ts = params.map((p) => p.id)
-  ms.tm = {}
-  params.forEach((p) => {
-    if (p.mark) ms.tm[p.id] = p.mark
-  })
-  imo.value = true
-  aii.value = idx
-}
-function clm() {
-  imo.value = false
-}
-function gmbc(m) {
-  if (m === '▲') return 'bg-gray-800 text-white border-gray-800'
-  if (m === '★') return 'bg-black text-yellow-400 border-black'
-  return 'bg-gray-50 text-gray-400 hover:bg-gray-100 border-gray-200'
-}
-function gmbt(m) {
-  if (m === '▲') return '▲ 重点'
-  if (m === '★') return '★ 废标'
-  return '无标记'
-}
-function tcb(id) {
-  const i = ms.ts.indexOf(id)
-  if (i > -1) ms.ts.splice(i, 1)
-  else ms.ts.push(id)
-}
-function tpm(id) {
-  const c = ms.tm[id]
-  if (!c) {
-    ms.tm[id] = '▲'
-    if (!ms.ts.includes(id)) ms.ts.push(id)
-  } else if (c === '▲') ms.tm[id] = '★'
-  else delete ms.tm[id]
-}
-function cms() {
-  const item = li.value[ms.ti]
-  if (!item) return
-  const sel = ms.ap
-    .filter((p) => ms.ts.includes(p.id))
-    .map((p) => ({ ...p, mark: ms.tm[p.id] || '' }))
-  item.params = sel
-  item.mergedText = sel
-    .map((p, idx) => p.mark + (idx + 1) + '、' + p.indicator + '：' + p.requirement)
-    .join('\n')
-  if (item.productId) item.syncParams = true
-  clm()
-}
-function autoEnableSync(idx) {
-  const item = li.value[idx]
-  if (item?.productId) item.syncParams = true
-}
 
 function applyMarkup() {
   const percent = markupPercent.value
@@ -683,6 +456,7 @@ function mapItemsToBackend(itemsArr) {
   })
 }
 const invalidItems = ref([]) // uids of items with validation errors
+const dt = ref<any>(null) // DeviceTable ref：lintAll / fixAll / pullAllEmpty
 function validateItems(items) {
   if (!items || !Array.isArray(items) || items.length === 0) return []
   return items.filter((item) => {
@@ -749,7 +523,6 @@ async function omm() {
     _versionId: versionId || undefined
   }
   av.value = 'edit'
-  aii.value = null
   clearValidation()
 }
 /** 新增空白方案版本（空清单，版本号递增） */
@@ -786,7 +559,6 @@ async function ommBlank() {
     _versionId: versionId || undefined
   }
   av.value = 'edit'
-  aii.value = null
   clearValidation()
 }
 function findUnknownDevices(items) {
@@ -976,7 +748,6 @@ async function sdv() {
 function gtl() {
   av.value = 'timeline'
   vvi.value = null
-  aii.value = null
   clearValidation()
 }
 async function cancelDraft() {
@@ -1003,11 +774,17 @@ async function cancelDraft() {
 function vhv(vi) {
   vvi.value = vi
   av.value = 'view'
-  aii.value = null
+}
+/** 概览栏「编辑」：基于选中归档版本新建草稿进入编辑（复用 omm 的拷贝逻辑） */
+function editFromOverview() {
+  const en = selEntry.value
+  if (!en || en.type !== 'ver') return
+  vvi.value = en.idx
+  av.value = 'view' // omm 从 view 态取源版本 items
+  omm()
 }
 function sed() {
   av.value = 'edit'
-  aii.value = null
   clearValidation()
 }
 
@@ -1052,81 +829,9 @@ async function deleteVersionEntry(entry) {
   }
 }
 
-const copyToast = ref(false)
-let copyToastTimer = null
-
-// 复制当前选中条目的技术参数
-function copyCurrentParams() {
-  const text = li.value[aii.value]?.mergedText || ''
-  if (!text) return
-  const showToast = () => {
-    copyToast.value = true
-    clearTimeout(copyToastTimer)
-    copyToastTimer = setTimeout(() => {
-      copyToast.value = false
-    }, 1500)
-  }
-  navigator.clipboard
-    .writeText(text)
-    .then(showToast)
-    .catch(() => {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-      showToast()
-    })
-}
-
 const rpid = ref(null)
 const rv = ref('')
 let planNameInput = null
-const editingContentVerId = ref(null)
-const editingContentVal = ref('')
-function secv(entry) {
-  if (!entry || !entry.data) return
-  if (entry.type === 'draft') {
-    editingContentVerId.value = '__draft__'
-    editingContentVal.value = entry.data.content || ''
-    return
-  }
-  if (entry.type !== 'ver') return
-  const vid = entry.data.versionId || entry.data.id
-  if (!vid) return
-  editingContentVerId.value = vid
-  editingContentVal.value = entry.data.content || ''
-  // 失焦后自动聚焦输入框，确保 blur 语义可靠
-  nextTick(() => {
-    ;(document.querySelector('[data-remark-input]') as HTMLInputElement)?.focus()
-  })
-}
-async function svcv() {
-  const verId = editingContentVerId.value
-  const val = editingContentVal.value.trim()
-  editingContentVerId.value = null // 失焦立即退出编辑态，后台保存
-  if (!verId) return
-  if (verId === '__draft__') {
-    const draftEntry = ste.value.find((e) => e.type === 'draft')
-    if (draftEntry) draftEntry.data.content = val || ''
-    return
-  }
-  const entry = ste.value.find(
-    (e) => e.type === 'ver' && (e.data.versionId === verId || e.data.id === verId)
-  )
-  if (!entry) return
-  if (val === (entry.data.content || '')) return
-  entry.data.content = val
-  try {
-    await updateSolutionVersionMeta(verId, { content: val })
-  } catch (e) {
-    console.warn('更新清单版本备注失败', e)
-  }
-}
-function ccvc() {
-  editingContentVerId.value = null
-}
 async function anp() {
   const planId = projectStore.addPlan(props.project.id, '新设备清单')
   if (planId) {
@@ -1178,6 +883,7 @@ async function rmp(id) {
 }
 
 watch(apid, () => {
+  selEntryKey.value = null
   gtl()
 })
 watch(
@@ -1312,7 +1018,6 @@ function flushDraftOnUnload() {
 }
 
 onMounted(async () => {
-  document.addEventListener('click', cud)
   window.addEventListener('pagehide', flushDraftOnUnload)
   restoreDrafts()
   try {
@@ -1330,9 +1035,6 @@ onMounted(async () => {
   }
 })
 onUnmounted(() => {
-  document.removeEventListener('click', cud)
-  document.removeEventListener('mousemove', odm)
-  document.removeEventListener('mouseup', oup)
   window.removeEventListener('pagehide', flushDraftOnUnload)
   debouncedSaveDraft.flush()
   debouncedSaveDraft.cancel()
@@ -1341,7 +1043,10 @@ onUnmounted(() => {
 
 <template>
   <div class="flex h-full w-full bg-white overflow-hidden">
-    <div class="w-[260px] border-r border-surface-100 flex flex-col bg-white flex-shrink-0">
+    <div
+      v-if="av === 'timeline'"
+      class="w-[260px] border-r border-surface-100 flex flex-col bg-white flex-shrink-0"
+    >
       <div class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0">
         <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider"
           >设备清单</span
@@ -1403,11 +1108,12 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Middle Panel: Timeline / Device List -->
+    <!-- 时间线：占据中栏+右栏，版本卡片平铺 -->
     <div
-      class="w-[360px] flex-shrink-0 border-r border-surface-100 flex flex-col bg-white/50 overflow-hidden"
+      v-if="av === 'timeline'"
+      class="flex-1 min-w-0 flex bg-white/50 overflow-hidden"
     >
-      <template v-if="av === 'timeline'">
+      <div class="w-[380px] shrink-0 flex flex-col border-r border-surface-100">
         <div
           class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0"
         >
@@ -1423,16 +1129,17 @@ onUnmounted(() => {
           </button>
         </div>
         <div
-          class="flex-1 overflow-y-auto py-3 px-3 min-h-0 bg-gray-50/30 space-y-2 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full"
+          class="flex-1 overflow-y-auto py-3 px-3 min-h-0 bg-gray-50/30 flex flex-col items-start space-y-2 [&>*]:w-full [&>*]:max-w-[440px] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full"
         >
           <!-- 草稿卡片 -->
           <div
             v-if="cplan?.draft"
-            @click="sed"
+            @click="selectEntry({ type: 'draft', data: cplan.draft })"
             class="bg-white rounded-lg border px-3 py-2.5 cursor-pointer transition-shadow hover:shadow-sm group/card border-amber-200 shadow-sm"
+            :class="selEntry?.type === 'draft' ? 'ring-2 ring-amber-300/60' : ''"
           >
-            <!-- Row 1: dot + version + time + amount + delete -->
-            <div class="flex items-center gap-2 mb-1.5">
+            <!-- Row 1: dot + version + time + amount + actions -->
+            <div class="flex items-center gap-2">
               <div class="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0" />
               <span class="text-xs font-medium text-amber-600 shrink-0">{{
                 fmtVersion(cplan.draft.versionNum)
@@ -1448,43 +1155,13 @@ onUnmounted(() => {
                   })
                 }}</span
               >
-              <div class="flex-1" />
-              <button
-                @click.stop="cancelDraft"
-                class="btn-ghost !p-0.5 text-slate-300 hover:text-red-500 opacity-0 group-hover/card:opacity-100 shrink-0"
-                v-tooltip="'删除草稿'"
-              >
-                <AppIcon name="trash" class="w-3 h-3" />
-              </button>
-            </div>
-            <!-- Row 2: 备注（点击编辑） -->
-            <div class="flex items-center gap-1 ml-4">
-              <template v-if="editingContentVerId === '__draft__'">
-                <input
-                  v-model="editingContentVal"
-                  @keyup.enter="svcv"
-                  @keyup.escape="ccvc"
-                  @blur="svcv"
-                  data-remark-input
-                  class="w-full text-[11px] bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200"
-                  placeholder="输入备注..."
-                  @click.stop
-                />
-              </template>
-              <span
-                v-else
-                @click.stop="secv({ type: 'draft', data: cplan.draft })"
-                class="text-[11px] cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-surface-50 transition-colors flex-1 min-w-0 truncate"
-                :class="cplan.draft.content ? 'text-surface-600' : 'text-surface-400 italic'"
-                >{{ cplan.draft.content || '点击添加版本说明' }}</span
-              >
             </div>
           </div>
 
           <!-- 空状态 -->
           <div
             v-if="!cplan?.draft && ste.length === 0"
-            class="text-center py-12 text-gray-400 text-xs space-y-3"
+            class="text-center py-12 text-gray-400 text-xs space-y-3 col-span-full"
           >
             <p>暂无版本记录</p>
             <button @click="omm" class="btn-secondary">
@@ -1496,14 +1173,19 @@ onUnmounted(() => {
           <div
             v-for="(entry, idx) in ste.filter((e) => e.type === 'ver')"
             :key="entry.data.versionId || entry.data.id"
-            @click="vhv(entry.idx)"
+            @click="selectEntry(entry)"
             class="bg-white rounded-lg border px-3 py-2.5 cursor-pointer transition-shadow hover:shadow-sm group/ver"
             :class="
-              idx === 0 && !cplan?.draft ? 'border-brand-200 shadow-sm' : 'border-surface-100'
+              selEntry &&
+              (selEntry.data.versionId || selEntry.data.id) === (entry.data.versionId || entry.data.id)
+                ? 'ring-2 ring-blue-300/70 border-blue-300 shadow-sm'
+                : idx === 0 && !cplan?.draft
+                  ? 'border-brand-200 shadow-sm'
+                  : 'border-surface-100'
             "
           >
-            <!-- Row 1: dot + version + tags + content preview + actions -->
-            <div class="flex items-center gap-2 mb-1.5">
+            <!-- Row 1: dot + version + time + amount + actions -->
+            <div class="flex items-center gap-2">
               <div
                 class="w-2 h-2 rounded-full flex-shrink-0"
                 :class="idx === 0 && !cplan?.draft ? 'bg-brand-500' : 'bg-surface-300'"
@@ -1524,81 +1206,226 @@ onUnmounted(() => {
                   })
                 }}</span
               >
-              <div class="flex-1" />
-              <button
-                @click.stop="evx(entry.data)"
-                class="btn-ghost !p-0.5 text-slate-300 hover:text-blue-600 opacity-0 group-hover/ver:opacity-100 shrink-0"
-                v-tooltip="'下载 Excel'"
-              >
-                <AppIcon name="download" class="w-3 h-3" />
-              </button>
-            </div>
-            <!-- Row 2: Commit message / remark (click to edit) -->
-            <div class="flex items-center gap-1 ml-4">
-              <template v-if="editingContentVerId === (entry.data.versionId || entry.data.id)">
-                <input
-                  v-model="editingContentVal"
-                  @keyup.enter="svcv"
-                  @keyup.escape="ccvc"
-                  @blur="svcv"
-                  data-remark-input
-                  class="w-full text-[11px] bg-white border border-blue-400 rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-blue-200"
-                  placeholder="输入备注..."
-                  @click.stop
-                />
-              </template>
-              <span
-                v-else
-                @click.stop="secv(entry)"
-                class="text-[11px] cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-surface-50 transition-colors flex-1 min-w-0 truncate"
-                :class="entry.data.content ? 'text-surface-600' : 'text-surface-400 italic'"
-                >{{ entry.data.content || '点击添加版本说明' }}</span
-              >
             </div>
           </div>
         </div>
-      </template>
+      </div>
 
-      <template v-else-if="av === 'edit'">
+      <!-- 版本概览栏（与清单版本标题栏同级） -->
+      <div
+        v-if="av === 'timeline'"
+        class="flex-1 min-w-0 flex flex-col bg-white overflow-hidden"
+      >
         <div
           class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0"
         >
-          <div class="flex items-center gap-1 min-w-0">
-            <button @click="gtl" class="text-surface-400 hover:text-brand-600 p-0.5 flex-shrink-0">
-              <AppIcon name="arrow-left" class="w-4 h-4" />
-            </button>
-            <span class="text-xs font-medium text-surface-700 truncate">{{ cpname }}</span>
-            <span
-              class="px-1.5 py-0.5 rounded text-[10px] font-medium border border-surface-200 text-surface-500 shrink-0"
-              >{{ fmtVersion(cplan?.draft?.versionNum) || '草稿' }}</span
-            >
+          <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider"
+            >版本概览</span
+          >
+          <div v-if="selEntry" class="flex items-center gap-1.5">
+            <template v-if="selEntry.type === 'draft'">
+              <button
+                @click="sed"
+                class="btn-ghost !p-1 text-slate-400 hover:text-blue-600"
+                v-tooltip="'编辑'"
+              >
+                <AppIcon name="edit" class="w-3.5 h-3.5" />
+              </button>
+              <button
+                @click="cancelDraft"
+                class="btn-ghost !p-1 text-slate-400 hover:text-red-500"
+                v-tooltip="'删除草稿'"
+              >
+                <AppIcon name="trash" class="w-3.5 h-3.5" />
+              </button>
+            </template>
+            <template v-else>
+              <button
+                @click="vhv(selEntry.idx)"
+                class="btn-ghost !p-1 text-slate-400 hover:text-blue-600"
+                v-tooltip="'查看'"
+              >
+                <AppIcon name="eye" class="w-3.5 h-3.5" />
+              </button>
+              <button
+                @click="editFromOverview"
+                class="btn-ghost !p-1 text-slate-400 hover:text-blue-600"
+                v-tooltip="'编辑（基于该版本新建草稿）'"
+              >
+                <AppIcon name="edit" class="w-3.5 h-3.5" />
+              </button>
+              <button
+                @click="evx(selEntry.data)"
+                class="btn-ghost !p-1 text-slate-400 hover:text-blue-600"
+                v-tooltip="'下载 Excel'"
+              >
+                <AppIcon name="download" class="w-3.5 h-3.5" />
+              </button>
+            </template>
           </div>
-          <div class="flex items-center gap-1 ml-auto flex-nowrap">
+        </div>
+        <div v-if="!selEntry" class="flex-1 flex items-center justify-center text-gray-300 text-xs">
+          暂无版本
+        </div>
+        <div v-else class="flex-1 overflow-y-auto p-3 space-y-3">
+          <div class="flex items-center gap-2">
+            <span
+              class="px-1.5 py-0.5 rounded text-[10px] font-medium border shrink-0"
+              :class="
+                selEntry.type === 'draft'
+                  ? 'border-amber-200 text-amber-600 bg-amber-50'
+                  : 'border-surface-200 text-surface-500 bg-surface-50'
+              "
+              >{{
+                fmtVersion(selEntry.data.versionNum) + (selEntry.type === 'draft' ? ' · 草稿' : '')
+              }}</span
+            >
+            <span class="text-[10px] text-surface-400">{{
+              formatDateTime(selEntry.data.startedAt || selEntry.data.createdAt)
+            }}</span>
+          </div>
+          <!-- 报价概览磁贴 -->
+          <div v-if="selOverview" class="grid grid-cols-2 gap-2">
+            <div class="rounded-lg border border-surface-100 bg-surface-50/60 px-2.5 py-2">
+              <div class="text-[10px] text-surface-400">状态</div>
+              <div class="text-[12px] font-medium mt-0.5" :class="selEntry.type === 'draft' ? 'text-amber-600' : 'text-surface-700'">{{ selOverview.status }}</div>
+            </div>
+            <div class="rounded-lg border border-surface-100 bg-surface-50/60 px-2.5 py-2">
+              <div class="text-[10px] text-surface-400">合计金额</div>
+              <div class="text-[12px] font-semibold font-mono text-red-600 mt-0.5">¥{{ selOverview.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</div>
+            </div>
+            <div class="rounded-lg border border-surface-100 bg-surface-50/60 px-2.5 py-2">
+              <div class="text-[10px] text-surface-400">设备总数</div>
+              <div class="text-[12px] font-medium text-surface-700 mt-0.5">{{ selOverview.totalUnits }} 台</div>
+            </div>
+            <div class="rounded-lg border border-surface-100 bg-surface-50/60 px-2.5 py-2">
+              <div class="text-[10px] text-surface-400">子网数量</div>
+              <div class="text-[12px] font-medium text-surface-700 mt-0.5">{{ selOverview.subnets }} 个</div>
+            </div>
+          </div>
+          <!-- 设备型号（默认收起，点击展开） -->
+          <div>
+            <button
+              @click="overviewExpanded = !overviewExpanded"
+              class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg border border-surface-100 bg-surface-50/60 hover:bg-surface-100 transition-colors"
+            >
+              <span class="text-[11px] font-medium text-surface-600 flex items-center gap-1.5">
+                <AppIcon
+                  name="chevron-down"
+                  class="w-3 h-3 transition-transform"
+                  :class="overviewExpanded ? '' : '-rotate-90'"
+                />设备型号
+              </span>
+              <span class="text-[11px] text-surface-400"
+                >共 {{ selOverview?.totalUnits ?? 0 }} 台{{ overviewExpanded ? '' : ' · 点击展开' }}</span
+              >
+            </button>
+            <div
+              v-if="overviewExpanded"
+              class="border border-t-0 border-surface-100 rounded-b-lg divide-y divide-surface-100 max-h-52 overflow-y-auto"
+            >
+              <div
+                v-for="m in selModelSummary"
+                :key="m.model"
+                class="flex items-center justify-between px-2.5 py-1.5 text-[11px] gap-2"
+              >
+                <span class="text-surface-600 truncate" :title="m.model">{{ m.model }}</span>
+                <span class="text-surface-400 font-mono shrink-0">× {{ m.qty }}</span>
+              </div>
+              <div v-if="selModelSummary.length === 0" class="px-2.5 py-2 text-[11px] text-surface-300">
+                无设备
+              </div>
+            </div>
+          </div>
+          <!-- 变更说明（多行文本，失焦保存） -->
+          <div>
+            <div class="text-[11px] font-medium text-surface-500 mb-1">变更说明</div>
+            <textarea
+              v-model="remarkVal"
+              @blur="saveSelRemark"
+              rows="4"
+              placeholder="记录此版本的变更目的或客户反馈..."
+              class="w-full text-[11px] px-2 py-1.5 border border-surface-200 rounded-lg outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 resize-none bg-white leading-relaxed"
+            ></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main: 设备表格（编辑 / 只读） -->
+    <div v-else class="flex-1 flex flex-col min-w-0 bg-white overflow-hidden">
+      <div
+        class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0"
+      >
+        <div class="flex items-center gap-1.5 min-w-0">
+          <button @click="gtl" class="text-surface-400 hover:text-brand-600 p-0.5 flex-shrink-0">
+            <AppIcon name="arrow-left" class="w-4 h-4" />
+          </button>
+          <span class="text-xs font-medium text-surface-700 truncate">{{ cpname }}</span>
+          <span
+            class="px-1.5 py-0.5 rounded text-[10px] font-medium border border-surface-200 text-surface-500 shrink-0"
+            >{{ fmtVersion(im ? cplan?.draft?.versionNum : vv?.versionNum) || '草稿' }}</span
+          >
+          <span v-if="ir && vv?.createdAt" class="text-[10px] text-surface-400 flex-shrink-0"
+            >{{ formatDateTime(vv.createdAt) }}</span
+          >
+          <span
+            v-if="ir && vv?.operator && vv.operator !== op"
+            class="text-[10px] text-surface-400 flex-shrink-0"
+            >{{ vv.operator }}</span
+          >
+        </div>
+        <div class="flex items-center gap-1 ml-auto flex-nowrap">
+          <template v-if="im">
             <button
               @click="apl"
               class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-              v-tooltip="'添加设备'"
+              v-tooltip="'添加设备（追加到末尾）'"
             >
               <AppIcon name="plus" class="w-3.5 h-3.5" />
             </button>
             <button
               @click="asub"
               class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-              v-tooltip="'子网'"
+              v-tooltip="'添加子网（追加到末尾）'"
             >
               <AppIcon name="folder" class="w-3.5 h-3.5" />
             </button>
             <button
               @click="showImportWizard = true"
               class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-              v-tooltip="'导入'"
+              v-tooltip="'导入 Excel'"
             >
               <AppIcon name="upload" class="w-3.5 h-3.5" />
+            </button>
+            <div class="w-px h-4 bg-surface-200 mx-0.5 flex-shrink-0" />
+            <button
+              @click="dt?.undo()"
+              :disabled="!dt?.canUndo"
+              class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0 disabled:opacity-30 disabled:pointer-events-none"
+              v-tooltip="'撤销 (Ctrl+Z)'"
+            >
+              <AppIcon name="undo" class="w-3.5 h-3.5" />
+            </button>
+            <button
+              @click="dt?.redo()"
+              :disabled="!dt?.canRedo"
+              class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0 disabled:opacity-30 disabled:pointer-events-none"
+              v-tooltip="'重做 (Ctrl+Shift+Z)'"
+            >
+              <AppIcon name="undo" class="w-3.5 h-3.5 rotate-180" />
+            </button>
+            <button
+              @click="dt?.lintAll()"
+              class="h-6 px-2 flex items-center gap-1 rounded-md text-[11px] text-surface-500 hover:text-amber-600 hover:bg-amber-50 transition-colors flex-shrink-0"
+              v-tooltip="'检查序号、分隔符、标点与行尾标点（结果面板内可一键修复）'"
+            >
+              <AppIcon name="search" class="w-3.5 h-3.5" /><span>检查</span>
             </button>
             <button
               @click="preSave"
               :disabled="isSaving"
-              class="flex items-center gap-1 h-6 px-2 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-wait transition-colors flex-shrink-0 whitespace-nowrap"
+              class="flex items-center gap-1 h-6 px-2 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-wait transition-colors flex-shrink-0 whitespace-nowrap ml-1"
             >
               <AppIcon v-if="isSaving" name="spinner" class="animate-spin w-3 h-3" /><AppIcon
                 v-else
@@ -1606,243 +1433,36 @@ onUnmounted(() => {
                 class="w-3 h-3"
               /><span>{{ isSaving ? '保存中...' : '保存' }}</span>
             </button>
-          </div>
-        </div>
-        <div
-          v-if="saveError"
-          class="px-3 py-2 bg-red-50 border-b border-red-100 text-[11px] text-red-600 flex items-center gap-1.5 shrink-0"
-        >
-          <AppIcon name="alert-circle" class="w-3 h-3 flex-shrink-0" /><span>{{ saveError }}</span>
-        </div>
-        <div
-          class="flex-1 overflow-y-auto p-3 space-y-2 min-h-0 pr-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-gray-300"
-        >
-          <div v-if="li.length === 0" class="text-center py-12 text-gray-400 text-xs">
-            清空状态。请增加设备节点。
-          </div>
-          <template v-for="(item, idx) in li" :key="item.uid">
-            <!-- Subnet Separator Card -->
-            <div
-              v-if="item.rowType === 'subnet'"
-              @click="aii = idx"
-              :data-item-idx="idx"
-              class="group relative flex flex-row transition-all duration-200 overflow-hidden rounded-lg cursor-pointer"
-              :class="[
-                aii === idx
-                  ? 'border-2 border-blue-400 bg-blue-50/20 ring-2 ring-blue-400/20 ring-offset-0 z-10'
-                  : idr && dti === idx
-                    ? 'border-2 border-blue-400 border-dashed bg-blue-50/30'
-                    : idr && dsi === idx
-                      ? 'opacity-40'
-                      : 'border-2 border-blue-200/60 bg-blue-50/30 hover:border-blue-300 hover:bg-blue-50/50'
-              ]"
-            >
-              <!-- Insert line above -->
-              <div
-                v-if="idr && dragInsert?.targetIdx === idx && dragInsert?.side === 'above'"
-                class="absolute -top-[3px] left-0 right-0 z-20 flex justify-center pointer-events-none"
-              >
-                <div class="h-[5px] w-[80%] bg-blue-500 rounded-full shadow-sm" />
-              </div>
-              <!-- Insert line below -->
-              <div
-                v-if="idr && dragInsert?.targetIdx === idx && dragInsert?.side === 'below'"
-                class="absolute -bottom-[3px] left-0 right-0 z-20 flex justify-center pointer-events-none"
-              >
-                <div class="h-[5px] w-[80%] bg-blue-500 rounded-full shadow-sm" />
-              </div>
-              <div
-                data-grip
-                @mousedown="ogd($event, idx)"
-                class="w-6 bg-blue-100/60 border-r border-blue-200/40 hover:bg-blue-200/60 cursor-grab flex-shrink-0 flex items-center justify-center text-blue-400 transition-colors"
-              >
-                <AppIcon name="grip-vertical" class="w-3 h-3" />
-              </div>
-              <div class="flex-1 flex items-center px-2 py-1 gap-1 min-w-0">
-                <AppIcon name="folder" class="w-3 h-3 text-blue-400 flex-shrink-0" />
-                <input
-                  v-model="item.name"
-                  @click.stop
-                  type="text"
-                  placeholder="子网名称"
-                  class="flex-1 min-w-0 bg-transparent text-[12px] h-5 py-0 px-1 text-blue-700 font-medium outline-none focus:bg-white/80 focus:ring-1 focus:ring-blue-300 rounded placeholder:text-blue-300"
-                />
-                <button
-                  @click.stop="rpl(idx)"
-                  class="flex-shrink-0 w-4 h-4 rounded-full border border-blue-200 bg-white text-blue-300 flex items-center justify-center transition hover:text-red-500 hover:border-red-200 shadow-sm"
-                >
-                  <AppIcon name="x" class="w-2.5 h-2.5" />
-                </button>
-              </div>
-            </div>
-
-            <!-- Device Card -->
-            <div
-              v-else
-              @click="aii = idx"
-              :data-item-idx="idx"
-              class="group relative flex flex-row transition-all duration-200 overflow-hidden"
-              :class="[
-                aii === idx
-                  ? 'border border-blue-400 bg-blue-50/10 ring-2 ring-blue-400/20 ring-offset-0 z-10 rounded-lg cursor-pointer'
-                  : idr && dti === idx
-                    ? 'border-blue-400 border-dashed bg-blue-50/30 rounded-lg'
-                    : idr && dsi === idx
-                      ? 'border border-gray-200 bg-white shadow-sm rounded-lg opacity-40 cursor-pointer'
-                      : 'border border-gray-200 bg-white shadow-sm hover:shadow hover:border-gray-300 rounded-lg cursor-pointer',
-                invalidItems.includes(item.uid)
-                  ? 'ring-1 ring-red-200 border-red-300 bg-red-50/30'
-                  : ''
-              ]"
-            >
-              <!-- Insert line above -->
-              <div
-                v-if="idr && dragInsert?.targetIdx === idx && dragInsert?.side === 'above'"
-                class="absolute -top-[3px] left-0 right-0 z-20 flex justify-center pointer-events-none"
-              >
-                <div class="h-[5px] w-[80%] bg-blue-500 rounded-full shadow-sm" />
-              </div>
-              <!-- Insert line below -->
-              <div
-                v-if="idr && dragInsert?.targetIdx === idx && dragInsert?.side === 'below'"
-                class="absolute -bottom-[3px] left-0 right-0 z-20 flex justify-center pointer-events-none"
-              >
-                <div class="h-[5px] w-[80%] bg-blue-500 rounded-full shadow-sm" />
-              </div>
-              <div
-                data-grip
-                @mousedown="ogd($event, idx)"
-                class="w-6 bg-gray-50/60 border-r border-gray-100 hover:bg-gray-200/60 cursor-grab flex-shrink-0 flex items-center justify-center text-gray-400 transition-colors"
-              >
-                <AppIcon name="grip-vertical" class="w-3 h-3" />
-              </div>
-              <div class="flex-1 flex flex-col p-1 gap-0.5 min-w-0">
-                <div class="flex items-center gap-1">
-                  <input
-                    v-model="item.customName"
-                    @click.stop
-                    type="text"
-                    placeholder="自定义名称"
-                    class="flex-1 min-w-0 bg-gray-50/80 border border-gray-200 rounded text-[12px] h-5 py-0 px-1.5 text-gray-700 text-center outline-none focus:border-[#007aff] focus:ring-1 focus:ring-blue-500 focus:bg-white placeholder:text-gray-350"
-                  />
-                  <button
-                    @click.stop="rpl(idx)"
-                    class="flex-shrink-0 w-4 h-4 rounded-full border border-gray-200 bg-white text-gray-400 flex items-center justify-center transition hover:text-red-500 hover:border-red-200 shadow-sm"
-                  >
-                    <AppIcon name="x" class="w-2.5 h-2.5" />
-                  </button>
-                </div>
-                <div class="flex items-center gap-1">
-                  <div class="relative flex-1 min-w-0">
-                    <input
-                      :value="item.model"
-                      @input="handleDeviceInput($event, item)"
-                      @compositionend="onDeviceCompositionEnd($event, item)"
-                      @keydown="onDeviceKeydown($event, item)"
-                      @keyup.enter="handleDeviceConfirm(item, $event)"
-                      @blur="handleDeviceConfirm(item, $event)"
-                      @click.stop
-                      type="text"
-                      placeholder="输入设备型号..."
-                      class="w-full bg-gray-50/80 border border-gray-200 rounded text-[12px] h-5 py-0 pl-1.5 pr-2 text-gray-700 outline-none focus:border-[#007aff] focus:ring-1 focus:ring-blue-500 focus:bg-white"
-                      :class="
-                        invalidItems.includes(item.uid) && !item.productId && !item.model
-                          ? 'border-red-300 bg-red-50/50'
-                          : ''
-                      "
-                    />
-                    <!-- 幽灵补全：已输文本透明复刻 + 灰色建议尾缀（Tab / 行尾 → 采纳） -->
-                    <span
-                      v-if="modelGhosts[item.uid]"
-                      class="absolute inset-0 flex items-center pl-1.5 pr-2 text-[12px] text-gray-300 pointer-events-none select-none overflow-hidden whitespace-nowrap"
-                    >
-                      <span class="invisible">{{ item.model }}</span>{{ modelGhosts[item.uid].tail }}
-                    </span>
-                  </div>
-                  <AppIcon
-                    v-if="invalidItems.includes(item.uid) && !item.productId && !item.model"
-                    name="alert-circle"
-                    class="w-3.5 h-3.5 text-red-400 flex-shrink-0"
-                  />
-                  <span
-                    v-if="!item.model"
-                    class="shrink-0 inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-400 ring-1 ring-inset ring-gray-200"
-                    >无设备</span
-                  >
-                  <span
-                    v-else-if="item.productId"
-                    class="shrink-0 inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-green-50 text-green-600 ring-1 ring-inset ring-green-500/10"
-                    ><AppIcon name="check" class="w-3 h-3 mr-1" />已匹配</span
-                  >
-                  <span
-                    v-else
-                    class="shrink-0 inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-500/10"
-                    ><AppIcon name="plus" class="w-3 h-3 mr-1" />新设备</span
-                  >
-                </div>
-                <div class="flex items-center gap-1">
-                  <div class="relative w-[103px]">
-                    <span
-                      class="absolute left-1 top-1/2 -translate-y-1/2 text-[11px] text-gray-400 pointer-events-none z-10"
-                      >¥</span
-                    ><input
-                      v-model.number="item.unitPrice"
-                      @click.stop
-                      @focus="$event.target.select()"
-                      @blur="item.quantity = Math.max(1, item.quantity || 1)"
-                      type="number"
-                      min="0"
-                      step="100"
-                      placeholder="0"
-                      class="w-full bg-transparent rounded text-[12px] h-5 py-0 pl-3.5 pr-1 text-right text-gray-700 outline-none hover:bg-gray-50 focus:bg-white focus:ring-1 focus:ring-blue-200 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      :class="
-                        invalidItems.includes(item.uid) && (!item.unitPrice || item.unitPrice <= 0)
-                          ? 'bg-red-50/50'
-                          : ''
-                      "
-                    />
-                  </div>
-                  <span class="text-[11px] text-gray-400 flex-shrink-0">×</span>
-                  <input
-                    v-model.number="item.quantity"
-                    @click.stop
-                    @focus="$event.target.select()"
-                    @blur="item.quantity = Math.max(1, item.quantity || 1)"
-                    type="number"
-                    min="1"
-                    placeholder="1"
-                    class="w-11 h-5 py-0 px-1 text-center text-xs text-gray-700 bg-transparent rounded outline-none hover:bg-gray-50 focus:bg-white focus:ring-1 focus:ring-blue-200 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                  <button
-                    @click.stop="tud(item.uid, $event)"
-                    data-unit-dropdown
-                    class="w-[42px] h-5 flex items-center justify-center gap-px text-[11px] text-gray-500 bg-transparent rounded hover:bg-gray-50 transition-colors outline-none flex-shrink-0"
-                  >
-                    <span>{{ item.unit || '台' }}</span
-                    ><AppIcon name="chevron-down" class="w-2.5 h-2.5 text-gray-300 flex-shrink-0" />
-                  </button>
-                  <div class="flex-1 min-w-0 flex items-center justify-end">
-                    <span class="text-xs text-blue-600 font-mono truncate"
-                      >¥{{
-                        ((item.unitPrice || 0) * (item.quantity || 0)).toLocaleString('zh-CN', {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })
-                      }}</span
-                    >
-                  </div>
-                </div>
-              </div>
-            </div>
           </template>
+          <button v-else @click="omm" class="btn-primary">
+            <AppIcon name="edit" class="w-3 h-3" />
+            修改
+          </button>
         </div>
-        <div
-          class="shrink-0 border-t border-gray-200 bg-gray-50/80 px-4 py-2.5 flex items-center justify-between"
-        >
-          <div class="flex items-center gap-2">
-            <span class="text-xs font-semibold text-gray-600 uppercase tracking-wider"
-              >总价</span
-            >
+      </div>
+      <div
+        v-if="saveError"
+        class="px-3 py-2 bg-red-50 border-b border-red-100 text-[11px] text-red-600 flex items-center gap-1.5 shrink-0"
+      >
+        <AppIcon name="alert-circle" class="w-3 h-3 flex-shrink-0" /><span>{{ saveError }}</span>
+      </div>
+      <DeviceTable
+        ref="dt"
+        :items="li"
+        :products="gp"
+        :readonly="ir"
+        :invalid-uids="invalidItems"
+        class="flex-1 min-h-0"
+      />
+      <!-- 总价栏 -->
+      <div
+        class="shrink-0 border-t border-gray-200 bg-gray-50/80 px-4 py-2.5 flex items-center justify-between"
+      >
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-semibold text-gray-600 uppercase tracking-wider"
+            >总价</span
+          >
+          <template v-if="im">
             <button
               v-if="!showMarkupInput"
               @click="showMarkupInput = true"
@@ -1861,193 +1481,19 @@ onUnmounted(() => {
                 placeholder="上浮"
                 @keyup.enter="applyMarkup"
                 @keyup.escape="showMarkupInput = false; markupPercent = 0"
-                ref="markupInputRef"
               />
               <span class="text-xs text-orange-600">%</span>
               <button @click="applyMarkup" class="text-xs text-orange-600 hover:text-orange-800 font-medium px-1">应用</button>
               <button @click="showMarkupInput = false; markupPercent = 0" class="text-xs text-gray-400 hover:text-gray-600 px-1">取消</button>
             </div>
-          </div>
-          <span class="text-sm font-bold text-red-600"
-            >¥
-            {{
-              gt.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-            }}</span
-          >
-        </div>
-      </template>
-
-      <template v-else-if="av === 'view'">
-        <div
-          class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0"
-        >
-          <div class="flex items-center gap-1 min-w-0">
-            <button @click="gtl" class="text-surface-400 hover:text-brand-600 p-0.5 flex-shrink-0">
-              <AppIcon name="arrow-left" class="w-4 h-4" />
-            </button>
-            <span class="text-xs font-medium text-surface-700 truncate">{{ cpname }}</span>
-            <span
-              class="px-1.5 py-0.5 rounded text-[10px] font-medium border border-surface-200 text-surface-500 shrink-0"
-              >{{ fmtVersion(vv?.versionNum) }}</span
-            >
-            <span class="text-[10px] text-surface-400 ml-1 flex-shrink-0" v-if="vv">{{
-              formatDateTime(vv.createdAt)
-            }}</span>
-            <span
-              v-if="vv?.operator && vv.operator !== op"
-              class="text-[10px] text-surface-400 ml-1 flex-shrink-0"
-              >{{ vv.operator }}</span
-            >
-          </div>
-          <div class="flex items-center gap-2 flex-shrink-0">
-            <button @click="omm" class="btn-primary">
-              <AppIcon name="edit" class="w-3 h-3" />
-              修改
-            </button>
-          </div>
-        </div>
-        <div
-          class="flex-1 overflow-y-auto p-3 space-y-2 min-h-0 pr-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full"
-        >
-          <div v-if="li.length === 0" class="text-center py-12 text-gray-400 text-xs">
-            此版本为空。
-          </div>
-          <template v-for="(item, idx) in li" :key="item.uid">
-            <!-- Subnet separator (view mode) -->
-            <div
-              v-if="item.rowType === 'subnet'"
-              @click="aii = idx"
-              class="border-2 border-blue-200/50 bg-blue-50/20 rounded-lg overflow-hidden cursor-pointer"
-              :class="aii === idx ? 'border-blue-400 bg-blue-100/30' : ''"
-            >
-              <div class="flex items-center justify-center px-2 py-1 gap-1">
-                <AppIcon name="folder" class="w-3 h-3 text-blue-400 flex-shrink-0" />
-                <span class="text-[12px] font-medium text-blue-600">{{
-                  item.name || '未命名子网'
-                }}</span>
-              </div>
-            </div>
-            <!-- Device card (view mode) -->
-            <div
-              v-else
-              @click="aii = idx"
-              class="border border-gray-200 bg-white rounded-lg overflow-hidden"
-              :class="
-                aii === idx
-                  ? 'border-blue-400 bg-blue-50/10 ring-2 ring-blue-400/20 ring-offset-0 cursor-pointer'
-                  : 'cursor-pointer'
-              "
-            >
-              <div class="flex flex-row">
-                <div
-                  class="w-6 bg-gray-50/60 border-r border-gray-100 flex-shrink-0 flex items-center justify-center text-gray-300"
-                >
-                  <AppIcon name="grip-vertical" class="w-3 h-3" />
-                </div>
-                <div class="flex-1 px-2 py-1 gap-0.5 min-w-0">
-                  <div class="text-[12px] font-medium text-gray-700 truncate mb-1">
-                    {{ item.customName || '（未命名）' }}
-                  </div>
-                  <div class="text-[11px] text-gray-400">
-                    {{ item.model || gpn(item.productId) || '未指定设备' }}
-                  </div>
-                  <div class="flex items-center gap-2 mt-1">
-                    <span class="text-[11px] text-gray-500"
-                      >¥{{ item.unitPrice?.toLocaleString('zh-CN') || 0 }}</span
-                    >
-                    <span class="text-[11px] text-gray-400"
-                      >×{{ item.quantity }} {{ item.unit }}</span
-                    >
-                    <span class="text-[11px] font-semibold text-[#007aff] ml-auto"
-                      >¥{{
-                        ((item.unitPrice || 0) * (item.quantity || 0)).toLocaleString('zh-CN', {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2
-                        })
-                      }}</span
-                    >
-                  </div>
-                </div>
-              </div>
-            </div>
           </template>
         </div>
-        <div
-          class="shrink-0 border-t border-gray-200 bg-gray-50/80 px-4 py-2.5 flex items-center justify-between"
+        <span class="text-sm font-bold text-red-600"
+          >¥
+          {{
+            gt.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          }}</span
         >
-          <span class="text-xs font-semibold text-gray-600 uppercase tracking-wider"
-            >总价</span
-          ><span class="text-sm font-bold text-red-600"
-            >¥
-            {{
-              gt.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-            }}</span
-          >
-        </div>
-      </template>
-    </div>
-
-    <!-- Right Panel: 参数配置排版区 -->
-    <div v-if="av !== 'timeline'" class="flex-1 flex flex-col bg-white relative overflow-hidden">
-      <div class="h-10 px-3 flex items-center justify-between border-b border-surface-100 shrink-0">
-        <span class="text-[11px] font-semibold text-surface-500 uppercase tracking-wider"
-          >参数配置排版区</span
-        >
-        <div class="flex items-center gap-3">
-          <button
-            v-if="aii !== null && li[aii]?.mergedText"
-            @click="copyCurrentParams"
-            class="text-[#007aff] hover:underline text-xs font-medium"
-          >
-            <AppIcon name="clipboard" class="w-3 h-3 inline-block mr-0.5 -mt-px" />复制
-          </button>
-          <label
-            v-if="im && aii !== null"
-            class="flex items-center gap-1.5 cursor-pointer select-none"
-          >
-            <input
-              type="checkbox"
-              v-model="li[aii].syncParams"
-              class="w-3 h-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            <span class="text-[11px] text-slate-500">更新产品参数</span>
-          </label>
-        </div>
-      </div>
-      <div class="flex-1 p-3 flex flex-col relative">
-        <div
-          v-if="aii === null || li.length === 0"
-          class="h-full flex flex-col items-center justify-center text-gray-300"
-        >
-          <p>在左侧选中设备进行客户化编辑</p>
-        </div>
-        <div
-          v-else-if="li[aii]?.rowType === 'subnet'"
-          class="h-full flex flex-col items-center justify-center text-gray-400 space-y-2"
-        >
-          <AppIcon name="folder" class="w-8 h-8 text-blue-300" />
-          <p class="text-sm">{{ li[aii].name || '未命名子网' }}</p>
-          <p class="text-xs text-gray-300">子网分隔标记，无参数配置</p>
-        </div>
-        <div
-          v-else-if="
-            aii == null ||
-            !li[aii] ||
-            (!li[aii].productId && !li[aii].model && !li[aii].mergedText && ir)
-          "
-          class="h-full flex items-center justify-center text-gray-400 text-sm"
-        >
-          请先为该项指定设备型号。
-        </div>
-        <div v-else class="h-full flex flex-col">
-          <textarea
-            v-model="li[aii].mergedText"
-            :readonly="ir"
-            class="flex-1 w-full p-4 border border-gray-200 rounded-xl focus:border-[#007aff] focus:ring-4 focus:ring-blue-500/10 outline-none resize-none text-[13px] text-gray-800 leading-relaxed bg-[#f9f9fb] transition-all"
-            :class="ir ? 'cursor-default select-text' : ''"
-            :placeholder="ir ? '' : '该设备没有参数，请手动输入'"
-          ></textarea>
-        </div>
       </div>
     </div>
   </div>
@@ -2078,130 +1524,6 @@ onUnmounted(() => {
           <button @click="confirmSave" class="btn-primary">确认保存</button>
         </div>
       </div>
-    </div>
-  </Teleport>
-
-  <!-- Parameter Modal -->
-  <Teleport to="body">
-    <div
-      v-if="imo"
-      class="fixed inset-0 z-[80] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm"
-    >
-      <div
-        class="bg-white/90 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden border border-white/20"
-      >
-        <div
-          class="px-6 py-4 border-b border-gray-200/50 flex justify-between items-center bg-white/50 shrink-0"
-        >
-          <div>
-            <span class="text-xs text-gray-400 font-medium uppercase tracking-wider"
-              >参数资源库</span
-            >
-            <h3 class="text-lg font-semibold text-slate-800">{{ gpn(ms.pid) }}</h3>
-          </div>
-        </div>
-        <div class="flex-1 overflow-y-auto p-6 bg-[#f5f5f7]/50 flex flex-col">
-          <div class="flex items-center mb-5">
-            <div class="relative flex-1">
-              <AppIcon
-                name="search"
-                class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2"
-              />
-              <input
-                v-model="ms.sq"
-                type="text"
-                placeholder="搜索指标名称或参数要求..."
-                class="w-full pl-9 pr-8 py-2 text-[13px] bg-white border border-gray-200 rounded-lg outline-none focus:border-[#007aff] focus:ring-1 focus:ring-blue-500 shadow-sm"
-              />
-              <button
-                v-if="ms.sq"
-                @click="ms.sq = ''"
-                class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-              >
-                <AppIcon name="x" class="w-3 h-3" />
-              </button>
-            </div>
-          </div>
-          <div class="space-y-3">
-            <div
-              v-for="param in fmp"
-              :key="param.id"
-              @click="tcb(param.id)"
-              class="flex items-center p-3 border rounded-xl bg-white cursor-pointer transition-all duration-200 shadow-sm"
-              :class="
-                ms.ts.includes(param.id)
-                  ? 'border-[#007aff] ring-1 ring-[#007aff]/50'
-                  : 'border-gray-200'
-              "
-            >
-              <div class="flex items-center mr-3">
-                <button
-                  @click.stop="tpm(param.id)"
-                  class="w-16 h-6 mr-3 flex-shrink-0 flex items-center justify-center border rounded-md text-[11px] font-medium transition-all"
-                  :class="gmbc(ms.tm[param.id])"
-                  v-tooltip="'点击切换状态'"
-                >
-                  {{ gmbt(ms.tm[param.id]) }}
-                </button>
-                <input
-                  type="checkbox"
-                  :value="param.id"
-                  v-model="ms.ts"
-                  @click.stop
-                  class="w-4 h-4 text-[#007aff] border-gray-300 rounded focus:ring-[#007aff]"
-                />
-              </div>
-              <div class="flex-1">
-                <div class="font-bold text-gray-800 text-[13px] mb-1">{{ param.indicator }}</div>
-                <div class="text-[12px] text-gray-500 leading-relaxed">{{ param.requirement }}</div>
-              </div>
-            </div>
-            <div v-if="fmp.length === 0" class="text-center py-8 text-gray-400 text-sm">
-              未匹配到参数
-            </div>
-          </div>
-        </div>
-        <div
-          class="px-6 py-4 border-t border-gray-200/50 bg-white/80 flex justify-end items-center gap-3 shrink-0"
-        >
-          <button
-            @click="clm"
-            class="px-5 py-2 text-[13px] font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-          >
-            取消
-          </button>
-          <button
-            @click="cms"
-            class="h-6 px-2 rounded-md text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-sm"
-          >
-            确认 ({{ ms.ts.length }})
-          </button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
-
-  <!-- Unit Dropdown (Teleported to avoid clipping) -->
-  <Teleport to="body">
-    <div
-      v-if="uo"
-      data-unit-dropdown
-      class="fixed z-[80] bg-white/90 backdrop-blur-md shadow-lg border border-gray-100 rounded-lg py-1 min-w-[60px]"
-      :style="{ top: upos.top + 'px', left: upos.left + 'px' }"
-    >
-      <button
-        v-for="u in units"
-        :key="u"
-        @click.stop="sud(u)"
-        class="w-full px-3 py-1.5 text-sm text-left transition-colors hover:bg-blue-50 hover:text-blue-600"
-        :class="
-          li.find((i) => i.uid === uo)?.unit === u
-            ? 'text-[#007aff] font-medium'
-            : 'text-surface-600'
-        "
-      >
-        {{ u }}
-      </button>
     </div>
   </Teleport>
 
@@ -2260,41 +1582,4 @@ onUnmounted(() => {
     </div>
   </Teleport>
 
-  <!-- Copy toast -->
-  <Teleport to="body">
-    <Transition name="toast-fade">
-      <div
-        v-if="copyToast"
-        class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] text-[12px] text-slate-400 bg-white/90 backdrop-blur-sm border border-slate-200 rounded-lg px-4 py-1.5 shadow-md"
-      >
-        已复制到剪贴板
-      </div>
-    </Transition>
-  </Teleport>
-
-  <!-- Drag ghost -->
-  <Teleport to="body">
-    <div
-      v-if="idr"
-      class="fixed px-3 py-1.5 bg-blue-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap"
-      :style="{ left: dragX + 12 + 'px', top: dragY + 12 + 'px' }"
-    >
-      <AppIcon name="grip-vertical" class="w-3 h-3 inline-block mr-1.5 -mt-px" />
-      {{ li[dsi]?.customName || li[dsi]?.name || li[dsi]?.model || '拖动' }}
-    </div>
-  </Teleport>
 </template>
-
-<style scoped>
-.toast-fade-enter-active,
-.toast-fade-leave-active {
-  transition:
-    opacity 0.2s ease,
-    transform 0.2s ease;
-}
-.toast-fade-enter-from,
-.toast-fade-leave-to {
-  opacity: 0;
-  transform: translate(-50%, 4px);
-}
-</style>

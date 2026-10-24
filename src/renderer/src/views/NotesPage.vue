@@ -299,27 +299,27 @@ const displayedNotes = computed(() => {
   return result
 })
 
-const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(displayedNotes as any)
-const pendingShiftDown = ref(false)
+const { selectedIds, clear: clearMultiSelect, isSelected, selectedCount, handleItemClick, handleItemMouseDown, markDragFinished } = useMultiSelect(displayedNotes as any, {
+  enabled: () => currentView.value === 'notebook'
+})
 
 function onNoteMouseDown(e: MouseEvent, nid: string) {
-  if ((e.target as HTMLElement).closest('input')) return
+  if ((e.target as HTMLElement).closest('input, button, a')) return
+  // 非笔记本视图：不进多选，仍可单条拖拽
   if (currentView.value !== 'notebook') { startNoteDrag(e, nid); return }
-  if (e.shiftKey) {
-    e.preventDefault()
-    multiSelectRange(nid)
-    pendingShiftDown.value = true
-    return
-  }
-  pendingShiftDown.value = false
-  if (!isSelected(nid)) multiSelectSingle(nid)
+  if (!handleItemMouseDown(e, nid)) return
   startNoteDrag(e, nid)
 }
 
 function onNoteCardClick(e: MouseEvent, nid: string) {
-  if (currentView.value === 'notebook' && (e.shiftKey || pendingShiftDown.value)) return
-  clearMultiSelect()
-  selectNote(nid)
+  if (currentView.value !== 'notebook') {
+    clearMultiSelect()
+    selectNote(nid)
+    return
+  }
+  const modifier = e.ctrlKey || e.metaKey || e.shiftKey
+  handleItemClick(e, nid)
+  if (!modifier) selectNote(nid)
 }
 
 // ─── View switching + auto-save ─────────────────────────────────────
@@ -565,7 +565,7 @@ function startNoteDrag(e: MouseEvent, noteId: string) {
     dragType.value = 'note'
     dragNoteId.value = noteId
     dragStarted.value = true
-  }, 300)
+  }, 200)
   document.addEventListener('mouseup', onDragUpPre)
 }
 
@@ -580,7 +580,7 @@ function startNotebookDrag(e: MouseEvent, notebookId: string) {
     dragType.value = 'notebook'
     dragNotebookId.value = notebookId
     dragStarted.value = true
-  }, 300)
+  }, 200)
   document.addEventListener('mouseup', onDragUpPre)
 }
 
@@ -593,7 +593,7 @@ function onDragUpPre(_e: MouseEvent) {
     dragTimer.value = null
   }
   // If timer already fired, let onDragUp handle it
-  if (isDragging.value) onDragUp(_e)
+  if (isDragging.value) { markDragFinished(); onDragUp(_e) }
 }
 
 function onDragMove(e: MouseEvent) {
@@ -998,7 +998,7 @@ const restoreNotebookList = computed(() => {
 <!-- Drag ghost -->
 <Teleport to="body">
   <div v-if="isDragging" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}">
-    <template v-if="dragType === 'note'">{{ selectedCount > 1 ? `${selectedCount} 条笔记` : `${notes.find(n => (n.note_id||n.id) === dragNoteId)?.title || '笔记'} · Shift+点击可多选` }}</template>
+    <template v-if="dragType === 'note'">{{ selectedCount > 1 ? `移动 ${selectedCount} 项` : `${notes.find(n => (n.note_id||n.id) === dragNoteId)?.title || '笔记'} · Ctrl/Shift 可多选` }}</template>
     <template v-else>{{ notebooks.find(n => n.id === dragNotebookId)?.name || '笔记本' }}</template>
   </div>
 </Teleport>

@@ -77,9 +77,9 @@ const dragSeriesId = ref<string|null>(null); const dragProductId = ref<string|nu
 const dragX = ref(0); const dragY = ref(0); const dragStartX = ref(0); const dragStartY = ref(0); const dragStarted = ref(false)
 const dragTimer = ref<ReturnType<typeof setTimeout>|null>(null); const dragTargetId = ref<string|null>(null)
 const dragInsert = ref<{targetId:string;side:'above'|'below'|'inside'}|null>(null)
-function startSeriesDrag(e: MouseEvent, sid: string) { e.preventDefault(); dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY; document.addEventListener('mousemove', onDragMove); dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'series'; dragSeriesId.value = sid; dragStarted.value = true }, 300); document.addEventListener('mouseup', onDragUpPre) }
-function startProductDrag(e: MouseEvent, pid: string) { e.preventDefault(); dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY; document.addEventListener('mousemove', onDragMove); dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'product'; dragProductId.value = pid; dragStarted.value = true }, 300); document.addEventListener('mouseup', onDragUpPre) }
-function onDragUpPre() { document.removeEventListener('mouseup', onDragUpPre); document.removeEventListener('mousemove', onDragMove); if (dragTimer.value) { clearTimeout(dragTimer.value); dragTimer.value = null }; if (isDragging.value) onDragUp() }
+function startSeriesDrag(e: MouseEvent, sid: string) { e.preventDefault(); dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY; document.addEventListener('mousemove', onDragMove); dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'series'; dragSeriesId.value = sid; dragStarted.value = true }, 200); document.addEventListener('mouseup', onDragUpPre) }
+function startProductDrag(e: MouseEvent, pid: string) { e.preventDefault(); dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY; document.addEventListener('mousemove', onDragMove); dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'product'; dragProductId.value = pid; dragStarted.value = true }, 200); document.addEventListener('mouseup', onDragUpPre) }
+function onDragUpPre() { document.removeEventListener('mouseup', onDragUpPre); document.removeEventListener('mousemove', onDragMove); if (dragTimer.value) { clearTimeout(dragTimer.value); dragTimer.value = null }; if (isDragging.value) { markDragFinished(); onDragUp() } }
 function onDragMove(e: MouseEvent) {
   dragX.value = e.clientX; dragY.value = e.clientY
   const el = document.elementFromPoint(e.clientX, e.clientY)
@@ -139,26 +139,20 @@ const productListRef = ref<HTMLElement|null>(null)
 const filteredProducts = computed(() => { let r = store.products as any[]; if (selectedSeriesId.value) { if (selectedSeriesId.value === store.uncategorizedSeriesId) { r = r.filter((p: any) => !p.seriesId) } else { r = r.filter((p: any) => p.seriesId === selectedSeriesId.value) } }; const q = seriesSearch.value.toLowerCase().trim(); if (q) r = r.filter((p: any) => p.name.toLowerCase().includes(q)); return [...r].sort((a: any, b: any) => (b.updatedAt||b.createdAt||'').localeCompare(a.updatedAt||a.createdAt||'')) })
 function selectProduct(id: string|null) { selectedProductId.value = id }
 
-const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(filteredProducts)
-const pendingShiftDown = ref(false)
+const { selectedIds, clear: clearMultiSelect, isSelected, selectedCount, handleItemClick, handleItemMouseDown, markDragFinished } = useMultiSelect(filteredProducts)
 
 function onProductMouseDown(e: MouseEvent, pid: string) {
-  if ((e.target as HTMLElement).closest('input')) return
-  if (e.shiftKey) {
-    e.preventDefault()
-    multiSelectRange(pid)
-    pendingShiftDown.value = true
-    return
-  }
-  pendingShiftDown.value = false
-  if (!isSelected(pid)) multiSelectSingle(pid)
+  if ((e.target as HTMLElement).closest('input, button, a')) return
+  // 修饰键按下：不动选区，交给 click 处理
+  if (!handleItemMouseDown(e, pid)) return
   startProductDrag(e, pid)
 }
 
 function onProductCardClick(e: MouseEvent, pid: string) {
-  if (e.shiftKey || pendingShiftDown.value) return
-  clearMultiSelect()
-  selectProduct(pid)
+  const modifier = e.ctrlKey || e.metaKey || e.shiftKey
+  handleItemClick(e, pid)
+  // 详情面板仅普通点击跟随（多选加减不打散右侧详情语义）
+  if (!modifier) selectProduct(pid)
 }
 
 function isDuplicateName(name: string, excludeId?: string): boolean {
@@ -845,7 +839,7 @@ watch(() => selectedSeriesId.value, () => store.fetchProducts())
   </div>
 
   <!-- Drag ghost -->
-  <Teleport to="body"><div v-if="isDragging" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}"><template v-if="dragType === 'series'">{{ store.series.find(s => s.id === dragSeriesId)?.name || '目录' }}</template><template v-else>{{ selectedCount > 1 ? `${selectedCount} 个产品` : `${store.products.find(p => p.id === dragProductId)?.name || '产品'} · Shift+点击可多选` }}</template></div></Teleport>
+  <Teleport to="body"><div v-if="isDragging" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}"><template v-if="dragType === 'series'">{{ store.series.find(s => s.id === dragSeriesId)?.name || '目录' }}</template><template v-else>{{ selectedCount > 1 ? `移动 ${selectedCount} 项` : `${store.products.find(p => p.id === dragProductId)?.name || '产品'} · Ctrl/Shift 可多选` }}</template></div></Teleport>
 
   <!-- Excel Import Wizard -->
   <ExcelImportWizard

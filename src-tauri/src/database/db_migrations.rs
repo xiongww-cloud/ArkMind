@@ -300,6 +300,8 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "UPDATE OR IGNORE contact_project_mapping SET contact_id = substr(contact_id, 9) WHERE contact_id LIKE 'CONTACT-%'",
         "DELETE FROM partner_project_mapping WHERE project_id LIKE 'PROJECT-%' OR partner_id LIKE 'VENDOR-%' OR partner_id LIKE 'CHANNEL-%' OR partner_id LIKE 'CUSTOMER-%'",
         "DELETE FROM contact_project_mapping WHERE project_id LIKE 'PROJECT-%' OR contact_id LIKE 'CONTACT-%'",
+        // 设备清单单位列（此前前端传了 unit 但后端无列静默丢弃，读回恒为「台」）
+        "ALTER TABLE solution_items ADD COLUMN unit TEXT DEFAULT '台'",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);

@@ -15,7 +15,7 @@ pub(crate) fn execute_object_catalog(entity: &str, field_filters: &[Value], sort
         "NOTE" => ("(SELECT n.note_id, n.title, n.content, n.is_daily, n.notebook_id, nb.name AS notebook_name, n.deleted_at, n.created_at, n.updated_at FROM notes n LEFT JOIN notebooks nb ON n.notebook_id = nb.id)", &["note_id","title","content","is_daily","notebook_id","notebook_name","deleted_at","created_at","updated_at"]),
         "EQUIPMENT_LIST" => ("solutions", &["id","project_id","name","created_at","updated_at"]),
         "EQUIPMENT_VERSION" => ("solution_versions", &["id","solution_id","version","tags","content","creator","status","created_at","updated_at"]),
-        "EQUIPMENT_ITEM" => ("(SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit_price, si.description AS params, si.row_type, si.sort_order, si.created_at, si.updated_at, sv.version, sv.status AS version_status, s.name AS solution_name, s.project_id, p.name AS project_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN projects p ON p.id=s.project_id)", &["id","solution_version_id","product_id","product_name","device_name","quantity","unit_price","params","row_type","sort_order","created_at","updated_at","version","version_status","solution_name","project_id","project_name"]),
+        "EQUIPMENT_ITEM" => ("(SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit, si.unit_price, si.description AS params, si.row_type, si.sort_order, si.created_at, si.updated_at, sv.version, sv.status AS version_status, s.name AS solution_name, s.project_id, p.name AS project_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN projects p ON p.id=s.project_id)", &["id","solution_version_id","product_id","product_name","device_name","quantity","unit","unit_price","params","row_type","sort_order","created_at","updated_at","version","version_status","solution_name","project_id","project_name"]),
         "PROJECT_DYNAMIC" => ("project_dynamics", &["id","project_id","type","content","operator","created_at"]),
         "EMAIL" => ("emails", &["id","account_id","folder","from_addr","from_name","to_addr","cc_addr","subject","received_at","has_attachments","ai_category","created_at"]),
         "CHAT" => return format!("{} 不支持结构化筛选，请使用 query 关键词搜索。", entity),
@@ -292,12 +292,13 @@ pub(crate) fn execute_equipment_chain(ids: &[String]) -> String {
             ).unwrap_or_default().iter().filter_map(|v| v["id"].as_str().map(String::from)).map(|vid| {
                 let vrow = database::get("SELECT version, status, creator, created_at FROM solution_versions WHERE id=?1", &[json!(&vid)]).ok().flatten().unwrap_or(json!({}));
                 let items: Vec<Value> = database::all(
-                    "SELECT product_name, device_name, quantity, unit_price, description AS params, row_type FROM solution_items WHERE solution_version_id=?1 ORDER BY sort_order LIMIT 120",
+                    "SELECT product_name, device_name, quantity, unit, unit_price, description AS params, row_type FROM solution_items WHERE solution_version_id=?1 ORDER BY sort_order LIMIT 120",
                     &[json!(&vid)],
                 ).unwrap_or_default().iter().map(|r| json!({
                     "product_name": r["product_name"].as_str().unwrap_or(""),
                     "device_name": r["device_name"].as_str().unwrap_or(""),
                     "quantity": r["quantity"].as_i64().unwrap_or(1),
+                    "unit": r["unit"].as_str().unwrap_or("台"),
                     "unit_price": r["unit_price"].as_f64().unwrap_or(0.0),
                     "params": r["params"].as_str().unwrap_or(""),
                     "row_type": r["row_type"].as_str().unwrap_or("device"),
@@ -920,11 +921,11 @@ mod tests {
         database::with_db(|c| c.execute_batch(
             "CREATE TABLE solutions(id TEXT PRIMARY KEY, project_id TEXT, name TEXT);
              CREATE TABLE solution_versions(id TEXT PRIMARY KEY, solution_id TEXT, version TEXT, status TEXT, creator TEXT, created_at TEXT);
-             CREATE TABLE solution_items(id TEXT PRIMARY KEY, solution_version_id TEXT, product_name TEXT, device_name TEXT, quantity INTEGER, unit_price REAL, description TEXT, row_type TEXT, sort_order INTEGER);
+             CREATE TABLE solution_items(id TEXT PRIMARY KEY, solution_version_id TEXT, product_name TEXT, device_name TEXT, quantity INTEGER, unit TEXT DEFAULT '台', unit_price REAL, description TEXT, row_type TEXT, sort_order INTEGER);
              CREATE TABLE business_relations(source_type TEXT, source_id TEXT, target_type TEXT, target_id TEXT, relation_type TEXT, metadata TEXT);
              INSERT INTO solutions VALUES('s1','p1','天门一院清单');
              INSERT INTO solution_versions VALUES('v1','s1','V2','finalized','张','2026-10-01 10:00:00');
-             INSERT INTO solution_items VALUES('i1','v1','AP','核心交换机',2,50000.5,'48口全千兆','device',1),('i2','v1','SW','接入交换机',10,1000,'24口','device',2);
+             INSERT INTO solution_items VALUES('i1','v1','AP','核心交换机',2,'台',50000.5,'48口全千兆','device',1),('i2','v1','SW','接入交换机',10,'台',1000,'24口','device',2);
              INSERT INTO business_relations VALUES('PROJECT','p1','EQUIPMENT_LIST','s1','has_equipment_list','{}');"
         )).unwrap();
 

@@ -658,7 +658,7 @@ fn import_projects(data: &Value, _tmp: &std::path::Path) -> Result<(), String> {
     }
     // 方案设备清单
     if let Some(items) = data["solution_items"].as_array() {
-        for i in items { database::run("INSERT OR IGNORE INTO solution_items(id,solution_version_id,product_id,product_name,quantity,unit_price,description,device_name,row_type,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", &[json!(i["id"]),json!(i["solution_version_id"]),json!(i["product_id"]),json!(i["product_name"]),json!(i["quantity"]),json!(i["unit_price"]),json!(i["description"]),json!(i["device_name"]),json!(i["row_type"]),json!(i["sort_order"]),json!(i["created_at"]),json!(i["updated_at"])]).ok(); }
+        for i in items { database::run("INSERT OR IGNORE INTO solution_items(id,solution_version_id,product_id,product_name,quantity,unit,unit_price,description,device_name,row_type,sort_order,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)", &[json!(i["id"]),json!(i["solution_version_id"]),json!(i["product_id"]),json!(i["product_name"]),json!(i["quantity"]),json!(i["unit"].as_str().unwrap_or("台")),json!(i["unit_price"]),json!(i["description"]),json!(i["device_name"]),json!(i["row_type"]),json!(i["sort_order"]),json!(i["created_at"]),json!(i["updated_at"])]).ok(); }
     }
     // 动态
     if let Some(dyns) = data["project_dynamics"].as_array() {

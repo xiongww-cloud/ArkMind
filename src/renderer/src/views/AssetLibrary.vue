@@ -297,28 +297,27 @@ const filteredFiles = computed(() => {
   return [...result].sort((a,b) => (b.updated_at||b.created_at||'').localeCompare(a.updated_at||a.created_at||''))
 })
 
-const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(filteredFiles as any)
-const pendingShiftDown = ref(false)
+const { selectedIds, clear: clearMultiSelect, isSelected, selectedCount, handleItemClick, handleItemMouseDown, markDragFinished } = useMultiSelect(filteredFiles as any)
 
 function onFileMouseDown(e: MouseEvent, f: AssetFile) {
   // 项目模式只读；仅项目域的文件（无库位置）不启用多选与拖拽（批量移动/删除仅库域）
   if (projectFilesMode.value || (f as any).in_library === false) return
-  const fid = f.id
-  if ((e.target as HTMLElement).closest('input')) return
-  if (e.shiftKey) {
+  if ((e.target as HTMLElement).closest('input, button, a')) return
+  // 修饰键在 mousedown 即完成选择（click 只挂在文件名上，卡片空白处也要能多选）
+  if (e.ctrlKey || e.metaKey || e.shiftKey) {
     e.preventDefault()
-    multiSelectRange(fid)
-    pendingShiftDown.value = true
+    handleItemClick(e, f.id)
     return
   }
-  pendingShiftDown.value = false
-  if (!isSelected(fid)) multiSelectSingle(fid)
-  startFileDrag(e, fid)
+  if (!handleItemMouseDown(e, f.id)) return
+  startFileDrag(e, f.id)
 }
 
 function onFileCardClick(e: MouseEvent, fid: string) {
-  if (e.shiftKey || pendingShiftDown.value) return
-  clearMultiSelect()
+  // 修饰键选择已在 mousedown 处理；拖拽后的补发 click 由多选层吞掉
+  if (e.ctrlKey || e.metaKey || e.shiftKey) return
+  // 普通点击文件 → 多选回退为单选该文件
+  handleItemClick(e, fid)
   if (!dragJustFinished.value) handlePreview(fid)
 }
 
@@ -407,17 +406,17 @@ function startFolderDrag(e: MouseEvent, fid: string) {
   e.preventDefault()
   dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY
   document.addEventListener('mousemove', onDragMove)
-  dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'folder'; dragFolderId.value = fid; dragStarted.value = true }, 300)
+  dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'folder'; dragFolderId.value = fid; dragStarted.value = true }, 200)
   document.addEventListener('mouseup', onDragUpPre)
 }
 function startFileDrag(e: MouseEvent, fid: string) {
   e.preventDefault()
   dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY
   document.addEventListener('mousemove', onDragMove)
-  dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'file'; dragFileId.value = fid; dragStarted.value = true }, 300)
+  dragTimer.value = setTimeout(() => { isDragging.value = true; dragType.value = 'file'; dragFileId.value = fid; dragStarted.value = true }, 200)
   document.addEventListener('mouseup', onDragUpPre)
 }
-function onDragUpPre() { document.removeEventListener('mouseup', onDragUpPre); document.removeEventListener('mousemove', onDragMove); if (dragTimer.value) { clearTimeout(dragTimer.value); dragTimer.value = null }; if (isDragging.value) onDragUp() }
+function onDragUpPre() { document.removeEventListener('mouseup', onDragUpPre); document.removeEventListener('mousemove', onDragMove); if (dragTimer.value) { clearTimeout(dragTimer.value); dragTimer.value = null }; if (isDragging.value) { markDragFinished(); onDragUp() } }
 function onDragMove(e: MouseEvent) {
   dragX.value = e.clientX; dragY.value = e.clientY
   const el = document.elementFromPoint(e.clientX, e.clientY)
@@ -476,8 +475,8 @@ async function onDragUp() {
 const dragGhostText = computed(() => {
   if (dragType.value === 'folder') return allFolders.value.find(f => f.id === dragFolderId.value)?.name || '目录'
   if (dragType.value === 'file') {
-    if (selectedCount.value > 1) return `${selectedCount.value} 个文件`
-    return `${fileDisplayName(allFiles.value.find(f => f.id === dragFileId.value) as any)} · Shift+点击可多选`
+    if (selectedCount.value > 1) return `移动 ${selectedCount.value} 项`
+    return `${fileDisplayName(allFiles.value.find(f => f.id === dragFileId.value) as any)} · Ctrl/Shift 可多选`
   }
   return ''
 })

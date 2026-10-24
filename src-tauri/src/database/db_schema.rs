@@ -55,7 +55,7 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
         CREATE TABLE IF NOT EXISTS solution_items (
             id TEXT PRIMARY KEY, solution_version_id TEXT NOT NULL,
             product_id TEXT, product_name TEXT DEFAULT '', quantity INTEGER DEFAULT 1,
-            unit_price REAL DEFAULT 0, description TEXT DEFAULT '',
+            unit TEXT DEFAULT '台', unit_price REAL DEFAULT 0, description TEXT DEFAULT '',
             device_name TEXT DEFAULT '', row_type TEXT DEFAULT 'device',
             sort_order INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now', 'localtime')), updated_at TEXT DEFAULT (datetime('now', 'localtime'))

@@ -126,10 +126,10 @@ function startFileDrag(e: MouseEvent, fileId: string) {
   e.preventDefault()
   dragX.value = dragStartX.value = e.clientX; dragY.value = dragStartY.value = e.clientY
   document.addEventListener('mousemove', onFileDragMove)
-  dragFileTimer.value = setTimeout(() => { isDraggingFile.value = true; dragFileId.value = fileId; dragStarted.value = true }, 300)
+  dragFileTimer.value = setTimeout(() => { isDraggingFile.value = true; dragFileId.value = fileId; dragStarted.value = true }, 200)
   document.addEventListener('mouseup', onFileDragUpPre)
 }
-function onFileDragUpPre() { document.removeEventListener('mouseup', onFileDragUpPre); document.removeEventListener('mousemove', onFileDragMove); if (dragFileTimer.value) { clearTimeout(dragFileTimer.value); dragFileTimer.value = null }; if (isDraggingFile.value) onFileDragUp() }
+function onFileDragUpPre() { document.removeEventListener('mouseup', onFileDragUpPre); document.removeEventListener('mousemove', onFileDragMove); if (dragFileTimer.value) { clearTimeout(dragFileTimer.value); dragFileTimer.value = null }; if (isDraggingFile.value) { markDragFinished(); onFileDragUp() } }
 function onFileDragMove(e: MouseEvent) {
   dragX.value = e.clientX; dragY.value = e.clientY
   const el = document.elementFromPoint(e.clientX, e.clientY)
@@ -256,26 +256,23 @@ const filteredFiles = computed(() => {
   })
 })
 
-const { selectedIds, clear: clearMultiSelect, selectSingle: multiSelectSingle, selectRange: multiSelectRange, isSelected, selectedCount } = useMultiSelect(filteredFiles as any)
-const pendingShiftDown = ref(false)
+const { selectedIds, clear: clearMultiSelect, isSelected, selectedCount, handleItemClick, handleItemMouseDown, markDragFinished } = useMultiSelect(filteredFiles as any)
 
 function onFileMouseDown(e: MouseEvent, fid: string) {
-  if ((e.target as HTMLElement).closest('input')) return
-  if (e.shiftKey) {
+  if ((e.target as HTMLElement).closest('input, button, a')) return
+  // 修饰键在 mousedown 即完成选择（click 只挂在文件名上，卡片空白处也要能多选）
+  if (e.ctrlKey || e.metaKey || e.shiftKey) {
     e.preventDefault()
-    multiSelectRange(fid)
-    pendingShiftDown.value = true
+    handleItemClick(e, fid)
     return
   }
-  pendingShiftDown.value = false
-  if (!isSelected(fid)) multiSelectSingle(fid)
+  if (!handleItemMouseDown(e, fid)) return
   startFileDrag(e, fid)
 }
 
-function onFileCardClick(e: MouseEvent, fid: string) {
-  if (e.shiftKey || pendingShiftDown.value) return
-  clearMultiSelect()
-  previewFile(fid)
+/** 整行点击：修饰键多选；普通点击多选回退为单选。打开文件只认文件名点击 */
+function onFileRowClick(e: MouseEvent, fid: string) {
+  handleItemClick(e, fid)
 }
 
 function selectFolder(id: string|null) {
@@ -474,12 +471,12 @@ function getFileColor(fileName) {
     <div class="flex-1 overflow-y-auto p-2 space-y-1">
       <div v-if="isFetching" class="text-center py-8"><p class="text-xs text-surface-400">加载中...</p></div>
       <div v-else-if="filteredFiles.length === 0" class="text-center py-8"><p class="text-xs text-surface-400">暂无文件</p></div>
-      <div v-for="file in filteredFiles" :key="file.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200" :class="[isDraggingFile && dragFileId===file.id ? 'opacity-30 select-none' : '', isSelected(file.id) ? 'bg-blue-50/70 border-blue-200' : '']" @mousedown="onFileMouseDown($event, file.id)">
+      <div v-for="file in filteredFiles" :key="file.id" class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group hover:bg-surface-50 border border-transparent hover:border-surface-200 cursor-pointer select-none" :class="[isDraggingFile && dragFileId===file.id ? 'opacity-30' : '', isSelected(file.id) ? 'bg-blue-50/70 border-blue-200' : '']" @mousedown="onFileMouseDown($event, file.id)" @click="onFileRowClick($event, file.id)">
         <div class="h-8 w-8 rounded-lg flex items-center justify-center flex-shrink-0 text-[9px] font-bold tracking-wider" :class="getFileColor(file.name)">{{ (file.name || '').split('.').pop()?.toUpperCase() || 'FILE' }}</div>
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 min-w-0">
             <input v-if="editingNameFileId === file.id" v-model="editingNameValue" data-name-input class="text-[12px] font-medium text-surface-800 bg-transparent outline-none border-b border-brand-400 w-full min-w-0 select-text" @keyup.enter="saveFileName(file.id)" @blur="saveFileName(file.id)" @mousedown.stop @keyup.escape="cancelEditName()"/>
-            <p v-else class="text-[12px] font-medium text-surface-800 truncate inline-block max-w-full cursor-pointer hover:text-blue-600 transition-colors" v-tooltip.auto="file.displayName || file.custom_name || file.name" @click="onFileCardClick($event, file.id)">{{ file.displayName || file.custom_name || file.name }}</p>
+            <p v-else class="text-[12px] font-medium text-surface-800 truncate inline-block max-w-full hover:text-blue-600 transition-colors" v-tooltip.auto="file.displayName || file.custom_name || file.name" @click.stop="previewFile(file.id)">{{ file.displayName || file.custom_name || file.name }}</p>
             <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatFileSize(file.file_size) }}</span>
             <span class="text-[11px] text-surface-400 whitespace-nowrap flex-shrink-0">{{ formatDateTime(file.updated_at || file.created_at) }}</span>
           </div>
@@ -520,7 +517,7 @@ function getFileColor(fileName) {
   <!-- Drag ghost -->
   <Teleport to="body">
     <div v-if="isDraggingFile" class="fixed px-3 py-1.5 bg-brand-600 text-white text-[11px] rounded-lg shadow-xl pointer-events-none z-[9999] opacity-90 whitespace-nowrap" :style="{left: (dragX + 12) + 'px', top: (dragY + 12) + 'px'}">
-      {{ selectedCount > 1 ? `${selectedCount} 个文件` : `${filteredFiles.find(f => f.id === dragFileId)?.displayName || filteredFiles.find(f => f.id === dragFileId)?.custom_name || filteredFiles.find(f => f.id === dragFileId)?.name || '文件'} · Shift+点击可多选` }}
+      {{ selectedCount > 1 ? `移动 ${selectedCount} 项` : `${filteredFiles.find(f => f.id === dragFileId)?.displayName || filteredFiles.find(f => f.id === dragFileId)?.custom_name || filteredFiles.find(f => f.id === dragFileId)?.name || '文件'}` }}
     </div>
   </Teleport>
 </div>
