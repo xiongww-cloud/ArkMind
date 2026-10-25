@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# macOS 本地打包：构建 .app → ad-hoc 签名 → 自验 → 造 dmg
-# （CI 自 v14.4.5 起只产 Windows；macOS 包由维护者在本机执行本脚本产出）
+# macOS 本地打包（兜底工具）：构建 .app → ad-hoc 签名 → 自验 → 造 dmg
+# CI（release.yml）已恢复双平台构建为主路径；本脚本用于不上 CI 的本地重建/调试
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PDFIUM_STATIC_LIB_PATH="$PWD/src-tauri/bin"
