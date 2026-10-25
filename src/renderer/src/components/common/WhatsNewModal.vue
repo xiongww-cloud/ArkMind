@@ -17,6 +17,21 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
+    version: '14.4.5',
+    date: '2026-10-25',
+    icon: 'table',
+    iconBg: 'bg-violet-50',
+    iconColor: 'text-violet-600',
+    title: '设备清单表格化 · 免激活',
+    items: [
+      '设备清单改类 Excel 表格：参数多行格、数量/单位/单价/小计列，子网可折叠分组；行内一键拉取产品库参数并可回写，Excel 跨行粘贴自动扩行',
+      '全局撤销/重做（Ctrl+Z / Ctrl+Shift+Z）；版本时间线改版：概览磁贴 + 设备型号折叠列表',
+      '免激活发布：移除许可证与试用机制，安装即用全部功能',
+      'macOS 修复：设置页知识管线卡片内容空白问题根治，保持双列布局',
+      '设置页版本号旁新增「软件官网」直达 GitHub 项目主页；旧版遗留拓扑助手条目自动清除',
+    ],
+  },
+  {
     version: '14.4.4',
     date: '2026-10-18',
     icon: 'download',
