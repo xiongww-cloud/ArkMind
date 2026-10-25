@@ -456,7 +456,19 @@ function mapItemsToBackend(itemsArr) {
   })
 }
 const invalidItems = ref([]) // uids of items with validation errors
-const dt = ref<any>(null) // DeviceTable ref：lintAll / fixAll / pullAllEmpty
+const dt = ref<any>(null) // DeviceTable ref：lintAll / fixAll / stripControlAll / pullAllEmpty
+
+/** 删除控标内容（破坏性批操作，先确认；撤销可恢复） */
+async function stripControlMarks() {
+  const ok = await dangerConfirm({
+    title: '删除控标内容',
+    message:
+      '将对全部设备参数执行：\n· 剥除 ★/▲ 控标符号（保留参数行）\n· 删除含「截图 / 证明 / 报告 / 盖章」的证明材料段（按标点切段）\n· 指标名命中关键词或要求被清空的行整行删除\n· 删除后自动修复标点与序号\n\n可通过撤销（Ctrl+Z）恢复。',
+    confirmText: '删除'
+  })
+  if (!ok) return
+  dt.value?.stripControlAll()
+}
 function validateItems(items) {
   if (!items || !Array.isArray(items) || items.length === 0) return []
   return items.filter((item) => {
@@ -1421,6 +1433,13 @@ onUnmounted(() => {
               v-tooltip="'检查序号、分隔符、标点与行尾标点（结果面板内可一键修复）'"
             >
               <AppIcon name="search" class="w-3.5 h-3.5" /><span>检查</span>
+            </button>
+            <button
+              @click="stripControlMarks"
+              class="h-6 px-2 flex items-center gap-1 rounded-md text-[11px] text-surface-500 hover:text-red-600 hover:bg-red-50 transition-colors flex-shrink-0"
+              v-tooltip="'剥除 ★/▲ 符号，删除含截图/证明/报告/盖章的证明材料段，删除后自动修复标点（可撤销）'"
+            >
+              <AppIcon name="trash" class="w-3.5 h-3.5" /><span>删除控标</span>
             </button>
             <button
               @click="preSave"

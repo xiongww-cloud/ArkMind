@@ -2,7 +2,7 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import type { PropType } from 'vue'
 import { findModelSuggestion } from '@/utils/modelSuggestion'
-import { lintParams, fixParams, paramsEquivalent } from '@/utils/paramText'
+import { lintParams, fixParams, paramsEquivalent, stripControlContent } from '@/utils/paramText'
 import type { LintIssue } from '@/utils/paramText'
 import { toast } from '@/composables/useToast'
 import { confirm, dangerConfirm } from '@/composables/useConfirm'
@@ -1004,6 +1004,39 @@ function fixAll() {
   else toast({ message: '未发现需要修复的问题', type: 'success' })
 }
 
+/** 删除控标内容：剥 ★/▲ 符号（保留行）、删证明材料段（截图/证明/报告/盖章），删除后自动标点修复。撤销走通用快照。 */
+function stripControlAll() {
+  if (props.readonly) return
+  let devices = 0
+  let marks = 0
+  let segments = 0
+  let rows = 0
+  for (const item of props.items) {
+    if (item.rowType === 'subnet' || !(item.mergedText || '').trim()) continue
+    const before = item.mergedText
+    const r = stripControlContent(before)
+    if (r.text !== before) {
+      item.mergedText = r.text
+      devices++
+      marks += r.marksStripped
+      segments += r.segmentsRemoved
+      rows += r.rowsRemoved
+    }
+  }
+  issues.value = {}
+  showIssues.value = false
+  resizeAllParams()
+  if (devices === 0) {
+    toast({ message: '未发现控标内容', type: 'success' })
+    return
+  }
+  const parts: string[] = []
+  if (marks) parts.push(`控标符号 ${marks} 处`)
+  if (segments) parts.push(`证明材料段 ${segments} 段`)
+  if (rows) parts.push(`整行删除 ${rows} 行`)
+  toast({ message: `已清理 ${devices} 台设备：${parts.length ? parts.join('、') : '无命中项'}`, type: 'success' })
+}
+
 function jumpToIssue(uid: string) {
   const idx = props.items.findIndex((i) => i.uid === uid)
   if (idx < 0) return
@@ -1033,7 +1066,7 @@ function dragLabel() {
   return it?.customName || it?.name || it?.model || '拖动'
 }
 
-defineExpose({ lintAll, fixAll, pullAllEmpty, undo, redo, canUndo, canRedo })
+defineExpose({ lintAll, fixAll, stripControlAll, pullAllEmpty, undo, redo, canUndo, canRedo })
 
 // ─── 展示辅助 ────────────────────────────────────────────────────────────────
 function subtotal(item: any) {

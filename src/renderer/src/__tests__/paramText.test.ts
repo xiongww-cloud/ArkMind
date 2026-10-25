@@ -5,7 +5,9 @@ import {
   normalizeParams,
   lintParams,
   fixParams,
-  paramsEquivalent
+  paramsEquivalent,
+  stripControlContent,
+  PROOF_KEYWORDS
 } from '../utils/paramText'
 
 describe('parseParams', () => {
@@ -189,5 +191,65 @@ describe('fixParams', () => {
 
   it('空文本原样返回', () => {
     expect(fixParams('')).toEqual({ text: '', fixes: { seq: 0, sep: 0, colon: 0, space: 0, punct: 0, ending: 0 } })
+  })
+})
+
+describe('stripControlContent', () => {
+  it('剥除行首 ★/▲ 符号但保留行', () => {
+    const r = stripControlContent('★1、质保：三年\n▲2、端口：48GE')
+    expect(r.text).toBe('1、质保：三年；\n2、端口：48GE。')
+    expect(r.marksStripped).toBe(2)
+    expect(r.rowsRemoved).toBe(0)
+  })
+
+  it('扫除内嵌 ★/▲ 字符', () => {
+    const r = stripControlContent('1、要求：支持A★功能与▲特性')
+    expect(r.text).toBe('1、要求：支持A功能与特性。')
+    expect(r.marksStripped).toBe(2)
+  })
+
+  it('按标点切段删除证明材料段并修复标点', () => {
+    // 含"盖章证明"的段连同前导分隔符一起删除，剩余段重接后行尾补「。」
+    const r = stripControlContent('1、质保：原厂三年，提供盖章证明；全国联保')
+    expect(r.text).toBe('1、质保：原厂三年，提供盖章证明；全国联保。'.replace('，提供盖章证明；', '，'))
+    expect(r.segmentsRemoved).toBe(1)
+  })
+
+  it('多个关键词段各自删除，序号重排', () => {
+    const r = stripControlContent(
+      '1、质保：三年，提供CMA检测报告\n2、服务：7x24，附现场截图\n3、端口：48GE'
+    )
+    expect(r.rowsRemoved).toBe(0)
+    expect(r.segmentsRemoved).toBe(2)
+    expect(r.text).not.toContain('报告')
+    expect(r.text).not.toContain('截图')
+    expect(r.text).toContain('48GE')
+    // 重排后仍连续
+    expect(r.text).toMatch(/^1、质保/)
+    expect(r.text).toMatch(/\n2、服务/)
+    expect(r.text).toMatch(/\n3、端口/)
+  })
+
+  it('指标名命中关键词整行删除', () => {
+    const r = stripControlContent('1、盖章证明：原件\n2、端口：48GE')
+    expect(r.rowsRemoved).toBe(1)
+    expect(r.text).toBe('1、端口：48GE。')
+  })
+
+  it('要求被清空的行整行删除', () => {
+    const r = stripControlContent('1、质保：提供盖章证明\n2、端口：48GE')
+    expect(r.rowsRemoved).toBe(1)
+    expect(r.text).toBe('1、端口：48GE。')
+  })
+
+  it('空文本与无控标文本', () => {
+    expect(stripControlContent('').text).toBe('')
+    const r = stripControlContent('1、端口：48GE')
+    expect(r.text).toBe('1、端口：48GE。') // 仅行尾归一
+    expect(r.marksStripped + r.segmentsRemoved + r.rowsRemoved).toBe(0)
+  })
+
+  it('关键词表恰为四词', () => {
+    expect(PROOF_KEYWORDS).toEqual(['截图', '证明', '报告', '盖章'])
   })
 })

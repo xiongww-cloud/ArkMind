@@ -248,3 +248,97 @@ export function fixParams(text: string): { text: string; fixes: FixSummary } {
 
   return { text: withEnding.join('\n'), fixes }
 }
+
+// ─── 控标内容清理 ────────────────────────────────────────────────────────────
+
+/** 证明材料关键词：命中所在标点段即删；指标名命中则整行删（要加词改这里） */
+export const PROOF_KEYWORDS = ['截图', '证明', '报告', '盖章']
+
+/** 段落分界标点（分隔符随前段走，删段即连分隔符一并删除）。
+ * 手写扫描而非 lookbehind 正则：旧版 WebKit（macOS 11–12）不支持 lookbehind，正则字面量会整模块语法错误。 */
+const SEG_PUNCTS = '，,；;。、'
+function splitByPunct(s: string): string[] {
+  const out: string[] = []
+  let start = 0
+  for (let i = 0; i < s.length; i++) {
+    if (SEG_PUNCTS.includes(s[i])) {
+      out.push(s.slice(start, i + 1))
+      start = i + 1
+    }
+  }
+  if (start < s.length) out.push(s.slice(start))
+  return out
+}
+
+export interface StripControlResult {
+  text: string
+  /** 被剥掉的 ★/▲ 符号数（行首标记 + 内嵌字符） */
+  marksStripped: number
+  /** 被删除的证明材料段数 */
+  segmentsRemoved: number
+  /** 被整行删除的行数（要求清空或指标名命中关键词） */
+  rowsRemoved: number
+}
+
+function hitKeyword(s: string): boolean {
+  return PROOF_KEYWORDS.some((k) => s.includes(k))
+}
+
+/**
+ * 删除控标内容：剥 ★/▲ 符号（保留行）；按标点切段删除含证明材料关键词的段；
+ * 指标名命中关键词或要求被清空的行整行删除；最后自动跑标点修复规则。
+ */
+export function stripControlContent(text: string): StripControlResult {
+  const result: StripControlResult = { text: text || '', marksStripped: 0, segmentsRemoved: 0, rowsRemoved: 0 }
+  if (!text || !text.trim()) return result
+
+  const kept: ParamRow[] = []
+  for (const row of parseParams(text)) {
+    // 1) 剥 ★/▲：行首标记 + 指标/要求/裸行内嵌字符
+    let { mark, indicator, requirement, raw } = row
+    if (mark) {
+      result.marksStripped++
+      mark = ''
+    }
+    const sweep = (s: string) => {
+      const hits = (s.match(/[★▲]/g) || []).length
+      result.marksStripped += hits
+      return hits ? s.replace(/[★▲]/g, '') : s
+    }
+    indicator = sweep(indicator)
+    requirement = sweep(requirement)
+    raw = sweep(raw)
+
+    // 2) 指标名本身命中关键词 → 整行删
+    if (indicator && hitKeyword(indicator)) {
+      result.rowsRemoved++
+      continue
+    }
+    if (raw) {
+      // 裸行按整行视为一个段：命中即删
+      if (hitKeyword(raw)) result.rowsRemoved++
+      else kept.push({ ...row, mark, indicator, requirement, raw })
+      continue
+    }
+
+    // 3) 要求按标点切段，命中关键词的段删除
+    const segments = splitByPunct(requirement).filter((s) => s !== '')
+    const survivors: string[] = []
+    for (const seg of segments) {
+      if (hitKeyword(seg)) result.segmentsRemoved++
+      else survivors.push(seg)
+    }
+    const newReq = survivors.join('').trim()
+
+    // 4) 要求被清空 → 整行删
+    if (!newReq) {
+      result.rowsRemoved++
+      continue
+    }
+    kept.push({ ...row, mark, indicator, requirement: newReq, raw })
+  }
+
+  // 5) 重排序号 + 标点修复规则（全半角多数派、行尾；/。）
+  result.text = fixParams(serializeParams(kept)).text
+  return result
+}
