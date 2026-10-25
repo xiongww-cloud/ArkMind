@@ -5,7 +5,6 @@ mod commands;
 mod crypto;
 mod builtin_agents;
 mod database;
-mod license;
 mod services;
 mod time_utils;
 
@@ -176,12 +175,6 @@ pub fn run() {
             // ★ 启动清扫：按邮箱保留期物理删除超期邮件（retention_months=0 的账户跳过；游标不动）
             commands::email_commands::cleanup_expired_emails();
 
-            // ★ 启动时清理过期许可证
-            license::cleanup_expired_licenses();
-
-            // ★ 启动时初始化试用期（首次启动记录开始时间）
-            license::init_trial();
-
             // Window events
             {
                 let handle = app.handle().clone();
@@ -213,7 +206,7 @@ pub fn run() {
             migrate_fix_is_daily_corruption();
             commands::file_commands::cleanup_preview_links();
             services::doc_writer::cleanup_generated_docs();
-            if database::check_license_premium() { upgrade_fts5_triggers_on_startup(); }
+            upgrade_fts5_triggers_on_startup();
 
             // ★ 启动时根据开关显示精灵
             {
@@ -308,7 +301,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // License
-            commands::license_status, commands::license_activate, commands::machine_code,
             // Projects
             commands::project_list, commands::project_get, commands::project_create, commands::project_update, commands::project_delete,
             commands::project_dynamics_add, commands::project_dynamics_list, commands::project_dynamics_list_all, commands::project_dynamics_delete, commands::project_dynamics_edit, commands::project_update_status, commands::project_archive,

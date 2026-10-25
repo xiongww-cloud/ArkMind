@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import AppHeader from '@/components/layout/Header.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Toast from '@/components/common/Toast.vue'
 import UploadProgress from '@/components/common/UploadProgress.vue'
-import ActivationModal from '@/components/common/ActivationModal.vue'
 import GuideModal from '@/components/common/GuideModal.vue'
 import WhatsNewModal from '@/components/common/WhatsNewModal.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -13,106 +12,12 @@ import { invoke } from '@tauri-apps/api/core'
 
 const sidebarCollapsed = ref(false)
 const authStore = useAuthStore()
-const showActivation = ref(false)
-const showTrialReminder = ref(false)
-const trialRemainingDays = ref(0)
 const guideModalRef = ref<InstanceType<typeof GuideModal> | null>(null)
 const whatsNewModalRef = ref<InstanceType<typeof WhatsNewModal> | null>(null)
-let licensePollTimer = null
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
 }
-
-const TRIAL_REMINDER_DAYS_KEY = 'trial_reminder_shown_date'
-
-function todayStr() {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-/** 试用提醒每天最多弹一次 */
-function shouldShowTrialReminder(remainingDays: number): boolean {
-  if (remainingDays > 7 || remainingDays <= 0) return false
-  try {
-    const last = localStorage.getItem(TRIAL_REMINDER_DAYS_KEY)
-    if (last === todayStr()) return false
-  } catch {
-    /* ignore */
-  }
-  return true
-}
-
-function markTrialReminderShown() {
-  try {
-    localStorage.setItem(TRIAL_REMINDER_DAYS_KEY, todayStr())
-  } catch {
-    /* ignore */
-  }
-}
-
-async function checkActivation() {
-  try {
-    const { fetchLicenseStatus } = await import('@/api/db-client')
-    const status = await fetchLicenseStatus()
-    const trial = status.trial
-
-    if (status.activated) {
-      return
-    }
-    // 许可证已过期 → 强制激活
-    if (status.status === 'expired') {
-      showActivation.value = true
-      return
-    }
-    // 试用已过期且未激活 → 强制激活
-    if (trial?.expired) {
-      showActivation.value = true
-      return
-    }
-    // 试用进行中且剩余 ≤7 天 → 每日提醒
-    if (trial?.active && trial.remainingDays <= 7) {
-      if (shouldShowTrialReminder(trial.remainingDays)) {
-        trialRemainingDays.value = trial.remainingDays
-        showTrialReminder.value = true
-      }
-    }
-  } catch (e) {
-    console.warn('License check failed, will retry on next poll:', e)
-  }
-}
-
-async function pollLicenseStatus() {
-  if (showActivation.value || showTrialReminder.value) return
-  try {
-    const { fetchLicenseStatus } = await import('@/api/db-client')
-    const status = await fetchLicenseStatus()
-    if (status.activated) return
-    const trial = status.trial
-    if (status.status === 'expired' || (!status.activated && trial?.expired)) {
-      showActivation.value = true
-      return
-    }
-    if (trial?.active && trial.remainingDays <= 7 && shouldShowTrialReminder(trial.remainingDays)) {
-      trialRemainingDays.value = trial.remainingDays
-      showTrialReminder.value = true
-    }
-  } catch {
-    // Silent fail
-  }
-}
-
-function onActivated() {
-  showActivation.value = false
-  showTrialReminder.value = false
-}
-
-function onDismissTrialReminder() {
-  markTrialReminderShown()
-  showTrialReminder.value = false
-}
-
-const LICENSE_POLL_INTERVAL_MS = 5 * 60 * 1000
 
 async function checkGuide() {
   try {
@@ -140,19 +45,10 @@ async function checkWhatsNew() {
 
 onMounted(() => {
   authStore.loadUser()
-  checkActivation()
   checkGuide()
   checkWhatsNew()
   // 上报 WebView 真实 UA 给网页抓取工具（失败静默——抓取回退默认诚实 UA）
   invoke('web_fetch_set_ua', { ua: navigator.userAgent }).catch(() => {})
-  licensePollTimer = setInterval(pollLicenseStatus, LICENSE_POLL_INTERVAL_MS)
-})
-
-onUnmounted(() => {
-  if (licensePollTimer) {
-    clearInterval(licensePollTimer)
-    licensePollTimer = null
-  }
 })
 </script>
 
@@ -172,18 +68,6 @@ onUnmounted(() => {
     <ConfirmDialog />
     <Toast />
     <UploadProgress />
-    <ActivationModal
-      v-if="showActivation"
-      @activated="onActivated"
-      @close="showActivation = false"
-    />
-    <ActivationModal
-      v-if="showTrialReminder"
-      trial-reminder
-      :trial-remaining-days="trialRemainingDays"
-      @activated="onActivated"
-      @close="onDismissTrialReminder"
-    />
     <GuideModal ref="guideModalRef" />
     <WhatsNewModal ref="whatsNewModalRef" />
   </div>

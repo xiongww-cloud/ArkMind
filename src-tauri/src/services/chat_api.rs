@@ -21,7 +21,7 @@ pub fn get_chat_config() -> ChatConfig {
     if let Ok(Some(row)) = crate::database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", &[]) {
         if let Some(s) = row["ai_config"].as_str() {
             if let Ok(v) = serde_json::from_str::<Value>(s) {
-                let machine = crate::license::get_machine_hash();
+                let machine = crate::crypto::get_machine_hash();
                 let v = crate::crypto::decrypt_config_api_keys(&v, &machine);
                 // 根据 activeProviderId 找到当前激活的 provider
                 let active_id = v.get("activeProviderId").and_then(|v|v.as_str());
@@ -54,7 +54,7 @@ pub fn get_chat_config() -> ChatConfig {
             if let Some(s) = row["kb_config"].as_str() {
                 if let Ok(v) = serde_json::from_str::<Value>(s) {
                     if let Some(u) = v.get("chatApiUrl").and_then(|v|v.as_str()) { config.base_url = u.to_string(); }
-                    if let Some(k) = v.get("chatApiKey").and_then(|v|v.as_str()) { config.api_key = crate::crypto::decrypt_api_key(k, &crate::license::get_machine_hash()); }
+                    if let Some(k) = v.get("chatApiKey").and_then(|v|v.as_str()) { config.api_key = crate::crypto::decrypt_api_key(k, &crate::crypto::get_machine_hash()); }
                     if let Some(m) = v.get("chatModelName").and_then(|v|v.as_str()) { config.model = m.to_string(); }
                 }
             }
@@ -81,7 +81,7 @@ pub fn resolve_provider_for_model(model: &str) -> Option<(String, String)> {
     let row = crate::database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", &[]).ok().flatten()?;
     let s = row["ai_config"].as_str()?;
     let v = serde_json::from_str::<Value>(s).ok()?;
-    let machine = crate::license::get_machine_hash();
+    let machine = crate::crypto::get_machine_hash();
     let v = crate::crypto::decrypt_config_api_keys(&v, &machine);
     pick_provider_for_model(&v, m)
 }

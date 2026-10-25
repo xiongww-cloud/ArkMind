@@ -11,12 +11,6 @@ pub(crate) fn create_schema(conn: &Connection) -> SqliteResult<()> {
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             updated_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
-        CREATE TABLE IF NOT EXISTS license (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, key_hash TEXT,
-            license_key TEXT, status TEXT DEFAULT 'inactive',
-            product TEXT DEFAULT '', activated_at TEXT, expires_at TEXT,
-            machine_code TEXT, created_at TEXT DEFAULT (datetime('now', 'localtime'))
-        );
         CREATE TABLE IF NOT EXISTS projects (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '',
             status TEXT DEFAULT 'Lead', owner TEXT DEFAULT '', user_id TEXT DEFAULT '',

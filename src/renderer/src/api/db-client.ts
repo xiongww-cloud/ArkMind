@@ -90,21 +90,6 @@ export interface TodoRow {
   created_at: string
   [key: string]: unknown
 }
-export interface LicenseStatus {
-  activated: boolean
-  status: string
-  product: string
-  expiresAt: string
-  activatedAt: string
-  machineCode: string
-  trial?: {
-    active: boolean
-    startedAt: string
-    endsAt: string
-    remainingDays: number
-    expired: boolean
-  }
-}
 export interface DynamicRow {
   id: string
   content: string
@@ -392,19 +377,6 @@ export async function profileIdentityRevert(
   revertRejected: Record<string, string>,
 ): Promise<void> {
   await invoke('profile_identity_revert', { before, revertRejected })
-}
-
-// ─── License ────────────────────────────────────────────────────
-export async function fetchLicenseStatus(): Promise<LicenseStatus> {
-  return invoke('license_status')
-}
-export async function activateLicense(
-  key: string
-): Promise<{ message: string; expiresAt: string }> {
-  return invoke('license_activate', { key })
-}
-export async function getMachineCode(): Promise<string> {
-  return invoke('machine_code')
 }
 
 // ─── Projects ──────────────────────────────────────────────────

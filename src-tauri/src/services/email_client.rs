@@ -84,7 +84,7 @@ pub type ImapSession = imap::Session<native_tls::TlsStream<std::net::TcpStream>>
 /// 把登录频率从每轮 2-3 次压到 1 次（腾讯企业邮等对 IMAP 登录限频，曾致"Login fail … login frequency limited"）
 pub fn open_session(account: &EmailAccount) -> Result<ImapSession, String> {
     let client = imap_connect(&account.imap_host, account.imap_port)?;
-    let machine = crate::license::get_machine_hash();
+    let machine = crate::crypto::get_machine_hash();
     let password = crate::crypto::decrypt_api_key(&account.password_encrypted, &machine);
     client.login(&account.username, &password).map_err(|e| format!("IMAP 登录失败: {}", e.0))
 }
@@ -109,7 +109,7 @@ pub fn fetch_new_emails_with(
     last_uid: u32,
 ) -> Result<Vec<ParsedEmail>, String> {
     // 解密密码（重连路径需要）
-    let machine = crate::license::get_machine_hash();
+    let machine = crate::crypto::get_machine_hash();
     let password = crate::crypto::decrypt_api_key(&account.password_encrypted, &machine);
 
     // 选择文件夹

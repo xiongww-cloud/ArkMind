@@ -175,3 +175,49 @@ pub fn decrypt_config_api_keys(config: &serde_json::Value, machine_hash: &str) -
 
     config
 }
+
+// ── 设备机器码（原 license.rs 迁入）─────────────────────────────────
+// 仅用于本机 API Key 加密绑定（encrypt_api_key/decrypt_api_key 的设备绑定因子），
+// 与已移除的许可证/试用机制无关——算法保持不变，存量加密配置可继续解密。
+
+pub fn get_machine_hash() -> String {
+    let id = get_hardware_id();
+    let mut h = Sha256::new();
+    h.update(id.as_bytes());
+    hex::encode(&h.finalize()[..8])
+}
+
+#[cfg(target_os = "windows")]
+fn get_hardware_id() -> String {
+    use std::process::Command;
+    use std::os::windows::process::CommandExt;
+    // Use PowerShell hidden window to get motherboard UUID (avoids wmic console flash)
+    if let Ok(output) = Command::new("powershell")
+        .args(["-WindowStyle", "Hidden", "-NoProfile", "-Command",
+               "(Get-CimInstance Win32_ComputerSystemProduct).UUID"])
+        .creation_flags(0x08000000)
+        .output()
+    {
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !text.is_empty() && text.len() > 8 {
+            return text;
+        }
+    }
+    // Fallback: hostname
+    hostname::get().unwrap_or_default().to_string_lossy().to_string()
+}
+
+#[cfg(target_os = "macos")]
+fn get_hardware_id() -> String {
+    std::process::Command::new("ioreg").args(["-rd1","-c","IOPlatformExpertDevice"]).output()
+        .ok().and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout); s.lines().find_map(|l| {
+                let t = l.trim(); if t.contains("IOPlatformUUID") { t.split('"').nth(3).map(|s| s.to_string()) } else { None }
+            })
+        }).unwrap_or_else(|| hostname::get().unwrap_or_default().to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn get_hardware_id() -> String {
+    std::fs::read_to_string("/etc/machine-id").unwrap_or_else(|_| hostname::get().unwrap_or_default().to_string_lossy().to_string())
+}

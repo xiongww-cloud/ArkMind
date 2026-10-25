@@ -22,7 +22,7 @@ pub async fn email_add_account(data: Value) -> Result<Value, String> {
     }
 
     // 加密密码
-    let machine = crate::license::get_machine_hash();
+    let machine = crate::crypto::get_machine_hash();
     let password_encrypted = crate::crypto::encrypt_api_key(&password, &machine);
 
     let retention_months = data["retentionMonths"].as_i64().unwrap_or(0).max(0);
@@ -77,7 +77,7 @@ pub async fn email_update_account(id: String, data: Value) -> Result<Value, Stri
     }
     if let Some(v) = data["password"].as_str() {
         if !v.is_empty() {
-            let machine = crate::license::get_machine_hash();
+            let machine = crate::crypto::get_machine_hash();
             let encrypted = crate::crypto::encrypt_api_key(v, &machine);
             fields.push("password_encrypted=?".to_string());
             values.push(json!(encrypted));

@@ -8,7 +8,7 @@ use tauri::Emitter;
     Ok(json!({"success":true,"embeddingApiUrl":config["embeddingApiUrl"],"embeddingApiKey":crate::crypto::mask_secret(config["embeddingApiKey"].as_str().unwrap_or("")),"embeddingModelName":config["embeddingModelName"],"embeddingActive":config["embeddingActive"],"chatApiUrl":config["chatApiUrl"],"chatApiKey":crate::crypto::mask_secret(config["chatApiKey"].as_str().unwrap_or("")),"chatModelName":config["chatModelName"]}))
 }
 #[tauri::command] pub async fn kb_update_config(data: Value) -> Result<Value, String> {
-    let machine = crate::license::get_machine_hash();
+    let machine = crate::crypto::get_machine_hash();
     let mut config = data;
     // 密钥字段：脱敏占位=未改动，沿用库内旧值；新值加密存储
     for key in &["chatApiKey", "embeddingApiKey"] {

@@ -59,7 +59,7 @@ pub fn load_api_key() -> Option<String> {
     .flatten()?;
     let s = row["ai_config"].as_str()?;
     let parsed: Value = serde_json::from_str(s).ok()?;
-    let machine = crate::license::get_machine_hash();
+    let machine = crate::crypto::get_machine_hash();
     let decrypted = crate::crypto::decrypt_config_api_keys(&parsed, &machine);
     let key = decrypted["webSearch"]["apiKey"].as_str().unwrap_or("").trim().to_string();
     if key.is_empty() {
@@ -471,7 +471,7 @@ mod tests {
         let conn = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let cfg: String = conn.query_row("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", [], |r| r.get(0)).unwrap();
         let parsed: Value = serde_json::from_str(&cfg).unwrap();
-        let machine = crate::license::get_machine_hash();
+        let machine = crate::crypto::get_machine_hash();
         let dec = crate::crypto::decrypt_config_api_keys(&parsed, &machine);
         let key = dec["webSearch"]["apiKey"].as_str().unwrap_or("").to_string();
         assert!(!key.is_empty(), "未配置 key");

@@ -244,7 +244,7 @@ pub fn get_vision_config() -> Option<VisionConfig> {
     ).ok().flatten()?;
     let s = row["ai_config"].as_str()?;
     let cfg: Value = serde_json::from_str(s).ok()?;
-    let machine = crate::license::get_machine_hash();
+    let machine = crate::crypto::get_machine_hash();
     let cfg = crate::crypto::decrypt_config_api_keys(&cfg, &machine);
     let providers = cfg["visionProviders"].as_array()?;
     let active_id = cfg["activeVisionId"].as_str()?;

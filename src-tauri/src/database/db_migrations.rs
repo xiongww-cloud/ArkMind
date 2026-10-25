@@ -9,47 +9,6 @@ fn table_exists(conn: &Connection, name: &str) -> bool {
     ).unwrap_or(0) > 0
 }
 
-pub fn check_license_premium() -> bool {
-    // ★ 试用期内开放全部高级功能
-    if crate::license::trial_is_active() {
-        return true;
-    }
-    match with_db(|conn| {
-        let row = conn.query_row(
-            "SELECT product, expires_at FROM license WHERE status='active' ORDER BY id DESC LIMIT 1",
-            [],
-            |r| Ok((r.get::<_, String>(0).unwrap_or_default(), r.get::<_, String>(1).unwrap_or_default())),
-        );
-        match row {
-            Ok((product, expires_at)) => {
-                if product != "advanced" && product != "enhanced" {
-                    return Ok(false);
-                }
-                if !expires_at.is_empty() && expires_at != "2099-12-31" {
-                    if let Ok(expiry) = chrono::NaiveDate::parse_from_str(&expires_at, "%Y-%m-%d") {
-                        let today = chrono::Local::now().date_naive();
-                        if expiry < today {
-                            let _ = conn.execute(
-                                "UPDATE license SET status='inactive' WHERE status='active' AND expires_at<?1",
-                                rusqlite::params![expires_at],
-                            );
-                            return Ok(false);
-                        }
-                    }
-                }
-                Ok(true)
-            }
-            Err(_) => Ok(false),
-        }
-    }) {
-        Ok(v) => v,
-        Err(e) => {
-            log::info!("[数据库] license 检查失败: {}", e);
-            false
-        }
-    }
-}
-
 pub(crate) fn migrate_files_to_file_assets(conn: &Connection) {
     let has_old = conn.prepare("SELECT global_name FROM file_assets LIMIT 0").is_ok();
     if has_old {
@@ -302,6 +261,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         "DELETE FROM contact_project_mapping WHERE project_id LIKE 'PROJECT-%' OR contact_id LIKE 'CONTACT-%'",
         // 设备清单单位列（此前前端传了 unit 但后端无列静默丢弃，读回恒为「台」）
         "ALTER TABLE solution_items ADD COLUMN unit TEXT DEFAULT '台'",
+        // 许可证/试用机制退役（公开仓库版）：license 表与试用记录清理，机器码仅保留为本地 API Key 加密因子
+        "DROP TABLE IF EXISTS license",
+        "DELETE FROM system_settings WHERE key IN ('trial_started_at','trial_machine_code')",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);

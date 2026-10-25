@@ -1,5 +1,4 @@
 use crate::database;
-use crate::license;
 use crate::crypto;
 use serde_json::{json, Value};
 use tauri::Manager;
@@ -21,7 +20,7 @@ use tauri::Manager;
                     let mut cfg: Value = serde_json::from_str(s).unwrap_or(json!({}));
                     for k in ["chatApiKey", "embeddingApiKey"] {
                         if let Some(v) = cfg.get(k).and_then(|v| v.as_str()) {
-                            cfg[k] = json!(crypto::mask_secret(&crypto::decrypt_api_key(v, &license::get_machine_hash())));
+                            cfg[k] = json!(crypto::mask_secret(&crypto::decrypt_api_key(v, &crypto::get_machine_hash())));
                         }
                     }
                     json!(cfg.to_string())
@@ -76,7 +75,7 @@ use tauri::Manager;
     if !data["localPath"].is_null() { crate::commands::file_commands::invalidate_storage_base(); }
     Ok(json!({"success":true}))
 }
-#[tauri::command] pub async fn get_ai_config() -> Result<Value, String> { let row = database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'",&[]).map_err(|e| e.to_string())?; match row { Some(r) => { if let Some(s) = r["ai_config"].as_str() { let parsed: Value = serde_json::from_str(s).unwrap_or(json!({})); let machine = license::get_machine_hash(); Ok(crypto::decrypt_config_api_keys(&parsed, &machine)) } else { Ok(json!({})) } } None => Ok(json!({})) } }
+#[tauri::command] pub async fn get_ai_config() -> Result<Value, String> { let row = database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'",&[]).map_err(|e| e.to_string())?; match row { Some(r) => { if let Some(s) = r["ai_config"].as_str() { let parsed: Value = serde_json::from_str(s).unwrap_or(json!({})); let machine = crypto::get_machine_hash(); Ok(crypto::decrypt_config_api_keys(&parsed, &machine)) } else { Ok(json!({})) } } None => Ok(json!({})) } }
 #[tauri::command] pub async fn update_ai_config(data: Value) -> Result<Value, String> {
     // Support both wrapped (data.aiConfig) and direct (data itself) formats
     let incoming: Value = if let Some(s) = data["aiConfig"].as_str().or(data["ai_config"].as_str()) {
@@ -87,7 +86,7 @@ use tauri::Manager;
         json!({})
     };
     // Read existing config and merge (so partial saves don't wipe other fields)
-    let machine = license::get_machine_hash();
+    let machine = crypto::get_machine_hash();
     let existing: Value = database::get("SELECT ai_config FROM system_config WHERE tenant_id='local-user'", &[]).ok().flatten()
         .and_then(|r| r["ai_config"].as_str().map(|s| {
             let v: Value = serde_json::from_str(s).unwrap_or(json!({}));
