@@ -264,6 +264,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         // 许可证/试用机制退役（公开仓库版）：license 表与试用记录清理，机器码仅保留为本地 API Key 加密因子
         "DROP TABLE IF EXISTS license",
         "DELETE FROM system_settings WHERE key IN ('trial_started_at','trial_machine_code')",
+        // 拓扑助手退役：拓扑工具/实现已整体移除，清遗留 Agent 档案与其工具分配（旧版种子或用户库残留，幂等）
+        "DELETE FROM agent_tool_assignments WHERE agent_id IN (SELECT id FROM agent_profiles WHERE name='拓扑助手' OR id='topology')",
+        "DELETE FROM agent_profiles WHERE name='拓扑助手' OR id='topology'",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);
