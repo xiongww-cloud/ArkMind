@@ -11,7 +11,7 @@
 - 版本号三处必须一致：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（`__APP_VERSION__` 取自 Cargo.toml，漏改会导致应用内更新弹窗静默失效）；`scripts/tauri-build.mjs` 会在构建时硬校验，改动版本必须三处同改。
 - 应用内有**两份**版本说明源：`WhatsNewModal.vue`（弹窗 changelog）与 `GuideModal.vue` 的「版本更新日志」章节；另有仓库根 `release-notes.md`（GitHub Release body 的 CI 取源）。发版时三处都要同步。
 - GitHub remote 名为 `github`（origin 指向旧本机路径）；tag 修复性重打用 `git tag -f` + force push，CI 的 prepare job 会复用现有 Draft（edit-first）。
-- CI（release.yml）自 v14.4.4 起只产 Windows NSIS（2x 计费倍率）；macOS 包由维护者本地跑 `scripts/mac-dmg.sh` 产出（app → ad-hoc 签名自验 → dmg）。
+- CI（release.yml）自公开仓库起双平台构建：Windows NSIS + macOS dmg（ad-hoc 签名链，dmg 内置安装说明）；公开仓库 Actions 免费。`scripts/mac-dmg.sh` 保留为本地兜底重建工具。
 - macOS 产物为 ad-hoc 本地签名（codesign --sign -）+ 未公证：「应用已损坏」已根治，但首开仍需 右键打开(≤14)/隐私设置放行(15+)。
 
 ## 改动纪律

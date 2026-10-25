@@ -66,3 +66,6 @@ tools/license-gen/private.key
 
 # local-only topology demo - never commit (standalone tool, not part of the app)
 tools/topo-demo/
+
+# 内部工作守则：本地保留、永不入库（公开仓库不暴露内部纪律）
+AGENTS.md
