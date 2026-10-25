@@ -22,6 +22,7 @@ const appVersion = __APP_VERSION__
 // 安装包网盘分发：发版后手动往网盘传新版本安装包（文件夹分享、链接永久不变）
 const BAIDU_SHARE_URL = 'https://pan.baidu.com/s/1DQDMOeBATY4AK7NQY0Rbfw?pwd=7ati'
 const QUARK_SHARE_URL = 'https://pan.quark.cn/s/c7b224546702?pwd=3scg'
+const GITHUB_REPO_URL = 'https://github.com/xiongww-cloud/ArkMind'
 const aiTab = ref('llm')
 const guideModalRef = ref<InstanceType<typeof GuideModal> | null>(null)
 const uploadProgress = useUploadProgress()
@@ -1633,9 +1634,11 @@ async function saveProfileEditor() {
             <span class="text-surface-300">·</span>
             <AppIcon name="download" size="12" class="text-surface-300" />
             <span>最新安装包：</span>
-            <a :href="BAIDU_SHARE_URL" @click.prevent="openUrl(BAIDU_SHARE_URL).catch(() => toast({ message: '打开百度网盘失败', type: 'error' }))" class="text-[12px] font-medium text-surface-500 underline decoration-surface-300 underline-offset-2 hover:text-blue-600 hover:decoration-blue-500 transition-colors cursor-pointer" title="百度网盘下载最新安装包（提取码 7ati，链接已自动填码）">百度网盘</a>
+            <a :href="BAIDU_SHARE_URL" @click.prevent.stop="openUrl(BAIDU_SHARE_URL).catch(() => toast({ message: '打开百度网盘失败', type: 'error' }))" class="text-[12px] font-medium text-surface-500 underline decoration-surface-300 underline-offset-2 hover:text-blue-600 hover:decoration-blue-500 transition-colors cursor-pointer" title="百度网盘下载最新安装包（提取码 7ati，链接已自动填码）">百度网盘</a>
             <span class="text-surface-300">/</span>
-            <a :href="QUARK_SHARE_URL" @click.prevent="openUrl(QUARK_SHARE_URL).catch(() => toast({ message: '打开夸克网盘失败', type: 'error' }))" class="text-[12px] font-medium text-surface-500 underline decoration-surface-300 underline-offset-2 hover:text-blue-600 hover:decoration-blue-500 transition-colors cursor-pointer" title="夸克网盘下载最新安装包（提取码 3scg，链接已自动填码）">夸克网盘</a>
+            <a :href="QUARK_SHARE_URL" @click.prevent.stop="openUrl(QUARK_SHARE_URL).catch(() => toast({ message: '打开夸克网盘失败', type: 'error' }))" class="text-[12px] font-medium text-surface-500 underline decoration-surface-300 underline-offset-2 hover:text-blue-600 hover:decoration-blue-500 transition-colors cursor-pointer" title="夸克网盘下载最新安装包（提取码 3scg，链接已自动填码）">夸克网盘</a>
+            <span class="text-surface-300">/</span>
+            <a :href="GITHUB_REPO_URL" @click.prevent.stop="openUrl(GITHUB_REPO_URL).catch((e) => { console.error('[Settings] open github repo failed:', e); toast({ message: '打开项目主页失败：' + (e?.message || e), type: 'error' }) })" class="text-[12px] font-medium text-surface-500 underline decoration-surface-300 underline-offset-2 hover:text-blue-600 hover:decoration-blue-500 transition-colors cursor-pointer" title="ArkMind 项目主页（GitHub 仓库）">软件官网</a>
           </p>
         </div>
         <button @click="guideModalRef?.open()" class="btn-secondary text-xs"><AppIcon name="lightbulb" size="12"/>使用指南</button>
