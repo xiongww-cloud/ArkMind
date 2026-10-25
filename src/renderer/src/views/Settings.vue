@@ -1691,149 +1691,6 @@ async function saveProfileEditor() {
         </div>
       </div>
 
-          <!-- 知识管线管理 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
-            <div class="flex items-center gap-2 px-5 pt-5 pb-0">
-              <h2 class="text-[13px] font-semibold text-surface-700">知识管线管理</h2>
-              <span class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-50 text-emerald-600' : 'bg-surface-50 text-surface-400'">
-                <span class="w-1.5 h-1.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-500' : 'bg-surface-300'"></span>
-                {{ pipelineRunning ? '运行中' : '空闲' }}
-              </span>
-            </div>
-            <div class="p-5">
-              <div class="space-y-3 mb-4" v-if="pipelineData">
-                <div>
-                  <div class="flex items-center justify-between mb-1">
-                    <span class="text-[11px] text-surface-500">物化进度</span>
-                    <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.children ?? 0 }} / {{ pipelineData.source?.total ?? 0 }}</span>
-                  </div>
-                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
-                    <div class="h-full rounded-full transition-all duration-500" :style="{ width: (pipelineData.source?.total ? Math.min(100, (pipelineData.knowledge?.children ?? 0) / pipelineData.source.total * 100) : 0) + '%', background: 'linear-gradient(90deg, #6366f1, #818cf8)' }"></div>
-                  </div>
-                  <div class="text-[10px] text-surface-400 mt-0.5 text-right">{{ pipelineData.source?.total ? ((pipelineData.knowledge?.children ?? 0) / pipelineData.source.total * 100).toFixed(1) : 0 }}%</div>
-                </div>
-                <div>
-                  <div class="flex items-center justify-between mb-1">
-                    <span class="text-[11px] text-surface-500">向量化进度</span>
-                    <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0 }} / {{ pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children ?? 0 }}</span>
-                  </div>
-                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
-                    <div class="h-full rounded-full transition-all duration-500" :style="{ width: ((pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) ? Math.min(100, (pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0) / (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) * 100) : 0) + '%', background: 'linear-gradient(90deg, #06b6d4, #22d3ee)' }"></div>
-                  </div>
-                  <div class="flex items-center justify-between mt-0.5 text-[10px]">
-                    <span :class="(pipelineData.knowledge?.embedPending ?? 0) > 0 ? 'text-amber-500 font-medium' : 'text-surface-400'">
-                      {{ (pipelineData.knowledge?.embedPending ?? 0) > 0 ? `待向量化 ${pipelineData.knowledge.embedPending} 块` : '全部已向量化' }}
-                    </span>
-                    <span class="text-surface-400">{{ (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) ? (((pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0) / (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children)) * 100).toFixed(1) : 0 }}%</span>
-                  </div>
-                  <div v-if="pipelineData.knowledge?.lastEmbedError" class="mt-1 text-[10px] text-red-500 truncate" v-tooltip.auto="pipelineData.knowledge.lastEmbedError">
-                    向量化错误：{{ pipelineData.knowledge.lastEmbedError }}
-                  </div>
-                </div>
-                <div v-if="(pipelineData.fileParse?.total ?? 0) > 0">
-                  <div class="flex items-center justify-between mb-1">
-                    <span class="text-[11px] text-surface-500">文件解析</span>
-                    <span class="text-[11px] font-mono text-surface-600">
-                      <span class="text-emerald-600">{{ pipelineData.fileParse?.done ?? 0 }}</span>
-                      <span class="text-surface-300 mx-0.5">/</span>
-                      <span>{{ pipelineData.fileParse?.total ?? 0 }}</span>
-                      <button v-if="pipelineData.fileParse?.failed" @click="showParseErrorsModal = true" class="text-red-400 ml-1 hover:underline cursor-pointer" v-tooltip="'点击查看失败文件明细'">({{ pipelineData.fileParse.failed }} 失败)</button>
-                      <button v-if="pipelineData.fileParse?.unsupported" @click="showParseErrorsModal = true" class="text-surface-400 ml-1 hover:text-surface-600 hover:underline cursor-pointer" v-tooltip="'点击查看不支持的文件明细'">({{ pipelineData.fileParse.unsupported }} 不支持)</button>
-                    </span>
-                  </div>
-                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
-                    <div class="h-full rounded-full transition-all duration-500" :style="{ width: ((pipelineData.fileParse?.total ? Math.min(100, (pipelineData.fileParse?.done ?? 0) / pipelineData.fileParse.total * 100) : 0) + '%'), background: 'linear-gradient(90deg, #f59e0b, #fbbf24)' }"></div>
-                  </div>
-                  <div class="flex items-center justify-between mt-1 text-[10px] text-surface-400">
-                    <span>{{ pipelineData.fileParse?.processing ? '正在解析 ' + (pipelineData.fileParse.current?.name || '文件') + ' — 第 ' + (pipelineData.fileParse.current?.page ?? 0) + '/' + (pipelineData.fileParse.current?.total ?? '--') + ' 页' : (pipelineData.fileParse?.pending ? '等待解析中...' : '空闲') }}</span>
-                    <span>{{ pipelineData.fileParse?.total ? ((pipelineData.fileParse?.done ?? 0) / pipelineData.fileParse.total * 100).toFixed(1) : 0 }}%</span>
-                  </div>
-                </div>
-                <div v-if="pipelineData.vectorVacuum" class="flex items-center justify-between text-[10px] text-surface-400 border-t border-surface-100 pt-2">
-                  <span>
-                    向量回收：孤儿 {{ pipelineData.vectorVacuum.orphan_vectors ?? 0 }} 个
-                    <template v-if="pipelineData.vectorVacuum.dry_run">（演练模式）</template>
-                  </span>
-                  <span>
-                    {{ pipelineData.vectorVacuum.last_run ? '上次清理 ' + formatVacuumTime(pipelineData.vectorVacuum.last_run) : (pipelineData.vectorVacuum.last_check ? '上次检查 ' + formatVacuumTime(pipelineData.vectorVacuum.last_check) : '尚未检查') }}
-                  </span>
-                </div>
-              </div>
-              <p v-else class="text-[11px] text-surface-300 text-center py-4 mb-4">加载中...</p>
-              <div class="flex flex-wrap gap-2 justify-end">
-                <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50"><AppIcon name="refresh" size="12"/>重试失败文件（{{ pipelineData.fileParse.failed }}）</button>
-                <button @click="handleRevectorize" class="btn-secondary text-xs !text-blue-600 !border-blue-300 hover:!bg-blue-50"><AppIcon name="refresh" size="12"/>重新向量化</button>
-                <button @click="showAdvancedOps = !showAdvancedOps" class="btn-secondary text-xs flex items-center gap-1">高级操作<AppIcon name="chevron-down" size="10" class="transition-transform" :class="showAdvancedOps ? 'rotate-180' : ''" /></button>
-              </div>
-              <div v-if="showAdvancedOps" class="mt-2 rounded-lg border border-surface-200 bg-surface-50/60 px-3 py-2 space-y-2">
-                <div class="flex items-center justify-between gap-3">
-                  <div class="min-w-0">
-                    <div class="text-[11px] text-surface-600">重置知识管线</div>
-                    <div class="text-[9px] text-surface-400">知识碎片与源数据不一致时使用，将全量重新物化</div>
-                  </div>
-                  <button @click="handleClearKnowledge" class="btn-secondary text-xs !text-amber-600 !border-amber-300 hover:!bg-amber-50 flex-shrink-0"><AppIcon name="undo" size="12"/>重置</button>
-                </div>
-                <div class="flex items-center justify-between gap-3 border-t border-surface-100 pt-2">
-                  <div class="min-w-0">
-                    <div class="text-[11px] text-surface-600">重置全部数据</div>
-                    <div class="text-[9px] text-surface-400">重新从业务数据抓取并物化，管线严重异常时的最后手段</div>
-                  </div>
-                  <button @click="handleClearAll" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50 flex-shrink-0"><AppIcon name="undo" size="12"/>重置</button>
-                </div>
-                <div class="flex items-center justify-between gap-3 border-t border-surface-100 pt-2">
-                  <div class="min-w-0">
-                    <div class="text-[11px] text-surface-600">回收孤儿文件资产</div>
-                    <div class="text-[9px] text-surface-400">清掉删除实体后无引用的附件记录与磁盘文件（悬垂关系/零引用资产/游离文件），幂等可常点</div>
-                  </div>
-                  <button @click="handleAssetsCleanup" class="btn-secondary text-xs !text-amber-600 !border-amber-300 hover:!bg-amber-50 flex-shrink-0"><AppIcon name="trash" size="12"/>回收</button>
-                </div>
-              </div>
-              <!-- 解析问题明细弹窗 -->
-              <Teleport to="body">
-                <Transition name="modal-fade">
-                  <div v-if="showParseErrorsModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="showParseErrorsModal = false">
-                    <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] max-h-[70vh] flex flex-col">
-                      <div class="px-5 pt-4 pb-3 border-b border-surface-100 flex items-center justify-between flex-shrink-0">
-                        <h3 class="text-[14px] font-semibold text-surface-800">解析问题明细</h3>
-                        <button @click="showParseErrorsModal = false" class="w-6 h-6 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition"><AppIcon name="x" size="13" /></button>
-                      </div>
-                      <div class="flex-1 overflow-y-auto px-5 py-3 space-y-4">
-                        <div v-if="!pipelineData?.fileParse?.failedFiles?.length && !pipelineData?.fileParse?.unsupportedFiles?.length" class="text-[11px] text-surface-400 text-center py-6">暂无问题文件</div>
-                        <div v-if="pipelineData?.fileParse?.failedFiles?.length">
-                          <div class="text-[11px] font-medium text-red-500 mb-1.5">解析失败（{{ pipelineData.fileParse.failed }}）</div>
-                          <div v-for="(f, i) in pipelineData.fileParse.failedFiles" :key="'f'+i" class="flex items-start gap-2 py-1 border-b border-surface-50 last:border-0">
-                            <AppIcon name="alert-circle" size="12" class="text-red-400 flex-shrink-0 mt-0.5" />
-                            <div class="flex-1 min-w-0">
-                              <div class="text-[11px] text-surface-700 truncate">{{ f.name }}</div>
-                              <div class="text-[10px] text-surface-400 break-all">{{ f.error || '解析失败' }}</div>
-                            </div>
-                            <span v-if="f.retries > 0" class="text-[9px] text-surface-400 flex-shrink-0 mt-1">已试{{ f.retries }}次</span>
-                          </div>
-                          <div v-if="pipelineData.fileParse.failed > pipelineData.fileParse.failedFiles.length" class="text-[10px] text-surface-400 mt-1">另有 {{ pipelineData.fileParse.failed - pipelineData.fileParse.failedFiles.length }} 个未列出</div>
-                        </div>
-                        <div v-if="pipelineData?.fileParse?.unsupportedFiles?.length">
-                          <div class="text-[11px] font-medium text-surface-500 mb-1.5">不支持的格式（{{ pipelineData.fileParse.unsupported }}）</div>
-                          <div v-for="(f, i) in pipelineData.fileParse.unsupportedFiles" :key="'u'+i" class="flex items-start gap-2 py-1 border-b border-surface-50 last:border-0">
-                            <AppIcon name="file" size="12" class="text-surface-400 flex-shrink-0 mt-0.5" />
-                            <div class="flex-1 min-w-0">
-                              <div class="text-[11px] text-surface-600 truncate">{{ f.name }}</div>
-                              <div class="text-[10px] text-surface-400 break-all">{{ (f.error || '').replace('__UNSUPPORTED__','') || '格式不支持' }}</div>
-                            </div>
-                          </div>
-                          <div v-if="pipelineData.fileParse.unsupported > pipelineData.fileParse.unsupportedFiles.length" class="text-[10px] text-surface-400 mt-1">另有 {{ pipelineData.fileParse.unsupported - pipelineData.fileParse.unsupportedFiles.length }} 个未列出</div>
-                        </div>
-                      </div>
-                      <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2 flex-shrink-0">
-                        <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50">重试失败任务</button>
-                        <button @click="showParseErrorsModal = false" class="btn-secondary text-xs">关闭</button>
-                      </div>
-                    </div>
-                  </div>
-                </Transition>
-              </Teleport>
-            </div>
-          </div>
-
       <!-- ══════════ 卡片区（Columns 瀑布流自动排列）═══════════ -->
       <!-- isolation-isolate：WebKit 多列容器内 z-index 堆叠上下文曾致灰带错绘（macOS） -->
       <div class="columns-1 lg:columns-2 gap-4 isolation-isolate">
@@ -2202,6 +2059,106 @@ async function saveProfileEditor() {
           </div>
 
 
+          <!-- 知识管线管理 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+            <div class="flex items-center gap-2 px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">知识管线管理</h2>
+              <span class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-50 text-emerald-600' : 'bg-surface-50 text-surface-400'">
+                <span class="w-1.5 h-1.5 rounded-full" :class="pipelineRunning ? 'bg-emerald-500' : 'bg-surface-300'"></span>
+                {{ pipelineRunning ? '运行中' : '空闲' }}
+              </span>
+            </div>
+            <div class="p-5">
+              <div class="space-y-3 mb-4" v-if="pipelineData">
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <span class="text-[11px] text-surface-500">物化进度</span>
+                    <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.children ?? 0 }} / {{ pipelineData.source?.total ?? 0 }}</span>
+                  </div>
+                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full" :style="{ width: (pipelineData.source?.total ? Math.min(100, (pipelineData.knowledge?.children ?? 0) / pipelineData.source.total * 100) : 0) + '%', background: 'linear-gradient(90deg, #6366f1, #818cf8)' }"></div>
+                  </div>
+                  <div class="text-[10px] text-surface-400 mt-0.5 text-right">{{ pipelineData.source?.total ? ((pipelineData.knowledge?.children ?? 0) / pipelineData.source.total * 100).toFixed(1) : 0 }}%</div>
+                </div>
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <span class="text-[11px] text-surface-500">向量化进度</span>
+                    <span class="text-[11px] font-mono text-surface-600">{{ pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0 }} / {{ pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children ?? 0 }}</span>
+                  </div>
+                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full" :style="{ width: ((pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) ? Math.min(100, (pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0) / (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) * 100) : 0) + '%', background: 'linear-gradient(90deg, #06b6d4, #22d3ee)' }"></div>
+                  </div>
+                  <div class="flex items-center justify-between mt-0.5 text-[10px]">
+                    <span :class="(pipelineData.knowledge?.embedPending ?? 0) > 0 ? 'text-amber-500 font-medium' : 'text-surface-400'">
+                      {{ (pipelineData.knowledge?.embedPending ?? 0) > 0 ? `待向量化 ${pipelineData.knowledge.embedPending} 块` : '全部已向量化' }}
+                    </span>
+                    <span class="text-surface-400">{{ (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children) ? (((pipelineData.knowledge?.vectorizedValid ?? pipelineData.knowledge?.vectorized ?? 0) / (pipelineData.knowledge?.childrenNonempty ?? pipelineData.knowledge?.children)) * 100).toFixed(1) : 0 }}%</span>
+                  </div>
+                  <div v-if="pipelineData.knowledge?.lastEmbedError" class="mt-1 text-[10px] text-red-500 truncate" v-tooltip.auto="pipelineData.knowledge.lastEmbedError">
+                    向量化错误：{{ pipelineData.knowledge.lastEmbedError }}
+                  </div>
+                </div>
+                <div v-if="(pipelineData.fileParse?.total ?? 0) > 0">
+                  <div class="flex items-center justify-between mb-1">
+                    <span class="text-[11px] text-surface-500">文件解析</span>
+                    <span class="text-[11px] font-mono text-surface-600">
+                      <span class="text-emerald-600">{{ pipelineData.fileParse?.done ?? 0 }}</span>
+                      <span class="text-surface-300 mx-0.5">/</span>
+                      <span>{{ pipelineData.fileParse?.total ?? 0 }}</span>
+                      <button v-if="pipelineData.fileParse?.failed" @click="showParseErrorsModal = true" class="text-red-400 ml-1 hover:underline cursor-pointer" v-tooltip="'点击查看失败文件明细'">({{ pipelineData.fileParse.failed }} 失败)</button>
+                      <button v-if="pipelineData.fileParse?.unsupported" @click="showParseErrorsModal = true" class="text-surface-400 ml-1 hover:text-surface-600 hover:underline cursor-pointer" v-tooltip="'点击查看不支持的文件明细'">({{ pipelineData.fileParse.unsupported }} 不支持)</button>
+                    </span>
+                  </div>
+                  <div class="h-2 bg-surface-100 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full" :style="{ width: ((pipelineData.fileParse?.total ? Math.min(100, (pipelineData.fileParse?.done ?? 0) / pipelineData.fileParse.total * 100) : 0) + '%'), background: 'linear-gradient(90deg, #f59e0b, #fbbf24)' }"></div>
+                  </div>
+                  <div class="flex items-center justify-between mt-1 text-[10px] text-surface-400">
+                    <span>{{ pipelineData.fileParse?.processing ? '正在解析 ' + (pipelineData.fileParse.current?.name || '文件') + ' — 第 ' + (pipelineData.fileParse.current?.page ?? 0) + '/' + (pipelineData.fileParse.current?.total ?? '--') + ' 页' : (pipelineData.fileParse?.pending ? '等待解析中...' : '空闲') }}</span>
+                    <span>{{ pipelineData.fileParse?.total ? ((pipelineData.fileParse?.done ?? 0) / pipelineData.fileParse.total * 100).toFixed(1) : 0 }}%</span>
+                  </div>
+                </div>
+                <div v-if="pipelineData.vectorVacuum" class="flex items-center justify-between text-[10px] text-surface-400 border-t border-surface-100 pt-2">
+                  <span>
+                    向量回收：孤儿 {{ pipelineData.vectorVacuum.orphan_vectors ?? 0 }} 个
+                    <template v-if="pipelineData.vectorVacuum.dry_run">（演练模式）</template>
+                  </span>
+                  <span>
+                    {{ pipelineData.vectorVacuum.last_run ? '上次清理 ' + formatVacuumTime(pipelineData.vectorVacuum.last_run) : (pipelineData.vectorVacuum.last_check ? '上次检查 ' + formatVacuumTime(pipelineData.vectorVacuum.last_check) : '尚未检查') }}
+                  </span>
+                </div>
+              </div>
+              <p v-else class="text-[11px] text-surface-300 text-center py-4 mb-4">加载中...</p>
+              <div class="flex flex-wrap gap-2 justify-end">
+                <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50"><AppIcon name="refresh" size="12"/>重试失败文件（{{ pipelineData.fileParse.failed }}）</button>
+                <button @click="handleRevectorize" class="btn-secondary text-xs !text-blue-600 !border-blue-300 hover:!bg-blue-50"><AppIcon name="refresh" size="12"/>重新向量化</button>
+                <button @click="showAdvancedOps = !showAdvancedOps" class="btn-secondary text-xs flex items-center gap-1">高级操作<AppIcon name="chevron-down" size="10" class="transition-transform" :class="showAdvancedOps ? 'rotate-180' : ''" /></button>
+              </div>
+              <div v-if="showAdvancedOps" class="mt-2 rounded-lg border border-surface-200 bg-surface-50/60 px-3 py-2 space-y-2">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="text-[11px] text-surface-600">重置知识管线</div>
+                    <div class="text-[9px] text-surface-400">知识碎片与源数据不一致时使用，将全量重新物化</div>
+                  </div>
+                  <button @click="handleClearKnowledge" class="btn-secondary text-xs !text-amber-600 !border-amber-300 hover:!bg-amber-50 flex-shrink-0"><AppIcon name="undo" size="12"/>重置</button>
+                </div>
+                <div class="flex items-center justify-between gap-3 border-t border-surface-100 pt-2">
+                  <div class="min-w-0">
+                    <div class="text-[11px] text-surface-600">重置全部数据</div>
+                    <div class="text-[9px] text-surface-400">重新从业务数据抓取并物化，管线严重异常时的最后手段</div>
+                  </div>
+                  <button @click="handleClearAll" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50 flex-shrink-0"><AppIcon name="undo" size="12"/>重置</button>
+                </div>
+                <div class="flex items-center justify-between gap-3 border-t border-surface-100 pt-2">
+                  <div class="min-w-0">
+                    <div class="text-[11px] text-surface-600">回收孤儿文件资产</div>
+                    <div class="text-[9px] text-surface-400">清掉删除实体后无引用的附件记录与磁盘文件（悬垂关系/零引用资产/游离文件），幂等可常点</div>
+                  </div>
+                  <button @click="handleAssetsCleanup" class="btn-secondary text-xs !text-amber-600 !border-amber-300 hover:!bg-amber-50 flex-shrink-0"><AppIcon name="trash" size="12"/>回收</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- 邮件账户配置 -->
           <div class="relative bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-visible break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
@@ -2441,6 +2398,51 @@ async function saveProfileEditor() {
           </div>
 
       </div>
+
+              <!-- 解析问题明细弹窗 -->
+              <Teleport to="body">
+                <Transition name="modal-fade">
+                  <div v-if="showParseErrorsModal" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="showParseErrorsModal = false">
+                    <div class="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[90vw] max-h-[70vh] flex flex-col">
+                      <div class="px-5 pt-4 pb-3 border-b border-surface-100 flex items-center justify-between flex-shrink-0">
+                        <h3 class="text-[14px] font-semibold text-surface-800">解析问题明细</h3>
+                        <button @click="showParseErrorsModal = false" class="w-6 h-6 flex items-center justify-center rounded-lg text-surface-400 hover:text-surface-600 hover:bg-surface-100 transition"><AppIcon name="x" size="13" /></button>
+                      </div>
+                      <div class="flex-1 overflow-y-auto px-5 py-3 space-y-4">
+                        <div v-if="!pipelineData?.fileParse?.failedFiles?.length && !pipelineData?.fileParse?.unsupportedFiles?.length" class="text-[11px] text-surface-400 text-center py-6">暂无问题文件</div>
+                        <div v-if="pipelineData?.fileParse?.failedFiles?.length">
+                          <div class="text-[11px] font-medium text-red-500 mb-1.5">解析失败（{{ pipelineData.fileParse.failed }}）</div>
+                          <div v-for="(f, i) in pipelineData.fileParse.failedFiles" :key="'f'+i" class="flex items-start gap-2 py-1 border-b border-surface-50 last:border-0">
+                            <AppIcon name="alert-circle" size="12" class="text-red-400 flex-shrink-0 mt-0.5" />
+                            <div class="flex-1 min-w-0">
+                              <div class="text-[11px] text-surface-700 truncate">{{ f.name }}</div>
+                              <div class="text-[10px] text-surface-400 break-all">{{ f.error || '解析失败' }}</div>
+                            </div>
+                            <span v-if="f.retries > 0" class="text-[9px] text-surface-400 flex-shrink-0 mt-1">已试{{ f.retries }}次</span>
+                          </div>
+                          <div v-if="pipelineData.fileParse.failed > pipelineData.fileParse.failedFiles.length" class="text-[10px] text-surface-400 mt-1">另有 {{ pipelineData.fileParse.failed - pipelineData.fileParse.failedFiles.length }} 个未列出</div>
+                        </div>
+                        <div v-if="pipelineData?.fileParse?.unsupportedFiles?.length">
+                          <div class="text-[11px] font-medium text-surface-500 mb-1.5">不支持的格式（{{ pipelineData.fileParse.unsupported }}）</div>
+                          <div v-for="(f, i) in pipelineData.fileParse.unsupportedFiles" :key="'u'+i" class="flex items-start gap-2 py-1 border-b border-surface-50 last:border-0">
+                            <AppIcon name="file" size="12" class="text-surface-400 flex-shrink-0 mt-0.5" />
+                            <div class="flex-1 min-w-0">
+                              <div class="text-[11px] text-surface-600 truncate">{{ f.name }}</div>
+                              <div class="text-[10px] text-surface-400 break-all">{{ (f.error || '').replace('__UNSUPPORTED__','') || '格式不支持' }}</div>
+                            </div>
+                          </div>
+                          <div v-if="pipelineData.fileParse.unsupported > pipelineData.fileParse.unsupportedFiles.length" class="text-[10px] text-surface-400 mt-1">另有 {{ pipelineData.fileParse.unsupported - pipelineData.fileParse.unsupportedFiles.length }} 个未列出</div>
+                        </div>
+                      </div>
+                      <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2 flex-shrink-0">
+                        <button v-if="((pipelineData?.fileParse?.failed ?? 0) > 0)" @click="handleRetryFailed" class="btn-secondary text-xs !text-red-600 !border-red-300 hover:!bg-red-50">重试失败任务</button>
+                        <button @click="showParseErrorsModal = false" class="btn-secondary text-xs">关闭</button>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+              </Teleport>
+
 
     </div>
   </div>
