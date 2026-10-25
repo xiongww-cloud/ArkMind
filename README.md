@@ -28,7 +28,7 @@ ArkMind 是一款面向项目型业务团队（系统集成商、IT 服务商）
 - **Knowledge Base 知识库** — AI RAG 问答，双层知识块，神经能量衰减模型，混合检索（FTS5 + 向量）
 - **AI Agent 智能助手** — ReAct 循环，9 个原生工具，流式输出，用户策略/"宪法"
 - **Solution 报价** — BOM 物料清单配置器，Excel 导入导出，服务费分摊，版本管理
-- **Settings 设置** — 系统配置、AI 模型管理、许可证管理
+- **Settings 设置** — 系统配置、AI 模型管理、邮件与知识管线
 
 ## Tech Stack
 
@@ -85,7 +85,6 @@ ArkMind/
 │   │   ├── lib.rs          # App entry, command registration
 │   │   ├── database.rs     # SQLite schema + migrations + FTS5
 │   │   ├── crypto.rs       # AES-256-GCM encryption
-│   │   ├── license.rs      # Ed25519 license verification
 │   │   ├── commands/       # 14 Tauri command modules (248 commands)
 │   │   └── services/       # 24 service modules (AI pipeline, file parsing, etc.)
 │   └── Cargo.toml
@@ -128,9 +127,9 @@ Please follow existing code conventions and run `npm run lint` before submitting
 
 ## License
 
-Commercial software. Requires license key activation. Advanced features (AI knowledge base, vector retrieval) require a premium license.
+All rights reserved. 源码公开可查看与构建自用，但**不附带开源许可证**——未经作者许可，不得商用、再分发或闭源衍生。
 
-商业软件，需要许可证密钥激活。高级功能（AI 知识库、向量检索）需要高级许可证。
+The source is publicly visible for audit and personal builds, but ships **without an open-source license** — commercial use, redistribution, and closed-source derivatives require the author's permission.
 
 ## Recommended IDE
 
