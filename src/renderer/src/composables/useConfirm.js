@@ -4,9 +4,10 @@ const state = ref({
   show: false,
   title: '',
   message: '',
-  type: 'confirm', // 'confirm' | 'alert'
+  type: 'confirm', // 'confirm' | 'alert' | 'choice'
   confirmText: '确认',
   cancelText: '取消',
+  extraText: '',
   resolve: null,
 })
 
@@ -67,9 +68,43 @@ export function alert({ title, message, confirmText } = {}) {
   })
 }
 
+/**
+ * Three-way choice dialog. Resolves to:
+ *   'confirm' — clicked the (danger) confirm button
+ *   'extra'   — clicked the extra middle button
+ *   false     — clicked cancel or backdrop
+ */
+export function choiceConfirm({
+  title,
+  message,
+  confirmText,
+  extraText,
+  cancelText,
+  danger = true,
+} = {}) {
+  return new Promise((resolve) => {
+    state.value = {
+      show: true,
+      title: title || '请选择操作',
+      message: message || '',
+      type: 'choice',
+      danger,
+      confirmText: confirmText || '确认',
+      extraText: extraText || '',
+      cancelText: cancelText || '取消',
+      resolve,
+    }
+  })
+}
+
 export function useConfirmDialog() {
   function handleConfirm() {
-    state.value.resolve?.(true)
+    state.value.resolve?.(state.value.type === 'choice' ? 'confirm' : true)
+    state.value.show = false
+  }
+
+  function handleExtra() {
+    state.value.resolve?.('extra')
     state.value.show = false
   }
 
@@ -78,5 +113,5 @@ export function useConfirmDialog() {
     state.value.show = false
   }
 
-  return { state, handleConfirm, handleCancel }
+  return { state, handleConfirm, handleExtra, handleCancel }
 }

@@ -8,5 +8,12 @@ export interface DangerConfirmOptions {
 export declare function dangerConfirm(options: string | DangerConfirmOptions): Promise<boolean>
 export declare function confirm(options: string | DangerConfirmOptions): Promise<boolean>
 export declare function alert(options: string | DangerConfirmOptions): Promise<void>
+export declare function choiceConfirm(options: {
+  title?: string
+  message: string
+  confirmText?: string
+  extraText?: string
+  cancelText?: string
+}): Promise<'confirm' | 'extra' | false>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export declare function useConfirmDialog(): any

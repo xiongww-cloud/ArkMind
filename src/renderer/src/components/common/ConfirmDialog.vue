@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useConfirmDialog } from '@/composables/useConfirm'
 
-const { state, handleConfirm, handleCancel } = useConfirmDialog()
+const { state, handleConfirm, handleExtra, handleCancel } = useConfirmDialog()
 </script>
 
 <template>
@@ -14,15 +14,22 @@ const { state, handleConfirm, handleCancel } = useConfirmDialog()
         <!-- Dialog -->
         <div class="relative bg-white rounded-xl shadow-lg border border-slate-100 w-full max-w-sm mx-4 p-6 z-10">
           <h3 class="text-sm font-semibold text-slate-800 mb-2">{{ state.title }}</h3>
-          <p class="text-sm text-slate-500 leading-relaxed mb-5">{{ state.message }}</p>
+          <p class="text-sm text-slate-500 leading-relaxed mb-5 whitespace-pre-line">{{ state.message }}</p>
 
           <div class="flex items-center justify-end gap-2">
             <button
-              v-if="state.type === 'confirm'"
+              v-if="state.type === 'confirm' || state.type === 'choice'"
               @click="handleCancel"
               class="btn-secondary text-xs"
             >
               <span>{{ state.cancelText }}</span>
+            </button>
+            <button
+              v-if="state.type === 'choice' && state.extraText"
+              @click="handleExtra"
+              class="btn-secondary text-xs"
+            >
+              <span>{{ state.extraText }}</span>
             </button>
             <button
               @click="handleConfirm"

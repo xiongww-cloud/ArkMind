@@ -5,7 +5,7 @@ import { findModelSuggestion } from '@/utils/modelSuggestion'
 import { lintParams, fixParams, paramsEquivalent, stripControlContent } from '@/utils/paramText'
 import type { LintIssue } from '@/utils/paramText'
 import { toast } from '@/composables/useToast'
-import { confirm, dangerConfirm } from '@/composables/useConfirm'
+import { confirm, dangerConfirm, choiceConfirm } from '@/composables/useConfirm'
 import { useMultiSelect } from '@/composables/useMultiSelect'
 import { useProductStore } from '@/stores/product'
 import AppIcon from '@/components/common/AppIcon.vue'
@@ -78,7 +78,7 @@ const {
   handleItemClick,
   handleItemMouseDown,
   markDragFinished
-} = useMultiSelect(props.items as any, {
+} = useMultiSelect(computed(() => props.items) as any, {
   getKey: (i: any) => i.uid,
   isSelectable: (i: any) => i.rowType !== 'subnet'
 })
@@ -97,9 +97,9 @@ function onRowCapture(idx: number, e: MouseEvent) {
   if (!item || item.rowType === 'subnet') return
   handleItemClick(e, item.uid)
 }
-/** 编辑聚焦时确保至少单选中（不打散已有选区） */
+/** 聚焦任意文本输入即切换选中该设备（单选） */
 function ensureSel(uid: string) {
-  if (!isSelected(uid)) selectSingle(uid)
+  selectSingle(uid)
 }
 function removeSelUid(uid: string) {
   if (!isSelected(uid)) return
@@ -493,19 +493,37 @@ async function removeRow(idx: number) {
   if (item.rowType === 'subnet') {
     const end = subnetBlockEnd(idx)
     const n = end - idx - 1
-    const ok = await dangerConfirm({
+    const name = item.name || '未命名子网'
+    if (n === 0) {
+      const ok = await dangerConfirm({
+        title: '删除子网',
+        message: `删除子网「${name}」？此操作可撤销。`,
+        confirmText: '删除'
+      })
+      if (!ok) return
+      props.items.splice(idx, 1)
+      removeSelUid(item.uid)
+      showUndoBar(`子网「${name}」`)
+      return
+    }
+    const choice = await choiceConfirm({
       title: '删除子网',
-      message:
-        n > 0
-          ? `删除子网「${item.name || '未命名子网'}」将一并删除其中 ${n} 台设备，此操作可撤销。确定删除？`
-          : `删除子网「${item.name || '未命名子网'}」？此操作可撤销。`,
-      confirmText: '删除'
+      message: `子网「${name}」内含 ${n} 台设备，选择删除范围：\n\n· 仅删除子网 — 子网容器移除，其中 ${n} 台设备保留为普通行\n· 删除子网和设备 — 连同设备一并删除\n\n此操作可撤销。`,
+      confirmText: '删除子网和设备',
+      extraText: '仅删除子网',
+      cancelText: '取消'
     })
-    if (!ok) return
-    const removed = props.items.slice(idx, end)
-    props.items.splice(idx, end - idx)
-    removed.forEach((r: any) => removeSelUid(r.uid))
-    showUndoBar(`子网「${item.name || '未命名子网'}」${n > 0 ? `及其中 ${n} 台设备` : ''}`)
+    if (choice === 'confirm') {
+      const removed = props.items.slice(idx, end)
+      props.items.splice(idx, end - idx)
+      removed.forEach((r: any) => removeSelUid(r.uid))
+      showUndoBar(`子网「${name}」及其中 ${n} 台设备`)
+    } else if (choice === 'extra') {
+      props.items.splice(idx, 1)
+      removeSelUid(item.uid)
+      showUndoBar(`子网「${name}」（设备已保留）`)
+    }
+    return
   } else {
     props.items.splice(idx, 1)
     removeSelUid(item.uid)
@@ -583,6 +601,11 @@ function ogd(e: MouseEvent, idx: number) {
 /** 行内长按空白处（非输入/按钮区域）触发拖拽；拖未选中设备前先单选它 */
 function onRowMousedown(e: MouseEvent, idx: number) {
   if (props.readonly) return
+  // 修饰键多选点击：阻止浏览器原生文本选择/原生拖拽（click 事件不受影响，多选逻辑照常）
+  if (e.shiftKey || e.ctrlKey || e.metaKey) {
+    e.preventDefault()
+    return
+  }
   const t = e.target as HTMLElement
   if (t.closest('input, textarea, button, select, a, [data-no-drag]')) return
   const item = props.items[idx]
@@ -1010,7 +1033,6 @@ function stripControlAll() {
   let devices = 0
   let marks = 0
   let segments = 0
-  let rows = 0
   for (const item of props.items) {
     if (item.rowType === 'subnet' || !(item.mergedText || '').trim()) continue
     const before = item.mergedText
@@ -1020,7 +1042,6 @@ function stripControlAll() {
       devices++
       marks += r.marksStripped
       segments += r.segmentsRemoved
-      rows += r.rowsRemoved
     }
   }
   issues.value = {}
@@ -1033,7 +1054,6 @@ function stripControlAll() {
   const parts: string[] = []
   if (marks) parts.push(`控标符号 ${marks} 处`)
   if (segments) parts.push(`证明材料段 ${segments} 段`)
-  if (rows) parts.push(`整行删除 ${rows} 行`)
   toast({ message: `已清理 ${devices} 台设备：${parts.length ? parts.join('、') : '无命中项'}`, type: 'success' })
 }
 
@@ -1090,9 +1110,10 @@ function subtotal(item: any) {
         <span>参数</span>
         <button
           @click="toggleAllExpand"
-          class="flex items-center justify-center w-5 h-5 rounded border border-surface-200 bg-white shadow-sm text-surface-400 hover:text-blue-600 transition-colors"
-          :title="allExpanded ? '全部收起' : '全部展开'"
+          class="flex items-center gap-0.5 text-[11px] font-normal normal-case text-surface-400 hover:text-blue-600 transition-colors"
+          :title="allExpanded ? '收起全部参数' : '展开全部参数'"
         >
+          <span>{{ allExpanded ? '收起' : '展开' }}</span>
           <AppIcon
             name="chevron-down"
             class="w-3 h-3 transition-transform"
@@ -1175,12 +1196,12 @@ function subtotal(item: any) {
             <span v-else class="w-[160px] shrink-0 text-[12px] font-medium truncate" :class="group.theme.text">{{
               group.subnet.name || '未命名子网'
             }}</span>
-            <!-- 名称右侧：添加设备（左）+ 删除子网（右） -->
+            <!-- 名称右侧：纯图标按钮（添加设备 + 删除子网） -->
             <button
               v-if="!readonly"
               @click.stop="openAddMenu(group.subnetIdx ?? 0, $event)"
               data-add-menu
-              class="shrink-0 w-5 h-5 rounded border bg-white/70 flex items-center justify-center transition-colors"
+              class="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors"
               :class="group.theme.add"
               v-tooltip="'在子网中添加设备'"
             >
@@ -1189,11 +1210,11 @@ function subtotal(item: any) {
             <button
               v-if="!readonly"
               @click.stop="removeRow(group.subnetIdx ?? 0)"
-              class="shrink-0 w-5 h-5 rounded border bg-white/70 flex items-center justify-center transition-colors"
+              class="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors"
               :class="group.theme.del"
-              v-tooltip="'删除子网及其设备'"
+              v-tooltip="'删除子网（可选保留设备）'"
             >
-              <AppIcon name="x" class="w-3 h-3" />
+              <AppIcon name="trash" class="w-3 h-3" />
             </button>
             <div class="flex-1 min-w-0" />
             <span
@@ -1269,6 +1290,7 @@ function subtotal(item: any) {
                 v-model="item.customName"
                 @input="onNameInput"
                 @click.stop
+                @focus="ensureSel(item.uid)"
                 @keydown="onCellKeydown($event, idx, 'customName')"
                 @paste="onCellPaste($event, idx, 'customName')"
                 data-model-cell
@@ -1295,6 +1317,7 @@ function subtotal(item: any) {
                   @keydown.esc="escBlur"
                   @blur="handleDeviceConfirm(item, $event)"
                   @click.stop
+                  @focus="ensureSel(item.uid)"
                   @paste="onCellPaste($event, idx, 'model')"
                   data-model-cell
                   data-cell="model"
@@ -1411,7 +1434,7 @@ function subtotal(item: any) {
                 v-if="!readonly"
               v-model.number="item.quantity"
               @click.stop
-              @focus="selectAll"
+              @focus="selectAll; ensureSel(item.uid)"
               @mouseup.prevent
               @blur="item.quantity = Math.max(1, item.quantity || 1)"
                 @keydown="onCellKeydown($event, idx, 'quantity')"
@@ -1449,7 +1472,7 @@ function subtotal(item: any) {
                 v-if="!readonly"
                 v-model.number="item.unitPrice"
                 @click.stop
-                @focus="selectAll"
+                @focus="selectAll; ensureSel(item.uid)"
                 @mouseup.prevent
                 @keydown="onCellKeydown($event, idx, 'unitPrice')"
                 @paste="onCellPaste($event, idx, 'unitPrice')"
@@ -1516,11 +1539,11 @@ function subtotal(item: any) {
     </div>
   </div>
 
-  <!-- 删除撤销条 -->
+  <!-- 删除撤销条（与 Toast 同区：右下角，悬浮于其上） -->
   <Teleport to="body">
     <div
       v-if="undoBar"
-      class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 px-4 py-2 rounded-lg bg-gray-800/95 text-white text-[12px] shadow-xl backdrop-blur"
+      class="fixed bottom-20 right-6 z-[100] flex items-center gap-3 px-4 py-2 rounded-lg bg-gray-800/95 text-white text-[12px] shadow-xl backdrop-blur"
     >
       <span class="max-w-[320px] truncate">已删除 {{ undoBar.label }}</span>
       <button
