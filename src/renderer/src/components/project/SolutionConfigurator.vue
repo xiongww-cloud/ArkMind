@@ -33,7 +33,9 @@ const gp = ref([]) // 产品列表 — 从后端 Product 表加载
 
 const showImportWizard = ref(false)
 // ─── 价格上浮 ───────────────────────────────────────────────────────────────
-const markupPercent = ref(0)
+/** 调价系数（如 1.2），与 markupDivide 组合成有效倍数：×coef 或 ÷coef */
+const markupCoef = ref(1.2)
+const markupDivide = ref(false)
 const showMarkupInput = ref(false)
 // ─── SCT 服务费分摊模式 ─────────────────────────────────────────────────────
 const showSCTAllocator = ref(false)
@@ -221,6 +223,8 @@ const vv = computed(() => {
   if (ir.value && vvi.value !== null) return cplan.value?.history[vvi.value] || null
   return null
 })
+/** 当前编辑中草稿（总价栏徽标用；any 逃逸 cplan 的 never 推断类历史噪音） */
+const curDraft = computed<any>(() => ((cplan.value as any) || {}).draft || null)
 
 const si = computed(() => {
   if (im.value && cplan.value?.draft) {
@@ -393,20 +397,76 @@ function asub() {
 const gpn = (id) =>
   (Array.isArray(gp.value) ? gp.value.find((p) => p.id === id) : undefined)?.name || ''
 
+/** 徽标显示：有效倍数 ≥1 显示 ×N；<1 显示 ÷N（1/倍数），如 ÷1.2 */
+function fmtMarkup(m: number): string {
+  const strip = (s: string) => s.replace(/0+$/, '').replace(/\.$/, '')
+  return m >= 1 ? `×${strip(m.toFixed(2))}` : `÷${strip((1 / m).toFixed(2))}`
+}
+
+/** 应用上浮：以原价基线重算（无快照先快照），改系数不复利；系数随版本持久化 */
 function applyMarkup() {
-  const percent = markupPercent.value
-  if (!percent || percent === 0) {
+  const coef = markupCoef.value
+  if (!coef || coef <= 0) {
     showMarkupInput.value = false
     return
   }
-  const multiplier = 1 + percent / 100
-  const items = im.value ? (cplan.value?.draft?.items || []) : li.value
-  for (const item of items) {
+  const draft: any = (cplan.value as any)?.draft
+  if (!draft) return
+  const multiplier = markupDivide.value ? 1 / coef : coef
+  let touched = 0
+  for (const item of draft.items || []) {
     if (item.rowType === 'subnet') continue
-    item.unitPrice = Math.round(item.unitPrice * multiplier * 100) / 100
+    if (item.originalPrice == null) item.originalPrice = item.unitPrice || 0
+    item.unitPrice = Math.round(item.originalPrice * multiplier * 100) / 100
+    touched++
   }
-  markupPercent.value = 0
+  draft.priceMarkup = multiplier
+  const expr = `${markupDivide.value ? '÷' : '×'}${coef}`
+  toast({ message: `已对 ${touched} 台设备 ${expr} 调价（以原价为基线，可随时还原）`, type: 'success' })
   showMarkupInput.value = false
+}
+
+/** 去小数：所有设备单价向上取整（一次性变换，不入原价基线；可撤销） */
+function ceilPrices() {
+  const draft: any = (cplan.value as any)?.draft
+  if (!draft) return
+  let n = 0
+  for (const item of draft.items || []) {
+    if (item.rowType === 'subnet') continue
+    const p = Number(item.unitPrice) || 0
+    const c = Math.ceil(p)
+    if (c !== p) {
+      item.unitPrice = c
+      n++
+    }
+  }
+  toast({ message: n ? `已对 ${n} 台设备单价向上取整` : '单价均已是整数', type: 'success' })
+}
+
+/** 修改上浮：复开系数输入并预填当前有效倍数（统一按 × 形式回填） */
+function openMarkupEdit() {
+  const draft: any = (cplan.value as any)?.draft
+  if (draft?.priceMarkup && Math.abs(draft.priceMarkup - 1) > 0.004) {
+    markupCoef.value = Math.round(draft.priceMarkup * 100) / 100
+    markupDivide.value = false
+  }
+  showMarkupInput.value = true
+}
+
+/** 还原原价：有快照的行恢复基线价，系数归 1（快照保留，可反复上浮/还原） */
+function restorePrices() {
+  const draft: any = (cplan.value as any)?.draft
+  if (!draft) return
+  let restored = 0
+  for (const item of draft.items || []) {
+    if (item.rowType === 'subnet') continue
+    if (item.originalPrice != null) {
+      item.unitPrice = item.originalPrice
+      restored++
+    }
+  }
+  draft.priceMarkup = 1
+  toast({ message: restored ? `已还原 ${restored} 台设备的原价` : '没有可还原的原价快照', type: 'success' })
 }
 
 const smm = ref(false)
@@ -443,6 +503,7 @@ function mapItemsToBackend(itemsArr) {
       count: item.quantity || 1,
       unit: item.unit || '台',
       price: item.unitPrice || 0,
+      originalPrice: item.originalPrice ?? null,
       // Persist selected parameter marks for read-only mode
       paramMarks: Array.isArray(item.params)
         ? item.params.map((p) => ({
@@ -463,7 +524,7 @@ async function stripControlMarks() {
   const ok = await dangerConfirm({
     title: '删除控标内容',
     message:
-      '将对全部设备参数执行：\n· 剥除 ★/▲ 控标符号（保留参数行）\n· 删除含「截图 / 证明 / 报告 / 盖章」的证明材料段（按标点切段）\n· 指标名命中关键词或要求被清空的行整行删除\n· 删除后自动修复标点与序号\n\n可通过撤销（Ctrl+Z）恢复。',
+      '将对全部设备参数执行：\n· 剥除 ★/▲ 控标符号（保留参数行）\n· 删除含「截图 / 证明 / 报告 / 盖章」的证明材料段（按标点切段）\n· 只删符号与小段文本，不会删除整条参数\n· 删除后自动修复标点与序号\n\n可通过撤销（Ctrl+Z）恢复。',
     confirmText: '删除'
   })
   if (!ok) return
@@ -532,6 +593,10 @@ async function omm() {
     items: copiedItems,
     startedAt: new Date().toISOString(),
     operator: op.value,
+    priceMarkup:
+      av.value === 'view' && vvi.value !== null
+        ? cplan.value.history[vvi.value]?.priceMarkup || 1
+        : 1,
     _versionId: versionId || undefined
   }
   av.value = 'edit'
@@ -568,6 +633,7 @@ async function ommBlank() {
     items: [],
     startedAt: new Date().toISOString(),
     operator: op.value,
+    priceMarkup: 1,
     _versionId: versionId || undefined
   }
   av.value = 'edit'
@@ -682,6 +748,7 @@ async function sdv() {
         tags: [],
         content: d.content || '',
         operator: d.operator || op.value,
+        priceMarkup: d.priceMarkup || 1,
         deviceItems,
         _versionId: d._versionId,
         // Pass original draft items so the store can preserve productId & params
@@ -702,6 +769,7 @@ async function sdv() {
           model: di.rowType === 'subnet' ? '' : di.model || '',
           customName: di.rowType === 'subnet' ? '' : di.deviceName || '',
           unitPrice: di.rowType === 'subnet' ? 0 : di.price || 0,
+          originalPrice: di.rowType === 'subnet' ? null : (di.originalPrice ?? null),
           quantity: di.rowType === 'subnet' ? 0 : di.count || 1,
           unit: di.rowType === 'subnet' ? '' : di.unit || '台',
           mergedText: di.rowType === 'subnet' ? '' : di.parameters || '',
@@ -926,6 +994,7 @@ const saveDraft = () => {
       versionNum: draft.versionNum,
       content: draft.content || '',
       tags: [],
+      priceMarkup: draft.priceMarkup || 1,
       deviceItems: mapItemsToBackend(draft.items)
     })
   }
@@ -953,6 +1022,7 @@ function restoreDrafts() {
       // 主：DB 已恢复的草稿（fetchProjectDetail 按 status 分流）优先
       if (plan.draft) {
         const d = plan.draft
+        if (d.priceMarkup == null) d.priceMarkup = 1
         if (Array.isArray(d.items)) {
           d.items.forEach((item) => {
             if (item.syncParams === undefined) item.syncParams = item.productId ? false : true
@@ -1473,46 +1543,86 @@ onUnmounted(() => {
         :invalid-uids="invalidItems"
         class="flex-1 min-h-0"
       />
-      <!-- 总价栏 -->
+      <!-- 总价栏：左=调价工具（各工具异色文本），右=总价标签+金额 -->
       <div
         class="shrink-0 border-t border-gray-200 bg-gray-50/80 px-4 py-2.5 flex items-center justify-between"
       >
         <div class="flex items-center gap-2">
+          <template v-if="im">
+            <!-- 编辑态：徽标/按钮原处变为输入行 -->
+            <div v-if="showMarkupInput" class="flex items-center gap-1 bg-orange-50 rounded-md px-1.5 py-0.5 border border-orange-200">
+              <button
+                @click="markupDivide = !markupDivide"
+                class="w-5 h-5 flex items-center justify-center text-[11px] font-medium text-orange-600 hover:text-orange-800 bg-white border border-orange-200 rounded"
+                :title="markupDivide ? '除法：单价 ÷ 系数（点击切回乘法）' : '乘法：单价 × 系数（点击切为除法）'"
+              >{{ markupDivide ? '÷' : '×' }}</button>
+              <input
+                v-model.number="markupCoef"
+                type="number"
+                min="0.1"
+                max="10"
+                step="0.1"
+                class="w-12 h-5 text-xs text-center bg-white border border-orange-200 rounded outline-none focus:border-orange-400"
+                placeholder="1.2"
+                @keyup.enter="applyMarkup"
+                @keyup.escape="showMarkupInput = false"
+              />
+              <button @click="applyMarkup" class="text-xs text-orange-600 hover:text-orange-800 font-medium px-1">应用</button>
+              <button @click="showMarkupInput = false" class="text-xs text-gray-400 hover:text-gray-600 px-1">取消</button>
+            </div>
+            <!-- 已上浮徽标：修改原位展开为输入行 -->
+            <span
+              v-else-if="Math.abs((curDraft?.priceMarkup ?? 1) - 1) > 0.004"
+              class="inline-flex items-center gap-1 text-[11px] text-orange-700 bg-orange-50 border border-orange-200 rounded px-1.5 py-0.5"
+            >
+              {{ (curDraft?.priceMarkup ?? 1) >= 1 ? '已上浮' : '已下浮' }} {{ fmtMarkup(curDraft?.priceMarkup ?? 1) }}
+              <button
+                @click="openMarkupEdit"
+                class="text-orange-600 hover:text-orange-900 font-medium underline underline-offset-2"
+                title="修改调价系数（以原价为基线重算，不复利；支持乘法/除法）"
+                >修改</button
+              >
+              <button
+                @click="restorePrices"
+                class="text-orange-600 hover:text-orange-900 font-medium underline underline-offset-2"
+                title="把所有设备单价还原为上浮前的原价快照"
+                >还原原价</button
+              >
+            </span>
+            <!-- 无调价：上浮入口 -->
+            <button
+              v-else
+              @click="showMarkupInput = true"
+              class="h-6 px-2 flex items-center rounded-md text-[11px] font-medium text-orange-600 hover:text-orange-700 hover:bg-orange-50 transition-colors"
+            >
+              价格上浮
+            </button>
+            <button
+              @click="ceilPrices"
+              class="h-6 px-2 flex items-center rounded-md text-[11px] font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 transition-colors"
+              title="把所有设备单价向上取整为整数（可撤销）"
+            >
+              向上取整
+            </button>
+          </template>
+          <span
+            v-if="!im && Math.abs((vv?.priceMarkup ?? 1) - 1) > 0.004"
+            class="text-[11px] text-orange-700 bg-orange-50 border border-orange-200 rounded px-1.5 py-0.5"
+          >
+            {{ (vv.priceMarkup ?? 1) >= 1 ? '已上浮' : '已下浮' }} {{ fmtMarkup(vv.priceMarkup ?? 1) }}
+          </span>
+        </div>
+        <span class="flex items-center gap-2">
           <span class="text-xs font-semibold text-gray-600 uppercase tracking-wider"
             >总价</span
           >
-          <template v-if="im">
-            <button
-              v-if="!showMarkupInput"
-              @click="showMarkupInput = true"
-              class="h-6 px-2 flex items-center justify-center rounded text-[11px] text-surface-400 hover:text-orange-600 hover:bg-orange-100 border border-dashed border-surface-300 hover:border-orange-300 transition-colors"
-            >
-              上浮
-            </button>
-            <div v-else class="flex items-center gap-1 bg-orange-50 rounded-md px-1.5 py-0.5 border border-orange-200">
-              <input
-                v-model.number="markupPercent"
-                type="number"
-                min="-50"
-                max="200"
-                step="1"
-                class="w-14 h-5 text-xs text-center bg-white border border-orange-200 rounded outline-none focus:border-orange-400"
-                placeholder="上浮"
-                @keyup.enter="applyMarkup"
-                @keyup.escape="showMarkupInput = false; markupPercent = 0"
-              />
-              <span class="text-xs text-orange-600">%</span>
-              <button @click="applyMarkup" class="text-xs text-orange-600 hover:text-orange-800 font-medium px-1">应用</button>
-              <button @click="showMarkupInput = false; markupPercent = 0" class="text-xs text-gray-400 hover:text-gray-600 px-1">取消</button>
-            </div>
-          </template>
-        </div>
-        <span class="text-sm font-bold text-red-600"
-          >¥
-          {{
-            gt.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-          }}</span
-        >
+          <span class="text-sm font-bold text-red-600"
+            >¥
+            {{
+              gt.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            }}</span
+          >
+        </span>
       </div>
     </div>
   </div>

@@ -267,6 +267,9 @@ pub(crate) fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         // 拓扑助手退役：拓扑工具/实现已整体移除，清遗留 Agent 档案与其工具分配（旧版种子或用户库残留，幂等）
         "DELETE FROM agent_tool_assignments WHERE agent_id IN (SELECT id FROM agent_profiles WHERE name='拓扑助手' OR id='topology')",
         "DELETE FROM agent_profiles WHERE name='拓扑助手' OR id='topology'",
+        // 价格上浮持久化：版本系数 + 行级原价基线（首次上浮时快照；还原/重算以基线为准，不复利）
+        "ALTER TABLE solution_versions ADD COLUMN price_markup REAL DEFAULT 1",
+        "ALTER TABLE solution_items ADD COLUMN original_unit_price REAL DEFAULT NULL",
     ];
     for m in migrations {
         let _ = conn.execute(m, []);

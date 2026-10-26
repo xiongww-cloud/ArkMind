@@ -406,6 +406,7 @@ export const useProjectStore = defineStore('project', () => {
               content: v.content || '',
               createdAt: v.createdAt || v.created_at,
               amount: v.amount || 0,
+              priceMarkup: v.priceMarkup || 1,
               operator: v.creator || '',
               status: v.status || 'final',
               items: parseItems(v.items).map((di) => ({
@@ -416,6 +417,7 @@ export const useProjectStore = defineStore('project', () => {
                 model: di.rowType === 'subnet' ? '' : di.model || '',
                 customName: di.rowType === 'subnet' ? '' : di.deviceName || '',
                 unitPrice: di.rowType === 'subnet' ? 0 : di.price || 0,
+                originalPrice: di.rowType === 'subnet' ? null : (di.originalPrice ?? null),
                 quantity: di.rowType === 'subnet' ? 0 : di.count || 1,
                 unit: di.rowType === 'subnet' ? '' : di.unit || '台',
                 mergedText: di.rowType === 'subnet' ? '' : di.parameters || '',
@@ -625,7 +627,8 @@ export const useProjectStore = defineStore('project', () => {
           deviceItems: data.deviceItems || [],
           versionNum: data.versionNum || 'V1.0',
           content: data.content || '',
-          tags: data.tags || []
+          tags: data.tags || [],
+          priceMarkup: data.priceMarkup || 1
         })
         const r = await api.finalizeDraftVersion(data._versionId, {})
         return r
@@ -641,6 +644,7 @@ export const useProjectStore = defineStore('project', () => {
         content: data.content || '',
         tags: data.tags || [],
         amount: data.amount || 0,
+        priceMarkup: data.priceMarkup || 1,
         creator: data.operator || ''
       })
       return r
