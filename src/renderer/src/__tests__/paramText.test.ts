@@ -230,16 +230,27 @@ describe('stripControlContent', () => {
     expect(r.text).toMatch(/\n3、端口/)
   })
 
-  it('指标名命中关键词整行删除', () => {
+  it('指标名命中关键词时行保留（绝不删整行）', () => {
     const r = stripControlContent('1、盖章证明：原件\n2、端口：48GE')
-    expect(r.rowsRemoved).toBe(1)
-    expect(r.text).toBe('1、端口：48GE。')
+    expect(r.rowsRemoved).toBe(0)
+    expect(r.text).toContain('盖章证明')
+    expect(r.text).toContain('48GE')
   })
 
-  it('要求被清空的行整行删除', () => {
+  it('要求被清空的行保留为仅指标名', () => {
     const r = stripControlContent('1、质保：提供盖章证明\n2、端口：48GE')
-    expect(r.rowsRemoved).toBe(1)
-    expect(r.text).toBe('1、端口：48GE。')
+    expect(r.rowsRemoved).toBe(0)
+    expect(r.text).toContain('质保')
+    expect(r.text).not.toContain('盖章')
+    expect(r.text).toContain('48GE')
+  })
+
+  it('裸行按段删、剩余文本保留为行', () => {
+    const r = stripControlContent('提供现场截图，三年质保')
+    expect(r.rowsRemoved).toBe(0)
+    expect(r.segmentsRemoved).toBe(1)
+    expect(r.text).not.toContain('截图')
+    expect(r.text).toContain('三年质保')
   })
 
   it('空文本与无控标文本', () => {

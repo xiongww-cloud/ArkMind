@@ -285,8 +285,10 @@ function hitKeyword(s: string): boolean {
 }
 
 /**
- * 删除控标内容：剥 ★/▲ 符号（保留行）；按标点切段删除含证明材料关键词的段；
- * 指标名命中关键词或要求被清空的行整行删除；最后自动跑标点修复规则。
+ * 删除控标内容：剥 ★/▲ 符号（保留行）；按标点切段删除含证明材料关键词的段。
+ * 只删符号与小段文本，绝不删除整条参数行——
+ * 指标名或裸行命中关键词时同样只对其内容做段删（指标名无标点，命中即整段去、行仍保留）。
+ * 最后自动跑标点修复规则。
  */
 export function stripControlContent(text: string): StripControlResult {
   const result: StripControlResult = { text: text || '', marksStripped: 0, segmentsRemoved: 0, rowsRemoved: 0 }
@@ -309,36 +311,31 @@ export function stripControlContent(text: string): StripControlResult {
     requirement = sweep(requirement)
     raw = sweep(raw)
 
-    // 2) 指标名本身命中关键词 → 整行删
-    if (indicator && hitKeyword(indicator)) {
-      result.rowsRemoved++
-      continue
-    }
     if (raw) {
-      // 裸行按整行视为一个段：命中即删
-      if (hitKeyword(raw)) result.rowsRemoved++
-      else kept.push({ ...row, mark, indicator, requirement, raw })
+      // 2) 裸行：同样按段删，剩余重接为 raw；行本身保留
+      const segs = splitByPunct(raw).filter((s) => s !== '')
+      const left = segs.filter((s) => {
+        if (hitKeyword(s)) {
+          result.segmentsRemoved++
+          return false
+        }
+        return true
+      }).join('')
+      kept.push({ ...row, mark, indicator, requirement, raw: left })
       continue
     }
 
-    // 3) 要求按标点切段，命中关键词的段删除
+    // 3) 要求按标点切段，命中关键词的段删除（行保留，要求清空也保留指标名行）
     const segments = splitByPunct(requirement).filter((s) => s !== '')
     const survivors: string[] = []
     for (const seg of segments) {
       if (hitKeyword(seg)) result.segmentsRemoved++
       else survivors.push(seg)
     }
-    const newReq = survivors.join('').trim()
-
-    // 4) 要求被清空 → 整行删
-    if (!newReq) {
-      result.rowsRemoved++
-      continue
-    }
-    kept.push({ ...row, mark, indicator, requirement: newReq, raw })
+    kept.push({ ...row, mark, indicator, requirement: survivors.join('').trim(), raw })
   }
 
-  // 5) 重排序号 + 标点修复规则（全半角多数派、行尾；/。）
+  // 4) 重排序号 + 标点修复规则（全半角多数派、行尾；/。）
   result.text = fixParams(serializeParams(kept)).text
   return result
 }
