@@ -19,6 +19,7 @@ import {
   type EmailAttachment
 } from '@/api/email-client'
 import { toast } from '@/composables/useToast'
+import { scrollToSelected } from '@/utils/focusLocator'
 import DOMPurify from 'dompurify'
 
 // ═══════════════════════════════════════════════════════════════
@@ -45,6 +46,7 @@ const detailLoading = ref(false)
 const activeAccountId = ref<string>('')
 const activeFolder = ref<'INBOX' | 'Sent'>('INBOX')
 const searchQuery = ref('')
+const emailListRef = ref<HTMLElement | null>(null)
 const selectedEmailId = ref<string | null>(null)
 const selectedEmail = ref<EmailDetail | null>(null)
 const attachments = ref<EmailAttachment[]>([])
@@ -408,9 +410,16 @@ async function handleRouteQuery() {
       if (activeAccountId.value) {
         await loadEmails()
       }
-      selectedEmailId.value = targetId
       await loadDetail(targetId)
+      // detail 拿不到时不设脏 id——否则右侧渲染空白详情且无路径自愈
+      if (selectedEmail.value && (selectedEmail.value as any).id === targetId) {
+        selectedEmailId.value = targetId
+      }
     }
+    // 定位：清筛选词 → 滚动到列表行（目标超出已加载窗口时仅以详情面板为准，不强滚）
+    searchQuery.value = ''
+    await nextTick()
+    scrollToSelected(emailListRef.value, 'email-id', targetId)
   }
 }
 
@@ -418,8 +427,13 @@ onMounted(async () => {
   await loadAccounts()
   await handleRouteQuery()
 })
+// ★ 仅本页路由消费 query——KeepAlive 缓存期间其它页面的 focus 不得污染邮件选中态
 watch(() => route.query, async () => {
-  await handleRouteQuery()
+  if (route.path === '/email') await handleRouteQuery()
+})
+// ★ 切回邮件页时若有未消费的 focus（首挂与激活双路径对齐其它页面）重新消费
+onActivated(async () => {
+  if (route.path === '/email' && (route.query.focus || route.query.id)) await handleRouteQuery()
 })
 </script>
 
@@ -537,7 +551,7 @@ watch(() => route.query, async () => {
       </div>
 
       <!-- Email list -->
-      <div class="flex-1 overflow-y-auto p-2 space-y-1" @scroll="onListScroll">
+      <div ref="emailListRef" class="flex-1 overflow-y-auto p-2 space-y-1" @scroll="onListScroll">
         <div v-if="loading" class="flex items-center justify-center py-10">
           <span class="text-xs text-surface-400">加载中...</span>
         </div>
@@ -551,6 +565,7 @@ watch(() => route.query, async () => {
         <div
           v-for="email in filteredEmails"
           :key="email.id"
+          :data-email-id="email.id"
           class="flex items-start gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden select-none"
           :class="[
             selectedEmailId === email.id

@@ -85,9 +85,12 @@ pub(crate) fn pick_direct_out(results: &[(String, String, String, bool)]) -> Opt
 /// - 问题截到 ≤5（超出丢弃并置 truncated）、每题选项截到 ≤6、剔除空 prompt/空选项
 /// - type 非 single_choice/multiple_choice 一律降级为 text
 /// - question_id 缺失时自动补 qN
+/// - wait=false → status="notified"（不早退，任务继续，done 出口由 attach_ask_cards 附卡）；
+///   wait 缺省/true → status="pending"（现状：本轮立即结束等待答复）
 /// - 无合格问题 → 失败信封（提示 LLM 正确用法）
 pub(crate) fn normalize_ask_args(a: &Value) -> String {
     let reason = a["reason"].as_str().unwrap_or("").trim().to_string();
+    let wait = a["wait"].as_bool().unwrap_or(true);
     let raw_qs = a["questions"].as_array().cloned().unwrap_or_default();
     let mut questions: Vec<Value> = Vec::new();
     let mut truncated = false;
@@ -120,10 +123,17 @@ pub(crate) fn normalize_ask_args(a: &Value) -> String {
         };
         return envelope.to_json();
     }
+    let (status, summary) = if wait {
+        ("pending", format!("已向用户发出 {} 个追问（本轮结束，等待用户答复）", questions.len()))
+    } else {
+        ("notified", format!(
+            "已向用户发出 {} 个确认卡片（不结束本轮）：立即按保守默认继续执行并在回答中括注假设；用户答复稍后以新消息进入，届时按答复调整。不可逆操作不得用此模式。", questions.len()
+        ))
+    };
     ToolResultEnvelope {
         result_type: "ask_user_result".to_string(),
-        data: json!({"status": "pending", "reason": reason, "questions": questions, "truncated": truncated}),
-        summary: Some(format!("已向用户发出 {} 个追问（本轮结束，等待用户答复）", questions.len())),
+        data: json!({"status": status, "reason": reason, "questions": questions, "truncated": truncated}),
+        summary: Some(summary),
     }.to_json()
 }
 
@@ -320,6 +330,91 @@ pub fn attach_confirmation_cards(v: &mut Value) {
         log::info!("[Agent] 自动发卡：{} 条确认事项", card["questions"].as_array().map_or(0, |a| a.len()));
         v["clarification"] = card;
     }
+}
+
+/// 委托确认事项结构直通（纯函数，可单测）：子 Agent 上报的 confirmations 已由系统
+/// 自动转交互卡片直出给用户——进入主 Agent 上下文（messages）前将问题内容替换为占位，
+/// 主 Agent 结构上无法转述/重复提问；tool_log 与 completed_round（重派快照）保留完整原文，
+/// 卡片附出与续跑记忆均不受影响。非委托信封/无 confirmations 原样返回。
+pub(crate) fn redact_delegate_confirmations(result: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<Value>(result) else {
+        return result.to_string();
+    };
+    if v["result_type"].as_str() != Some("delegate_agent_result") {
+        return result.to_string();
+    }
+    let Some(confs) = v["data"]["confirmations"].as_array() else {
+        return result.to_string();
+    };
+    if confs.is_empty() {
+        return result.to_string();
+    }
+    let n = confs.len();
+    let placeholder: Vec<Value> = (0..n)
+        .map(|_| json!({"question": "[已直出为用户确认卡片，内容不在你的上下文中]", "options": []}))
+        .collect();
+    v["data"]["confirmations"] = json!(placeholder);
+    if let Some(summary) = v["summary"].as_str() {
+        v["summary"] = json!(format!(
+            "{}（其中 {} 个确认事项已自动转为用户卡片直出，问题内容不在你的上下文中——禁止在正文重复提问；用户答复将以新消息进入，届时引用并续派对应 Agent 即可）",
+            summary, n
+        ));
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| result.to_string())
+}
+
+/// 非阻断追问（wait=false → status=notified）回合末收卡：模型按默认继续干完了本轮，
+/// 卡片在此附到最终回答上（答案+卡片同帧），答复随下一条用户消息进入新轮。
+/// 与 attach_confirmation_cards 并列调用；与已有 clarification 合并（按 prompt 去重、
+/// 总量截 5、题号重编），阻断追问（早退路径）不经过此函数。
+pub fn attach_ask_cards(v: &mut Value) {
+    let Some(rounds) = v.get("tool_log").and_then(|t| t.as_array()) else { return };
+    let mut notified: Option<Value> = None;
+    'outer: for round in rounds {
+        let Some(tools) = round["tools"].as_array() else { continue };
+        for t in tools {
+            let Ok(env) = serde_json::from_str::<Value>(t["result"].as_str().unwrap_or("")) else { continue };
+            if env["result_type"].as_str() != Some("ask_user_result") { continue; }
+            let data = &env["data"];
+            if data["status"].as_str() != Some("notified") { continue; }
+            if data["questions"].as_array().map_or(true, |a| a.is_empty()) { continue; }
+            notified = Some(data.clone());
+            break 'outer;
+        }
+    }
+    let Some(ask) = notified else { return };
+    let existing = if v["clarification"].is_null() { None } else { v["clarification"].as_object().cloned() };
+    let mut merged: Vec<Value> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    let mut reason = String::new();
+    if let Some(ex) = &existing {
+        if let Some(r) = ex.get("reason").and_then(|r| r.as_str()) { reason = r.to_string(); }
+        for q in ex.get("questions").and_then(|q| q.as_array()).into_iter().flatten() {
+            let p = q["prompt"].as_str().unwrap_or("").to_string();
+            if p.is_empty() || seen.contains(&p) { continue; }
+            seen.push(p);
+            merged.push(q.clone());
+        }
+    }
+    if reason.is_empty() { reason = ask["reason"].as_str().unwrap_or("").to_string(); }
+    for q in ask["questions"].as_array().into_iter().flatten() {
+        if merged.len() >= 5 { break; }
+        let p = q["prompt"].as_str().unwrap_or("").to_string();
+        if p.is_empty() || seen.contains(&p) { continue; }
+        seen.push(p);
+        merged.push(q.clone());
+    }
+    if merged.is_empty() { return; }
+    let questions: Vec<Value> = merged.into_iter().enumerate().map(|(i, mut q)| {
+        if let Some(obj) = q.as_object_mut() {
+            obj.insert("question_id".into(), json!(format!("q{}", i + 1)));
+        }
+        q
+    }).collect();
+    log::info!("[Agent] 非阻断追问收卡：{} 问", questions.len());
+    let mut card = json!({"status": "pending", "questions": questions});
+    if !reason.is_empty() { card["reason"] = json!(reason); }
+    v["clarification"] = card;
 }
 
 /// 轮末历史压缩：已成功执行的「文档生成」大参数调用在 messages 里换为摘要占位——
@@ -1715,7 +1810,8 @@ pub async fn agent_chat_workflow_internal(
                     } }
                     let parsed_args: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                     round_tools.push(json!({"tool":tc.function.name,"args":parsed_args,"result":result,"result_len":result.chars().count()}));
-                    messages.push(ChatMessage{role:MessageRole::Tool,content:Some(result.clone()),tool_calls:None,tool_call_id:Some(tc.id.clone()),reasoning_content:None,name:Some(tc.function.name.clone())});
+                    // ★ 确认事项结构直通：主 Agent 上下文用脱敏版（防转述）；tool_log/重派快照仍为完整原文
+                    messages.push(ChatMessage{role:MessageRole::Tool,content:Some(redact_delegate_confirmations(result)),tool_calls:None,tool_call_id:Some(tc.id.clone()),reasoning_content:None,name:Some(tc.function.name.clone())});
                 }
                 current_round["tools"] = json!(round_tools);
                 tool_log.push(current_round);
@@ -1921,7 +2017,7 @@ pub async fn agent_chat_workflow_internal(
 #[cfg(test)]
 mod tests {
     use super::append_documents_note;
-    use super::{pick_direct_out, build_delegate_snapshot, normalize_ask_args, format_clarification_answer, pick_clarification_out, append_delegated_note};
+    use super::{pick_direct_out, build_delegate_snapshot, normalize_ask_args, format_clarification_answer, pick_clarification_out, append_delegated_note, attach_ask_cards, redact_delegate_confirmations};
     use super::{tool_granted, forbidden_summary};
     use crate::services::agent_workflow::{ChatMessage, FunctionCall, MessageRole, ToolCall};
 
@@ -2266,5 +2362,86 @@ mod tests {
         assert!(s.contains("未对本会话开放") && s.contains("委托"));
         let g = forbidden_summary("ext_tool_watch", "{}");
         assert!(g.contains("未授权"));
+    }
+
+    /// wait=false → status=notified（不早退语义）；wait 缺省/true → pending（现状）
+    #[test]
+    fn normalize_ask_args_wait_switches_status() {
+        let base = json!({"reason": "r", "questions": [{"prompt": "联网吗？", "type": "single_choice", "options": ["是", "否"]}]});
+        let mut nonblock = base.clone();
+        nonblock["wait"] = json!(false);
+        let v: serde_json::Value = serde_json::from_str(&normalize_ask_args(&nonblock)).unwrap();
+        assert_eq!(v["data"]["status"], "notified");
+        assert!(v["summary"].as_str().unwrap().contains("不结束本轮"));
+        let block: serde_json::Value = serde_json::from_str(&normalize_ask_args(&base)).unwrap();
+        assert_eq!(block["data"]["status"], "pending");
+    }
+
+    /// 早退判定只认 pending：notified 不触发本轮终止
+    #[test]
+    fn clarification_out_ignores_notified_ask() {
+        let parsed: Vec<serde_json::Value> = vec![
+            json!({"result_type":"ask_user_result","data":{"status":"notified","questions":[{"question_id":"q1","prompt":"p","type":"text","options":[]}]}}),
+        ];
+        assert!(pick_clarification_out(&parsed).is_none());
+    }
+
+    /// 非阻断追问收卡：notified → 附到 clarification；与已有卡合并去重、题号重编；无 notified 不动
+    #[test]
+    fn attach_ask_cards_attaches_and_merges() {
+        // 无 notified → 不设置
+        let mut v1 = json!({"tool_log": [{"tools": [{"result": r#"{"result_type":"object_create_result","data":{}}"#}]}]});
+        attach_ask_cards(&mut v1);
+        assert!(v1["clarification"].is_null());
+
+        // notified → 附卡（带 reason）
+        let notified = r#"{"result_type":"ask_user_result","data":{"status":"notified","reason":"是否联网","questions":[{"question_id":"q1","prompt":"要联网查吗？","type":"single_choice","options":["是","否"]}]}}"#;
+        let mut v2 = json!({"tool_log": [{"tools": [{"result": notified}]}]});
+        attach_ask_cards(&mut v2);
+        assert_eq!(v2["clarification"]["questions"][0]["prompt"], "要联网查吗？");
+        assert_eq!(v2["clarification"]["reason"], "是否联网");
+
+        // 与已有确认卡合并：按 prompt 去重、题号重编 q1..q2
+        let mut v3 = json!({
+            "clarification": {"status": "pending", "questions": [{"question_id": "cf1", "prompt": "确认删除吗？", "type": "single_choice", "options": ["删"]}]},
+            "tool_log": [{"tools": [{"result": notified}]}]
+        });
+        attach_ask_cards(&mut v3);
+        let qs = v3["clarification"]["questions"].as_array().unwrap();
+        assert_eq!(qs.len(), 2);
+        assert_eq!(qs[0]["prompt"], "确认删除吗？");
+        assert_eq!(qs[0]["question_id"], "q1");
+        assert_eq!(qs[1]["question_id"], "q2");
+
+        // 重复 prompt 去重
+        let dup = r#"{"result_type":"ask_user_result","data":{"status":"notified","questions":[{"question_id":"q1","prompt":"确认删除吗？","type":"text","options":[]}]}}"#;
+        let mut v4 = json!({
+            "clarification": {"status": "pending", "questions": [{"question_id": "cf1", "prompt": "确认删除吗？", "type": "single_choice", "options": ["删"]}]},
+            "tool_log": [{"tools": [{"result": dup}]}]
+        });
+        attach_ask_cards(&mut v4);
+        assert_eq!(v4["clarification"]["questions"].as_array().unwrap().len(), 1);
+    }
+
+    /// 确认事项结构直通：委托信封的问题内容从主 Agent 视角脱敏为占位；数量保留；
+    /// 非委托信封/无 confirmations/坏 JSON 原样返回
+    #[test]
+    fn redact_delegate_confirmations_scrubs_questions_for_main_view() {
+        let full = r#"{"result_type":"delegate_agent_result","data":{"status":"partial","confirmations":[{"question":"预算范围多少？","options":["<50万","50-100万"]}],"missing":[]},"summary":"委托完成"}"#;
+        let redacted = redact_delegate_confirmations(full);
+        let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+        let confs = v["data"]["confirmations"].as_array().unwrap();
+        assert_eq!(confs.len(), 1, "数量保留");
+        assert!(confs[0]["question"].as_str().unwrap().contains("已直出"));
+        assert!(!redacted.contains("预算范围"), "问题原文不得进入主 Agent 上下文");
+        assert!(v["summary"].as_str().unwrap().contains("已自动转为用户卡片"), "summary 提示直出");
+        assert_eq!(v["data"]["status"], "partial", "其余字段不动");
+
+        // 无 confirmations / 非委托 / 坏 JSON → 原样
+        let no_confs = r#"{"result_type":"delegate_agent_result","data":{"confirmations":[]},"summary":"s"}"#;
+        assert_eq!(redact_delegate_confirmations(no_confs), no_confs);
+        let object_env = r#"{"result_type":"object_detail","data":{"id":"x"}}"#;
+        assert_eq!(redact_delegate_confirmations(object_env), object_env);
+        assert_eq!(redact_delegate_confirmations("not-json"), "not-json");
     }
 }

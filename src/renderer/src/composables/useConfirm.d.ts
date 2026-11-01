@@ -14,6 +14,7 @@ export declare function choiceConfirm(options: {
   confirmText?: string
   extraText?: string
   cancelText?: string
+  danger?: boolean
 }): Promise<'confirm' | 'extra' | false>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export declare function useConfirmDialog(): any

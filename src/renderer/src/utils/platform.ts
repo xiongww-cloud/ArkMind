@@ -6,3 +6,6 @@ export const isMac: boolean =
 
 /** 粘贴快捷键显示文本：macOS 用 ⌘V，其他平台用 Ctrl+V */
 export const pasteShortcut: string = isMac ? '⌘V' : 'Ctrl+V'
+
+/** 修饰键显示文本（多选提示等场景）：macOS 用 ⌘，其他平台用 Ctrl */
+export const modKey: string = isMac ? '⌘' : 'Ctrl'

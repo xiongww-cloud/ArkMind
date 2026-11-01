@@ -70,7 +70,8 @@ describe('serializeParams / normalizeParams', () => {
   })
 
   it('保留标记前缀', () => {
-    expect(normalizeParams('▲1. a: 1')).toBe('▲1、a：1')
+    expect(normalizeParams('▲1. a: 1')).toBe('▲a：1') // 单行：无序号，标记保留
+    expect(normalizeParams('▲1. a: 1\n2）b：2')).toBe('▲1、a：1\n2、b：2') // 多行：序号+标记
   })
 
   it('幂等：normalize 两次等于一次', () => {
@@ -78,8 +79,10 @@ describe('serializeParams / normalizeParams', () => {
     expect(normalizeParams(normalizeParams(t))).toBe(normalizeParams(t))
   })
 
-  it('无序号行补序号', () => {
-    expect(normalizeParams('裸行内容')).toBe('1、裸行内容')
+  it('单行不补序号（多行才编号）', () => {
+    expect(normalizeParams('裸行内容')).toBe('裸行内容')
+    expect(normalizeParams('1、裸行内容')).toBe('裸行内容')
+    expect(normalizeParams('吞吐量：≥1Tbps')).toBe('吞吐量：≥1Tbps')
   })
 })
 
@@ -172,9 +175,18 @@ describe('fixParams', () => {
     expect(lintParams(text)).toEqual([])
   })
 
-  it('逗号按多数派统一（半角居多取半角）+ 行尾补「。」', () => {
+  it('逗号按多数派统一（半角居多取半角）；单行不加序号与行尾标点', () => {
     const { text } = fixParams('1、a：x,y,z，w')
-    expect(text).toBe('1、a：x,y,z,w。')
+    expect(text).toBe('a：x,y,z,w')
+  })
+
+  it('单行不加序号与行尾标点；已有序号被规整掉，已有句号不剥（不加不减）', () => {
+    expect(fixParams('吞吐量：≥10Gbps').text).toBe('吞吐量：≥10Gbps')
+    expect(fixParams('1、吞吐量：≥10Gbps。').text).toBe('吞吐量：≥10Gbps。')
+  })
+
+  it('多行序号与行尾标点规范不变', () => {
+    expect(fixParams('a：1\nb：2').text).toBe('1、a：1；\n2、b：2。')
   })
 
   it('已是规范文本时零修复且不变', () => {
@@ -202,16 +214,16 @@ describe('stripControlContent', () => {
     expect(r.rowsRemoved).toBe(0)
   })
 
-  it('扫除内嵌 ★/▲ 字符', () => {
+  it('扫除内嵌 ★/▲ 字符（单行：无序号无行尾标点）', () => {
     const r = stripControlContent('1、要求：支持A★功能与▲特性')
-    expect(r.text).toBe('1、要求：支持A功能与特性。')
+    expect(r.text).toBe('要求：支持A功能与特性')
     expect(r.marksStripped).toBe(2)
   })
 
-  it('按标点切段删除证明材料段并修复标点', () => {
-    // 含"盖章证明"的段连同前导分隔符一起删除，剩余段重接后行尾补「。」
+  it('按标点切段删除证明材料段（单行：无序号无行尾标点）', () => {
+    // 含"盖章证明"的段连同其分隔符一起删除，剩余段重接
     const r = stripControlContent('1、质保：原厂三年，提供盖章证明；全国联保')
-    expect(r.text).toBe('1、质保：原厂三年，提供盖章证明；全国联保。'.replace('，提供盖章证明；', '，'))
+    expect(r.text).toBe('质保：原厂三年，全国联保')
     expect(r.segmentsRemoved).toBe(1)
   })
 
@@ -256,7 +268,7 @@ describe('stripControlContent', () => {
   it('空文本与无控标文本', () => {
     expect(stripControlContent('').text).toBe('')
     const r = stripControlContent('1、端口：48GE')
-    expect(r.text).toBe('1、端口：48GE。') // 仅行尾归一
+    expect(r.text).toBe('端口：48GE') // 单行：无序号无行尾标点
     expect(r.marksStripped + r.segmentsRemoved + r.rowsRemoved).toBe(0)
   })
 

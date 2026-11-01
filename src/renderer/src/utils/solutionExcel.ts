@@ -61,6 +61,45 @@ function getCellByField(row: RawDataRow, mapping: (string | undefined)[], fieldK
 //  WIZARD IMPORT — 按映射组装设备清单
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** 子网默认名：映射列（名称→型号→参数→序号）优先，取不到则取行内第一个非空单元格——
+ *  检测为子网的行，其行文本就是默认子网名（单格标题行文本可能落在任意列）。 */
+export function defaultSubnetName(row: RawDataRow, mapping: (string | undefined)[]): string {
+  const mapped =
+    getCellByField(row, mapping, 'deviceName') ||
+    getCellByField(row, mapping, 'model') ||
+    getCellByField(row, mapping, 'params') ||
+    getCellByField(row, mapping, 'sn')
+  if (mapped) return mapped
+  const anyText = row.cells.find((c) => c.trim())
+  return (anyText || '').trim()
+}
+
+/**
+ * 清单 Excel 行分类（向导默认判定；用户可在向导里逐行改回）。
+ * 子网识别优先消灭手动环节：
+ * 1. 合计/总计 → ignore
+ * 2. 任意列纵向合并主格（rowSpan>1）且无型号 → subnet（不限于序号列）
+ * 3. 有型号 → device（型号是硬信号）
+ * 4. 无型号且恰好一个单元格有文本 → subnet（子网标题行典型形态；多格内容=名称/数量等成行数据，判设备——型号可空）
+ * 5. 全空 → ignore（合并块的空白中间行被 shouldSkip 行过滤，到不了这里）
+ */
+export function classifySolutionRow(
+  row: RawDataRow,
+  mapping: (string | undefined)[],
+  _sheet: SheetData
+): string | null {
+  const modelIdx = mapping.findIndex((k) => k === 'model')
+  const modelVal = modelIdx >= 0 ? (row.cells[modelIdx] || '').trim() : ''
+  const hasTotal = row.cells.some((c) => c.includes('合计') || c.includes('总计'))
+  if (hasTotal) return 'ignore'
+  if (!modelVal && row.merges.some((mg) => mg.isMaster && mg.rowSpan > 1)) return 'subnet'
+  if (modelVal) return 'device'
+  const contentCells = row.cells.filter((c) => c.trim().length > 0).length
+  if (contentCells === 1) return 'subnet'
+  if (contentCells > 1) return 'device'
+  return 'ignore'
+}
+
 /**
  * 向导确认后，按映射 + 行决策组装 DeviceItem[]（替代旧 parsePMSExcel）。
  *
@@ -88,7 +127,7 @@ export function buildItemsFromMapping(
 
     // 子网行
     if (decision.action === 'subnet') {
-      const name = decision.subnetName || getCellByField(row, mapping, 'model') || getCellByField(row, mapping, 'sn') || '未命名子网'
+      const name = decision.subnetName || defaultSubnetName(row, mapping) || '未命名子网'
       currentSubnet = name
       items.push({
         uid: guid(),

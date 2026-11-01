@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import { exportToPMSExcel, buildItemsFromMapping } from '@/utils/solutionExcel'
+import { exportToPMSExcel, buildItemsFromMapping, classifySolutionRow } from '@/utils/solutionExcel'
 import { detectSCTSheet, buildSCTMapping, classifySCTRow, shouldSkipSCTRow } from '@/utils/sctExcel'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
@@ -19,6 +19,7 @@ import type { ImportField, RawDataRow, SheetData } from '@/utils/excelRaw'
 
 import * as api from '@/api/db-client'
 import { formatDateTime } from '@/utils/time'
+import { findHistoryParams } from '@/utils/resolveParams'
 const { updateSolutionVersionMeta, fetchProducts, createProduct, deleteVersion } =
   api
 const props = defineProps({ project: { type: Object, required: true } })
@@ -82,32 +83,6 @@ const sctPreset: ExcelImportPreset = {
   shouldSkip: shouldSkipSCTRow
 }
 
-function classifySolutionRow(
-  row: RawDataRow,
-  mapping: (string | undefined)[],
-  sheet: SheetData
-): string | null {
-  // 查映射后的型号列
-  const modelIdx = mapping.findIndex((k) => k === 'model')
-  const modelVal = modelIdx >= 0 ? (row.cells[modelIdx] || '').trim() : ''
-  // 检查是否为合计/总计行（任意单元格含关键词）
-  const hasTotal = row.cells.some((c) => c.includes('合计') || c.includes('总计'))
-  if (hasTotal) return 'ignore'
-  // 检查是否为子网行：序号列纵向合并的主单元格
-  const snIdx = mapping.findIndex((k) => k === 'sn')
-  if (snIdx >= 0) {
-    const m = row.merges.find((mg) => mg.col === snIdx + 1 && mg.isMaster && mg.rowSpan > 1)
-    if (m && !modelVal) return 'subnet'
-  }
-  // 有型号 → 设备
-  if (modelVal) return 'device'
-  // 无型号但行内有内容 → 仍作为设备导入（型号可选，后续可手动填写）
-  const hasContent = row.cells.some((c) => c.trim().length > 0)
-  if (hasContent) return 'device'
-  // 空行
-  return 'ignore'
-}
-
 function shouldSkipSolutionRow(row: RawDataRow, sheet: SheetData): boolean {
   // 全空行跳过
   return row.cells.every((c) => !c.trim())
@@ -117,10 +92,11 @@ function onImportConfirm(payload: any) {
   const { mapping, rows, decisions, sheet } = payload
   const productList = Array.isArray(gp.value) ? gp.value : []
   const items = buildItemsFromMapping(rows, mapping, decisions, sheet, productList)
-  // 匹配产品库参数
+  // 匹配参数：本清单历史优先，产品库兜底（仅空参数行）
   if (cplan.value?.draft) {
     cplan.value.draft.items = items.map((item: any) => {
       if (item.rowType === 'subnet' || !item.model) return item
+      const hist = findHistoryParams(cplan.value?.history, item.model)
       const match = productList.find(
         (p: any) => (p.name || '').toLowerCase() === item.model.toLowerCase()
       )
@@ -129,8 +105,15 @@ function onImportConfirm(payload: any) {
           ...item,
           productId: match.id,
           // 产品库无参数时默认勾选"更新产品参数"，让本次导入的参数回写产品库
-          syncParams: !match.full_specs,
-          mergedText: item.mergedText || match.full_specs || ''
+          syncParams: !match.full_specs && !hist,
+          mergedText: item.mergedText || hist?.mergedText || match.full_specs || ''
+        }
+      }
+      if (hist) {
+        return {
+          ...item,
+          mergedText: item.mergedText || hist.mergedText,
+          syncParams: item.syncParams !== false
         }
       }
       return { ...item, syncParams: item.syncParams !== false }
@@ -184,7 +167,7 @@ function handleServiceFeeCancel() {
   sctSheet.value = null
 }
 
-const plans = ref([])
+const plans = ref<any[]>([])
 const apid = ref('')
 function iplans() {
   if (!props.project.plans || props.project.plans.length === 0) {
@@ -366,32 +349,52 @@ async function saveSelRemark() {
   }
 }
 
-/** 工具栏添加设备：插入根级区域末尾（第一个子网行之前），保证不落入任何子网 */
-function apl() {
-  if (ir.value) return
-  const firstSubnet = li.value.findIndex((i) => i.rowType === 'subnet')
-  const at = firstSubnet === -1 ? li.value.length : firstSubnet
-  li.value.splice(at, 0, {
-    uid: guid(),
-    rowType: 'device',
-    productId: '',
-    model: '',
-    customName: '',
-    unitPrice: 0,
-    quantity: 1,
-    unit: '台',
-    params: [],
-    mergedText: '',
-    syncParams: true
-  })
-  if (firstSubnet !== -1) {
-    toast({ message: '已添加到根级清单（顶部区域）', type: 'success' })
+/** 工具栏添加下拉（顶部/底部） */
+const tbAddMenu = ref<{ kind: 'device' | 'subnet'; x: number; y: number } | null>(null)
+function openTbAdd(kind: 'device' | 'subnet', e: MouseEvent) {
+  e.stopPropagation()
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  tbAddMenu.value = { kind, x: r.left, y: r.bottom + 6 }
+}
+function closeTbAdd(e?: Event) {
+  if (tbAddMenu.value && !(e?.target as HTMLElement)?.closest?.('[data-tb-add]')) {
+    tbAddMenu.value = null
   }
 }
-/** 工具栏添加子网：追加为新的空子网（清单末尾） */
-function asub() {
-  if (ir.value) return
-  li.value.splice(li.value.length, 0, { uid: guid(), rowType: 'subnet', name: '新子网' })
+/** 顶部插入根级第 0 位；底部 = 根级区域末尾（第一个子网前），均不落入子网 */
+function tbInsert(where: 'top' | 'bottom') {
+  const menu = tbAddMenu.value
+  tbAddMenu.value = null
+  if (!menu || ir.value) return
+  const firstSubnet = li.value.findIndex((i) => i.rowType === 'subnet')
+  const at =
+    menu.kind === 'device'
+      ? where === 'top'
+        ? 0
+        : firstSubnet === -1
+          ? li.value.length
+          : firstSubnet
+      : where === 'top'
+        ? 0
+        : li.value.length
+  if (menu.kind === 'device') {
+    li.value.splice(at, 0, {
+      uid: guid(),
+      rowType: 'device',
+      productId: '',
+      model: '',
+      customName: '',
+      unitPrice: 0,
+      quantity: 1,
+      unit: '台',
+      params: [],
+      mergedText: '',
+      syncParams: true
+    })
+  } else {
+    li.value.splice(at, 0, { uid: guid(), rowType: 'subnet', name: '新子网' })
+  }
+  dt.value?.scrollToIdx?.(at)
 }
 
 const gpn = (id) =>
@@ -563,13 +566,15 @@ async function omm() {
     const model = (item.model || '').trim()
     const matched = allProducts.find((p) => (p.name || '').toLowerCase() === model.toLowerCase())
     const hasProduct = !!(matched?.id || item.productId)
+    const hist = model ? findHistoryParams(cplan.value?.history, model) : null
     return {
       ...item,
       syncParams: hasProduct ? false : true,
       productId: matched?.id || item.productId || '',
       model: matched ? matched.name : item.model,
       unitPrice: !item.unitPrice && matched?.price ? matched.price : item.unitPrice,
-      mergedText: !item.mergedText && matched?.full_specs ? matched.full_specs : item.mergedText
+      mergedText:
+        !item.mergedText ? (hist?.mergedText || matched?.full_specs || '') : item.mergedText
     }
   })
   // 先写库（status='draft'），失败则回退为纯本地草稿
@@ -732,7 +737,13 @@ async function sdv() {
         item.productId = match.id
         item.model = match.name
         if (match.price && !item.unitPrice) item.unitPrice = match.price
-        if (match.full_specs && !item.mergedText) item.mergedText = match.full_specs
+        if (!item.mergedText) {
+          const hist = findHistoryParams(cplan.value?.history, model)
+          item.mergedText = hist?.mergedText || match.full_specs || ''
+        }
+      } else if (!item.mergedText) {
+        const hist = findHistoryParams(cplan.value?.history, model)
+        if (hist) item.mergedText = hist.mergedText
       }
     }
 
@@ -906,6 +917,143 @@ async function deleteVersionEntry(entry) {
     }
   } catch (e) {
     console.warn('删除版本失败', e)
+  }
+}
+
+// ─── 复制版本到同项目其他清单（支持新建目标清单） ──────────────────────────
+const COPY_NEW = '__new__'
+const showCopyDlg = ref(false)
+const copyBusy = ref(false)
+const copyTargetId = ref('')
+const copyNewName = ref('')
+const copyTargets = computed(() => plans.value.filter((p: any) => p.id !== apid.value))
+
+function openCopyDialog() {
+  if (!selEntry.value) return
+  copyNewName.value = ''
+  const first = copyTargets.value.find((p: any) => !p.draft) || copyTargets.value[0]
+  copyTargetId.value = first?.id || COPY_NEW
+  showCopyDlg.value = true
+}
+
+/** 后端版本行 → 前端 draft 形状（与 fetchProjectDetail 的映射一致） */
+function mapVersionRowToDraft(v: any) {
+  const items = Array.isArray(v.items) ? v.items : []
+  return {
+    versionId: v.id,
+    versionNum: v.versionNum || v.version || '',
+    tags: v.tags ? String(v.tags).split(',').filter(Boolean) : [],
+    content: v.content || '',
+    createdAt: v.createdAt || v.created_at,
+    amount: v.amount || 0,
+    priceMarkup: v.priceMarkup || 1,
+    status: 'draft',
+    items: items.map((di: any) => ({
+      uid: di.id,
+      productId: di.productId || '',
+      rowType: di.rowType || 'device',
+      name: di.name || '',
+      model: di.rowType === 'subnet' ? '' : di.model || '',
+      customName: di.rowType === 'subnet' ? '' : di.deviceName || '',
+      unitPrice: di.rowType === 'subnet' ? 0 : di.price || 0,
+      originalPrice: di.rowType === 'subnet' ? null : (di.originalPrice ?? null),
+      quantity: di.rowType === 'subnet' ? 0 : di.count || 1,
+      unit: di.rowType === 'subnet' ? '' : di.unit || '台',
+      mergedText: di.rowType === 'subnet' ? '' : di.parameters || '',
+      params: [],
+      syncParams: di.rowType === 'subnet' ? false : !di.productId
+    })),
+    _versionId: v.id,
+    startedAt: v.createdAt || v.created_at,
+    operator: v.creator || ''
+  }
+}
+
+async function confirmCopyTo() {
+  const en = selEntry.value
+  if (!en || !copyTargetId.value) {
+    showCopyDlg.value = false
+    return
+  }
+  copyBusy.value = true
+  try {
+    let target: any = null
+    if (copyTargetId.value === COPY_NEW) {
+      // 新建设备清单作为复制目标
+      const name = copyNewName.value.trim() || '新设备清单'
+      await projectStore.syncProjectToBackend(props.project.id)
+      const sol = await api.createSolution(props.project.id, name)
+      const planId = 'plan-' + Date.now()
+      props.project.plans.push({
+        id: planId,
+        name,
+        items: [],
+        history: [],
+        draft: null,
+        createdAt: new Date().toISOString(),
+        _backendSolutionId: sol.id
+      })
+      plans.value = props.project.plans
+      target = plans.value.find((p: any) => p.id === planId)
+      try {
+        await projectStore.addProjectDynamic(props.project.id, `创建了设备清单「${name}」`)
+      } catch {
+        /* 动态记录失败不阻断 */
+      }
+    } else {
+      target = plans.value.find((p: any) => p.id === copyTargetId.value)
+      if (!target) {
+        showCopyDlg.value = false
+        return
+      }
+      if (target.draft) {
+        alert({
+          title: '目标清单已有编辑中的版本',
+          message: `「${target.name}」已有编辑中的版本，请先保存或删除后再复制。`
+        })
+        return
+      }
+      // 确保目标清单已有后端 solution（本地新建的清单可能还没同步）
+      if (!target._backendSolutionId) {
+        await projectStore.syncProjectToBackend(props.project.id)
+        const sol = await api.createSolution(props.project.id, target.name || '设备清单')
+        target._backendSolutionId = sol.id
+      }
+    }
+    const vn = 'v' + ((Array.isArray(target.history) ? target.history.length : 0) + 1) + '.0'
+    const srcVerId =
+      en.type === 'draft' ? en.data._versionId : en.data.versionId || en.data.id
+    let draft
+    if (srcVerId) {
+      // 后端原子复制（同项目校验、目标草稿冲突校验在命令内）
+      const r = await api.copyVersionToSolution(srcVerId, target._backendSolutionId, {
+        versionNum: vn,
+        creator: op.value
+      })
+      draft = mapVersionRowToDraft(r)
+    } else {
+      // 本地降级草稿（无后端版本）→ 客户端深拷贝落目标清单
+      const srcItems = JSON.parse(JSON.stringify(Array.isArray(en.data.items) ? en.data.items : []))
+      const r = await projectStore.createPlanDraft(props.project.id, target.id, {
+        versionNum: vn,
+        content: '',
+        tags: [],
+        operator: op.value,
+        deviceItems: mapItemsToBackend(srcItems)
+      })
+      draft = mapVersionRowToDraft(r)
+    }
+    target.draft = draft
+    showCopyDlg.value = false
+    toast({ message: `已复制到「${target.name}」（${fmtVersion(vn)}）`, type: 'success' })
+    // 切到目标清单的时间线并选中草稿
+    apid.value = target.id
+    av.value = 'timeline'
+    selEntryKey.value = 'draft' as any
+  } catch (e: any) {
+    alert({ title: '复制失败', message: e?.message || String(e) || '请重试' })
+  } finally {
+    copyBusy.value = false
   }
 }
 
@@ -1101,6 +1249,7 @@ function flushDraftOnUnload() {
 
 onMounted(async () => {
   window.addEventListener('pagehide', flushDraftOnUnload)
+  document.addEventListener('click', closeTbAdd)
   restoreDrafts()
   try {
     const raw = await fetchProducts()
@@ -1118,6 +1267,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   window.removeEventListener('pagehide', flushDraftOnUnload)
+  document.removeEventListener('click', closeTbAdd)
   debouncedSaveDraft.flush()
   debouncedSaveDraft.cancel()
 })
@@ -1314,6 +1464,13 @@ onUnmounted(() => {
                 <AppIcon name="edit" class="w-3.5 h-3.5" />
               </button>
               <button
+                @click="openCopyDialog"
+                class="btn-ghost !p-1 text-slate-400 hover:text-blue-600"
+                v-tooltip="'复制到其他清单'"
+              >
+                <AppIcon name="copy" class="w-3.5 h-3.5" />
+              </button>
+              <button
                 @click="cancelDraft"
                 class="btn-ghost !p-1 text-slate-400 hover:text-red-500"
                 v-tooltip="'删除草稿'"
@@ -1342,6 +1499,13 @@ onUnmounted(() => {
                 v-tooltip="'下载 Excel'"
               >
                 <AppIcon name="download" class="w-3.5 h-3.5" />
+              </button>
+              <button
+                @click="openCopyDialog"
+                class="btn-ghost !p-1 text-slate-400 hover:text-blue-600"
+                v-tooltip="'复制到其他清单'"
+              >
+                <AppIcon name="copy" class="w-3.5 h-3.5" />
               </button>
             </template>
           </div>
@@ -1460,16 +1624,18 @@ onUnmounted(() => {
         <div class="flex items-center gap-1 ml-auto flex-nowrap">
           <template v-if="im">
             <button
-              @click="apl"
+              @click.stop="openTbAdd('device', $event)"
+              data-tb-add
               class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-              v-tooltip="'添加设备（追加到末尾）'"
+              v-tooltip="'添加设备（选择顶部或底部）'"
             >
               <AppIcon name="plus" class="w-3.5 h-3.5" />
             </button>
             <button
-              @click="asub"
+              @click.stop="openTbAdd('subnet', $event)"
+              data-tb-add
               class="h-6 w-6 flex items-center justify-center rounded-md text-surface-400 hover:text-blue-600 hover:bg-blue-50 transition-colors flex-shrink-0"
-              v-tooltip="'添加子网（追加到末尾）'"
+              v-tooltip="'添加子网（选择顶部或底部）'"
             >
               <AppIcon name="folder" class="w-3.5 h-3.5" />
             </button>
@@ -1539,6 +1705,7 @@ onUnmounted(() => {
         ref="dt"
         :items="li"
         :products="gp"
+        :history="cplan?.history || []"
         :readonly="ir"
         :invalid-uids="invalidItems"
         class="flex-1 min-h-0"
@@ -1626,6 +1793,122 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+
+  <!-- 工具栏添加下拉（顶部/底部） -->
+  <Teleport to="body">
+    <div
+      v-if="tbAddMenu"
+      data-tb-add
+      class="fixed z-[90] bg-white shadow-lg border border-gray-100 rounded-lg py-1 w-max max-w-[220px]"
+      :style="{ left: tbAddMenu.x + 'px', top: tbAddMenu.y + 'px' }"
+    >
+      <div class="px-3 pt-1 pb-1 text-[10px] text-surface-400 uppercase tracking-wider">
+        添加{{ tbAddMenu.kind === 'device' ? '设备' : '子网' }}
+      </div>
+      <button
+        data-tb-add
+        @click.stop="tbInsert('top')"
+        class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+      >
+        <AppIcon :name="tbAddMenu.kind === 'device' ? 'plus' : 'folder'" class="w-3 h-3" />添加到顶部
+      </button>
+      <button
+        data-tb-add
+        @click.stop="tbInsert('bottom')"
+        class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+      >
+        <AppIcon :name="tbAddMenu.kind === 'device' ? 'plus' : 'folder'" class="w-3 h-3" />添加到底部
+      </button>
+    </div>
+  </Teleport>
+
+  <!-- 复制版本到其他清单 -->
+  <Teleport to="body">
+    <div
+      v-if="showCopyDlg"
+      class="fixed inset-0 z-[80] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm"
+    >
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-semibold text-gray-800">复制版本到其他清单</h3>
+        </div>
+        <div class="p-6 space-y-3">
+          <p class="text-[11px] text-gray-500 leading-relaxed">
+            将
+            <span class="font-medium text-gray-700">{{
+              fmtVersion(selEntry?.data?.versionNum)
+            }}</span>
+            （{{ selEntry?.type === 'draft' ? '草稿' : '归档版本' }}）复制为所选清单的
+            <span class="text-amber-600">编辑中草稿</span>，原版本不受影响。
+          </p>
+          <div class="space-y-1.5 max-h-56 overflow-y-auto">
+            <label
+              class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors"
+              :class="
+                copyTargetId === COPY_NEW
+                  ? 'border-blue-400 bg-blue-50/60 ring-1 ring-blue-200'
+                  : 'border-surface-100 hover:bg-surface-50'
+              "
+            >
+              <input type="radio" :value="COPY_NEW" v-model="copyTargetId" class="accent-blue-500" />
+              <span class="text-[12px] text-gray-700 flex-1">＋ 新建设备清单</span>
+            </label>
+            <input
+              v-if="copyTargetId === COPY_NEW"
+              v-model="copyNewName"
+              placeholder="新清单名称（默认：新设备清单）"
+              class="w-full text-[12px] px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 ml-[26px] !w-[calc(100%-26px)]"
+              @keyup.enter="confirmCopyTo"
+            />
+            <div
+              v-if="copyTargets.length === 0"
+              class="text-[11px] text-gray-400 py-1.5 text-center"
+            >
+              本项目暂无其他设备清单，将复制到新建的清单
+            </div>
+            <div
+              v-for="p in copyTargets"
+              :key="p.id"
+              class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border transition-colors"
+              :class="
+                p.draft
+                  ? 'border-surface-100 opacity-50 cursor-not-allowed'
+                  : copyTargetId === p.id
+                    ? 'border-blue-400 bg-blue-50/60 ring-1 ring-blue-200'
+                    : 'border-surface-100 hover:bg-surface-50'
+              "
+              :title="p.draft ? '该清单已有编辑中的版本，不可作为目标' : ''"
+              @click="!p.draft && (copyTargetId = p.id)"
+            >
+              <input
+                type="radio"
+                :value="p.id"
+                v-model="copyTargetId"
+                :disabled="!!p.draft"
+                class="accent-blue-500"
+              />
+              <span class="text-[12px] text-gray-700 flex-1 truncate">{{ p.name }}</span>
+              <span class="text-[10px] text-gray-400 shrink-0">
+                {{ Array.isArray(p.history) ? p.history.length : 0 }} 版本{{
+                  p.draft ? ' · 有草稿' : ''
+                }}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-2">
+          <button @click="showCopyDlg = false" class="btn-ghost">取消</button>
+          <button
+            class="btn-primary"
+            :disabled="!copyTargetId || copyBusy"
+            @click="confirmCopyTo"
+          >
+            {{ copyBusy ? '复制中…' : '复制' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 
   <!-- Modify Modal -->
   <Teleport to="body">

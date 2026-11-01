@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useSelectionStore } from '@/stores/selection'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
+import { scrollToSelected } from '@/utils/focusLocator'
 import AppIcon from '@/components/common/AppIcon.vue'
 const ProjectDetail = defineAsyncComponent(() => import('@/views/ProjectDetail.vue'))
 import AtMentionSelector from '@/components/common/AtMentionSelector.vue'
@@ -505,8 +506,45 @@ function handleRouteQuery() {
     createNotePrefilled(title, content)
   }
   if (focus) {
-    selectedNoteId.value = focus
+    // focus 深链定位：切视图 + 走 selectNote 拉正文（直接设 selectedNoteId 会残留上一篇正文且有脏写风险）
+    locateNoteById(focus)
   }
+}
+
+const noteListRef = ref<HTMLElement | null>(null)
+let locateSeq = 0
+/** focus 深链定位：全量查（含闪记）→ 切视图 → 清筛选 → 加载列表 → 打开正文 → 滚动到可见 */
+async function locateNoteById(id: string): Promise<boolean> {
+  const mySeq = ++locateSeq
+  let r: any = await notesV2ListAll()
+  if (mySeq !== locateSeq) return false
+  let note = (r?.notes || []).find((n: any) => n.note_id === id || n.id === id)
+  if (!note) {
+    r = await notesV2ListDaily()
+    if (mySeq !== locateSeq) return false
+    note = (r?.notes || []).find((n: any) => n.note_id === id || n.id === id)
+  }
+  if (!note) return false
+  if (note.notebook_id) {
+    currentView.value = 'notebook'
+    selectedNotebookId.value = note.notebook_id
+  } else if (note.is_daily) {
+    currentView.value = 'daily'
+  } else if (note.project_ids && String(note.project_ids).trim()) {
+    currentView.value = 'projectNote'
+    selectedProjectNoteId.value = null
+    projectNotesExpanded.value = true
+  } else {
+    currentView.value = 'all'
+  }
+  // 筛选词可能把目标滤出列表
+  noteFilterQuery.value = ''
+  await loadNotes()
+  if (mySeq !== locateSeq) return false
+  selectNote(id)
+  await nextTick()
+  scrollToSelected(noteListRef.value, 'note-id', id)
+  return true
 }
 // ★ 同路由内 query 变化不触发 onActivated（KeepAlive 已激活），通知快捷操作跳转时在此消费
 watch(() => route.query, () => {
@@ -908,8 +946,8 @@ const restoreNotebookList = computed(() => {
         <input v-model="noteFilterQuery" type="text" class="flex-1 min-w-0 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="筛选笔记（标题/内容）..."/>
       </div>
     </div>
-    <div class="flex-1 overflow-y-auto p-2 space-y-1.5">
-      <div v-for="note in displayedNotes" :key="note.note_id" @mousedown="onNoteMouseDown($event, note.note_id||note.id)" class="flex items-center px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden hover:scale-[1.02] hover:z-10 select-none" :class="[selectedNoteId===(note.note_id||note.id)||isSelected(note.note_id||note.id)?'bg-blue-50/70 border-brand-200 shadow-none scale-100':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragNoteId===(note.note_id||note.id)?'opacity-50':'']" @click="onNoteCardClick($event, note.note_id||note.id)">
+    <div ref="noteListRef" class="flex-1 overflow-y-auto p-2 space-y-1.5">
+      <div v-for="note in displayedNotes" :key="note.note_id" :data-note-id="note.note_id || note.id" @mousedown="onNoteMouseDown($event, note.note_id||note.id)" class="flex items-center px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden hover:scale-[1.02] hover:z-10 select-none" :class="[selectedNoteId===(note.note_id||note.id)||isSelected(note.note_id||note.id)?'bg-blue-50/70 border-brand-200 shadow-none scale-100':'border-surface-100 hover:border-surface-300 hover:shadow-md', isDragging && dragNoteId===(note.note_id||note.id)?'opacity-50':'']" @click="onNoteCardClick($event, note.note_id||note.id)">
         <div v-if="selectedNoteId===(note.note_id||note.id)" class="absolute left-0 top-0 bottom-0 w-[3px] bg-blue-500 rounded-r"></div>
         <div class="flex-1 min-w-0">
           <p class="text-[12px] font-medium text-surface-800 truncate">{{ currentView==='daily' ? (note.title||(note.created_at||'').slice(0,10)) : (note.title||'未命名笔记') }}</p>

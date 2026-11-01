@@ -136,6 +136,8 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
                 let save_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // ★ 框架自动发卡：本轮委托上报的 confirmations（主 Agent 未自行追问时）
                 crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v);
+                // ★ 非阻断追问（wait=false）收卡：附到最终回答（答案+卡片同帧，与已有卡合并去重）
+                crate::services::agent_workflow::workflow::attach_ask_cards(&mut v);
                 // ★ 保存 assistant 消息到 DB（纯内容，无 metadata）
                 if let Some(ref sid) = session_id {
                     let mut answer = v["answer"].as_str().unwrap_or("").to_string();
@@ -228,7 +230,7 @@ pub(crate) fn main_agent_tool_list() -> Vec<String> {
     tauri::async_runtime::spawn(async move {
         let result = crate::services::agent_workflow::agent_chat_workflow(query, vec![], None, Some(app_handle.clone()), false, None, Some(tools)).await;
         match result {
-            Ok(mut v) => { crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v); log::info!("[Done] kb_chat emitted"); let _ = app_handle.emit("agent:done", &v); }
+            Ok(mut v) => { crate::services::agent_workflow::workflow::attach_confirmation_cards(&mut v); crate::services::agent_workflow::workflow::attach_ask_cards(&mut v); log::info!("[Done] kb_chat emitted"); let _ = app_handle.emit("agent:done", &v); }
             Err(e) => {
                 if e == "cancelled" {
                     let _ = app_handle.emit("agent:done", json!({"success":true,"answer":"已停止执行。","cancelled":true,"sid":""}));

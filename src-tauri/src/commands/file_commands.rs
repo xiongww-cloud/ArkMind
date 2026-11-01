@@ -22,21 +22,64 @@ fn compute_file_hash(path: &str) -> Result<(String, u64), String> {
     Ok((hash, file_size))
 }
 
-pub fn storage_base() -> String {
-    { let guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()); if let Some(ref s) = *guard { return s.clone(); } }
-    
-    // 使用 AppData 路径作为稳定的文件存储位置
-    let default = dirs::data_local_dir()
+/// 旧版文件根（统一目录改造前：data_local_dir/com.arkmind.app/files），存量一次性搬迁用
+fn legacy_files_dir() -> String {
+    dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("com.arkmind.app")
         .join("files")
         .to_string_lossy()
-        .to_string();
+        .to_string()
+}
+
+/// 存量文件一次性搬迁：旧根有 64-hex 文件且新根为空时整体 move（同卷 rename 秒完成，
+/// 跨卷退化逐文件拷贝）。幂等：迁完旧根留空目录不删（防误判，孤儿清扫只扫当前根）。
+fn migrate_legacy_files_once(new_base: &str) {
+    let old = legacy_files_dir();
+    if old.trim_end_matches(&['\\','/'][..]) == new_base.trim_end_matches(&['\\','/'][..]) {
+        return;
+    }
+    let old_dir = std::path::Path::new(&old);
+    if !old_dir.is_dir() { return; }
+    let has_old = std::fs::read_dir(old_dir).map(|mut d| d.next().is_some()).unwrap_or(false);
+    if !has_old { return; }
+    let new_dir = std::path::Path::new(new_base);
+    let has_new = new_dir.is_dir()
+        && std::fs::read_dir(new_dir).map(|mut d| d.next().is_some()).unwrap_or(false);
+    if has_new {
+        // 两边都有数据：不自动合并（用户可能已双写），仅记录——由孤儿清扫/用户处置
+        log::warn!("[Storage] 新旧文件目录均非空，跳过自动搬迁: {} ← {}", new_base, old);
+        return;
+    }
+    std::fs::create_dir_all(new_dir).ok();
+    let mut moved = 0usize;
+    let mut failed = 0usize;
+    for entry in std::fs::read_dir(old_dir).into_iter().flatten().flatten() {
+        let from = entry.path();
+        if !from.is_file() { continue; }
+        let to = new_dir.join(entry.file_name());
+        // 同卷 rename 优先；跨卷/失败退化 copy+delete
+        if std::fs::rename(&from, &to).is_err() {
+            match std::fs::copy(&from, &to) {
+                Ok(_) => { let _ = std::fs::remove_file(&from); }
+                Err(e) => { failed += 1; log::warn!("[Storage] 存量文件搬迁失败 {:?}: {}", from, e); continue; }
+            }
+        }
+        moved += 1;
+    }
+    log::info!("[Storage] 存量文件一次性搬迁完成: {} 个 → {}（失败 {}）", moved, new_base, failed);
+}
+
+pub fn storage_base() -> String {
+    { let guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()); if let Some(ref s) = *guard { return s.clone(); } }
     
-    std::fs::create_dir_all(&default).ok();
+    // 统一数据目录：文件收拢到 get_data_dir()/files（跟随 storage.json 指针）
+    let base = crate::get_data_dir().join("files").to_string_lossy().to_string();
+    std::fs::create_dir_all(&base).ok();
+    migrate_legacy_files_once(&base);
     let mut guard = STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = Some(default.clone());
-    default
+    *guard = Some(base.clone());
+    base
 }
 
 pub fn invalidate_storage_base() { *STORAGE_BASE.lock().unwrap_or_else(|e| e.into_inner()) = None; }
@@ -1098,7 +1141,9 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-/// macOS：从 NSPasteboard 读取 Finder 复制的文件，拷贝到临时目录返回附件列表
+/// macOS：从 NSPasteboard 读取 Finder 复制的文件，拷贝到临时目录返回附件列表。
+/// 文件 URL 之外的常见情形：截图/复制的图像（pasteboard 直接携带图像数据）——
+/// 无 fileURL 时回退读 PNG/TIFF 数据落临时文件，保证失焦场景下截图粘贴可用。
 /// 必须在主线程读取剪贴板（AppKit 限制），故通过 run_on_main_thread 同步执行
 #[cfg(target_os = "macos")]
 fn read_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
@@ -1123,6 +1168,41 @@ fn read_clipboard_files_impl(app: &tauri::AppHandle) -> Vec<serde_json::Value> {
                         let decoded = percent_decode(&path);
                         if let Some(v) = copy_to_attach_temp(&decoded) {
                             files.push(v);
+                        }
+                    }
+                }
+            }
+            // 无文件 URL → 回退读图像数据（截图常驻 PNG；部分来源仅 TIFF）
+            if files.is_empty() {
+                use objc2_app_kit::{NSPasteboardTypePNG, NSPasteboardTypeTIFF};
+                let png_type = unsafe { NSPasteboardTypePNG };
+                let tiff_type = unsafe { NSPasteboardTypeTIFF };
+                let mut data = pb.dataForType(&png_type).filter(|d| d.length() > 0);
+                let mut ext = "png";
+                if data.is_none() {
+                    data = pb.dataForType(&tiff_type).filter(|d| d.length() > 0);
+                    ext = "tiff";
+                }
+                if let Some(d) = data {
+                    let len = d.length();
+                    // NSData::bytes 未生成安全绑定（纯指针 getter），经 msg_send 取
+                    let ptr: *const std::ffi::c_void = unsafe { objc2::msg_send![&*d, bytes] };
+                    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+                    if !bytes.is_empty() {
+                        let dir = std::env::temp_dir().join("arkmind_attach");
+                        std::fs::create_dir_all(&dir).ok();
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        let name = format!("pasted_{}.{}", ts, ext);
+                        let path = dir.join(&name);
+                        if std::fs::write(&path, bytes).is_ok() {
+                            files.push(serde_json::json!({
+                                "path": path.to_string_lossy(),
+                                "name": name,
+                                "kind": "image"
+                            }));
                         }
                     }
                 }

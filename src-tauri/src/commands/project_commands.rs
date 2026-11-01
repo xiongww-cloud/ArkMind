@@ -1217,6 +1217,86 @@ pub fn sync_solution_graph(project_id: &str) {
     }
     Ok(version)
 }
+/// 复制版本到同一项目内的另一个设备清单：源版本 items 深拷贝为目标清单下的新草稿（status='draft'）。
+/// 目标清单已有编辑中的草稿时拒绝（与前端「已有编辑中的版本」规则一致）。
+#[tauri::command]
+pub async fn solution_version_copy(
+    source_version_id: String,
+    target_solution_id: String,
+    version_num: Option<String>,
+    creator: Option<String>,
+) -> Result<Value, String> {
+    let src = database::get(
+        "SELECT sv.*, s.project_id AS src_project FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE sv.id=?1",
+        &[json!(&source_version_id)],
+    ).map_err(|e| e.to_string())?
+     .ok_or_else(|| "源版本不存在".to_string())?;
+    let tgt = database::get("SELECT project_id FROM solutions WHERE id=?1", &[json!(&target_solution_id)])
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "目标清单不存在".to_string())?;
+    let src_project = src["src_project"].as_str().unwrap_or("");
+    let tgt_project = tgt["project_id"].as_str().unwrap_or("");
+    if src_project.is_empty() || src_project != tgt_project {
+        return Err("仅支持复制到同一项目的设备清单".into());
+    }
+    if database::get(
+        "SELECT id FROM solution_versions WHERE solution_id=?1 AND status='draft' LIMIT 1",
+        &[json!(&target_solution_id)],
+    ).map_err(|e| e.to_string())?.is_some() {
+        return Err("目标清单已有编辑中的版本，请先保存或删除后再复制".into());
+    }
+    // 版本号：缺省按目标清单现有版本数递增（无草稿时等同历史数）
+    let vn = match version_num.filter(|s| !s.trim().is_empty()) {
+        Some(v) => v,
+        None => {
+            let cnt = database::get(
+                "SELECT COUNT(*) AS c FROM solution_versions WHERE solution_id=?1",
+                &[json!(&target_solution_id)],
+            ).map_err(|e| e.to_string())?
+             .and_then(|r| r["c"].as_i64()).unwrap_or(0);
+            format!("v{}.0", cnt + 1)
+        }
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let price_markup = src["price_markup"].as_f64().unwrap_or(1.0);
+    database::run(
+        "INSERT INTO solution_versions(id,solution_id,version,tags,content,creator,status,price_markup) VALUES(?1,?2,?3,'','',?4,'draft',?5)",
+        &[json!(&id), json!(&target_solution_id), json!(vn), json!(creator.unwrap_or_default()), json!(price_markup)],
+    ).map_err(|e| e.to_string())?;
+    // 深拷贝设备行（新 uuid，其余字段原样；product_id 全局有效，跨清单可用）
+    let rows = database::all(
+        "SELECT * FROM solution_items WHERE solution_version_id=?1 ORDER BY sort_order",
+        &[json!(&source_version_id)],
+    ).map_err(|e| e.to_string())?;
+    for row in &rows {
+        let item_id = uuid::Uuid::new_v4().to_string();
+        database::run(
+            "INSERT INTO solution_items(id,solution_version_id,product_id,product_name,device_name,quantity,unit,unit_price,original_unit_price,description,row_type,sort_order) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            &[
+                json!(item_id), json!(&id),
+                row["product_id"].clone(), row["product_name"].clone(), row["device_name"].clone(),
+                row["quantity"].clone(), row["unit"].clone(), row["unit_price"].clone(),
+                row["original_unit_price"].clone(), row["description"].clone(),
+                row["row_type"].clone(), row["sort_order"].clone(),
+            ],
+        ).map_err(|e| e.to_string())?;
+    }
+    // 项目侧同步（与 solution_version_create 同款三件套）
+    touch_project(src_project);
+    sync_project_products(src_project).ok();
+    sync_solution_graph(src_project);
+    // 返回完整版本数据（含 items 解析）
+    let mut version = database::get(
+        "SELECT sv.id, sv.version as versionNum, sv.tags, sv.content, sv.creator, sv.created_at as createdAt, sv.status, COALESCE(sv.price_markup, 1) as priceMarkup, COALESCE((SELECT SUM(si2.quantity * si2.unit_price) FROM solution_items si2 WHERE si2.solution_version_id=sv.id), 0) as amount, COALESCE((SELECT json_group_array(json_object('id', si.id, 'productId', si.product_id, 'product_id', si.product_id, 'model', si.product_name, 'deviceName', si.device_name, 'count', si.quantity, 'price', si.unit_price, 'unit', si.unit, 'name', CASE WHEN si.row_type='subnet' THEN si.description ELSE '' END, 'parameters', si.description, 'rowType', si.row_type, 'sortOrder', si.sort_order, 'originalPrice', si.original_unit_price)) FROM solution_items si WHERE si.solution_version_id=sv.id), '[]') as items FROM solution_versions sv WHERE sv.id=?",
+        &[json!(&id)],
+    ).map_err(|e| e.to_string())?.unwrap_or(Value::Null);
+    if let Some(s) = version["items"].as_str() {
+        if let Ok(arr) = serde_json::from_str::<Value>(s) {
+            version["items"] = arr;
+        }
+    }
+    Ok(version)
+}
 #[tauri::command] pub async fn solution_version_delete(version_id: String) -> Result<(), String> { let pid = database::get("SELECT s.project_id FROM solution_versions sv JOIN solutions s ON s.id=sv.solution_id WHERE sv.id=?1", &[json!(&version_id)]).ok().flatten().and_then(|r| r["project_id"].as_str().map(|s| s.to_string())); emit_for_version(&version_id); database::run("DELETE FROM business_relations WHERE (source_type='EQUIPMENT_VERSION' AND source_id=?1) OR (target_type='EQUIPMENT_VERSION' AND target_id=?1) OR (source_type='EQUIPMENT_ITEM' AND source_id IN (SELECT id FROM solution_items WHERE solution_version_id=?1)) OR (target_type='EQUIPMENT_ITEM' AND target_id IN (SELECT id FROM solution_items WHERE solution_version_id=?1))",&[json!(&version_id)]).ok(); database::run("DELETE FROM solution_items WHERE solution_version_id=?",&[json!(&version_id)]).ok(); database::run("DELETE FROM solution_versions WHERE id=?",&[json!(&version_id)]).map_err(|e| e.to_string())?; if let Some(pid) = pid { sync_project_products(&pid).ok(); sync_solution_graph(&pid); } Ok(()) }
 
 /// 从方案版本 ID 反查项目 ID，触发项目重新物化

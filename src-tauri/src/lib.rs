@@ -6,6 +6,7 @@ mod crypto;
 mod builtin_agents;
 mod database;
 mod services;
+mod storage_path;
 mod time_utils;
 
 /// 字符安全的文本预览：字符串源含多字节内容（模型输出/网页正文/用户数据）时，
@@ -14,21 +15,11 @@ pub fn preview(s: impl AsRef<str>, max: usize) -> String {
     s.as_ref().chars().take(max).collect()
 }
 
-/// 获取应用数据目录
-/// - macOS: ~/Arkmind（仅 Apple Silicon：bin/libpdfium.a 为 arm64-only，Intel Mac 无法构建）
-/// - Windows: %APPDATA%/com.arkmind.app
+/// 获取应用数据目录（统一数据目录：DB/文件/向量库/日志全在此根下）
+/// - 默认根见 storage_path::default_data_dir（macOS ~/Arkmind）
+/// - 用户可通过设置页迁移：指针 storage.json 固定在默认根，记录自定义目录
 pub fn get_data_dir() -> PathBuf {
-
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join("Arkmind")
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("com.arkmind.app")
-    }
+    storage_path::resolved_data_dir()
 }
 
 use database::db_path;
@@ -354,8 +345,11 @@ pub fn run() {
             commands::solution_list, commands::solution_create, commands::solution_rename, commands::solution_delete,
             commands::solution_version_list, commands::solution_version_create, commands::solution_version_update_meta,
             commands::solution_version_finalize, commands::solution_version_save_draft, commands::solution_version_delete,
+            commands::solution_version_copy,
             // Storage
             commands::storage_get_config, commands::storage_update_config, commands::oss_test_connection,
+            commands::storage_location, commands::storage_change_dir, commands::app_restart,
+            commands::storage_verify_previous, commands::storage_cleanup_previous, commands::storage_rollback,
             commands::storage_migrate, commands::storage_migrate_progress, commands::storage_default_path,
             // KB
             commands::kb_get_config, commands::kb_update_config, commands::kb_import_file, commands::kb_save_note,
@@ -391,6 +385,7 @@ pub fn run() {
             commands::create_sprite_window, commands::toggle_sprite_window, commands::close_sprite_window, commands::set_sprite_position,
             // Chat Window
             commands::create_chat_window, commands::toggle_chat_window, commands::close_chat_window, commands::set_chat_dialog_mode,
+            commands::chat_navigate_main,
             commands::get_chat_hotkey, commands::set_chat_hotkey,
             // Export
             commands::export_data, commands::export_pick_save_path, commands::import_data, commands::backup_all, commands::restore_all, commands::export_write_buffer,

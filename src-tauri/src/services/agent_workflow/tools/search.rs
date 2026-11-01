@@ -412,8 +412,7 @@ async fn search_once(keywords: &[String], scope_rowids: Option<std::collections:
             let title = database::get("SELECT title FROM source_data WHERE source_type=?1 AND source_id=?2", &[json!(st), json!(sid)])
                 .ok().flatten().and_then(|r| r["title"].as_str().map(String::from)).unwrap_or_default();
             let attrib = match st.as_str() {
-                "NOTE" => database::get("SELECT COALESCE(nb.name,'未归类') AS n FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1", &[json!(sid)])
-                    .ok().flatten().and_then(|r| r["n"].as_str().map(|s| format!("笔记本：{}", s))).unwrap_or_default(),
+                "NOTE" => super::common::note_attribution(sid),
                 "FILE" => database::get("SELECT CASE WHEN lfl.folder_id IS NULL THEN '未归类' ELSE COALESCE(lf.name,'未归类') END AS n FROM library_file_locations lfl LEFT JOIN library_folders lf ON lf.id=lfl.folder_id WHERE lfl.file_id=?1", &[json!(sid)])
                     .ok().flatten().and_then(|r| r["n"].as_str().map(|s| format!("目录：{}", s))).unwrap_or_default(),
                 _ => String::new(),

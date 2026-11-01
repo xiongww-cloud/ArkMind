@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSelectionStore } from '@/stores/selection'
 import AppIcon from '@/components/common/AppIcon.vue'
 import UploadModal from '@/components/shared/UploadModal.vue'
 import { toast } from '@/composables/useToast'
+import { scrollToSelected } from '@/utils/focusLocator'
 import { dangerConfirm } from '@/composables/useConfirm'
 import { fmtDate, formatSize, fileDisplayName, fileTypeColor } from '@/utils/format'
 import { fetchProjects, fetchTodos, fetchFiles, createTodo as apiCreateTodo, updateTodo as apiUpdateTodo, deleteTodo as apiDeleteTodo, toggleTodo as apiToggleTodo, previewFile, uploadFile, deleteFileFromDomain, fetchFilesByTodo, fetchFileTree } from '@/api/db-client'
@@ -367,11 +368,26 @@ function handleRouteQuery() {
     router.replace('/todos').then(() => setTimeout(() => handleCreatePrefilled(title, priority, dueDate, content), 50))
   }
   if (q.select || q.focus) {
-    selectedTodoId.value = (q.select || q.focus) as string
+    const id = (q.select || q.focus) as string
+    selectedTodoId.value = id
+    locateTodo(id)
   }
 }
 
-watch(() => route.query, handleRouteQuery)
+const todoListRef = ref<HTMLElement | null>(null)
+/** focus 深链定位：切回列表视图（日历态不渲染列表）→ 已完成项自动展开抽屉 → 滚动到可见 */
+async function locateTodo(id: string) {
+  viewMode.value = 'list'
+  const t = todos.value.find((x) => x.id === id)
+  if (t?.done) doneDrawerOpen.value = true
+  await nextTick()
+  scrollToSelected(todoListRef.value, 'todo-id', id)
+}
+
+// ★ 仅本页路由消费 query——KeepAlive 缓存期间其它页面的 focus 不得污染待办选中态
+watch(() => route.query, () => {
+  if (route.path === '/todos') handleRouteQuery()
+})
 watch(() => selectionStore.current.seq, () => {
   if (selectionStore.current.type === 'todo') {
     selectedTodoId.value = selectionStore.current.id
@@ -433,13 +449,13 @@ function isOverdue(t: Todo): boolean {
       </div>
     </div>
     <!-- List View -->
-    <div v-if="viewMode === 'list'" class="flex-1 overflow-y-auto p-2 space-y-1.5">
+    <div ref="todoListRef" v-if="viewMode === 'list'" class="flex-1 overflow-y-auto p-2 space-y-1.5">
       <div v-if="loading" class="text-center py-8">
         <p class="text-xs text-surface-400">加载中...</p>
       </div>
       <div v-else>
         <!-- Undone todos -->
-        <div v-for="todo in undoneTodos" :key="todo.id"
+        <div v-for="todo in undoneTodos" :key="todo.id" :data-todo-id="todo.id"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200 group border bg-white shadow-sm relative overflow-hidden"
           :class="[
             'border-surface-100 hover:border-surface-300 hover:shadow-md',
@@ -485,7 +501,7 @@ function isOverdue(t: Todo): boolean {
         <span class="ml-auto text-surface-300">{{ doneTodos.length }} 项</span>
       </button>
       <div v-show="doneDrawerOpen" class="px-2 pb-2 space-y-1 max-h-[200px] overflow-y-auto">
-        <div v-for="todo in doneTodos" :key="todo.id"
+        <div v-for="todo in doneTodos" :key="todo.id" :data-todo-id="todo.id"
           class="flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer group border bg-gray-50/80 border-gray-200"
           :class="selectedTodoId === todo.id ? 'bg-gray-100/70 border-gray-300' : ''"
           @click="selectTodo(todo.id)"

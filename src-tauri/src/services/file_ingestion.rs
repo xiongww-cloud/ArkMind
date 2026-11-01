@@ -15,7 +15,52 @@ use serde_json::json;
 
 static INGESTION_RUNNING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
-const MAX_CONCURRENT: usize = 5;
+/// 解析 worker 并发：5→2（Windows OOM 定案：多 worker × 全量文本读/正则克隆/OCR 载荷
+/// 的内存倍增是 alloc-abort 主源；串行化重型解析后剩余并发收益小、风险大）
+const MAX_CONCURRENT: usize = 2;
+
+/// 内存背压阈值：可用物理内存低于此值不领取新任务（队列保持 pending 自动减速）
+const MEMORY_MIN_AVAILABLE_MB: u64 = 1536;
+
+/// 可用物理内存（MB）；非 Windows 暂不设闸（mac 未复现 OOM 闪退）
+#[cfg(windows)]
+fn available_physical_mb() -> Option<u64> {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        dw_length: u32,
+        dw_memory_load: u32,
+        ull_total_phys: u64,
+        ull_avail_phys: u64,
+        ull_total_page_file: u64,
+        ull_avail_page_file: u64,
+        ull_total_virtual: u64,
+        ull_avail_virtual: u64,
+        ull_avail_extended_virtual: u64,
+    }
+    extern "system" {
+        fn GlobalMemoryStatusEx(lp_buffer: *mut MemoryStatusEx) -> i32;
+    }
+    unsafe {
+        let mut m: MemoryStatusEx = std::mem::zeroed();
+        m.dw_length = std::mem::size_of::<MemoryStatusEx>() as u32;
+        if GlobalMemoryStatusEx(&mut m) != 0 {
+            Some(m.ull_avail_phys / (1024 * 1024))
+        } else {
+            None
+        }
+    }
+}
+#[cfg(not(windows))]
+fn available_physical_mb() -> Option<u64> {
+    None
+}
+
+/// 任务级内存水位日志（取证用：OOM 崩溃后 app.log 直接可见水位变化，无需再挖 dump）
+fn log_memory_watermark(tag: &str) {
+    if let Some(avail) = available_physical_mb() {
+        log::info!("[内存水位] {} 可用物理 {}MB", tag, avail);
+    }
+}
 
 /// 任务错误前缀：带此前缀的错误不参与任务级重试，直接标记为 failed（如视觉模型解析失败）
 pub const NON_RETRYABLE_PREFIX: &str = "__NO_RETRY__";
@@ -203,6 +248,21 @@ fn process_push_queue_non_blocking() -> usize {
         return 0; // 没有可用槽位，跳过本轮
     }
 
+    // 内存背压：可用物理内存低于阈值 → 本轮不领取（任务留在 pending，批次自减速）
+    if let Some(avail_mb) = available_physical_mb() {
+        if avail_mb < MEMORY_MIN_AVAILABLE_MB {
+            use std::sync::atomic::AtomicU64;
+            static LAST_MEM_WARN: AtomicU64 = AtomicU64::new(0);
+            let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let last = LAST_MEM_WARN.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(last) >= 60_000 && LAST_MEM_WARN.compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                log::warn!("[数据中台] 内存背压：可用物理 {}MB < {}MB 阈值，本轮暂停领取新任务（30s 后重试）", avail_mb, MEMORY_MIN_AVAILABLE_MB);
+            }
+            std::thread::sleep(Duration::from_millis(30_000));
+            return 0;
+        }
+    }
+
     let available_slots = MAX_CONCURRENT - current_active;
     // 单语句原子领取（UPDATE…RETURNING）：SELECT 与标记分离时，并发入队/重启窗口会让同一行被领取两次
     let tasks = match crate::database::all(
@@ -259,9 +319,11 @@ fn process_push_queue_non_blocking() -> usize {
                 fn drop(&mut self) { ACTIVE_TASKS.fetch_sub(1, Ordering::SeqCst); }
             }
             let _guard = TaskGuard;
+            log_memory_watermark(&format!("任务开始 {}/{}", source_type, source_id));
             let start = std::time::Instant::now();
             process_task_with_retry(task);
             let elapsed = start.elapsed().as_millis();
+            log_memory_watermark(&format!("任务完成 {}/{}", source_type, source_id));
             log::info!("[数据中台] ← 完成任务 {}/{} (耗时 {}ms) [剩余活跃 {}]", source_type, source_id, elapsed, ACTIVE_TASKS.load(Ordering::Relaxed));
         });
     }

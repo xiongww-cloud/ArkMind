@@ -227,7 +227,6 @@ export interface AgentDoneResult {
   answer?: string
   tool_log?: any[]
   context_docs?: any[]
-  sources?: any[]
   workspace?: string
   error?: string
   clarification?: ClarificationData

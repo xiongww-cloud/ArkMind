@@ -14,6 +14,34 @@ pub(crate) fn parse_source_id(source_id_str: &str) -> (String, String) {
     }
 }
 
+/// 笔记归属回显（检索/对象详情共用单一入口）——AI 用它回答"这笔记属于谁"。
+/// 优先级与前端视图语义一致：闪记 → 每日闪记；笔记本 → 笔记本：X；
+/// 项目笔记（note_project_mapping ⋈ projects）→ 项目：A、B（多项目顿号连接）；都没有 → 未归类。
+/// 此前只查 notebook 且兜底"未归类"，项目笔记与闪记被误报为未归类。
+pub(crate) fn note_attribution(note_id: &str) -> String {
+    let row = database::get(
+        "SELECT n.is_daily, COALESCE(nb.name,'') AS nb_name, \
+         COALESCE((SELECT GROUP_CONCAT(DISTINCT p.name) FROM note_project_mapping npm \
+         JOIN projects p ON p.id=npm.project_id WHERE npm.note_id=n.note_id),'') AS project_names \
+         FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1",
+        &[json!(note_id)],
+    ).ok().flatten();
+    let Some(row) = row else { return "未归类".to_string() };
+    let is_daily = row["is_daily"].as_i64().unwrap_or(0) != 0 || row["is_daily"].as_bool().unwrap_or(false);
+    if is_daily {
+        return "每日闪记".to_string();
+    }
+    let nb = row["nb_name"].as_str().unwrap_or("");
+    if !nb.is_empty() {
+        return format!("笔记本：{}", nb);
+    }
+    let projects = row["project_names"].as_str().unwrap_or("");
+    if !projects.is_empty() {
+        return format!("项目：{}", projects);
+    }
+    "未归类".to_string()
+}
+
 /// 查询 source_data 表获取来源信息，返回 JSON 对象
 /// 返回结构：{"found": true, "id": "uuid", "type": "PROJECT", "name": "名称", "source_data_id": "123"}
 pub fn build_chunk_metadata(source_id_str: &str) -> serde_json::Value {
@@ -150,4 +178,35 @@ pub(crate) fn fetch_parent_chunks(source_data_id: &str, source_type: &str, sourc
         "total_chunks": total_chunks,
         "chunks": chunks
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::database::{run, get};
+
+    /// 笔记归属：闪记 → 每日闪记；笔记本 → 笔记本：X；项目笔记 → 项目：A、B；无归属 → 未归类
+    #[test]
+    fn note_attribution_covers_daily_notebook_project_and_plain() {
+        let (_dir, _g) = crate::database::db_core::test_util::setup_test_db();
+        run("CREATE TABLE notes(note_id TEXT PRIMARY KEY, title TEXT, is_daily INTEGER NOT NULL DEFAULT 0, notebook_id TEXT)", &[]).unwrap();
+        run("CREATE TABLE notebooks(id TEXT PRIMARY KEY, name TEXT)", &[]).unwrap();
+        run("CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT)", &[]).unwrap();
+        run("CREATE TABLE note_project_mapping(note_id TEXT, project_id TEXT)", &[]).unwrap();
+
+        run("INSERT INTO notes(note_id,title,is_daily) VALUES('n-daily','随手记',1)", &[]).unwrap();
+        run("INSERT INTO notes(note_id,title,is_daily,notebook_id) VALUES('n-nb','笔记',0,'nb1')", &[]).unwrap();
+        run("INSERT INTO notes(note_id,title,is_daily) VALUES('n-proj','项目笔记',0)", &[]).unwrap();
+        run("INSERT INTO notes(note_id,title,is_daily) VALUES('n-plain','裸笔记',0)", &[]).unwrap();
+        run("INSERT INTO notebooks(id,name) VALUES('nb1','技术方案')", &[]).unwrap();
+        run("INSERT INTO projects(id,name) VALUES('p1','华东医院'),('p2','智慧园区')", &[]).unwrap();
+        run("INSERT INTO note_project_mapping VALUES('n-proj','p1'),('n-proj','p2')", &[]).unwrap();
+
+        assert_eq!(super::note_attribution("n-daily"), "每日闪记");
+        assert_eq!(super::note_attribution("n-nb"), "笔记本：技术方案");
+        let proj = super::note_attribution("n-proj");
+        assert!(proj.starts_with("项目："), "项目笔记应显示所属项目，实得: {}", proj);
+        assert!(proj.contains("华东医院") && proj.contains("智慧园区"), "多项目顿号连接: {}", proj);
+        assert_eq!(super::note_attribution("n-plain"), "未归类");
+        assert_eq!(super::note_attribution("missing"), "未归类");
+    }
 }

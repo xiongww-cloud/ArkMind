@@ -2,6 +2,7 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import type { PropType } from 'vue'
 import { findModelSuggestion } from '@/utils/modelSuggestion'
+import { findHistoryParams, listHistoryParams } from '@/utils/resolveParams'
 import { lintParams, fixParams, paramsEquivalent, stripControlContent } from '@/utils/paramText'
 import type { LintIssue } from '@/utils/paramText'
 import { toast } from '@/composables/useToast'
@@ -15,6 +16,8 @@ const productStore = useProductStore()
 const props = defineProps({
   items: { type: Array as PropType<any[]>, required: true },
   products: { type: Array as PropType<any[]>, default: () => [] },
+  /** 本清单历史版本（新→旧，fetchProjectDetail 形状）：参数回填的第一来源 */
+  history: { type: Array as PropType<any[]>, default: () => [] },
   readonly: { type: Boolean, default: false },
   invalidUids: { type: Array as PropType<string[]>, default: () => [] }
 })
@@ -312,7 +315,7 @@ function onDeviceKeydown(e: KeyboardEvent, item: any) {
   }
 }
 
-/** 型号确认（Enter/blur）：匹配产品库回填关联/价格/参数 */
+/** 型号确认（Enter/blur）：匹配产品库回填关联/价格/参数；参数回填本清单历史优先 */
 function handleDeviceConfirm(item: any, e?: any) {
   if (e?.isComposing) return
   setModelGhost(item, null)
@@ -323,6 +326,7 @@ function handleDeviceConfirm(item: any, e?: any) {
     return
   }
   item.model = text
+  const hist = findHistoryParams(props.history, text)
   const match = props.products.find(
     (p: any) => (p.name || '').toLowerCase() === text.toLowerCase()
   )
@@ -331,10 +335,12 @@ function handleDeviceConfirm(item: any, e?: any) {
     item.model = match.name || match.model
     item.syncParams = false
     if (match.price && !item.unitPrice) item.unitPrice = match.price
-    item.mergedText = item.mergedText || match.full_specs || ''
+    item.mergedText = item.mergedText || hist?.mergedText || match.full_specs || ''
   } else {
     item.productId = null
     item.syncParams = true
+    // 产品库无此型号，但本清单历史调过 → 仍可回填项目内参数
+    if (!item.mergedText && hist) item.mergedText = hist.mergedText
   }
 }
 
@@ -531,21 +537,43 @@ async function removeRow(idx: number) {
   }
 }
 
-// ─── 行内悬浮「+」：向下添加设备 / 子网 ─────────────────────────────────────
-const addMenu = ref<{ idx: number; x: number; y: number } | null>(null)
-function openAddMenu(idx: number, e: MouseEvent) {
+// ─── 行间悬浮「+」与子网「+」：随处插入设备 / 子网 ─────────────────────────
+/** 当前悬浮行（items 下标）：行间「+」与悬浮删除按此显隐——不用 CSS group-hover，
+ *  因为缝隙按钮跨在行边界上，几何上会落入相邻行的 :hover 区域，点亮相邻行按钮 */
+const hoverIdx = ref<number | null>(null)
+const addMenu = ref<{ kind: 'gap' | 'subnet'; at: number; x: number; y: number } | null>(null)
+
+/** 行间缝隙「+」：at = 直接 splice 位置（缝隙即位置） */
+function openGapAddMenu(at: number, e: MouseEvent) {
   e.stopPropagation()
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  addMenu.value = { idx, x: r.left, y: r.bottom + 6 }
+  addMenu.value = { kind: 'gap', at, x: r.left, y: r.bottom + 6 }
 }
-function insertAt(idx: number, type: 'device' | 'subnet', dir: 'above' | 'below' = 'below') {
+/** 子网头部「+」：子网内顶/底加设备 + 子网块外上/下加子网 */
+function openSubnetAddMenu(subnetIdx: number, e: MouseEvent) {
+  e.stopPropagation()
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  addMenu.value = { kind: 'subnet', at: subnetIdx, x: r.left, y: r.bottom + 6 }
+}
+/** 按 splice 位置直接插入；插入后滚动到该行，设备行聚焦名称格 */
+function insertAtPos(at: number, type: 'device' | 'subnet') {
   if (props.readonly) return
   const row =
     type === 'device' ? blankDevice() : { uid: guid(), rowType: 'subnet', name: '新子网' }
-  const at = Math.max(0, Math.min(dir === 'below' ? idx + 1 : idx, props.items.length))
-  props.items.splice(at, 0, row)
+  const pos = Math.max(0, Math.min(at, props.items.length))
+  props.items.splice(pos, 0, row)
   addMenu.value = null
-  if (type === 'device') nextTick(() => focusCell(at, 'customName'))
+  nextTick(() => {
+    scrollRowIntoView(pos)
+    if (type === 'device') focusCell(pos, 'customName')
+  })
+}
+/** 滚动指定行到视区中央（平滑） */
+function scrollRowIntoView(idx: number) {
+  nextTick(() => {
+    const row = document.querySelector(`[data-item-idx="${idx}"]`) as HTMLElement | null
+    row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
 }
 
 /** 在子网内添加设备：top = 成为第一个子设备；bottom = 成为最后一个子设备 */
@@ -554,7 +582,10 @@ function insertIntoSubnet(subnetIdx: number, pos: 'top' | 'bottom') {
   const at = pos === 'top' ? subnetIdx + 1 : subnetBlockEnd(subnetIdx)
   props.items.splice(at, 0, blankDevice())
   addMenu.value = null
-  nextTick(() => focusCell(at, 'customName'))
+  nextTick(() => {
+    scrollRowIntoView(at)
+    focusCell(at, 'customName')
+  })
 }
 function closeAddMenu(e?: Event) {
   if (addMenu.value && !(e?.target as HTMLElement)?.closest?.('[data-add-menu]')) {
@@ -758,6 +789,19 @@ function resizeAllParams() {
     document
       .querySelectorAll('textarea[data-param-cell], textarea[data-model-cell]')
       .forEach((el) => autoGrow(el as HTMLTextAreaElement))
+    updateClippedMap()
+  })
+}
+/** 收起态是否被裁切（底部渐显用）：裁切容器 clientHeight < textarea 实际高度 */
+const clippedMap = reactive<Record<string, boolean>>({})
+function updateClippedMap() {
+  document.querySelectorAll('textarea[data-param-cell]').forEach((el) => {
+    const ta = el as HTMLTextAreaElement
+    const rowIdx = Number(ta.getAttribute('data-row-idx'))
+    const uid = (props.items as any[])[rowIdx]?.uid
+    if (!uid) return
+    const clipper = ta.closest('[data-param-clip]') as HTMLElement | null
+    clippedMap[uid] = !!clipper && ta.offsetHeight > clipper.clientHeight + 1
   })
 }
 onMounted(() => {
@@ -766,6 +810,8 @@ onMounted(() => {
   window.addEventListener('keydown', onKeyUndoRedo)
   resetHistory()
   resizeAllParams()
+  // 字体（Inter）异步落位后行高会变——不重算则 textarea 定高小于真实内容，底部被裁
+  try { document.fonts.ready.then(() => resizeAllParams()).catch(() => {}) } catch { /* 非标准环境静默 */ }
 })
 onUnmounted(() => {
   document.removeEventListener('click', cud)
@@ -878,38 +924,93 @@ function findProduct(item: any) {
   return list.find((p: any) => (p.name || '').toLowerCase() === model.toLowerCase()) || null
 }
 
-/** 拉取单行参数；本地不一致时询问覆盖/保留 */
+// ─── 拉取参数：来源选择器（历史版本逐一展示参数供点选） ────────────────────
+const showPullPicker = ref(false)
+const pullItem = ref<any>(null)
+const pullSources = ref<any[]>([])
+/** 各来源卡片的参数预览展开态（默认收起，点「展开参数」下拉） */
+const pullExpanded = ref<Record<number, boolean>>({})
+
+/** 拉取单行参数：多来源时弹选择器把每个历史版本的参数展示出来供点选 */
 async function pullRow(item: any) {
   if (props.readonly) return
+  const model = (item.model || '').trim()
+  const hits = model ? listHistoryParams(props.history, model) : []
   const product = findProduct(item)
-  if (!product) {
-    toast({ message: '未匹配到产品库条目，无法拉取', type: 'warning' })
+  if (!hits.length && !product) {
+    toast({ message: '未匹配到本清单历史与产品库条目，无法拉取', type: 'warning' })
     return
   }
-  const remote = product.full_specs || ''
+  const sources = [
+    ...hits.map((h) => ({
+      kind: 'history' as const,
+      label: h.versionNum ? String(h.versionNum).replace(/^V/, 'v') : '历史版本',
+      meta: h.createdAt ? String(h.createdAt).slice(0, 16).replace('T', ' ') : '',
+      mergedText: h.mergedText,
+      productId: h.productId
+    })),
+    ...(product
+      ? [
+          {
+            kind: 'product' as const,
+            label: product.name || '产品库',
+            meta: '产品库',
+            mergedText: product.full_specs || '',
+            productId: product.id
+          }
+        ]
+      : [])
+  ]
+  if (sources.length === 1) {
+    await applyPullSource(item, sources[0])
+    return
+  }
+  pullItem.value = item
+  pullSources.value = sources
+  pullExpanded.value = {}
+  showPullPicker.value = true
+}
+
+/** 选择器中点选某个来源 */
+async function choosePullSource(src: any) {
+  showPullPicker.value = false
+  const item = pullItem.value
+  pullItem.value = null
+  if (!item || !src) return
+  await applyPullSource(item, src)
+}
+
+/** 应用所选来源参数；本地不一致时询问覆盖/保留 */
+async function applyPullSource(item: any, src: any) {
+  const remote = src.mergedText || ''
   const local = item.mergedText || ''
+  if (!remote.trim()) {
+    toast({ message: '该来源没有参数，无法拉取', type: 'warning' })
+    return
+  }
+  const srcName = src.kind === 'history' ? `本清单历史 ${src.label}` : `「${src.label}」`
   if (paramsEquivalent(local, remote)) {
-    toast({ message: '参数与产品库一致，无需拉取', type: 'success' })
+    toast({ message: `参数与${srcName}一致，无需拉取`, type: 'success' })
     return
   }
   if (local.trim()) {
     const ok = await confirm({
       title: '覆盖本地参数？',
-      message: `「${item.customName || item.model}」的参数与产品库不一致。覆盖将以产品库参数替换本地修改。`,
+      message: `「${item.customName || item.model}」的参数与${srcName}不一致。覆盖将以所选来源参数替换本地修改。`,
       confirmText: '覆盖',
       cancelText: '保留本地'
     })
     if (!ok) return
   }
   item.mergedText = remote
-  item.productId = product.id
+  if (src.productId) item.productId = src.productId
   if (issues.value[item.uid]) {
     const next = { ...issues.value }
     delete next[item.uid]
     issues.value = next
   }
   resizeAllParams()
-  toast({ message: `已拉取「${product.name}」参数`, type: 'success' })
+  toast({ message: `已拉取${srcName}参数`, type: 'success' })
 }
 
 /** 一键立即回写：把该设备当前参数写回产品库（覆盖 full_specs） */
@@ -945,29 +1046,34 @@ async function writeBack(item: any) {
   }
 }
 
-/** 批量拉取：只填充参数为空的已匹配设备 */
+/** 批量填充：只填参数为空的已匹配设备；来源 = 本清单历史 → 产品库 */
 function pullAllEmpty() {
   if (props.readonly) return
   let filled = 0
   let skipped = 0
   for (const item of props.items) {
     if (item.rowType === 'subnet') continue
-    const product = findProduct(item)
-    if (!product || !product.full_specs) {
-      if (item.productId || item.model) skipped++
-      continue
-    }
     if ((item.mergedText || '').trim()) {
       skipped++
       continue
     }
-    item.mergedText = product.full_specs
-    item.productId = product.id
+    const model = (item.model || '').trim()
+    const hist = model ? findHistoryParams(props.history, model) : null
+    const product = findProduct(item)
+    const source = hist?.mergedText || product?.full_specs || ''
+    if (!source) {
+      if (item.productId || item.model) skipped++
+      continue
+    }
+    item.mergedText = source
+    if (!item.productId && (hist?.productId || product?.id)) {
+      item.productId = hist?.productId || product?.id
+    }
     filled++
   }
   resizeAllParams()
   if (filled > 0) toast({ message: `已填充 ${filled} 台设备的参数${skipped ? `（跳过 ${skipped} 台）` : ''}`, type: 'success' })
-  else toast({ message: '没有可填充的空白参数（设备需已匹配产品库）', type: 'warning' })
+  else toast({ message: '没有可填充的空白参数（需已匹配产品库或本清单历史中有同型号）', type: 'warning' })
 }
 
 // ─── 检查 / 一键修复 ─────────────────────────────────────────────────────────
@@ -1086,7 +1192,17 @@ function dragLabel() {
   return it?.customName || it?.name || it?.model || '拖动'
 }
 
-defineExpose({ lintAll, fixAll, stripControlAll, pullAllEmpty, undo, redo, canUndo, canRedo })
+defineExpose({
+  lintAll,
+  fixAll,
+  stripControlAll,
+  pullAllEmpty,
+  undo,
+  redo,
+  canUndo,
+  canRedo,
+  scrollToIdx: (idx: number) => scrollRowIntoView(idx)
+})
 
 // ─── 展示辅助 ────────────────────────────────────────────────────────────────
 function subtotal(item: any) {
@@ -1127,9 +1243,9 @@ function subtotal(item: any) {
       <div class="w-[100px] shrink-0 px-2 py-1.5 flex items-center justify-center">小计</div>
     </div>
 
-    <!-- 行列表 -->
+    <!-- 行列表（pt/pb 给行间「+」留出显示空间，避免首末行按钮被表头/底栏遮挡） -->
     <div
-      class="flex-1 overflow-y-auto min-h-0 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full"
+      class="flex-1 overflow-y-auto min-h-0 pt-3 pb-3 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200 [&::-webkit-scrollbar-thumb]:rounded-full"
     >
       <div
         v-if="items.length === 0"
@@ -1137,10 +1253,10 @@ function subtotal(item: any) {
       >
         <p>{{ readonly ? '此版本为空。' : '清单为空，先添加设备或子网。' }}</p>
         <div v-if="!readonly" class="flex items-center justify-center gap-2">
-          <button @click="insertAt(-1, 'device')" class="btn-secondary">
+          <button @click="insertAtPos(items.length, 'device')" class="btn-secondary">
             <AppIcon name="plus" class="w-3.5 h-3.5" />添加设备
           </button>
-          <button @click="insertAt(-1, 'subnet')" class="btn-secondary">
+          <button @click="insertAtPos(items.length, 'subnet')" class="btn-secondary">
             <AppIcon name="folder" class="w-3.5 h-3.5" />添加子网
           </button>
         </div>
@@ -1153,6 +1269,8 @@ function subtotal(item: any) {
           :data-item-idx="group.subnetIdx"
           data-subnet-row
           @mousedown="onRowMousedown($event, group.subnetIdx ?? 0)"
+          @mouseenter="hoverIdx = group.subnetIdx"
+          @mouseleave="hoverIdx = null"
           class="relative flex items-stretch border-b group transition-all"
           :class="[
             group.theme.bg,
@@ -1169,6 +1287,29 @@ function subtotal(item: any) {
             v-if="idr && dragInsert?.targetIdx === group.subnetIdx && dragInsert?.side === 'below'"
             class="absolute -bottom-[2px] left-0 right-0 z-20 h-[4px] bg-blue-500 rounded-full pointer-events-none"
           />
+          <!-- 行间插入「+」：上下沿（缝隙即插入位置；子网下沿=块外；JS 悬停态显隐） -->
+          <button
+            v-if="!readonly"
+            @click.stop="openGapAddMenu(group.subnetIdx ?? 0, $event)"
+            @mousedown.stop
+            data-add-menu
+            class="absolute left-[155px] -top-[9px] z-30 w-[18px] h-[18px] rounded-full border border-gray-200 bg-white shadow-sm text-gray-400 flex items-center justify-center transition-all hover:text-blue-600 hover:border-blue-300 hover:scale-110"
+            :class="hoverIdx === (group.subnetIdx ?? 0) ? 'opacity-100' : 'opacity-0 pointer-events-none'"
+            v-tooltip="'在此处插入'"
+          >
+            <AppIcon name="plus" class="w-2.5 h-2.5" />
+          </button>
+          <button
+            v-if="!readonly"
+            @click.stop="openGapAddMenu(subnetBlockEnd(group.subnetIdx ?? 0), $event)"
+            @mousedown.stop
+            data-add-menu
+            class="absolute left-[155px] -bottom-[9px] z-30 w-[18px] h-[18px] rounded-full border border-gray-200 bg-white shadow-sm text-gray-400 flex items-center justify-center transition-all hover:text-blue-600 hover:border-blue-300 hover:scale-110"
+            :class="hoverIdx === (group.subnetIdx ?? 0) ? 'opacity-100' : 'opacity-0 pointer-events-none'"
+            v-tooltip="'在此处插入'"
+          >
+            <AppIcon name="plus" class="w-2.5 h-2.5" />
+          </button>
 
           <div class="flex-1 flex items-center gap-1.5 px-2 py-1.5 min-w-0">
             <button
@@ -1199,7 +1340,7 @@ function subtotal(item: any) {
             <!-- 名称右侧：纯图标按钮（添加设备 + 删除子网） -->
             <button
               v-if="!readonly"
-              @click.stop="openAddMenu(group.subnetIdx ?? 0, $event)"
+              @click.stop="openSubnetAddMenu(group.subnetIdx ?? 0, $event)"
               data-add-menu
               class="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors"
               :class="group.theme.add"
@@ -1236,6 +1377,8 @@ function subtotal(item: any) {
             @click.capture="onRowCapture(idx, $event)"
             @click="onRowClick(idx, $event)"
             @mousedown="onRowMousedown($event, idx)"
+            @mouseenter="hoverIdx = idx"
+            @mouseleave="hoverIdx = null"
             class="relative flex items-stretch border-b border-surface-100 transition-all group cursor-pointer"
             :style="isSelected(item.uid) ? { backgroundColor: 'rgba(191, 219, 254, 0.55)' } : {}"
             :class="[
@@ -1264,7 +1407,7 @@ function subtotal(item: any) {
             <!-- 序号 -->
             <div
               class="w-[44px] shrink-0 flex items-center justify-center text-[11px] text-surface-400 select-none transition-opacity"
-              :class="!readonly ? 'group-hover:opacity-0' : ''"
+              :class="!readonly && hoverIdx === idx ? 'opacity-0' : ''"
             >
               {{ no }}
             </div>
@@ -1272,7 +1415,8 @@ function subtotal(item: any) {
             <!-- 悬浮删除（占序号位；仅点击小圆钮本体才删除） -->
             <div
               v-if="!readonly"
-              class="absolute left-0 top-0 bottom-0 w-[44px] z-20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+              class="absolute left-0 top-0 bottom-0 w-[44px] z-20 flex items-center justify-center transition-opacity pointer-events-none"
+              :class="hoverIdx === idx ? 'opacity-100' : 'opacity-0'"
             >
               <button
                 @click.stop="removeRow(idx)"
@@ -1282,6 +1426,30 @@ function subtotal(item: any) {
                 <AppIcon name="x" class="w-2.5 h-2.5" />
               </button>
             </div>
+
+            <!-- 行间插入「+」：上下沿（缝隙即插入位置；位于名称列与型号列分界；JS 悬停态显隐） -->
+            <button
+              v-if="!readonly"
+              @click.stop="openGapAddMenu(idx, $event)"
+              @mousedown.stop
+              data-add-menu
+              class="absolute left-[155px] -top-[9px] z-30 w-[18px] h-[18px] rounded-full border border-gray-200 bg-white shadow-sm text-gray-400 flex items-center justify-center transition-all hover:text-blue-600 hover:border-blue-300 hover:scale-110"
+              :class="hoverIdx === idx ? 'opacity-100' : 'opacity-0 pointer-events-none'"
+              v-tooltip="'在此处插入'"
+            >
+              <AppIcon name="plus" class="w-2.5 h-2.5" />
+            </button>
+            <button
+              v-if="!readonly"
+              @click.stop="openGapAddMenu(idx + 1, $event)"
+              @mousedown.stop
+              data-add-menu
+              class="absolute left-[155px] -bottom-[9px] z-30 w-[18px] h-[18px] rounded-full border border-gray-200 bg-white shadow-sm text-gray-400 flex items-center justify-center transition-all hover:text-blue-600 hover:border-blue-300 hover:scale-110"
+              :class="hoverIdx === idx ? 'opacity-100' : 'opacity-0 pointer-events-none'"
+              v-tooltip="'在此处插入'"
+            >
+              <AppIcon name="plus" class="w-2.5 h-2.5" />
+            </button>
 
             <!-- 设备名称（支持换行，完整显示） -->
             <div class="w-[120px] shrink-0 px-1.5 flex items-center">
@@ -1339,10 +1507,11 @@ function subtotal(item: any) {
               </div>
             </div>
 
-            <!-- 参数（默认收起两行，可下拉展开） -->
-            <div class="flex-1 min-w-[200px] px-1.5 relative flex items-center group/param">
+            <!-- 参数（默认收起两行，可下拉展开；底部独占操作条，永不遮字） -->
+            <div class="flex-1 min-w-[200px] px-1.5 relative flex flex-col group/param">
               <div
-                class="w-full"
+                data-param-clip
+                class="w-full relative"
                 :class="isExpanded(item.uid) ? '' : 'max-h-[52px] overflow-hidden'"
               >
                 <textarea
@@ -1371,10 +1540,15 @@ function subtotal(item: any) {
                   class="text-[12px] leading-relaxed text-gray-700 whitespace-pre-wrap break-words px-2 py-1 min-h-[28px] cursor-pointer"
                   :class="item.mergedText ? '' : 'text-gray-300'"
                 >{{ item.mergedText || '—' }}</div>
+                <!-- 收起态裁切处的底部渐隐：半行不再突兀截断，提示下方还有内容 -->
+                <div
+                  v-if="!isExpanded(item.uid) && clippedMap[item.uid]"
+                  class="pointer-events-none absolute bottom-0 left-0 right-0 h-5 bg-gradient-to-t from-gray-50 to-transparent"
+                ></div>
               </div>
-              <!-- 悬浮操作区：问题数 / 回写 / 复制 / 拉取（在裁切层之外，带底色） -->
+              <!-- 底部操作条：独占一行（占位常在、按钮 hover 显隐）——文本全宽、按钮永不遮字 -->
               <div
-                class="absolute bottom-1 right-2 flex items-center gap-0.5 opacity-0 group-hover/param:opacity-100 focus-within:opacity-100 transition-opacity z-10"
+                class="h-5 shrink-0 flex items-center justify-end gap-0.5 pr-0.5 opacity-0 group-hover/param:opacity-100 focus-within:opacity-100 transition-opacity"
               >
                 <span
                   v-if="issues[item.uid]"
@@ -1554,31 +1728,69 @@ function subtotal(item: any) {
     </div>
   </Teleport>
 
-  <!-- 子网「+」下拉菜单：在子网中添加设备 -->
+  <!-- 插入下拉菜单：行间缝隙（添加设备/子网） or 子网头部（子网内加设备 + 块外加子网） -->
   <Teleport to="body">
     <div
       v-if="addMenu"
       data-add-menu
-      class="fixed z-[90] bg-white shadow-lg border border-gray-100 rounded-lg py-1 min-w-[132px]"
+      class="fixed z-[90] bg-white shadow-lg border border-gray-100 rounded-lg py-1 w-max max-w-[220px]"
       :style="{ left: addMenu.x + 'px', top: addMenu.y + 'px' }"
     >
-      <div class="px-3 pt-1 pb-1 text-[10px] text-surface-400 uppercase tracking-wider">
-        在子网中添加设备
-      </div>
-      <button
-        data-add-menu
-        @click.stop="insertIntoSubnet(addMenu.idx, 'top')"
-        class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-      >
-        <AppIcon name="plus" class="w-3 h-3" />添加到子网顶部
-      </button>
-      <button
-        data-add-menu
-        @click.stop="insertIntoSubnet(addMenu.idx, 'bottom')"
-        class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-      >
-        <AppIcon name="plus" class="w-3 h-3" />添加到子网底部
-      </button>
+      <template v-if="addMenu.kind === 'gap'">
+        <div class="px-3 pt-1 pb-1 text-[10px] text-surface-400 uppercase tracking-wider">
+          在此处插入
+        </div>
+        <button
+          data-add-menu
+          @click.stop="insertAtPos(addMenu.at, 'device')"
+          class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+        >
+          <AppIcon name="plus" class="w-3 h-3" />添加设备
+        </button>
+        <button
+          data-add-menu
+          @click.stop="insertAtPos(addMenu.at, 'subnet')"
+          class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+        >
+          <AppIcon name="folder" class="w-3 h-3" />添加子网
+        </button>
+      </template>
+      <template v-else>
+        <div class="px-3 pt-1 pb-1 text-[10px] text-surface-400 uppercase tracking-wider">
+          在子网中添加设备
+        </div>
+        <button
+          data-add-menu
+          @click.stop="insertIntoSubnet(addMenu.at, 'top')"
+          class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+        >
+          <AppIcon name="plus" class="w-3 h-3" />添加到子网顶部
+        </button>
+        <button
+          data-add-menu
+          @click.stop="insertIntoSubnet(addMenu.at, 'bottom')"
+          class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+        >
+          <AppIcon name="plus" class="w-3 h-3" />添加到子网底部
+        </button>
+        <div class="px-3 pt-1.5 pb-1 text-[10px] text-surface-400 uppercase tracking-wider">
+          子网块外插入
+        </div>
+        <button
+          data-add-menu
+          @click.stop="insertAtPos(addMenu.at, 'subnet')"
+          class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+        >
+          <AppIcon name="folder" class="w-3 h-3" />在子网上方添加子网
+        </button>
+        <button
+          data-add-menu
+          @click.stop="insertAtPos(subnetBlockEnd(addMenu.at), 'subnet')"
+          class="w-full px-3 py-1.5 text-xs text-left whitespace-nowrap hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
+        >
+          <AppIcon name="folder" class="w-3 h-3" />在子网下方添加子网
+        </button>
+      </template>
     </div>
   </Teleport>
 
@@ -1612,6 +1824,81 @@ function subtotal(item: any) {
     >
       <AppIcon name="grip-vertical" class="w-3 h-3 inline-block mr-1.5 -mt-px" />
       {{ dragLabel() }}
+    </div>
+  </Teleport>
+
+  <!-- 拉取参数：来源选择（历史版本逐一展示参数供点选） -->
+  <Teleport to="body">
+    <div
+      v-if="showPullPicker"
+      class="fixed inset-0 z-[85] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm"
+      @click.self="showPullPicker = false"
+    >
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden">
+        <div class="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between">
+          <div class="min-w-0">
+            <h3 class="text-sm font-semibold text-gray-800">选择参数来源</h3>
+            <p class="text-[11px] text-gray-400 mt-0.5 truncate">
+              {{ pullItem?.customName || pullItem?.model }} · 共
+              {{ pullSources.filter((s) => s.kind === 'history').length }} 个历史版本含此型号
+            </p>
+          </div>
+          <button
+            @click="showPullPicker = false"
+            class="text-gray-400 hover:text-gray-600 flex-shrink-0 ml-3"
+          >
+            <AppIcon name="x" class="w-4 h-4" />
+          </button>
+        </div>
+        <div class="max-h-[60vh] overflow-y-auto p-3 space-y-2">
+          <button
+            v-for="(s, i) in pullSources"
+            :key="i"
+            @click="choosePullSource(s)"
+            class="w-full text-left px-3 py-2.5 rounded-lg border transition-colors"
+            :class="
+              s.kind === 'product'
+                ? 'border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50'
+                : 'border-surface-100 hover:bg-surface-50 hover:border-blue-200'
+            "
+          >
+            <div class="flex items-center gap-2 mb-1.5">
+              <span
+                class="px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0"
+                :class="
+                  s.kind === 'product' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-50 text-blue-600'
+                "
+                >{{ s.kind === 'product' ? '产品库' : s.label }}</span
+              >
+              <span v-if="s.kind === 'history' && s.meta" class="text-[10px] text-surface-400">{{
+                s.meta
+              }}</span>
+              <span class="text-[10px] text-surface-300 ml-auto shrink-0">点击使用此参数</span>
+            </div>
+            <div
+              class="text-[11px] text-surface-600 leading-relaxed whitespace-pre-wrap transition-all"
+              :class="pullExpanded[i] ? 'max-h-28 overflow-y-auto pr-1' : 'max-h-4 overflow-hidden'"
+            >
+              {{ s.mergedText || '（无参数）' }}
+            </div>
+            <button
+              v-if="(s.mergedText || '').length > 48"
+              @click.stop="pullExpanded[i] = !pullExpanded[i]"
+              class="mt-1 flex items-center gap-1 text-[10px] text-surface-400 hover:text-blue-600 transition-colors"
+            >
+              <AppIcon
+                name="chevron-down"
+                class="w-3 h-3 transition-transform"
+                :class="pullExpanded[i] ? '' : '-rotate-90'"
+              />
+              {{ pullExpanded[i] ? '收起' : '展开参数' }}
+            </button>
+          </button>
+        </div>
+        <div class="px-5 py-3 border-t border-gray-100 bg-gray-50/50 flex justify-end">
+          <button @click="showPullPicker = false" class="btn-ghost">取消</button>
+        </div>
+      </div>
     </div>
   </Teleport>
 </template>

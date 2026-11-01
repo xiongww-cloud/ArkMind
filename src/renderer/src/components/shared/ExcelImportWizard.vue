@@ -14,6 +14,7 @@ import {
   type SheetData,
   type RawDataRow
 } from '@/utils/excelRaw'
+import { defaultSubnetName } from '@/utils/solutionExcel'
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  PROPS / EMITS
@@ -243,6 +244,12 @@ async function reparseWithHeader(row: number) {
 function initMappingAndDecisions() {
   const sheet = activeSheet.value
   if (!sheet) return
+  /** 子网行预填默认子网名（行文本），向导输入框直接可见可改 */
+  const makeDecision = (row: RawDataRow, action: string) => {
+    if (action !== 'subnet') return { action }
+    const name = defaultSubnetName(row, mapping.value)
+    return name ? { action, subnetName: name } : { action }
+  }
   // 预设（如 SCT）自动识别：命中则用固定映射 + 预设行决策
   const preset = props.preset
   if (preset && preset.detect(sheet)) {
@@ -252,7 +259,7 @@ function initMappingAndDecisions() {
       const skip = preset.shouldSkip?.(row, sheet) ?? props.shouldSkipRow?.(row, sheet) ?? false
       if (skip) return { action: 'ignore' }
       const autoAction = preset.classify(row, mapping.value, sheet)
-      return { action: autoAction ?? 'problem' }
+      return makeDecision(row, autoAction ?? 'problem')
     })
     return
   }
@@ -263,8 +270,21 @@ function initMappingAndDecisions() {
     if (skip) return { action: 'ignore' }
     const autoAction = props.classify(row, mapping.value, sheet)
     // classify 返回 null 表示"问题行"（需要用户选择），用 'problem' 标记
-    return { action: autoAction ?? 'problem' }
+    return makeDecision(row, autoAction ?? 'problem')
   })
+}
+
+/** 行操作下拉手动切换：切到子网且未命名时，用行文本预填 */
+function setRowAction(ri: number, action: string) {
+  const d = decisions.value[ri]
+  if (!d) return
+  if (action === 'subnet' && !d.subnetName) {
+    const row = activeSheet.value?.rows[ri]
+    const name = row ? defaultSubnetName(row, mapping.value) : ''
+    decisions.value[ri] = { ...d, action, ...(name ? { subnetName: name } : {}) }
+  } else {
+    decisions.value[ri] = { ...d, action }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -296,7 +316,13 @@ function batchSetProblemRows(action: string) {
   for (let i = 0; i < decisions.value.length; i++) {
     const d = decisions.value[i]
     if (props.rowActions.find((a) => a.key === d.action)?.isProblem) {
-      decisions.value[i] = { ...d, action }
+      if (action === 'subnet' && !d.subnetName) {
+        const row = activeSheet.value?.rows[i]
+        const name = row ? defaultSubnetName(row, mapping.value) : ''
+        decisions.value[i] = { ...d, action, ...(name ? { subnetName: name } : {}) }
+      } else {
+        decisions.value[i] = { ...d, action }
+      }
     }
   }
 }
@@ -824,7 +850,7 @@ function isRequiredMapped(): boolean {
       <button
         v-for="a in rowActions"
         :key="a.key"
-        @click="decisions[actionDropdownRow!].action = a.key; closeAllDropdowns()"
+        @click="setRowAction(actionDropdownRow!, a.key); closeAllDropdowns()"
         class="w-full px-3 py-1.5 text-[11px] text-left transition-colors"
         :class="
           decisions[actionDropdownRow!]?.action === a.key

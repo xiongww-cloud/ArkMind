@@ -6,9 +6,12 @@ import { alert, dangerConfirm } from '@/composables/useConfirm'
 import { toast } from '@/composables/useToast'
 import { useUploadProgress } from '@/composables/useUploadProgress'
 import {
-  fetchSettings, updateSettings, browseFolder,
+  browseFolder,
   updateAiConfig, fetchAiConfig, webSearchTest,
-  migrateFiles, pipelineClearVectors,
+  fetchStorageLocation, changeStorageDir, appRestart,
+  verifyStoragePrevious, cleanupStoragePrevious, rollbackStorageDir,
+  type StorageVerifyResult,
+  pipelineClearVectors,
   pipelineClearKnowledge, pipelineClearAll,
   pipelineRevectorize, pipelineRetryFailed,
   pipelineDebugStatus, knowledgePipelineStatus,
@@ -883,7 +886,10 @@ function closeOpenDropdownsOnOutside(e: MouseEvent) {
   if (notifyIntervalOpen.value && notifyWrapRef.value && !notifyWrapRef.value.contains(t)) notifyIntervalOpen.value = false
   if (retentionOpen.value && retentionWrapRef.value && !retentionWrapRef.value.contains(t)) retentionOpen.value = false
 }
-onMounted(() => document.addEventListener('mousedown', closeOpenDropdownsOnOutside, true))
+onMounted(() => {
+  document.addEventListener('mousedown', closeOpenDropdownsOnOutside, true)
+  loadStorageLocation()
+})
 onActivated(() => document.addEventListener('mousedown', closeOpenDropdownsOnOutside, true))
 onDeactivated(() => document.removeEventListener('mousedown', closeOpenDropdownsOnOutside, true))
 onBeforeUnmount(() => document.removeEventListener('mousedown', closeOpenDropdownsOnOutside, true))
@@ -1412,72 +1418,149 @@ const maskedApiKey = (key) => {
   return key.slice(0, 4) + '●●●●' + key.slice(-4)
 }
 
-// ─── Storage Config ──────────────────────────────────────────────────────
-const activeStorage = ref('LOCAL')
-const localPath = ref('')
-const savedLocalPath = ref('')
-const isEditingPath = ref(false)
+// ─── Storage 位置（统一数据目录：DB/文件/向量库整体迁移） ──────────────
+const storageLoc = ref<import('@/api/db-client').StorageLocation | null>(null)
+const storageLoading = ref(false)
+const storageMigrating = ref(false)
+const storagePhase = ref('')
+const storageProgressPct = ref(0)
+const pendingNewDir = ref('')
+const showMigrateConfirm = ref(false)
+const showRestartModal = ref(false)
+let storageUnlisten: (() => void) | null = null
 
-const storageSaving = ref(false)
-const storageSaved = ref(false)
-const isBrowsing = ref(false)
-
-async function loadStorageConfig() {
+async function loadStorageLocation() {
+  storageLoading.value = true
   try {
-    const data = await fetchSettings()
-    activeStorage.value = data.activeStorage || 'LOCAL'
-    localPath.value = data.localPath || ''
-    savedLocalPath.value = data.localPath || ''
-    isEditingPath.value = !data.localPath
-  } catch (e) {
-    console.warn('Failed to load storage config:', e)
-  }
-}
-
-async function saveStorageConfig() {
-  storageSaving.value = true
-  try {
-    const newPath = localPath.value.trim() || null
-    const oldPath = savedLocalPath.value || null
-
-    await updateSettings({
-      activeStorage: activeStorage.value,
-      localPath: newPath,
-    })
-
-    // 路径变更时触发文件搬迁
-    if (oldPath && newPath && oldPath !== newPath) {
-      try {
-        await migrateFiles(oldPath, newPath)
-      } catch (e) {
-        console.warn('文件搬迁失败:', e)
-      }
+    storageLoc.value = await fetchStorageLocation()
+    // 迁移后检查区：存在旧目录时自动复核一次（静默，失败不打扰）
+    if (storageLoc.value?.previousDirExists) {
+      verifyStoragePrevious()
+        .then((r) => { storageVerifyResult.value = r })
+        .catch(() => { /* 手动再点验证 */ })
+    } else {
+      storageVerifyResult.value = null
     }
-
-    savedLocalPath.value = newPath || ''
-    isEditingPath.value = false
-    storageSaved.value = true
-    setTimeout(() => { storageSaved.value = false }, 2000)
   } catch (e) {
-    alert('保存失败: ' + (e.message || '网络异常'))
+    console.warn('[Storage] 读取存储位置失败:', e)
   } finally {
-    storageSaving.value = false
+    storageLoading.value = false
   }
 }
 
-function startEditPath() {
-  isEditingPath.value = true
+const PHASE_LABELS: Record<string, string> = {
+  prepare: '准备中…',
+  database: '拷贝数据库…',
+  files: '拷贝文件…',
+  lancedb: '拷贝向量库…',
+  backups: '拷贝备份…',
+  verify: '完整性校验…',
+  done: '完成'
 }
 
-async function openFolderPicker() {
-  isBrowsing.value = true
+async function pickStorageDir() {
+  const r = await browseFolder()
+  if (r.canceled || !r.path) return
+  pendingNewDir.value = r.path
+  showMigrateConfirm.value = true
+}
+
+async function confirmMigrate() {
+  if (!pendingNewDir.value) return
+  showMigrateConfirm.value = false
+  storageMigrating.value = true
+  storagePhase.value = 'prepare'
+  storageProgressPct.value = 0
   try {
-    const data = await browseFolder()
-    if (data.path) localPath.value = data.path
-  } catch (e) {
-    alert('无法打开文件夹选择器: ' + (e.message || '请手动输入路径'))
+    const { listen } = await import('@tauri-apps/api/event')
+    storageUnlisten = await listen<{ phase: string; current: number; total: number }>(
+      'storage:progress',
+      (ev) => {
+        storagePhase.value = ev.payload?.phase || ''
+        const { current, total } = ev.payload || {}
+        storageProgressPct.value = total ? Math.min(100, Math.round((current / total) * 100)) : 0
+      }
+    )
+  } catch { /* 无进度也能跑 */ }
+  try {
+    const r = await changeStorageDir(pendingNewDir.value)
+    if (r?.restartRequired) {
+      showRestartModal.value = true
+    }
+  } catch (e: any) {
+    toast({ message: '迁移失败：' + (e?.message || e), type: 'error' })
   } finally {
-    isBrowsing.value = false
+    storageMigrating.value = false
+    storagePhase.value = ''
+    storageProgressPct.value = 0
+    try { storageUnlisten?.() } catch { /* noop */ }
+    storageUnlisten = null
+    pendingNewDir.value = ''
+    await loadStorageLocation()
+  }
+}
+
+async function confirmRestart() {
+  try {
+    await appRestart()
+  } catch {
+    // restart 不会正常返回；失败时提示手动重启
+    toast({ message: '请手动重启应用生效', type: 'warning' })
+  }
+}
+
+// ─── 迁移后检查：校验 / 回切 / 清理旧数据 ─────────────────────
+const storageVerifying = ref(false)
+const storageVerifyResult = ref<StorageVerifyResult | null>(null)
+const storageActionBusy = ref(false)
+const showRollbackConfirm = ref(false)
+const showCleanupConfirm = ref(false)
+
+const storagePreviousAvailable = computed(
+  () => !!(storageLoc.value?.previousDir && storageLoc.value?.previousDirExists)
+)
+
+async function verifyMigration() {
+  storageVerifying.value = true
+  storageVerifyResult.value = null
+  try {
+    storageVerifyResult.value = await verifyStoragePrevious()
+  } catch (e: any) {
+    toast({ message: '校验失败：' + (e?.message || e), type: 'error' })
+  } finally {
+    storageVerifying.value = false
+  }
+}
+
+async function confirmRollback() {
+  showRollbackConfirm.value = false
+  storageActionBusy.value = true
+  try {
+    const r = await rollbackStorageDir()
+    if (r?.restartRequired) showRestartModal.value = true
+  } catch (e: any) {
+    toast({ message: '回切失败：' + (e?.message || e), type: 'error' })
+  } finally {
+    storageActionBusy.value = false
+    await loadStorageLocation()
+  }
+}
+
+async function confirmCleanup() {
+  showCleanupConfirm.value = false
+  storageActionBusy.value = true
+  try {
+    const r = await cleanupStoragePrevious()
+    toast({
+      message: `已清理旧数据（${r?.files ?? 0} 个文件）`,
+      type: 'success'
+    })
+    storageVerifyResult.value = null
+  } catch (e: any) {
+    toast({ message: '清理失败：' + (e?.message || e), type: 'error' })
+  } finally {
+    storageActionBusy.value = false
+    await loadStorageLocation()
   }
 }
 
@@ -1512,7 +1595,7 @@ onActivated(() => {
   loopStatusTimer = setInterval(loadLoopStatus, 600000)  // 10分钟刷新一次
   pipelineTimer = setInterval(loadPipeline, 3000)
   Promise.all([
-    loadStorageConfig(),
+    loadStorageLocation(),
     loadAiConfig(),
     refreshLogs(),
     loadNotifyConfig(),
@@ -1529,6 +1612,7 @@ onDeactivated(stopPollTimers)
 onBeforeUnmount(stopPollTimers)
 
 // ─── 我的档案（用户身份）─────────────────────────────────
+const factsViewerOpen = ref(false)
 const profName = ref('')
 const profTitle = ref('')
 const profCompany = ref('')
@@ -1698,6 +1782,141 @@ async function saveProfileEditor() {
       <!-- isolation-isolate：WebKit 多列容器内 z-index 堆叠上下文曾致灰带错绘（macOS） -->
       <div class="columns-1 lg:columns-2 gap-4 isolation-isolate">
 
+          <!-- 存储位置（统一数据目录） -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+            <div class="flex items-center gap-2 px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">存储位置</h2>
+              <span
+                v-if="storageLoc?.isCustom"
+                class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-600"
+              >自定义目录</span>
+              <span
+                v-else-if="storageLoc"
+                class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-surface-50 text-surface-400"
+              >默认目录</span>
+            </div>
+            <div class="p-5 space-y-3">
+              <p class="text-[10px] text-surface-400">
+                数据库、上传文件、向量库统一存放于此目录。迁移采用「拷贝-校验-切换」，成功前旧数据原样保留，中断不丢数据；切换后需重启生效。
+              </p>
+              <div v-if="storageLoc?.broken" class="px-3 py-2 rounded-lg bg-red-50 border border-red-100 text-[11px] text-red-600">
+                自定义数据目录不可用（可能已被移动或删除），当前已回退默认目录。重新迁移可修复。
+              </div>
+              <div class="px-3 py-2.5 rounded-lg bg-surface-50 border border-surface-100">
+                <div class="text-[10px] text-surface-400 mb-0.5">当前数据目录</div>
+                <div class="text-[12px] font-mono text-surface-700 break-all select-all leading-relaxed">
+                  {{ storageLoading ? '读取中…' : (storageLoc?.dataDir || '—') }}
+                </div>
+                <div v-if="storageLoc && storageLoc.dataDir !== storageLoc.defaultDir" class="text-[10px] text-surface-400 mt-1 font-mono break-all">
+                  默认：{{ storageLoc.defaultDir }}
+                </div>
+              </div>
+              <!-- 迁移后检查：旧目录仍在时显示（校验 / 回切 / 清理） -->
+              <div
+                v-if="storageLoc?.previousDir"
+                class="px-3 py-2.5 rounded-lg border space-y-2"
+                :class="storagePreviousAvailable ? 'border-amber-200 bg-amber-50/50' : 'border-surface-100 bg-surface-50'"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[11px] font-medium" :class="storagePreviousAvailable ? 'text-amber-700' : 'text-surface-500'">迁移后检查</span>
+                  <span v-if="!storagePreviousAvailable" class="text-[10px] text-surface-400">原目录已不存在</span>
+                </div>
+                <div class="text-[11px] font-mono break-all" :class="storagePreviousAvailable ? 'text-amber-700/80' : 'text-surface-400'">
+                  {{ storageLoc.previousDir }}
+                </div>
+                <template v-if="storageVerifyResult">
+                  <p class="text-[11px] leading-relaxed" :class="storageVerifyResult.ok ? 'text-emerald-600' : 'text-red-500'">
+                    <template v-if="storageVerifyResult.ok">
+                      ✓ 校验通过：数据库完整，文件 {{ storageVerifyResult.current.files }} 个 / {{ (storageVerifyResult.current.bytes / 1024 / 1024).toFixed(1) }} MB{{ storageVerifyResult.hasNewFiles ? `（较原目录新增 ${storageVerifyResult.current.files - storageVerifyResult.previous.files} 个，属迁移后正常使用）` : '，与原目录一致' }}
+                    </template>
+                    <template v-else>
+                      ✗ 校验未通过：{{ !storageVerifyResult.dbOk ? '数据库完整性异常；' : '' }}{{ !storageVerifyResult.filesMatch ? `文件少于原目录（当前 ${storageVerifyResult.current.files} 个 vs 原 ${storageVerifyResult.previous.files} 个）` : '' }}——请勿清理旧数据，建议回切或重新迁移
+                    </template>
+                  </p>
+                </template>
+                <div v-if="storagePreviousAvailable" class="flex flex-wrap gap-2 pt-0.5">
+                  <button
+                    class="btn-secondary text-xs disabled:opacity-40"
+                    :disabled="storageVerifying || storageActionBusy"
+                    @click="verifyMigration"
+                  >{{ storageVerifying ? '校验中…' : '验证数据完整性' }}</button>
+                  <button
+                    class="btn-secondary text-xs !text-red-600 !border-red-200 hover:!bg-red-50 disabled:opacity-40"
+                    :disabled="storageActionBusy"
+                    @click="showRollbackConfirm = true"
+                  >回切原路径</button>
+                  <button
+                    class="btn-secondary text-xs disabled:opacity-40"
+                    :disabled="storageActionBusy || (storageVerifyResult !== null && !storageVerifyResult.ok)"
+                    :title="storageVerifyResult && !storageVerifyResult.ok ? '校验未通过，禁止清理' : '确认数据无误后删除旧目录中的数据副本'"
+                    @click="showCleanupConfirm = true"
+                  >清理旧数据</button>
+                </div>
+              </div>
+              <div class="flex justify-end">
+                <button
+                  class="btn-primary text-xs disabled:opacity-40 disabled:cursor-wait"
+                  :disabled="storageMigrating || storageLoading"
+                  @click="pickStorageDir"
+                >
+                  <AppIcon name="folder" size="12" />更改位置
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 我的档案 -->
+          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
+            <div class="px-5 pt-5 pb-0">
+              <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
+              <p class="text-[10px] text-surface-400 mt-1">AI 助手与AI洞察依据此档案认识你</p>
+            </div>
+            <div class="p-5 pt-3 space-y-2.5">
+              <p v-if="profSummary" class="text-[13px] font-medium text-surface-700">{{ profSummary }}</p>
+              <p v-else class="text-[12px] text-surface-400">暂未识别出你的身份信息</p>
+              <p class="text-[10px] text-surface-400">{{ profSourceText }}</p>
+              <p class="text-[10px] text-surface-400 truncate">我的邮箱：<span v-if="!profEmails.length" class="text-surface-300">未配置，在「邮件账户」添加后自动识别</span><span v-else>{{ profEmails.join('、') }}</span></p>
+              <div class="pt-1 border-t border-surface-100">
+                <button
+                  class="w-full mt-2 flex items-center justify-between px-2.5 py-2 rounded-lg border border-surface-100 bg-surface-50/60 hover:bg-surface-100 transition-colors group/facts"
+                  @click="factsViewerOpen = true"
+                >
+                  <span class="text-[11px] font-medium text-surface-600">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20）</span></span>
+                  <span class="flex items-center gap-1 text-[10px] text-surface-400 group-hover/facts:text-brand-600">
+                    查看全部<AppIcon name="chevron-right" size="12" />
+                  </span>
+                </button>
+              </div>
+              <div class="flex justify-end pt-1">
+                <button @click="openProfileEditor" class="btn-primary text-xs"><AppIcon name="edit" size="12"/>编辑</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 画像事实查看弹窗（只读；入口 = 档案卡「画像事实」行） -->
+          <Teleport to="body">
+            <Transition name="modal-fade">
+              <div v-if="factsViewerOpen" class="fixed inset-0 z-[100] bg-black/30 flex items-center justify-center" @click.self="factsViewerOpen = false">
+                <div class="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[90vw] max-h-[80vh] flex flex-col">
+                  <div class="px-5 pt-4 pb-2 border-b border-surface-100">
+                    <h3 class="text-[14px] font-semibold text-surface-800">画像事实 <span class="text-surface-400 font-normal text-[12px]">（{{ profileFacts.length }}/20）</span></h3>
+                    <p class="text-[10px] text-surface-400 mt-0.5">AI 助手与AI洞察据此认识你；在「编辑」中增删调整</p>
+                  </div>
+                  <div class="px-5 py-3 space-y-1.5 overflow-y-auto">
+                    <p v-if="!profileFacts.length" class="text-[12px] text-surface-400 py-6 text-center">还没有画像事实。AI洞察里的「记入画像」会自动沉淀，也可以在「编辑」中添加。</p>
+                    <div v-else v-for="f in profileFacts" :key="f.id" class="px-3 py-2 rounded-lg bg-surface-50 border border-surface-100">
+                      <span class="block text-[12px] text-surface-600 leading-relaxed">{{ f.content }}</span>
+                    </div>
+                  </div>
+                  <div class="px-5 py-3 border-t border-surface-100 flex items-center justify-end gap-2">
+                    <button @click="factsViewerOpen = false" class="btn-secondary text-xs">关闭</button>
+                    <button @click="factsViewerOpen = false; openProfileEditor()" class="btn-primary text-xs"><AppIcon name="edit" size="12"/>编辑</button>
+                  </div>
+                </div>
+              </div>
+            </Transition>
+          </Teleport>
+
           <!-- AI 模型配置 -->
           <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
             <div class="px-5 pt-5 pb-0">
@@ -1798,33 +2017,6 @@ async function saveProfileEditor() {
                   <button @click="testWebSearch" :disabled="!webSearchKey || webSearching" class="btn-secondary text-xs"><AppIcon name="play" size="12"/>{{ webSearching ? '测试中...' : '测试连接' }}</button>
                   <button @click="saveWebSearch" :disabled="webSearchSaving" class="btn-primary text-xs"><AppIcon name="save" size="12"/>{{ webSearchSaving ? '保存中...' : (webSearchKey ? '保存' : '清除配置') }}</button>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- 我的档案 -->
-          <div class="bg-white rounded-2xl border border-surface-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden break-inside-avoid mb-4">
-            <div class="px-5 pt-5 pb-0">
-              <h2 class="text-[13px] font-semibold text-surface-700">我的档案</h2>
-              <p class="text-[10px] text-surface-400 mt-1">AI 助手与AI洞察依据此档案认识你</p>
-            </div>
-            <div class="p-5 pt-3 space-y-2.5">
-              <p v-if="profSummary" class="text-[13px] font-medium text-surface-700">{{ profSummary }}</p>
-              <p v-else class="text-[12px] text-surface-400">暂未识别出你的身份信息</p>
-              <p class="text-[10px] text-surface-400">{{ profSourceText }}</p>
-              <p class="text-[10px] text-surface-400 truncate">我的邮箱：<span v-if="!profEmails.length" class="text-surface-300">未配置，在「邮件账户」添加后自动识别</span><span v-else>{{ profEmails.join('、') }}</span></p>
-              <div class="pt-1 border-t border-surface-100">
-                <p class="text-[11px] font-medium text-surface-600 mt-2">画像事实 <span class="text-surface-400 font-normal">（{{ profileFacts.length }}/20）</span></p>
-                <p v-if="!profileFacts.length" class="text-[10px] text-surface-400 mt-1">可在AI洞察里点「记入画像」沉淀，或在「编辑」中添加</p>
-                <div v-else class="mt-1.5 space-y-1">
-                  <div v-for="f in profileFacts.slice(0, 3)" :key="f.id" class="px-2.5 py-1.5 rounded-lg bg-surface-50 border border-surface-100">
-                    <span class="block truncate text-[11px] text-surface-600 leading-snug cursor-default" v-tooltip.auto="f.content">{{ f.content }}</span>
-                  </div>
-                  <p v-if="profileFacts.length > 3" class="text-[10px] text-surface-400 pl-1">…共 {{ profileFacts.length }} 条，在「编辑」中查看全部</p>
-                </div>
-              </div>
-              <div class="flex justify-end pt-1">
-                <button @click="openProfileEditor" class="btn-primary text-xs"><AppIcon name="edit" size="12"/>编辑</button>
               </div>
             </div>
           </div>
@@ -2715,6 +2907,117 @@ async function saveProfileEditor() {
       </div>
     </Transition>
   </Teleport>
+
+  <!-- 迁移后检查：回切确认 -->
+  <Teleport to="body">
+    <div v-if="showRollbackConfirm" class="fixed inset-0 z-[90] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm">
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-semibold text-gray-800">回切原数据目录</h3>
+        </div>
+        <div class="p-6 space-y-3 text-[12px] text-surface-600 leading-relaxed">
+          <p>将切回：</p>
+          <p class="font-mono text-[11px] break-all px-3 py-2 rounded-lg bg-surface-50 border border-surface-100">{{ storageLoc?.previousDir }}</p>
+          <ul class="text-[11px] text-surface-500 space-y-1 list-disc pl-4">
+            <li>回切零拷贝（原目录数据一直完整保留），切换前会再次校验其数据库完好</li>
+            <li><strong>迁移后在新目录产生的数据不会跟随回切</strong>（仍保留在新目录，可再次切回）</li>
+            <li>切换后需重启生效</li>
+          </ul>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-2">
+          <button class="btn-ghost" @click="showRollbackConfirm = false">取消</button>
+          <button class="btn-primary" @click="confirmRollback">确认回切</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- 迁移后检查：清理旧数据确认 -->
+  <Teleport to="body">
+    <div v-if="showCleanupConfirm" class="fixed inset-0 z-[90] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm">
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-semibold text-gray-800">清理旧数据</h3>
+        </div>
+        <div class="p-6 space-y-3 text-[12px] text-surface-600 leading-relaxed">
+          <p>将永久删除原目录中的数据副本：</p>
+          <p class="font-mono text-[11px] break-all px-3 py-2 rounded-lg bg-surface-50 border border-surface-100">{{ storageLoc?.previousDir }}</p>
+          <ul class="text-[11px] text-surface-500 space-y-1 list-disc pl-4">
+            <li>删除范围：数据库、上传文件、向量库、备份（<strong>日志与指针文件不受影响</strong>）</li>
+            <li>清理后<strong>无法再回切</strong>——请先确认应用运行一切正常</li>
+            <li>此操作不可撤销，建议清理前先手动抽查旧目录数据</li>
+          </ul>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-2">
+          <button class="btn-ghost" @click="showCleanupConfirm = false">取消</button>
+          <button class="btn-primary !bg-red-600 hover:!bg-red-700" @click="confirmCleanup">确认清理</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- 存储迁移：确认 -->
+  <Teleport to="body">
+    <div v-if="showMigrateConfirm" class="fixed inset-0 z-[90] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm">
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-semibold text-gray-800">迁移数据目录</h3>
+        </div>
+        <div class="p-6 space-y-3 text-[12px] text-surface-600 leading-relaxed">
+          <p>将把数据库、上传文件、向量库、备份<strong>完整拷贝</strong>到：</p>
+          <p class="font-mono text-[11px] break-all px-3 py-2 rounded-lg bg-surface-50 border border-surface-100">{{ pendingNewDir }}</p>
+          <ul class="text-[11px] text-surface-500 space-y-1 list-disc pl-4">
+            <li>拷贝并校验通过后才切换，<strong>旧数据原样保留</strong>，任意时刻中断都不丢数据</li>
+            <li>目标目录必须为空；迁移期间应用冻结，完成后需重启生效</li>
+            <li>迁移成功后旧目录数据不会自动删除，确认无误可手动清理</li>
+          </ul>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-2">
+          <button class="btn-ghost" @click="showMigrateConfirm = false">取消</button>
+          <button class="btn-primary" @click="confirmMigrate">开始迁移</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- 存储迁移：进度 -->
+  <Teleport to="body">
+    <div v-if="storageMigrating" class="fixed inset-0 z-[95] flex items-center justify-center bg-gray-900/50 backdrop-blur-sm">
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-semibold text-gray-800">正在迁移数据…</h3>
+        </div>
+        <div class="p-6 space-y-3">
+          <p class="text-[11px] text-surface-500">{{ PHASE_LABELS[storagePhase] || '处理中…' }}</p>
+          <div class="h-2 rounded-full bg-surface-100 overflow-hidden">
+            <div class="h-full bg-blue-500" :style="{ width: storageProgressPct + '%' }"></div>
+          </div>
+          <p class="text-[11px] text-surface-400 text-right font-mono">{{ storageProgressPct }}%</p>
+          <p class="text-[10px] text-surface-400 leading-relaxed">迁移期间应用功能暂不可用。请勿断电/退出；即使中断，旧数据也完好、可重新迁移。</p>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- 存储迁移：重启提示 -->
+  <Teleport to="body">
+    <div v-if="showRestartModal" class="fixed inset-0 z-[95] flex items-center justify-center bg-gray-900/50 backdrop-blur-sm">
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-semibold text-gray-800">迁移完成</h3>
+        </div>
+        <div class="p-6 text-[12px] text-surface-600 leading-relaxed">
+          <p>数据已完整迁移并校验通过。重启应用后生效。</p>
+          <p class="text-[11px] text-surface-400 mt-2">旧目录数据仍保留，确认一切正常后可手动删除。</p>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-2">
+          <button class="btn-ghost" @click="showRestartModal = false; loadStorageLocation()">稍后</button>
+          <button class="btn-primary" @click="confirmRestart">立即重启</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
   <GuideModal ref="guideModalRef" />
 </template>
 

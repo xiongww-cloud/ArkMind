@@ -270,8 +270,10 @@ function onFileMouseDown(e: MouseEvent, fid: string) {
   startFileDrag(e, fid)
 }
 
-/** 整行点击：修饰键多选；普通点击多选回退为单选。打开文件只认文件名点击 */
+/** 整行点击：修饰键多选已在 mousedown 完成（click 再处理会 toggle 两次抵消——
+ *  mac ⌘+点击空白区"无反应"的根因）；普通点击多选回退为单选。打开文件只认文件名点击 */
 function onFileRowClick(e: MouseEvent, fid: string) {
+  if (e.ctrlKey || e.metaKey || e.shiftKey) return
   handleItemClick(e, fid)
 }
 

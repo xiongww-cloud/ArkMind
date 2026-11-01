@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder, WebviewUrl};
 use std::sync::atomic::{AtomicBool, Ordering};
+use serde_json::json;
 
 // 失焦自动隐藏监听器只绑定一次（窗口由配置创建，可能多次调用 create_chat_window）
 static CHAT_EVENT_SETUP: AtomicBool = AtomicBool::new(false);
@@ -298,6 +299,17 @@ pub(crate) fn toggle_chat_fire_and_forget(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(e) = toggle_chat(&app).await { log::warn!("[Chat] 快捷键切换失败: {e}"); }
     });
+}
+
+/// 浮窗内链跳转：唤起主窗并广播导航事件（浮窗无 router，主窗监听 chat:navigate 执行跳转）
+#[tauri::command]
+pub async fn chat_navigate_main(app: AppHandle, path: String) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    let _ = app.emit("chat:navigate", json!({ "path": path }));
+    Ok(())
 }
 
 /// 切换聊天窗口显示/隐藏（精灵点击调用）

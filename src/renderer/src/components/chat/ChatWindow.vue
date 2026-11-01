@@ -306,15 +306,17 @@ async function loadHistory() {
     messages.value = msgs.map(mapHistoryMessage)
     hasMore.value = msgs.length >= 10
     applyLastRoundSnapshot()
-    for (const msg of messages.value) {
-      if (msg.role === 'assistant' && msg.content) {
-        agent.renderMd(msg.content).then(h => { if (h && msg.id) agent.rendered.value[msg.id] = h })
+    await Promise.all(messages.value.map((msg) => {
+      if (msg.role === 'assistant' && msg.content && msg.id) {
+        return agent.renderMd(msg.content).then(h => { if (h && msg.id) agent.rendered.value[msg.id] = h })
       }
-    }
+      return Promise.resolve()
+    }))
   } catch (e) {
     console.error('[Chat] 加载历史失败:', e)
   }
   restorePlanDock()
+  pinToBottom()
 }
 
 // Dock 恢复路径：重启/切会话/新建会话后即时投影持久化计划（后端 session.plan 是唯一事实源，
@@ -345,11 +347,13 @@ async function loadOlderMessages() {
     if (result.success && result.messages && result.messages.length > 0) {
       const older = result.messages.map(mapHistoryMessage)
       messages.value.unshift(...older)
-      for (const msg of older) {
-        if (msg.role === 'assistant' && msg.content) {
-          agent.renderMd(msg.content).then(h => { if (h && msg.id) agent.rendered.value[msg.id] = h })
+      // 先等旧消息渲染落位再补偿——渲染异步，先补偿会算少高度、位置漂移
+      await Promise.all(older.map((msg) => {
+        if (msg.role === 'assistant' && msg.content && msg.id) {
+          return agent.renderMd(msg.content).then(h => { if (h && msg.id) agent.rendered.value[msg.id] = h })
         }
-      }
+        return Promise.resolve()
+      }))
       nextTick(() => { el.scrollTop = el.scrollHeight - prevHeight })
       hasMore.value = result.messages.length >= 10
     } else {
@@ -364,10 +368,14 @@ async function loadOlderMessages() {
 // ★ 滚动跟随状态机：scrollChat 原为无条件吸底，流式输出期间用户完全滚不动；
 //   距底 30px 内视为贴底，滚开即脱离跟随，用户主动动作（发送/停止/展开全部）强制回底
 const stickToBottom = ref(true)
+let entryAnchorLock = false
+let entryAnchorTimer: ReturnType<typeof setTimeout> | null = null
 function onChatScroll() {
   const el = chatListRef.value
   if (!el) return
   stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 30
+  // 入场窗口：塌陷/钉底产生的 scroll 事件不是用户滚动，不触发向上加载
+  if (entryAnchorLock) return
   if (el.scrollTop > 100) return
   loadOlderMessages()
 }
@@ -378,6 +386,37 @@ function scrollChat(force = false) {
     const el = chatListRef.value
     if (el && stickToBottom.value) el.scrollTop = el.scrollHeight
   })
+}
+
+/** 打开/重载历史后钉底：高度未定型期（markdown 渲染 flush/图片/字体）持续补钉；用户上滑即停。
+ *  首个钉底强制执行——塌陷重渲的夹紧 scroll 事件会把 stickToBottom 翻 false（且先于同帧 rAF）。 */
+function pinToBottom() {
+  stickToBottom.value = true
+  entryAnchorLock = true
+  if (entryAnchorTimer) clearTimeout(entryAnchorTimer)
+  entryAnchorTimer = setTimeout(() => { entryAnchorLock = false }, 500)
+  const forcePin = () => {
+    const el = chatListRef.value
+    if (el) el.scrollTop = el.scrollHeight
+    stickToBottom.value = true
+  }
+  requestAnimationFrame(() => requestAnimationFrame(forcePin))
+  const repin = () => {
+    if (!stickToBottom.value) return
+    const el = chatListRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  }
+  nextTick(() => {
+    repin()
+    const el = chatListRef.value
+    if (!el) return
+    el.querySelectorAll('img').forEach((img) => {
+      if ((img as HTMLImageElement).complete) return
+      img.addEventListener('load', repin, { once: true })
+      img.addEventListener('error', repin, { once: true })
+    })
+  })
+  try { document.fonts.ready.then(repin).catch(() => {}) } catch { /* 非标准环境静默 */ }
 }
 
 function fmtTime(ts?: number) {
@@ -623,6 +662,7 @@ onUnmounted(() => {
   unlistenReset?.()
   unlistenFocus?.()
   if (elapsedTimer) clearInterval(elapsedTimer)
+  if (entryAnchorTimer) clearTimeout(entryAnchorTimer)
 })
 </script>
 
@@ -669,14 +709,14 @@ onUnmounted(() => {
               <!-- 思考流（本轮瞬态：流式滚动自动跟底，正文开始折叠为一行可展开） -->
               <div v-if="agent.thought.value && (m.id || '') === agent.thoughtMsgId.value" class="mt-1">
                 <div v-if="!agent.thoughtCollapsed.value" ref="thoughtBoxRef"
-                  class="max-h-[80px] overflow-y-auto rounded-lg bg-surface-50 border border-surface-100 px-2.5 py-1.5 text-[11px] leading-relaxed text-surface-400 whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
+                  class="max-h-[80px] overflow-y-auto rounded-lg bg-surface-50 border border-surface-100 px-2.5 py-1.5 text-[11px] leading-relaxed text-surface-400 whitespace-pre-wrap break-words [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">{{ agent.thought.value }}</div>
                 <template v-else>
                   <button type="button" class="flex items-center gap-1 text-[10px] text-surface-300 hover:text-brand-600 transition-colors" @click="thoughtExpanded = !thoughtExpanded">
                     <svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="thoughtExpanded ? 'M6 9l6 6 6-6' : 'M9 6l6 6-6 6'"/></svg>
                     思考了 {{ agent.thoughtSecs.value }} 秒 · {{ agent.thought.value.length.toLocaleString() }} 字
                   </button>
                   <div v-if="thoughtExpanded" ref="thoughtBoxRef"
-                    class="mt-1 max-h-[130px] overflow-y-auto rounded-lg bg-surface-50 border border-surface-100 px-2.5 py-1.5 text-[11px] leading-relaxed text-surface-400 whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
+                    class="mt-1 max-h-[130px] overflow-y-auto rounded-lg bg-surface-50 border border-surface-100 px-2.5 py-1.5 text-[11px] leading-relaxed text-surface-400 whitespace-pre-wrap break-words [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">{{ agent.thought.value }}</div>
                 </template>
               </div>
               <div v-if="!m.thinking" class="msg-a__meta">

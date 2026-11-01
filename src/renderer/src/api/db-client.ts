@@ -1034,6 +1034,19 @@ export async function saveDraftVersion(
 ): Promise<VersionRow> {
   return invoke('solution_version_save_draft', { versionId, data })
 }
+/** 复制版本到同项目另一设备清单（目标清单下新建 status='draft' 草稿） */
+export async function copyVersionToSolution(
+  sourceVersionId: string,
+  targetSolutionId: string,
+  opts?: { versionNum?: string; creator?: string }
+): Promise<VersionRow> {
+  return invoke('solution_version_copy', {
+    sourceVersionId,
+    targetSolutionId,
+    versionNum: opts?.versionNum ?? null,
+    creator: opts?.creator ?? ''
+  })
+}
 export async function solutionDownloadExcel(data: {
   buffer: number[]
   fileName: string
@@ -1597,6 +1610,55 @@ export async function browseFolder(): Promise<{ canceled: boolean; path: string 
   } catch {
     return { canceled: true, path: '' }
   }
+}
+
+// ─── 存储位置（统一数据目录）────────────────────────────────────
+export interface StorageLocation {
+  dataDir: string
+  defaultDir: string
+  isCustom: boolean
+  broken: boolean
+  previousDir?: string | null
+  previousDirExists?: boolean
+}
+export interface StorageVerifyResult {
+  dbOk: boolean
+  filesMatch: boolean
+  filesExact?: boolean
+  hasNewFiles?: boolean
+  ok: boolean
+  current: { files: number; bytes: number }
+  previous: { files: number; bytes: number }
+}
+export async function fetchStorageLocation(): Promise<StorageLocation> {
+  return invoke('storage_location')
+}
+export async function changeStorageDir(newPath: string): Promise<{
+  success: boolean
+  restartRequired?: boolean
+  oldDir?: string
+}> {
+  return invoke('storage_change_dir', { newPath })
+}
+export async function verifyStoragePrevious(): Promise<StorageVerifyResult> {
+  return invoke('storage_verify_previous')
+}
+export async function cleanupStoragePrevious(): Promise<{
+  success: boolean
+  files: number
+  bytes: number
+}> {
+  return invoke('storage_cleanup_previous')
+}
+export async function rollbackStorageDir(): Promise<{
+  success: boolean
+  restartRequired?: boolean
+  newDataDir?: string
+}> {
+  return invoke('storage_rollback')
+}
+export async function appRestart(): Promise<void> {
+  await invoke('app_restart')
 }
 
 // ─── Todos ──────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import { toast } from '@/composables/useToast'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { uploadFile, listMaterials, deleteMaterial, previewFile, exportFile, getMaterialAssociations, updateMaterialAssociations, updateFileMeta, exportWriteBuffer, removeTempFile, copyFileToClipboard } from '@/api/db-client'
 import { exportProductsToExcel } from '@/utils/productExcel'
+import { scrollToSelected } from '@/utils/focusLocator'
 import ExcelImportWizard from '@/components/shared/ExcelImportWizard.vue'
 import type { ImportField, RawDataRow, SheetData } from '@/utils/excelRaw'
 import { useUploadProgress } from '@/composables/useUploadProgress'
@@ -656,7 +657,21 @@ onMounted(async () => {
   } catch (e) { console.warn('[ProductCenter] Failed to listen drag-drop:', e) }
   handleRouteQuery()
 })
-onActivated(() => { store.fetchProducts(); handleRouteQuery() })
+onActivated(async () => {
+  // ★ 等数据落位再消费 focus/挂 watch——否则选中时 products 为空，详情字段初始化拿到空值后再也不重跑
+  await store.fetchProducts()
+  handleRouteQuery()
+})
+
+/** focus 深链定位：确保数据 → 切到对象所在目录（否则跨目录对象不在过滤列表里）→ 选中 → 滚动到可见 */
+async function locateProduct(id: string) {
+  if (store.products.length === 0) await store.fetchProducts()
+  const p = (store.products as any[]).find((x: any) => x.id === id)
+  if (p) selectedSeriesId.value = p.seriesId || null
+  selectedProductId.value = id
+  await nextTick()
+  scrollToSelected(productListRef.value, 'product-id', id)
+}
 
 function handleRouteQuery() {
   const action = route.query.action as string
@@ -668,7 +683,7 @@ function handleRouteQuery() {
     createProductPrefilled(name)
   }
   if (focus) {
-    selectedProductId.value = focus
+    locateProduct(focus)
   }
 }
 // ★ 同路由内 query 变化不触发 onActivated（KeepAlive 已激活），通知快捷操作跳转时在此消费

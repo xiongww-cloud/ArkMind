@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, onActivated } from 'vue'
+import { ref, computed, onMounted, watch, onActivated, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { toast } from '@/composables/useToast'
+import { scrollToSelected } from '@/utils/focusLocator'
 import { dangerConfirm } from '@/composables/useConfirm'
 import {
   contactsListChannels, contactsListVendors,
@@ -204,10 +205,10 @@ function handleRouteQuery() {
     activeTab.value = tab as TabType
   }
 
-  // Support focus parameter (same as id)
+  // Support focus parameter (same as id) —— 跨 tab 反查定位（停在默认 channels 会定位失败）
   const targetId = id || focus
   if (targetId) {
-    selectedId.value = targetId
+    locateEntity(targetId)
   } else if (contactId) {
     // Find which partner owns this contact - search in all lists
     const allLists = [
@@ -257,6 +258,43 @@ function handleRouteQuery() {
   }
 }
 
+const entityListRef = ref<HTMLElement | null>(null)
+/** focus 深链定位：跨三个 tab 反查对象（实体 id 或联系人 id → 所属公司）→ 清筛选 → 滚动到可见 */
+async function locateEntity(id: string) {
+  const allLists = [
+    { tab: 'channels' as TabType, list: channels.value },
+    { tab: 'vendors' as TabType, list: vendors.value },
+    { tab: 'customers' as TabType, list: customers.value },
+  ]
+  let hit = false
+  // 1) 实体自身 id（可能不在当前 tab）
+  for (const { tab: tabName, list } of allLists) {
+    if (list.some((e: any) => e.id === id)) {
+      activeTab.value = tabName
+      selectedId.value = id
+      hit = true
+      break
+    }
+  }
+  // 2) 联系人个人 id → 定位到所属公司并选中（同 contactId 分支语义）
+  if (!hit) {
+    for (const { tab: tabName, list } of allLists) {
+      const owner = list.find((e: any) => e.contacts?.some((c: any) => c.id === id))
+      if (owner) {
+        activeTab.value = tabName
+        selectedId.value = owner.id
+        hit = true
+        break
+      }
+    }
+  }
+  if (!hit) return
+  // 搜索词可能把目标滤出列表
+  searchQuery.value = ''
+  await nextTick()
+  scrollToSelected(entityListRef.value, 'entity-id', selectedId.value || '')
+}
+
 onActivated(async () => {
   await loadAll()
   handleRouteQuery()
@@ -303,11 +341,11 @@ watch(() => route.query, () => {
             <input v-model="searchQuery" type="text" class="flex-1 bg-transparent text-[11px] outline-none placeholder-surface-300" placeholder="搜索名称..."/>
           </div>
         </div>
-        <div class="flex-1 overflow-y-auto">
+        <div ref="entityListRef" class="flex-1 overflow-y-auto">
           <div v-if="filteredEntities.length === 0" class="text-center py-8">
             <p class="text-[11px] text-surface-400">暂无数据</p>
           </div>
-          <div v-for="entity in filteredEntities" :key="entity.id" @click="selectEntity(entity.id)"
+          <div v-for="entity in filteredEntities" :key="entity.id" :data-entity-id="entity.id" @click="selectEntity(entity.id)"
             class="flex items-center gap-2.5 px-3 py-2.5 border-b border-surface-50 cursor-pointer hover:bg-surface-50 transition-colors"
             :class="selectedId === entity.id ? 'bg-brand-50/50 border-l-2 border-l-brand-500' : ''">
             <div class="h-7 w-7 rounded-lg flex items-center justify-center flex-shrink-0 text-[10px] font-bold" :class="tabColors[activeTab]">

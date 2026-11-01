@@ -6,12 +6,20 @@ import router from './router'
 import { vTooltip } from './directives/tooltip'
 import { initAgentRunListeners } from './stores/agentRun'
 import { setupLinkInterceptor } from './utils/linkInterceptor'
+import { pushInAppPath } from './utils/inAppLink'
+import { listen } from '@tauri-apps/api/event'
 import '@fontsource-variable/inter'
 import './assets/main.css'
 import './assets/markdown.css'
 
 // 全局处理链接点击：外部链接用默认浏览器打开（浮窗入口 chat.ts 同注册）
 setupLinkInterceptor()
+
+// 浮窗内链跳转桥：浮窗无 router，经 chat_navigate_main 唤起主窗后在此执行跳转
+listen<{ path: string }>('chat:navigate', (ev) => {
+  const p = ev.payload?.path
+  if (p) pushInAppPath(p).catch((e) => console.error('[chat:navigate] 跳转失败:', e))
+})
 
 const app = createApp(App)
 const pinia = createPinia()

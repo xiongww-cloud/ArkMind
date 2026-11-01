@@ -12,7 +12,7 @@ pub(crate) fn execute_object_catalog(entity: &str, field_filters: &[Value], sort
         "CHANNEL" | "VENDOR" | "CUSTOMER" => ("partners", &["id","type","name","phone","address","remark","contact_person","contact_phone","created_at","updated_at"]),
         "CONTACT" => ("(SELECT pc.id, pc.name, pc.phone, pc.email, pc.position, pc.remark, pc.created_at, COALESCE(GROUP_CONCAT(DISTINCT p.name),'') AS partner_names FROM partner_contacts pc LEFT JOIN partner_contact_mapping pcm ON pcm.contact_id=pc.id LEFT JOIN partners p ON p.id=pcm.partner_id GROUP BY pc.id)", &["id","name","phone","email","position","remark","partner_names","created_at"]),
         "TODO" => ("todos", &["id","title","content","done","priority","due_date","repeat","created_at","updated_at"]),
-        "NOTE" => ("(SELECT n.note_id, n.title, n.content, n.is_daily, n.notebook_id, nb.name AS notebook_name, n.deleted_at, n.created_at, n.updated_at FROM notes n LEFT JOIN notebooks nb ON n.notebook_id = nb.id)", &["note_id","title","content","is_daily","notebook_id","notebook_name","deleted_at","created_at","updated_at"]),
+        "NOTE" => ("(SELECT n.note_id, n.title, n.content, n.is_daily, n.notebook_id, nb.name AS notebook_name, COALESCE((SELECT GROUP_CONCAT(DISTINCT p2.name) FROM note_project_mapping npm2 JOIN projects p2 ON p2.id=npm2.project_id WHERE npm2.note_id=n.note_id),'') AS project_names, n.deleted_at, n.created_at, n.updated_at FROM notes n LEFT JOIN notebooks nb ON n.notebook_id = nb.id)", &["note_id","title","content","is_daily","notebook_id","notebook_name","project_names","deleted_at","created_at","updated_at"]),
         "EQUIPMENT_LIST" => ("solutions", &["id","project_id","name","created_at","updated_at"]),
         "EQUIPMENT_VERSION" => ("solution_versions", &["id","solution_id","version","tags","content","creator","status","created_at","updated_at"]),
         "EQUIPMENT_ITEM" => ("(SELECT si.id, si.solution_version_id, si.product_id, si.product_name, si.device_name, si.quantity, si.unit, si.unit_price, si.description AS params, si.row_type, si.sort_order, si.created_at, si.updated_at, sv.version, sv.status AS version_status, s.name AS solution_name, s.project_id, p.name AS project_name FROM solution_items si JOIN solution_versions sv ON sv.id=si.solution_version_id JOIN solutions s ON s.id=sv.solution_id JOIN projects p ON p.id=s.project_id)", &["id","solution_version_id","product_id","product_name","device_name","quantity","unit","unit_price","params","row_type","sort_order","created_at","updated_at","version","version_status","solution_name","project_id","project_name"]),
@@ -394,7 +394,17 @@ pub(crate) fn format_catalog_row(entity: &str, row: &Value) -> String {
         "NOTE" => {
             let id = row["note_id"].as_str().unwrap_or(row["id"].as_str().unwrap_or(""));
             let mut s = format!("[NOTE] {} | NOTE-{}", row["title"].as_str().unwrap_or(""), id);
-            if let Some(nb) = row["notebook_name"].as_str().filter(|s| !s.is_empty()) { s.push_str(&format!(" | 笔记本: {}", nb)); }
+            // 归属回显与 note_attribution 同优先级：闪记 → 笔记本 → 项目（AI 列表/详情一眼可见归属）
+            let is_daily = row["is_daily"].as_i64().unwrap_or(0) != 0 || row["is_daily"].as_bool().unwrap_or(false);
+            let nb = row["notebook_name"].as_str().filter(|v| !v.is_empty());
+            let projects = row["project_names"].as_str().filter(|v| !v.is_empty());
+            if is_daily {
+                s.push_str(" | 每日闪记");
+            } else if let Some(nb) = nb {
+                s.push_str(&format!(" | 笔记本: {}", nb));
+            } else if let Some(pj) = projects {
+                s.push_str(&format!(" | 项目: {}", pj));
+            }
             s
         }
         _ => format!("[{}] {}", upper, super::entity_ref::fmt(&upper, row["id"].as_str().unwrap_or(""))),
@@ -584,8 +594,7 @@ pub(crate) fn timeline_mode(obj_type: &str, start: &str, end: &str, limit: usize
                 database::get("SELECT CASE WHEN lfl.file_id IS NULL OR lfl.folder_id IS NULL THEN '未归类' ELSE COALESCE(lf.name,'未归类') END AS n FROM library_file_locations lfl LEFT JOIN library_folders lf ON lf.id=lfl.folder_id WHERE lfl.file_id=?1", &[json!(sid)])
                     .ok().flatten().and_then(|r| r["n"].as_str().map(String::from)).unwrap_or_else(|| "未归类".to_string())
             } else {
-                database::get("SELECT COALESCE(nb.name,'未归类') AS n FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1", &[json!(sid)])
-                    .ok().flatten().and_then(|r| r["n"].as_str().map(String::from)).unwrap_or_else(|| "未归类".to_string())
+                super::common::note_attribution(sid)
             };
             extra = Some(match extra {
                 Some(mut e) => { e["attribution"] = json!(attribution); e }
@@ -755,8 +764,7 @@ pub(crate) fn keyword_object_mode(query: &str, obj_type: &str, start: &str, end:
                 database::get("SELECT CASE WHEN lfl.file_id IS NULL OR lfl.folder_id IS NULL THEN '未归类' ELSE COALESCE(lf.name,'未归类') END AS n FROM library_file_locations lfl LEFT JOIN library_folders lf ON lf.id=lfl.folder_id WHERE lfl.file_id=?1", &[json!(sid)])
                     .ok().flatten().and_then(|r| r["n"].as_str().map(String::from)).unwrap_or_else(|| "未归类".to_string())
             } else {
-                database::get("SELECT COALESCE(nb.name,'未归类') AS n FROM notes n LEFT JOIN notebooks nb ON nb.id=n.notebook_id WHERE n.note_id=?1", &[json!(sid)])
-                    .ok().flatten().and_then(|r| r["n"].as_str().map(String::from)).unwrap_or_else(|| "未归类".to_string())
+                super::common::note_attribution(sid)
             };
             extra = Some(match extra {
                 Some(mut e) => { e["attribution"] = json!(attribution); e }

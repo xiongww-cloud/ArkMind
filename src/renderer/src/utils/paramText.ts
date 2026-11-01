@@ -100,19 +100,22 @@ export function parseParams(text: string): ParamRow[] {
   return rows
 }
 
-/** 行结构 → 规范文本（序号自动连续，分隔统一 "N、"，指标与要求间全角冒号）。 */
+/** 行结构 → 规范文本（多行：序号自动连续，分隔统一 "N、"，指标与要求间全角冒号；
+ *  单行：不加序号——单条参数无需编号，保持干净）。 */
 export function serializeParams(rows: ParamRow[]): string {
-  return rows
-    .map((r, i) => {
-      const n = i + 1
-      if (r.raw) return `${r.mark}${n}、${r.raw}`
-      if (!r.indicator && !r.requirement) return ''
-      if (!r.indicator) return `${r.mark}${n}、${r.requirement}`
-      if (!r.requirement) return `${r.mark}${n}、${r.indicator}`
-      return `${r.mark}${n}、${r.indicator}：${r.requirement}`
-    })
-    .filter((l) => l !== '')
-    .join('\n')
+  const items: { mark: string; body: string }[] = []
+  for (const r of rows) {
+    let body = ''
+    if (r.raw) body = r.raw
+    else if (r.indicator && r.requirement) body = `${r.indicator}：${r.requirement}`
+    else if (r.indicator) body = r.indicator
+    else if (r.requirement) body = r.requirement
+    if (body) items.push({ mark: r.mark, body })
+  }
+  if (items.length <= 1) {
+    return items.map((it) => `${it.mark}${it.body}`).join('\n')
+  }
+  return items.map((it, i) => `${it.mark}${i + 1}、${it.body}`).join('\n')
 }
 
 /** 规范化整段文本（等价于 parse → serialize，幂等）。 */
@@ -125,38 +128,44 @@ export function paramsEquivalent(a: string, b: string): boolean {
   return normalizeParams(a || '') === normalizeParams(b || '')
 }
 
-/** 检查整段文本，返回问题列表（四类规则）。 */
+/** 检查整段文本，返回问题列表。
+ *  单行参数不检查序号/分隔符/行尾标点——单条无需编号、无需行尾句号（多行规范不变）。 */
 export function lintParams(text: string): LintIssue[] {
   const issues: LintIssue[] = []
   if (!text || !text.trim()) return issues
   const rows = parseParams(text)
   if (rows.length === 0) return issues
+  const singleLine = rows.length === 1
 
-  // 1) 序号：缺号 / 重号 / 乱序（裸行不参与序号检查）
-  const numbered = rows.filter((r) => r.num !== null)
-  let seqOk = true
-  for (let i = 0; i < numbered.length; i++) {
-    if (numbered[i].num !== i + 1) {
-      seqOk = false
-      break
+  // 1) 序号：缺号 / 重号 / 乱序（裸行不参与序号检查；单行不检查）
+  if (!singleLine) {
+    const numbered = rows.filter((r) => r.num !== null)
+    let seqOk = true
+    for (let i = 0; i < numbered.length; i++) {
+      if (numbered[i].num !== i + 1) {
+        seqOk = false
+        break
+      }
     }
-  }
-  if (numbered.length > 0 && !seqOk) {
-    issues.push({
-      rule: 'seq',
-      line: 0,
-      message: `序号不连续（当前：${numbered.map((r) => r.num).join('、')}，应为 1～${numbered.length}）`
-    })
+    if (numbered.length > 0 && !seqOk) {
+      issues.push({
+        rule: 'seq',
+        line: 0,
+        message: `序号不连续（当前：${numbered.map((r) => r.num).join('、')}，应为 1～${numbered.length}）`
+      })
+    }
   }
 
   rows.forEach((r, i) => {
     const line = i + 1
-    // 2) 行首分隔符未归一为 "N、" / 缺序号
-    if (r.num === null) {
-      issues.push({ rule: 'sep', line, message: '缺少行首序号「N、」' })
-    } else if (r.sepForm !== '、') {
-      const cur = r.sepForm === '（）' ? `（${r.num}）` : `${r.num}${r.sepForm}`
-      issues.push({ rule: 'sep', line, message: `行首分隔符应为「N、」（当前「${cur}」）` })
+    // 2) 行首分隔符未归一为 "N、" / 缺序号（单行跳过）
+    if (!singleLine) {
+      if (r.num === null) {
+        issues.push({ rule: 'sep', line, message: '缺少行首序号「N、」' })
+      } else if (r.sepForm !== '、') {
+        const cur = r.sepForm === '（）' ? `（${r.num}）` : `${r.num}${r.sepForm}`
+        issues.push({ rule: 'sep', line, message: `行首分隔符应为「N、」（当前「${cur}」）` })
+      }
     }
     // 3a) 指标与要求之间使用了半角冒号
     if (r.halfColon) {
@@ -196,16 +205,18 @@ export function lintParams(text: string): LintIssue[] {
     })
   }
 
-  // 5) 行尾标点：非末行应以「；」结尾，末行应以「。」结尾
-  const visibleLines = String(text)
-    .split(/\r?\n/)
-    .filter((l) => l.trim())
-  visibleLines.forEach((rawLine, i) => {
-    const need = i === visibleLines.length - 1 ? '。' : '；'
-    if (!rawLine.trimEnd().endsWith(need)) {
-      issues.push({ rule: 'ending', line: i + 1, message: `行尾应以「${need}」结尾` })
-    }
-  })
+  // 5) 行尾标点：非末行应以「；」结尾，末行应以「。」结尾（单行不检查）
+  if (!singleLine) {
+    const visibleLines = String(text)
+      .split(/\r?\n/)
+      .filter((l) => l.trim())
+    visibleLines.forEach((rawLine, i) => {
+      const need = i === visibleLines.length - 1 ? '。' : '；'
+      if (!rawLine.trimEnd().endsWith(need)) {
+        issues.push({ rule: 'ending', line: i + 1, message: `行尾应以「${need}」结尾` })
+      }
+    })
+  }
 
   return issues
 }
@@ -238,13 +249,17 @@ export function fixParams(text: string): { text: string; fixes: FixSummary } {
   // 序号/分隔符/冒号/空格归一：parse → serialize
   const normalized = normalizeParams(out)
 
-  // 行尾标点归一：非末行「；」，末行「。」（先剥原有结尾标点再补，避免叠标点）
+  // 行尾标点归一：非末行「；」，末行「。」（先剥原有结尾标点再补，避免叠标点）；
+  // 单行参数不动行尾标点（不剥也不补）
   const lines = normalized.split('\n')
-  const withEnding = lines.map((line, i) => {
-    const need = i === lines.length - 1 ? '。' : '；'
-    const stripped = line.replace(/[。．.;；，,、：:！!？?]+$/, '')
-    return stripped ? stripped + need : line
-  })
+  const withEnding =
+    lines.length === 1
+      ? lines
+      : lines.map((line, i) => {
+          const need = i === lines.length - 1 ? '。' : '；'
+          const stripped = line.replace(/[。．.;；，,、：:！!？?]+$/, '')
+          return stripped ? stripped + need : line
+        })
 
   return { text: withEnding.join('\n'), fixes }
 }

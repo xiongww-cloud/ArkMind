@@ -90,7 +90,9 @@ function onPasteKeydown(e: KeyboardEvent) {
   const now = Date.now()
   if (now - lastClipRead < 500) return // 防抖，避免重复后端调用
   lastClipRead = now
-  readClipboardFiles()
+  readClipboardFiles().then((n) => {
+    if (n === 0) toast({ message: '剪贴板中没有可粘贴的文件或图片', type: 'info' })
+  })
 }
 
 onMounted(() => window.addEventListener('keydown', onPasteKeydown))
@@ -104,6 +106,16 @@ function open() {
   // macOS：paste 事件只在可编辑元素上触发，弹窗打开后聚焦隐藏的 textarea
   requestAnimationFrame(() => {
     pasteArea.value?.focus()
+  })
+}
+
+/** 任意点击后回收焦点到隐藏 textarea（点在真输入框上则不抢）——粘贴通道的关键前提 */
+function refocusPasteArea() {
+  requestAnimationFrame(() => {
+    const el = document.activeElement
+    const tag = el?.tagName
+    const editable = tag === 'INPUT' || tag === 'TEXTAREA' || (el as HTMLElement | null)?.isContentEditable
+    if (!editable) pasteArea.value?.focus()
   })
 }
 
@@ -275,11 +287,13 @@ async function onUploadPaste(e: ClipboardEvent) {
       }
     }
   }
-  // 系统剪贴板中的文件不暴露给 clipboardData（浏览器安全限制），
-  // 若浏览器侧未取到任何文件且剪贴板确为文件列表，才回退从后端读取（纯文本粘贴不打后端）
-  const clipboardHasFiles = Array.from(e.clipboardData?.types || []).includes('Files')
-  if (added === 0 && clipboardHasFiles) {
-    await readClipboardFiles()
+  // 系统剪贴板中的文件/截图：WebKit 常不暴露 'Files' type、Finder 文件也不进 clipboardData——
+  // 未取到任何东西时无条件走后端回退（NSPasteboard 读 fileURL + 图像数据），空结果给轻提示
+  if (added === 0) {
+    const n = await readClipboardFiles()
+    if (n === 0) {
+      toast({ message: '剪贴板中没有可粘贴的文件或图片', type: 'info' })
+    }
   }
   // 处理完成后重新聚焦隐藏 textarea，保持后续粘贴可用
   requestAnimationFrame(() => {
@@ -288,7 +302,8 @@ async function onUploadPaste(e: ClipboardEvent) {
 }
 
 /** 从后端读取系统剪贴板（资源管理器/Finder 复制）的文件，加入待上传列表 */
-async function readClipboardFiles() {
+async function readClipboardFiles(): Promise<number> {
+  let added = 0
   try {
     const r: any = await invoke('chat_read_clipboard_files')
     if (r?.success && Array.isArray(r.files) && r.files.length) {
@@ -298,9 +313,11 @@ async function readClipboardFiles() {
         // 去重：keydown 与 paste 可能双触发
         if (pendingUploads.value.some(u => u.tempPath === f.path)) continue
         pendingUploads.value.push({ file: f, name: name.replace(/\.[^.]+$/, ''), ext, isPath: false, tempPath: f.path })
+        added++
       }
     }
   } catch (err) { console.warn('[UploadModal] macos clipboard read failed:', err) }
+  return added
 }
 
 function removeUpload(idx: number) {
@@ -407,6 +424,7 @@ defineExpose({ open, close })
       <div
         v-if="show"
         class="fixed inset-0 z-[80] bg-black/30 flex items-center justify-center"
+        @mousedown="refocusPasteArea"
       >
         <!-- 隐藏 textarea：macOS 上 paste 事件只在可编辑元素触发，用它捕获粘贴 -->
         <textarea

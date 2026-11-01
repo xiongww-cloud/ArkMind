@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { reactive, computed } from 'vue'
+import { reactive, ref, computed, watch } from 'vue'
 import type { ClarificationData, ClarificationQuestion } from '@/composables/useAgentChat'
-import { buildClarificationReply, mergeClarificationAnswer } from '@/composables/useAgentChat'
+import { buildClarificationReply, mergeClarificationAnswer, renderMdInline } from '@/composables/useAgentChat'
 
 const props = defineProps<{
   clarification: ClarificationData
@@ -13,6 +13,18 @@ const props = defineProps<{
   ignored?: boolean
 }>()
 const emit = defineEmits<{ submit: [text: string], ignore: [] }>()
+
+// 题干/背景/答案按行内 markdown 预渲染（卡片原为纯文本插值，AI 给的 [名称](#/路由) 链接显示成原始语法；
+// 渲染为 <a> 后由全局链接拦截器接管点击）。题干原文保留给答复解析（parsedReply 按原文定位）。
+const reasonHtml = ref('')
+const promptHtml = reactive<Record<string, string>>({})
+const answerHtml = reactive<Record<string, string>>({})
+async function renderCardTexts() {
+  if (props.clarification.reason) reasonHtml.value = await renderMdInline(props.clarification.reason)
+  for (const q of props.clarification.questions) {
+    promptHtml[q.question_id] = await renderMdInline(q.prompt)
+  }
+}
 
 const SKIP_TEXT = '暂不补充这些信息，请按最合理的默认假设继续，并在结果中括注说明采用的假设。'
 
@@ -37,6 +49,22 @@ const parsedReply = computed(() => {
   })
   return { skipped: false, answers }
 })
+
+// 渲染触发（必须在 parsedReply 之后声明，replyText watcher immediate 会同步读它）
+renderCardTexts()
+watch(() => props.clarification, () => renderCardTexts())
+watch(
+  () => props.replyText,
+  async () => {
+    const p = parsedReply.value
+    if (p && !p.skipped) {
+      for (const [qid, ans] of Object.entries(p.answers)) {
+        answerHtml[qid] = await renderMdInline(String(ans ?? ''))
+      }
+    }
+  },
+  { immediate: true }
+)
 
 const answers = reactive<Record<string, string | string[]>>({})
 const custom = reactive<Record<string, string>>({})
@@ -101,7 +129,7 @@ function ignore() {
       <span class="text-[12px] font-semibold text-surface-700">{{ ignored ? '已忽略' : answered ? '已确认' : 'AI 需要你的决定' }}</span>
     </div>
     <div class="px-3.5 pb-3 space-y-3">
-      <p v-if="clarification.reason && !answered && !ignored" class="text-[11px] text-surface-500 leading-relaxed -mt-0.5">{{ clarification.reason }}</p>
+      <p v-if="clarification.reason && !answered && !ignored" class="text-[11px] text-surface-500 leading-relaxed -mt-0.5" v-html="reasonHtml || clarification.reason"></p>
 
       <!-- 已忽略：不答复不续跑，卡片定格；后续对话由用户主动发消息开启 -->
       <p v-if="ignored" class="text-[11px] text-surface-400 leading-relaxed -mt-0.5">已忽略此确认，未回复任何内容；想继续直接发消息即可（不补充时 AI 会按合理默认假设推进）。</p>
@@ -109,8 +137,8 @@ function ignore() {
         <p v-if="parsedReply?.skipped" class="text-[11px] text-surface-500">用户选择按默认假设继续（结果中已括注采用的假设）</p>
         <template v-else-if="parsedReply">
           <div v-for="(q, i) in clarification.questions" :key="q.question_id">
-            <p class="text-[11px] text-surface-400 leading-snug">{{ i + 1 }}. {{ q.prompt }}</p>
-            <p v-if="parsedReply.answers[q.question_id]" class="text-[12px] text-surface-800 font-medium mt-0.5">→ {{ parsedReply.answers[q.question_id] }}</p>
+            <p class="text-[11px] text-surface-400 leading-snug">{{ i + 1 }}. <span v-html="promptHtml[q.question_id] || q.prompt"></span></p>
+            <p v-if="parsedReply.answers[q.question_id]" class="text-[12px] text-surface-800 font-medium mt-0.5" v-html="'→ ' + (answerHtml[q.question_id] || parsedReply.answers[q.question_id])"></p>
           </div>
         </template>
         <p v-else class="text-[11px] text-surface-400">已答复</p>
@@ -119,7 +147,7 @@ function ignore() {
       <!-- 作答态 -->
       <template v-else>
         <div v-for="(q, i) in clarification.questions" :key="q.question_id" class="pt-0.5">
-          <p class="text-[12px] font-medium text-surface-700 mb-1.5 leading-snug">{{ i + 1 }}. {{ q.prompt }}</p>
+          <p class="text-[12px] font-medium text-surface-700 mb-1.5 leading-snug">{{ i + 1 }}. <span v-html="promptHtml[q.question_id] || q.prompt"></span></p>
           <input v-if="q.type === 'text'" v-model="answers[q.question_id]" type="text"
             class="w-full border border-surface-200 rounded-md px-2.5 py-1 text-[11px] outline-none focus:border-brand-400" placeholder="输入答复..." />
           <div v-else class="space-y-1">

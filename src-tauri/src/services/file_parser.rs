@@ -945,6 +945,41 @@ pub fn refine_zip_container_ext(bytes: &[u8]) -> Option<&'static str> {
 /// 单文件解析尺寸上限（与目录遍历同口径 200MB）：超限不解析、不入知识索引（文件本体保留可用）
 pub const MAX_PARSE_BYTES: u64 = 200 * 1024 * 1024;
 
+/// 文本类解析上限（txt/md/csv/json）：无界 read_to_string 是 OOM 主源之一
+/// （Windows 定案崩溃：0xc0000409 __fastfail = alloc error abort，不走 panic hook 零日志）——
+/// 知识索引不需要更大原文，超限走 unsupported 终态（与 200MB 闸同口径）
+pub const MAX_TEXT_PARSE_BYTES: u64 = 30 * 1024 * 1024;
+
+/// 有界文本读取：超限返回 unsupported 终态错误（ingestion 按前缀标记不再重试）
+fn read_text_bounded(path: &str) -> Result<String, String> {
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
+    if len > MAX_TEXT_PARSE_BYTES {
+        return Err(format!(
+            "{}文本文件过大（{}MB > 30MB 上限），暂不解析、不入知识索引",
+            crate::services::file_ingestion::UNSUPPORTED_PREFIX,
+            len / 1_048_576
+        ));
+    }
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+/// 深解析（XML/二进制建模）放入 16MB 大栈线程：病态深层嵌套文档在默认小栈上
+/// 溢出即进程死（STATUS_STACK_OVERFLOW，同样不走 panic hook）
+fn run_with_big_stack<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    match std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(f)
+    {
+        Ok(handle) => match handle.join() {
+            Ok(r) => r,
+            Err(_) => Err("解析线程异常终止".to_string()),
+        },
+        Err(e) => Err(format!("启动解析线程失败: {}", e)),
+    }
+}
+
 /// 尺寸闸判定：返回 Some(拒绝理由) 则不得继续解析
 fn parse_size_gate(file_len: u64) -> Option<String> {
     if file_len > MAX_PARSE_BYTES {
@@ -1118,7 +1153,8 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
                 if let Ok(t) = read_pptx(path) { if !t.is_empty() { return mk(t, String::new()); } }
             }
             "text/plain" | "text/csv" | "application/json" => {
-                let text = std::fs::read_to_string(path).unwrap_or_default();
+                // 有界读取：超限返回空 → 落到后缀路由给出 unsupported 终态理由
+                let text = read_text_bounded(path).unwrap_or_default();
                 return mk(text, String::new());
             }
             "application/msword" | "application/x-ole-storage" => {
@@ -1134,7 +1170,10 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
     // ── 后缀路由 ──
     let ext = hinted_ext.to_lowercase();
     let text = match ext.as_str() {
-        "txt" | "md" | "csv" | "json" => std::fs::read_to_string(path).unwrap_or_default(),
+        "txt" | "md" | "csv" | "json" => match read_text_bounded(path) {
+            Ok(t) => t,
+            Err(e) => return ParseResult { text: String::new(), success: false, error: e, inferred_ext: None },
+        },
         "docx" => read_docx(path).unwrap_or_default(),
         "doc" => read_doc_legacy(path).unwrap_or_default(),
         "xlsx" | "xls" => read_xlsx(path).unwrap_or_default(),
@@ -1166,7 +1205,7 @@ pub fn parse_file_smart(path: &str, hinted_ext: &str) -> ParseResult {
 
     // ── 轮询兜底：依次硬啃 PDF → DOCX → XLSX → TXT（含 read_pdf，重型解析串行）──
     let _heavy = heavy_parse_guard();
-    let fallbacks: &[fn(&str) -> String] = &[read_pdf, |p| read_docx(p).unwrap_or_default(), |p| read_xlsx(p).unwrap_or_default(), |p| read_pptx(p).unwrap_or_default(), |p| std::fs::read_to_string(p).unwrap_or_default()];
+    let fallbacks: &[fn(&str) -> String] = &[read_pdf, |p| read_docx(p).unwrap_or_default(), |p| read_xlsx(p).unwrap_or_default(), |p| read_pptx(p).unwrap_or_default(), |p| read_text_bounded(p).unwrap_or_default()];
     for try_parse in fallbacks {
         let t = try_parse(path);
         if !t.is_empty() && t.len() > 20 {
@@ -1499,7 +1538,13 @@ fn clean_xlsx(text: &str) -> String {
 // ── 底层解析器 ──
 
 /// PPTX 解析：提取所有幻灯片中的文本（<a:t> 节点），按页输出 markdown
+/// PPTX 解析入口：深解析（zip+XML 流扫描）走大栈线程防嵌套溢出
 fn read_pptx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let owned = p.to_string();
+    run_with_big_stack(move || read_pptx_inner(&owned).map_err(|e| e.to_string())).map_err(Into::into)
+}
+
+fn read_pptx_inner(p: &str) -> Result<String, Box<dyn std::error::Error>> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
     use std::io::BufReader;
@@ -1574,9 +1619,10 @@ fn read_docx_to_markdown(p: &str) -> Result<String, Box<dyn std::error::Error>> 
     word_bytes_to_markdown(&bytes)
 }
 
-/// DOCX 解析：保留旧接口名，实现同 `read_docx_to_markdown`
+/// DOCX 解析：保留旧接口名，实现同 `read_docx_to_markdown`（深解析走大栈线程防嵌套溢出）
 fn read_docx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
-    read_docx_to_markdown(p)
+    let owned = p.to_string();
+    run_with_big_stack(move || read_docx_to_markdown(&owned).map_err(|e| e.to_string())).map_err(Into::into)
 }
 
 /// Word（.doc/.docx）字节流 → Markdown。rwml 建模 + word_markdown 渲染。
@@ -1600,10 +1646,14 @@ fn word_bytes_to_markdown(bytes: &[u8]) -> Result<String, Box<dyn std::error::Er
     Ok(markdown)
 }
 
-/// DOC 解析：使用 rwml 解析旧版 Word 二进制格式（OLE2），输出 Markdown
+/// DOC 解析：使用 rwml 解析旧版 Word 二进制格式（OLE2），输出 Markdown（大栈线程防嵌套溢出）
 fn read_doc_legacy(p: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let bytes = std::fs::read(p)?;
-    word_bytes_to_markdown(&bytes)
+    let owned = p.to_string();
+    run_with_big_stack(move || -> Result<String, String> {
+        let bytes = std::fs::read(&owned).map_err(|e| e.to_string())?;
+        word_bytes_to_markdown(&bytes).map_err(|e| e.to_string())
+    })
+    .map_err(Into::into)
 }
 
 fn read_xlsx(p: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -2020,6 +2070,28 @@ mod tests {
         let text2 = "完整句。\n下一句。";
         let out2 = merge_pdf_broken_lines(text2);
         assert!(out2.contains("完整句。\n下一句。") || out2.lines().count() == 2);
+    }
+
+    /// 文本有界读取：小文件正常读；超 30MB 返回 unsupported 终态错误（防 OOM 主闸之一）
+    #[test]
+    fn read_text_bounded_guards_oversize() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let small = dir.path().join("ok.txt");
+        std::fs::write(&small, "内容正常").unwrap();
+        assert_eq!(read_text_bounded(&small.to_string_lossy()).unwrap(), "内容正常");
+
+        let big = dir.path().join("big.txt");
+        {
+            let mut f = std::fs::File::create(&big).unwrap();
+            let chunk = vec![b'x'; 1024 * 1024];
+            for _ in 0..=30 { // 31MB > 30MB 上限
+                f.write_all(&chunk).unwrap();
+            }
+        }
+        let err = read_text_bounded(&big.to_string_lossy()).unwrap_err();
+        assert!(err.contains(crate::services::file_ingestion::UNSUPPORTED_PREFIX), "应为 unsupported 终态: {}", err);
+        assert!(err.contains("30MB"), "应含上限说明: {}", err);
     }
 }
 

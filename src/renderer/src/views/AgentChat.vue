@@ -341,7 +341,7 @@ onMounted(async () => {
   // 渲染当前会话的消息
   if (currentSessionId.value) { await selectSession(currentSessionId.value) }
   initialScrollDone = false
-  nextTick(() => scrollToBottomIfNear())
+  pinToBottom()
 })
 // ★ 每次切换回来时重新加载会话（保持与全局对话框同步）
 // 但如果 AI 正在回复中，不要覆盖当前会话状态
@@ -354,7 +354,7 @@ onActivated(async () => {
       activeTokenTimer = setInterval(activeTokenConsume, 15)
     }
     initialScrollDone = false
-    nextTick(() => scrollToBottomIfNear())
+    pinToBottom()
     return
   }
   try {
@@ -392,7 +392,7 @@ onActivated(async () => {
     }
   }
   initialScrollDone = false
-  nextTick(() => scrollToBottomIfNear())
+  pinToBottom()
   // KeepAlive 激活不走 selectSession：独立刷新当前会话的计划投影（覆盖离开本页期间浮窗/分析师对 plan 的增删）
   restorePlanDock(currentSessionId.value || '')
 })
@@ -409,7 +409,8 @@ async function selectSession(id: string) {
       return Promise.resolve()
     }))
   }
-  scrollToBottomIfNear()
+  initialScrollDone = false
+  pinToBottom()
   // Dock 恢复路径：会话切换/启动落位后投影该会话持久化计划（后端 session.plan 唯一事实源；
   // run 中跳过——事件流自带快照）。setRunSid('') 须在 applyPlan 前，防 matchSid 归属过滤拦下新会话快照
   restorePlanDock(id)
@@ -498,12 +499,13 @@ async function loadOlderMessages() {
         return { ...rest, ...docFieldsFromMeta(rest), dbId: rest.id, id: 'hist-' + rest.id, timestamp: rest.created_at ? new Date(rest.created_at).getTime() : Date.now() }
       })
       session.messages.unshift(...older)
-      // 渲染旧消息的 markdown
-      for (const m of older) {
+      // 先等旧消息 markdown 渲染落位再补偿——渲染是异步的，先补偿会算少高度、位置漂移
+      await Promise.all(older.map((m) => {
         if (m.role === 'assistant' && m.content && !m.isThinking) {
-          renderMessageContent(m.id || '', m.content)
+          return renderMessageContent(m.id || '', m.content)
         }
-      }
+        return Promise.resolve()
+      }))
       nextTick(() => { el.scrollTop = el.scrollHeight - prevHeight })
       sessionHasMore.value[session.id] = r.messages.length >= 10
     } else {
@@ -518,6 +520,8 @@ function onFeedScroll() {
   if (!el) return
   // ★ 跟随态判定：距底 <48px 视为贴底；滚开即脱离磁吸，流式输出不再把用户拉回
   stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD
+  // 入场窗口：塌陷/钉底产生的 scroll 事件不是用户滚动，不触发向上加载
+  if (entryAnchorLock) return
   if (el.scrollTop > 100) return
   loadOlderMessages()
 }
@@ -558,6 +562,42 @@ function scrollToBottomIfNear() {
   if (!initialScrollDone) { initialScrollDone = true; stickToBottom.value = true; nextTick(() => { el.scrollTop = el.scrollHeight }); return }
   if (!stickToBottom.value) return
   nextTick(() => { const n = feedScrollRef.value as HTMLElement | null; if (n) n.scrollTop = n.scrollHeight })
+}
+/** 进入页面钉底：高度未定型期（图片加载/字体落位）持续补钉；用户上滑（脱离磁吸）即停止打扰。
+ *  首个钉底强制执行——内容塌陷/重渲产生的夹紧 scroll 事件会把 stickToBottom 翻成 false
+ *  （且 scroll 事件先于同帧 rAF），若首钉也检查 stick 就会永远空转。 */
+let entryAnchorLock = false
+let entryAnchorTimer: ReturnType<typeof setTimeout> | null = null
+function pinToBottom() {
+  stickToBottom.value = true
+  // 入场窗口内 onFeedScroll 不触发 loadOlderMessages（scrollTop 被夹到 0 附近不是用户意图）
+  entryAnchorLock = true
+  if (entryAnchorTimer) clearTimeout(entryAnchorTimer)
+  entryAnchorTimer = setTimeout(() => { entryAnchorLock = false }, 500)
+  const forcePin = () => {
+    const el = feedScrollRef.value as HTMLElement | null
+    if (el) el.scrollTop = el.scrollHeight
+    stickToBottom.value = true
+  }
+  // 双 rAF：等 reactive DOM flush 完成后再定位
+  requestAnimationFrame(() => requestAnimationFrame(forcePin))
+  const repin = () => {
+    if (!stickToBottom.value) return
+    const el = feedScrollRef.value as HTMLElement | null
+    if (el) el.scrollTop = el.scrollHeight
+  }
+  // 图片加载完会撑高内容——逐张补钉（load 与 error 都触发，只补一次）
+  nextTick(() => {
+    const el = feedScrollRef.value as HTMLElement | null
+    if (!el) return
+    el.querySelectorAll('img').forEach((img) => {
+      if ((img as HTMLImageElement).complete) return
+      img.addEventListener('load', repin, { once: true })
+      img.addEventListener('error', repin, { once: true })
+    })
+  })
+  // 字体落位改变行高
+  try { document.fonts.ready.then(repin).catch(() => {}) } catch { /* 非标准环境静默 */ }
 }
 function backToBottom() {
   stickToBottom.value = true
@@ -960,6 +1000,7 @@ onUnmounted(() => {
   stopAllTypewriters()
   if (activeTokenTimer) { clearInterval(activeTokenTimer); activeTokenTimer = null }
   activeTokenConsume = null
+  if (entryAnchorTimer) clearTimeout(entryAnchorTimer)
   unlistenProgress?.()
   unlistenThought?.()
   unlistenToken?.()
@@ -1051,14 +1092,14 @@ onUnmounted(() => {
                 <!-- 思考流（本轮瞬态：流式滚动自动跟底，正文开始折叠为一行可展开，刷新/历史不存在） -->
                 <div v-if="agent.thought.value && (msg.id || '') === agent.thoughtMsgId.value" class="mt-1">
                   <div v-if="!agent.thoughtCollapsed.value" ref="thoughtBoxRef"
-                    class="max-h-[96px] overflow-y-auto rounded-lg bg-[#f7f7f9] border border-[#ececf0] px-2.5 py-1.5 text-[11px] leading-relaxed text-[#8e8e93] whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
+                    class="max-h-[96px] overflow-y-auto rounded-lg bg-[#f7f7f9] border border-[#ececf0] px-2.5 py-1.5 text-[11px] leading-relaxed text-[#8e8e93] whitespace-pre-wrap break-words [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">{{ agent.thought.value }}</div>
                   <template v-else>
                     <button type="button" class="flex items-center gap-1 text-[10px] text-[#c7c7cc] hover:text-[#2563eb] transition-colors" @click="thoughtExpanded = !thoughtExpanded">
                       <AppIcon :name="thoughtExpanded ? 'chevron-down' : 'chevron-right'" size="10" />
                       思考了 {{ agent.thoughtSecs.value }} 秒 · {{ agent.thought.value.length.toLocaleString() }} 字
                     </button>
                     <div v-if="thoughtExpanded" ref="thoughtBoxRef"
-                      class="mt-1 max-h-[160px] overflow-y-auto rounded-lg bg-[#f7f7f9] border border-[#ececf0] px-2.5 py-1.5 text-[11px] leading-relaxed text-[#8e8e93] whitespace-pre-wrap break-words">{{ agent.thought.value }}</div>
+                      class="mt-1 max-h-[160px] overflow-y-auto rounded-lg bg-[#f7f7f9] border border-[#ececf0] px-2.5 py-1.5 text-[11px] leading-relaxed text-[#8e8e93] whitespace-pre-wrap break-words [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">{{ agent.thought.value }}</div>
                   </template>
                 </div>
               </div>
