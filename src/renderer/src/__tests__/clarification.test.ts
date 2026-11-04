@@ -70,6 +70,25 @@ describe('buildClarificationReply', () => {
     expect(text).toContain('3.部署模式：一体机交付')
     expect(text).not.toContain('部署模式？')
   })
+
+  it('答案与补充说明并存', () => {
+    const text = buildClarificationReply(data, { q1: '医院核心HIS/PACS' }, '机房在3号楼，预算上限80万')
+    expect(text).toContain('1.业务场景偏好：医院核心HIS/PACS')
+    expect(text).toContain('补充说明：机房在3号楼，预算上限80万')
+    expect(text.endsWith('请继续执行。')).toBe(true)
+  })
+
+  it('允许纯补充提交（无答案）', () => {
+    const text = buildClarificationReply(data, {}, '预算砍半，其他按原方案')
+    expect(text.startsWith('补充说明：')).toBe(true)
+    expect(text).toContain('预算砍半')
+    expect(text).toContain('请继续执行')
+  })
+
+  it('无答案无补充 → 仍走默认假设话术（不误入纯补充分支）', () => {
+    const text = buildClarificationReply(data, {}, '   ')
+    expect(text).toContain('默认假设')
+  })
 })
 
 describe('mergeClarificationAnswer', () => {

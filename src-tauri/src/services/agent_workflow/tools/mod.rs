@@ -34,7 +34,7 @@ pub(crate) const TOOL_LABELS: &[(&str, &str, &str)] = &[
     ("ext_tool_web_search", "联网搜索", "搜索公开互联网信息"),
     ("ext_tool_web_fetch", "网页抓取", "抓取网页全文并转为 Markdown"),
     ("ext_tool_report", "缺口与确认上报", "子 Agent 结构化上报：数据缺口 / 需用户拍板的确认事项"),
-    ("ext_tool_ask_user", "向用户提问", "结构化确认卡片；wait=true 本轮结束等答复，wait=false 问完继续"),
+    ("ext_tool_ask_user", "向用户提问", "结构化确认卡片；wait=false(默认) 问完继续、回合末发卡；wait=true 仅高危不可逆操作阻断等答复"),
     ("ext_tool_delegate_agent", "委托专业助手", "把任务委托给专业 Agent 执行"),
     ("ext_tool_watch", "关注管理", "观察池增删改查：替用户持续盯一件事"),
 ];

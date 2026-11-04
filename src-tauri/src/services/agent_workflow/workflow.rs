@@ -85,12 +85,12 @@ pub(crate) fn pick_direct_out(results: &[(String, String, String, bool)]) -> Opt
 /// - 问题截到 ≤5（超出丢弃并置 truncated）、每题选项截到 ≤6、剔除空 prompt/空选项
 /// - type 非 single_choice/multiple_choice 一律降级为 text
 /// - question_id 缺失时自动补 qN
-/// - wait=false → status="notified"（不早退，任务继续，done 出口由 attach_ask_cards 附卡）；
-///   wait 缺省/true → status="pending"（现状：本轮立即结束等待答复）
+/// - wait=false（缺省）→ status="notified"（不早退，任务继续，done 出口由 attach_ask_cards 附卡）；
+///   wait=true → status="pending"（仅高危不可逆操作阻断本轮等待答复）
 /// - 无合格问题 → 失败信封（提示 LLM 正确用法）
 pub(crate) fn normalize_ask_args(a: &Value) -> String {
     let reason = a["reason"].as_str().unwrap_or("").trim().to_string();
-    let wait = a["wait"].as_bool().unwrap_or(true);
+    let wait = a["wait"].as_bool().unwrap_or(false);
     let raw_qs = a["questions"].as_array().cloned().unwrap_or_default();
     let mut questions: Vec<Value> = Vec::new();
     let mut truncated = false;
@@ -237,6 +237,19 @@ pub(crate) fn forbidden_summary(name: &str, arguments: &str) -> String {
         }
     }
     format!("工具「{}」在当前任务中未授权，已跳过执行。", name)
+}
+
+/// 工具参数 JSON 解析（执行入口专用）：失败**必留日志**再退空对象——
+/// 曾 5 处静默 unwrap_or({})：参数整体丢失时工具只报"缺字段"类误导性参数错误，日志无从定罪。
+fn parse_tool_args_or_empty(tool: &str, args_str: &str) -> Value {
+    match serde_json::from_str::<Value>(args_str) {
+        Ok(v) => v,
+        Err(e) => {
+            let head: String = args_str.chars().take(80).collect();
+            log::warn!("[Agent] 工具 {} 参数 JSON 解析失败({})，参数前80字: {}", tool, e, head);
+            json!({})
+        }
+    }
 }
 
 #[tauri::command]
@@ -440,12 +453,22 @@ fn compress_doc_tool_history(messages: &mut [ChatMessage]) {
             let Some(fid) = done.get(tc.id.as_str()) else { continue };
             let n = tc.function.arguments.chars().count();
             if n < THRESHOLD || tc.function.arguments.contains("\"_compressed\"") { continue; }
-            let action = serde_json::from_str::<Value>(&tc.function.arguments).ok()
+            let orig = serde_json::from_str::<Value>(&tc.function.arguments).ok();
+            let action = orig.as_ref()
                 .and_then(|v| v["action"].as_str().map(String::from))
                 .unwrap_or_else(|| "create".into());
+            let file_type = orig.as_ref()
+                .and_then(|v| v["file_type"].as_str().filter(|s| *s == "docx" || *s == "xlsx"))
+                .unwrap_or("docx");
+            let filename = orig.as_ref()
+                .and_then(|v| v["filename"].as_str().filter(|s| !s.is_empty()))
+                .unwrap_or("<历史占位>");
+            // ★ 占位必须是"可模仿的正确形状"：曾用 {action,source_file_id,_compressed:"不再回显"}
+            //   ——无 content 键 + "不再回显"暗示，模型模仿后 append 漏传 content，
+            //   连续被拒烧尽预算（第4章起分批追加失败事故）。保留完整骨架 + content.children 形状。
             tc.function.arguments = format!(
-                "{{\"action\":\"{}\",\"source_file_id\":\"{}\",\"_compressed\":\"原 {} 字符正文已交付落盘，不再回显\"}}",
-                action, fid, n
+                "{{\"file_type\":\"{}\",\"action\":\"{}\",\"source_file_id\":\"{}\",\"filename\":\"{}\",\"content\":{{\"children\":[\"<历史占位：原{}字正文已落盘>\"]}},\"_compressed\":\"仅历史显示压缩，不是调用模板：新的 append 必须传完整 content.children；改稿用 action=read 取回原结构\"}}",
+                file_type, action, fid, filename, n
             );
         }
     }
@@ -583,6 +606,14 @@ pub async fn agent_chat_workflow_internal(
     let cancel_key: Option<String> = session_id.clone()
         .or_else(|| delegate_run.as_ref().and_then(|d| d.llm.cancel_sid.clone()));
     let sid_out: String = cancel_key.clone().unwrap_or_default();
+    // ★ 同会话串行：旧 run 未退出前新 run 排队。必须先持锁再清取消标记——
+    //   此前无锁并发时"新 run 清标记 → 旧 run 取消失效复活 → 继续旧问题"竞态是中断残留的根因。
+    let _run_guard = if is_root && respond_cancel {
+        match cancel_key.as_ref() {
+            Some(k) if !k.is_empty() => Some(crate::services::agent_workflow::acquire_session_run_lock(k).await),
+            _ => None,
+        }
+    } else { None };
     if is_root && respond_cancel { if let Some(ref k) = cancel_key { clear_session_cancel(k); } }
     log::info!("workflow start, app_some={}", app_handle.is_some());
     let query = user_query.trim().to_string();
@@ -628,6 +659,16 @@ pub async fn agent_chat_workflow_internal(
     if session.owner_session_id.is_none() {
         session.owner_session_id = session_id.clone();
     }
+    // ★ 中断即忘：上一 run 被用户中断 → 本 run 注入作废指令（读取后自清，仅顶层消费）。
+    //   未答复的确认/追问问题随中断作废，模型不得续答或重提，直接处理新消息。
+    let effective_prompt = if is_root && std::mem::take(&mut session.last_run_cancelled) {
+        format!(
+            "{}\n\n【中断作废】用户已中断上一任务：该任务及其未答复的确认/追问问题全部作废——禁止续答、重提或追问旧问题，直接处理本条新消息。",
+            effective_prompt
+        )
+    } else {
+        effective_prompt.to_string()
+    };
     // ★ 计划恢复：run 开头同步权威快照（含 null——上一 run 的 Dock 残留即时清除；有计划则带进度复活）
     if is_root && !silent {
         emit_plan_snapshot(session.plan.as_ref(), &app_handle, &sid_out, false);
@@ -1002,7 +1043,12 @@ pub async fn agent_chat_workflow_internal(
     loop {
         // ★ 检查停止信号（仅顶层清除标志，子Agent保留信号向上传播；独立后台运行体跳过）
         if respond_cancel { if let Some(ref k) = cancel_key { if session_cancelled(k) {
-            if is_root { clear_session_cancel(k); }
+            if is_root {
+                clear_session_cancel(k);
+                // ★ 中断即忘：落盘"上一 run 被中断"标记，下一 run 注入作废指令（未答问题不再续提）
+                session.last_run_cancelled = true;
+                if let Some(ref sid) = session_id { save_session_state(sid, &session); }
+            }
             log::info!("收到停止信号，中断执行");
             let ws = session.generate_scratchpad();
             return Ok(json!({"sid": sid_out.clone(),"success":true,"result_type":"answer","answer":"已停止执行。","workspace":ws,"iterations":iters,"cancelled":true,"promptTokens":session.prompt_tokens,"completionTokens":session.completion_tokens,"cachedTokens":session.cached_tokens,"tool_log":tool_log}));
@@ -1082,6 +1128,11 @@ pub async fn agent_chat_workflow_internal(
                 // ★ 取消必须显式传播：子 Agent 被用户停止时若伪装成普通失败，
                 //   主 Agent 会按"失败重试"教条重新委托——用户停止意图被覆盖（重复委托事故根因）
                 let was_cancelled = respond_cancel && e == "cancelled";
+                // ★ 中断即忘：流中取消同样落盘作废标记（下一 run 注入作废指令）
+                if was_cancelled && is_root {
+                    session.last_run_cancelled = true;
+                    if let Some(ref sid) = session_id { save_session_state(sid, &session); }
+                }
                 // ★ 仅根工作流上报 agent:error：子 Agent（delegate_depth≥1）失败由委托信封回传，
                 // 若直接发 error 会让前端提前拆掉 done/token 监听，导致父流程最终回复丢失（仅刷新可见）
                 // 取消例外：走 done 的 cancelled 通道，不弹错误
@@ -1359,7 +1410,7 @@ pub async fn agent_chat_workflow_internal(
                         let vc = visited_chunks_snapshot.clone();
                         let shown_mem = session.shown_memory_ids.clone();
                         handles.push((orig_idx, tokio::spawn(async move {
-                            let a: Value = serde_json::from_str(&args_str).unwrap_or(json!({}));
+                            let a: Value = parse_tool_args_or_empty(&name, &args_str);
                             let (res, effects) = match name.as_str() {
                                 "ext_tool_search" | "ext_tool_search_knowledge_base" => {
                                     let kw: Vec<String> = a["keywords"].as_array()
@@ -1467,7 +1518,7 @@ pub async fn agent_chat_workflow_internal(
                     .map(|(i, r)| (*i, r.clone())).collect();
                 completed_round.extend(async_results.iter().map(|(i, r, _)| (*i, r.clone())));
                 for (idx, name, args_str) in &sync_tasks {
-                    let a: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                    let a: Value = parse_tool_args_or_empty(name, args_str);
                     let (result, effects) = match name.as_str() {
                         "ext_tool_object" => {
                             let mode = a["mode"].as_str().unwrap_or("");
@@ -2055,6 +2106,12 @@ mod tests {
         compress_doc_tool_history(&mut msgs);
         let tcs = msgs[0].tool_calls.as_ref().unwrap();
         assert!(tcs[0].function.arguments.contains("_compressed") && tcs[0].function.arguments.contains("FID-1") && tcs[0].function.arguments.contains("\"append\""));
+        // ★ 防"占位教坏模型"回归：占位必须保留完整骨架（file_type/filename）+ content.children 形状 + 反模仿指引
+        assert!(tcs[0].function.arguments.contains("\"file_type\""), "占位须含 file_type");
+        assert!(tcs[0].function.arguments.contains("\"filename\""), "占位须含 filename");
+        assert!(tcs[0].function.arguments.contains("\"content\":{\"children\":["), "占位须展示 content.children 形状");
+        assert!(tcs[0].function.arguments.contains("不是调用模板"), "占位须含反模仿指引");
+        assert!(!tcs[0].function.arguments.contains("不再回显"), "旧版误导文案（暗示不用传正文）必须消失");
         assert!(!tcs[1].function.arguments.contains("_compressed"), "失败轮不压缩");
         let snapshot = tcs[0].function.arguments.clone();
         compress_doc_tool_history(&mut msgs);
@@ -2201,7 +2258,7 @@ mod tests {
         });
         let v: serde_json::Value = serde_json::from_str(&normalize_ask_args(&a)).unwrap();
         assert_eq!(v["result_type"], "ask_user_result");
-        assert_eq!(v["data"]["status"], "pending");
+        assert_eq!(v["data"]["status"], "notified", "wait 缺省=非阻断（新默认）");
         let qs = v["data"]["questions"].as_array().unwrap();
         // 空 prompt 剔除 + ≤5 截断（q1 + q3 + q4 + q5 + q6，q7 丢弃）
         assert_eq!(qs.len(), 5);
@@ -2364,7 +2421,7 @@ mod tests {
         assert!(g.contains("未授权"));
     }
 
-    /// wait=false → status=notified（不早退语义）；wait 缺省/true → pending（现状）
+    /// wait=true → pending（高危阻断例外）；wait 缺省/false → notified（非阻断默认）
     #[test]
     fn normalize_ask_args_wait_switches_status() {
         let base = json!({"reason": "r", "questions": [{"prompt": "联网吗？", "type": "single_choice", "options": ["是", "否"]}]});
@@ -2373,8 +2430,14 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&normalize_ask_args(&nonblock)).unwrap();
         assert_eq!(v["data"]["status"], "notified");
         assert!(v["summary"].as_str().unwrap().contains("不结束本轮"));
-        let block: serde_json::Value = serde_json::from_str(&normalize_ask_args(&base)).unwrap();
-        assert_eq!(block["data"]["status"], "pending");
+        // ★ 缺省即非阻断（默认 wait=false）
+        let dflt: serde_json::Value = serde_json::from_str(&normalize_ask_args(&base)).unwrap();
+        assert_eq!(dflt["data"]["status"], "notified", "wait 缺省应为非阻断 notified");
+        // 高危操作显式 wait=true → 阻断
+        let mut block = base.clone();
+        block["wait"] = json!(true);
+        let bv: serde_json::Value = serde_json::from_str(&normalize_ask_args(&block)).unwrap();
+        assert_eq!(bv["data"]["status"], "pending");
     }
 
     /// 早退判定只认 pending：notified 不触发本轮终止

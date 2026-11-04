@@ -209,7 +209,12 @@ export function mergeClarificationAnswer(
 
 /// 把追问卡片的选择合成为用户消息文本（走正常发送管线）。
 /// answers: question_id → 单选字符串 / 多选数组；未作答的问题跳过；全空时返回默认继续话术。
-export function buildClarificationReply(data: ClarificationData, answers: Record<string, string | string[]>): string {
+/// supplement: 卡片底部固定「补充说明」输入（可与答案并存，也可单独提交——纯补充=没答案但有交代）。
+export function buildClarificationReply(
+  data: ClarificationData,
+  answers: Record<string, string | string[]>,
+  supplement?: string
+): string {
   const parts: string[] = []
   data.questions.forEach((q, i) => {
     const a = answers[q.question_id]
@@ -217,8 +222,14 @@ export function buildClarificationReply(data: ClarificationData, answers: Record
     if (!text) return
     parts.push(`${i + 1}.${q.prompt.replace(/[？?]\s*$/, '')}：${text}`)
   })
-  if (!parts.length) return '暂不补充这些信息，请按最合理的默认假设继续，并在结果中括注说明采用的假设。'
-  return `已确认补充信息：${parts.join('；')}。请继续执行。`
+  const sup = (supplement || '').trim()
+  if (!parts.length) {
+    // 允许纯补充提交：未答题但提供了补充信息
+    if (sup) return `补充说明：${sup}。请继续执行。`
+    return '暂不补充这些信息，请按最合理的默认假设继续，并在结果中括注说明采用的假设。'
+  }
+  const supSeg = sup ? `；补充说明：${sup}` : ''
+  return `已确认补充信息：${parts.join('；')}${supSeg}。请继续执行。`
 }
 
 // ─── Agent:done result type ─────────────────────────────────────
@@ -356,7 +367,8 @@ export function useAgentChat() {
     try {
       const { agentCancel } = await import('@/api/db-client')
       await agentCancel(sessionId)
-      isChatting.value = false
+      // ★ 不立即 isChatting=false：保持忙碌守卫到旧 run 的 agent:done/error 到达，
+      //   由 startAgentChat 的 handler 复位——防止新消息与未死透的旧 run 并发（中断残留竞态）
       const msgs = getMessages()
       const lastMsg = msgs[msgs.length - 1]
       if (lastMsg && lastMsg.role === 'assistant' && (lastMsg.thinking || lastMsg.isThinking)) {
@@ -366,6 +378,7 @@ export function useAgentChat() {
       }
     } catch (e) {
       console.error('[AgentChat] 停止失败:', e)
+      isChatting.value = false // agent_cancel 失败时兜底复位，避免永久卡发送
     }
   }
 

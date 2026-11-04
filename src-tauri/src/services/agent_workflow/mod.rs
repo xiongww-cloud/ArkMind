@@ -85,6 +85,23 @@ pub fn cancel_agent(session_id: &str) {
     cancel_session(if session_id.is_empty() { "" } else { session_id });
 }
 
+// ★ 同会话 run 串行锁：同一会话同时只允许一个顶层 run。
+//   修"用户中断后立即发新问题 → 新 run 启动时清掉取消标记 → 旧 run 取消失效复活继续旧问题"
+//   竞态（旧 run 持锁退出后新 run 才启动，清除标记此时才安全），并防双 run 并发写会话历史。
+//   子 Agent（is_root=false）不参与（由顶层 run 持锁包裹，进锁会死锁）；无 sid 的独立后台运行体不参与。
+pub(crate) static SESSION_RUN_LOCKS: Lazy<Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+
+pub(crate) async fn acquire_session_run_lock(sid: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let arc = {
+        let mut m = SESSION_RUN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        m.entry(sid.to_string())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    arc.lock_owned().await
+}
+
 // Data structures
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)] #[serde(rename_all = "lowercase")]
 pub enum MessageRole { System, User, Assistant, Tool }

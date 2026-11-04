@@ -1,0 +1,20 @@
+{
+  "name": "vlm-pdf-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "PDF → VLM 解析试验台：自定义提示词/模型，逐页识别并查看结果（跑通后回移主程序）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.4",
+    "marked": "^15.0.12",
+    "pdfjs-dist": "^4.10.38"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "arkmind",
-  "version": "14.4.6",
+  "version": "14.4.7",
   "description": "A Vue + TypeScript desktop application",
   "private": true,
   "scripts": {

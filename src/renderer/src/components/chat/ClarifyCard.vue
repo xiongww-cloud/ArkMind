@@ -75,6 +75,19 @@ for (const q of props.clarification.questions) {
   customOpen[q.question_id] = false
 }
 const disabled = computed(() => !!props.answered || !!props.ignored)
+// ★ 卡片级固定补充输入：与逐题作答并存，也可单独提交（纯补充=没答案但有交代）
+const supplement = ref('')
+const canSubmit = computed(() => {
+  if (disabled.value) return false
+  if (supplement.value.trim()) return true
+  return anyAnswered.value
+})
+// 已答复态：解析答复文本中的「补充说明：」段（buildClarificationReply 合成格式）
+const supplementShown = computed(() => {
+  if (!props.answered || !props.replyText || props.replyText.startsWith('暂不补充')) return ''
+  const m = props.replyText.match(/补充说明：([\s\S]*?)(?:。请继续执行。|$)/)
+  return m ? m[1].trim() : ''
+})
 
 function isPicked(q: ClarificationQuestion, opt: string): boolean {
   const a = answers[q.question_id]
@@ -105,10 +118,10 @@ const anyAnswered = computed(() => props.clarification.questions.some((q) => {
   return Array.isArray(a) ? a.length > 0 : String(a).trim().length > 0
 }))
 function submit() {
-  if (disabled.value || !anyAnswered.value) return
+  if (!canSubmit.value) return
   const finalAnswers: Record<string, string | string[]> = {}
   for (const q of props.clarification.questions) finalAnswers[q.question_id] = merged(q)
-  emit('submit', buildClarificationReply(props.clarification, finalAnswers))
+  emit('submit', buildClarificationReply(props.clarification, finalAnswers, supplement.value))
 }
 /// 忽略=这题不答：不发消息不续跑（原「先不补充，按默认假设继续」按钮并入此路径——
 /// 模板话术既污染会话历史又语义冗余；AI prompt 本就允许可默认事项自行采用假设，
@@ -140,7 +153,10 @@ function ignore() {
             <p class="text-[11px] text-surface-400 leading-snug">{{ i + 1 }}. <span v-html="promptHtml[q.question_id] || q.prompt"></span></p>
             <p v-if="parsedReply.answers[q.question_id]" class="text-[12px] text-surface-800 font-medium mt-0.5" v-html="'→ ' + (answerHtml[q.question_id] || parsedReply.answers[q.question_id])"></p>
           </div>
+          <p v-if="supplementShown" class="text-[11px] text-surface-500 leading-snug pt-0.5 border-t border-surface-100 mt-1">补充：{{ supplementShown }}</p>
         </template>
+        <!-- 纯补充答复（无逐题答案）：parsedReply 为 null，直接展示补充段 -->
+        <p v-else-if="supplementShown" class="text-[11px] text-surface-500 leading-snug">补充：{{ supplementShown }}</p>
         <p v-else class="text-[11px] text-surface-400">已答复</p>
       </template>
 
@@ -166,10 +182,14 @@ function ignore() {
             <button v-else type="button" @click="openCustom(q)" class="text-[10px] text-surface-400 hover:text-brand-600 px-1">+ 其他（自行填写）</button>
           </div>
         </div>
+        <!-- 卡片级固定补充：与逐题作答并存，可单独提交 -->
+        <textarea v-model="supplement" rows="2"
+          class="w-full border border-surface-200 rounded-md px-2.5 py-1.5 text-[11px] outline-none focus:border-brand-400 resize-y"
+          placeholder="补充说明（可选）：其他背景、上面没覆盖到的信息，可单独提交…"></textarea>
         <div class="flex items-center justify-end gap-2.5 pt-0.5">
           <button type="button" @click="ignore" class="text-[11px] text-surface-400 hover:text-surface-600 transition-colors">忽略</button>
-          <button type="button" :disabled="!anyAnswered" @click="submit"
-            :class="anyAnswered ? 'btn-primary text-xs' : 'inline-flex items-center h-6 px-2.5 rounded-md text-xs font-medium bg-surface-100 text-surface-400 cursor-not-allowed'"
+          <button type="button" :disabled="!canSubmit" @click="submit"
+            :class="canSubmit ? 'btn-primary text-xs' : 'inline-flex items-center h-6 px-2.5 rounded-md text-xs font-medium bg-surface-100 text-surface-400 cursor-not-allowed'"
           >确认并继续</button>
         </div>
       </template>

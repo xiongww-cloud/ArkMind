@@ -55,6 +55,10 @@ pub struct SessionMemory {
     /// 删除会话时与项目/笔记等域同构回收（collect + release），不再解析消息 metadata。
     #[serde(skip)]
     pub(crate) owner_session_id: Option<String>,
+    /// 上一 run 是否被用户中断（中断即忘）：下一顶层 run 消费此标记注入"作废"指令后自清。
+    /// serde(default)：旧 session_state JSON 无此字段，反序列化默认 false。
+    #[serde(default)]
+    pub(crate) last_run_cancelled: bool,
 }
 
 // ★ Session 状态缓存：从 chat_sessions.session_state 加载/保存 SessionMemory
@@ -101,6 +105,7 @@ impl SessionMemory {
             prev_visited_chunks: std::collections::HashSet::new(),
             prev_visited_sources: std::collections::HashSet::new(),
             owner_session_id: None,
+            last_run_cancelled: false,
         }
     }
 
@@ -444,6 +449,20 @@ pub(crate) fn compute_scope_from_session(session: &SessionMemory) -> Option<std:
 #[cfg(test)]
 mod tests {
     use super::SessionMemory;
+
+    /// 中断即忘标记的序列化兼容：旧 session_state JSON（无 last_run_cancelled 字段）反序列化默认 false；
+    /// 新标记 round-trip 保留（中断后下一 run 能消费到作废指令）
+    #[test]
+    fn last_run_cancelled_serde_compat() {
+        let mut s = SessionMemory::new();
+        let mut legacy = serde_json::to_value(&s).unwrap();
+        legacy.as_object_mut().unwrap().remove("last_run_cancelled");
+        let back: SessionMemory = serde_json::from_value(legacy).unwrap();
+        assert!(!back.last_run_cancelled, "旧 JSON 应默认 false");
+        s.last_run_cancelled = true;
+        let rt: SessionMemory = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        assert!(rt.last_run_cancelled, "标记应随 session_state 落盘保留");
+    }
 
     /// Dock 恢复路径（plan_get）的数据源闭环：plan 随 session_state 序列化落库，
     /// "进程重启"（重新 load）后完整还原——回归钉：曾因唯一恢复 emit 挂在 run 启动，重启后 Dock 失明

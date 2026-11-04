@@ -897,30 +897,29 @@ async function cpFile(f: SessionFile) {
   catch (e: any) { toast({ message: e?.message || '复制失败', type: 'error' }) }
 }
 
+// 停止中状态：isChatting 保持 true 直到旧 run 的 agent:done/error 到达——
+// 立即放开会允许新消息与旧 run 并发（旧 run 复活/事件串扰，"中断后继续旧问题"的前端侧根因）
+const stopping = ref(false)
+watch(() => agent.isChatting.value, (v) => { if (!v) stopping.value = false })
+
 async function stopAgent() {
+  if (stopping.value) return
+  stopping.value = true
   try {
     const { agentCancel } = await import('@/api/db-client')
     await agentCancel(agentRun.runSid || undefined)
-    agent.isChatting.value = false
-    // C4 修复：停止时 unlisten 所有旧 listener，防止重发时重复处理
+    // 只停装饰性监听（进度/思考/token）；**保留 done/error**——旧 run 真正退出时由它们复位 isChatting 并自清理
     unlistenProgress?.(); unlistenProgress = null
     unlistenThought?.(); unlistenAnswer?.(); unlistenThought = null
     unlistenToken?.(); unlistenToken = null
-    unlistenDone?.(); unlistenDone = null
-    unlistenError?.(); unlistenError = null
-    // 更新最后一条 AI 消息
-    const session = currentSession.value
-    if (session) {
-      const lastMsg = session.messages[session.messages.length - 1]
-      if (lastMsg && lastMsg.role === 'assistant' && lastMsg.isThinking) {
-        lastMsg.isThinking = false
-        if (!lastMsg.content) lastMsg.content = '已停止执行。'
-      }
-    }
+    // 不再立即 isChatting=false：等旧 run 的 done( cancelled )/error 到达后由其 handler 复位
+    // 最后一条 AI 消息保持"思考中"外观，done 到达时统一落定为「已停止执行。」（cancelled 不覆盖已流出内容）
     scrollToBottomIfNear()
   } catch (e) {
     console.error('[KB] 停止失败:', e)
-    agent.isChatting.value = false  // ★ agent_cancel 调用失败也复位状态，避免发送按钮永久红着
+    // agent_cancel 调用失败：恢复可发送，避免永久卡死（旧 run 未被通知取消）
+    agent.isChatting.value = false
+    stopping.value = false
   }
 }
 
@@ -1149,7 +1148,7 @@ onUnmounted(() => {
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
           </button>
           <textarea ref="textareaRef" v-model="inputMessage" rows="1" maxlength="5000" placeholder="向 AI 提问..." class="flex-1 border-none resize-none outline-none text-[13px] text-surface-800 bg-transparent leading-relaxed placeholder:text-surface-400 max-h-[80px] py-1" @keydown.enter.exact.prevent="handleSendMessage" @paste="onPaste" @input="(e: any) => { if (!inputMessage.trim()) { e.target.style.height = ''; return }; e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 80) + 'px' }" />
-          <button v-if="agent.isChatting.value" @click="stopAgent" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-red-500 hover:bg-red-600 text-white transition-all duration-200" v-tooltip="'停止'">
+          <button v-if="agent.isChatting.value" @click="stopAgent" :disabled="stopping" :class="stopping ? 'opacity-60 cursor-wait' : ''" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-red-500 hover:bg-red-600 text-white transition-all duration-200" v-tooltip="stopping ? '正在停止…' : '停止'">
             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
           </button>
           <button v-else @click="handleSendMessage" :disabled="!inputMessage.trim()" class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-200" :class="inputMessage.trim() ? 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm' : 'bg-surface-100 text-surface-400 cursor-not-allowed'" v-tooltip="'发送'">

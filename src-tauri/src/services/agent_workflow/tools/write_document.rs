@@ -40,11 +40,17 @@ pub(crate) fn execute(a: &Value) -> String {
     if action == "append" {
         let source_id = a["source_file_id"].as_str().unwrap_or("");
         if source_id.is_empty() {
+            log::warn!("[文档生成] append 缺 source_file_id，收到 keys: {:?}", key_list(a));
             return err("append 需要 source_file_id（create 返回的 file_id）。".to_string());
         }
         let content = &a["content"];
         if content.is_null() {
-            return err("append 需要 content：{children:[新章节块]}，只传本次新增内容。".to_string());
+            // ★ 事故根因日志：模型漏传 content（曾因模仿历史压缩占位形态，见 compress_doc_tool_history）
+            log::warn!("[文档生成] append 缺 content，收到 keys: {:?}", key_list(a));
+            return err(
+                "append 需要 content：{children:[新章节块]}，只传本次新增内容。注意：历史消息中的 _compressed 字段只是压缩显示，不是调用模板——每次 append 都必须完整传 content.children。"
+                    .to_string(),
+            );
         }
         return match doc_writer::append_docx(source_id, content, owner_session) {
             Ok(doc) => ToolResultEnvelope {
@@ -75,6 +81,7 @@ pub(crate) fn execute(a: &Value) -> String {
     }
 
     if file_type != "docx" && file_type != "xlsx" {
+        log::warn!("[文档生成] create file_type 非法「{}」，收到 keys: {:?}", file_type, key_list(a));
         return err(format!(
             "不支持的 file_type「{}」。支持：docx（Word）、xlsx（Excel）。",
             file_type
@@ -82,12 +89,25 @@ pub(crate) fn execute(a: &Value) -> String {
     }
     let filename = a["filename"].as_str().unwrap_or("").trim();
     if filename.is_empty() {
+        log::warn!("[文档生成] create 缺 filename，收到 keys: {:?}", key_list(a));
         return err("创建文档需要提供 filename（文件名，不含扩展名）。".to_string());
     }
     let content = &a["content"];
     if !content.is_object() || content.as_object().map_or(true, |m| m.is_empty()) {
+        log::warn!(
+            "[文档生成] create content 缺失或非对象（实际类型: {}），收到 keys: {:?}",
+            match content {
+                Value::Null => "null".to_string(),
+                Value::String(s) => format!("string(len={})", s.len()),
+                other => other
+                    .as_object()
+                    .map(|m| format!("object(len={})", m.len()))
+                    .unwrap_or_else(|| format!("{:?}", other)),
+            },
+            key_list(a)
+        );
         return err(
-            "创建文档需要提供 content（文档内容结构，由你根据需求设计）。".to_string(),
+            "创建文档需要提供 content（文档内容结构，由你根据需求设计）。若 content 是字符串而非对象，请传 {children:[…]} 结构；历史消息中的 _compressed 占位不是调用模板。".to_string(),
         );
     }
 
@@ -135,6 +155,13 @@ fn err(msg: String) -> String {
         summary: Some(msg),
     }
     .to_json()
+}
+
+/// 入参键列表（诊断用：参数类错误时日志可直接看出模型传了什么/漏了什么）
+fn key_list(a: &Value) -> Vec<String> {
+    a.as_object()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 fn human_size(bytes: u64) -> String {

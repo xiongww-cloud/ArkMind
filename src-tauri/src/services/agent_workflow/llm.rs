@@ -404,7 +404,14 @@ async fn stream_once(
                                 while st.tca.len() <= idx { st.tca.push((String::new(), String::new(), String::new())); }
                                 if let Some(id) = td["id"].as_str() { st.tca[idx].0 = id.to_string(); }
                                 if let Some(name) = td["function"]["name"].as_str() { st.tca[idx].1 = name.to_string(); }
-                                if let Some(args) = td["function"]["arguments"].as_str() { st.tca[idx].2.push_str(args); }
+                                // arguments 常规为字符串增量；少数 provider 直接下发对象 → 兼容序列化
+                                // （曾只认 as_str()：对象型参数被静默丢成空串 → 工具收到 {} 报参数错误）
+                                if let Some(args) = td["function"]["arguments"].as_str() {
+                                    st.tca[idx].2.push_str(args);
+                                } else if let Some(obj) = td["function"]["arguments"].as_object() {
+                                    log::warn!("[LLM] tool_calls[{}].arguments 为对象型，已序列化兼容", idx);
+                                    st.tca[idx].2 = serde_json::to_string(&Value::Object(obj.clone())).unwrap_or_default();
+                                }
                             }
                         }
                     }
